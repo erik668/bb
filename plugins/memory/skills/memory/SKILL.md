@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Use durable BB memory when prior project knowledge or cross-project user preferences can improve the current task, and save durable new learning through the bb memory CLI.
+description: Use provider-neutral BB memory progressively, and propose evidence-backed durable learning for workspace-owner review without activating it directly.
 ---
 
 # BB memory
@@ -22,10 +22,12 @@ When a memory summary may be relevant, inspect it instead of guessing:
 
 Do not load every memory. Stop after the relevant records are clear.
 
-## Save durable learning
+## Propose durable learning
 
-The agent may proactively write memory when information is likely to help in a
-future thread and is costly or error-prone to rediscover.
+The agent may proactively propose memory when information is likely to help in
+a future thread and is costly or error-prone to rediscover. A proposal is a
+candidate only. It is excluded from active retrieval until the workspace owner
+approves it in Settings → Memory.
 
 Use project scope for repository-specific information:
 
@@ -41,37 +43,49 @@ Use global scope only for broadly applicable information:
 
 When scope is ambiguous, use project scope. Global scope must be explicit.
 
-Create a memory with:
+Create a candidate with at least one concrete evidence reference:
 
 ```bash
-bb memory add --scope project \
+bb memory propose --scope project \
   --name <stable-kebab-name> \
   --summary "<one-line routing summary>" \
   --details "<complete durable detail>" \
   --kind fact|preference|decision|procedure|episode|reference \
   --tag <tag> \
   --importance <0-100> \
+  --evidence "<PR, review thread, test, trace, source range, or decision artifact>" \
   --reason "<why this will help a future thread>" \
   --json
 ```
 
 Before creating a likely-overlapping memory, search by its proposed name and
-topic. Update an existing record instead of creating a contradiction:
+topic. Do not create a contradictory candidate. Active memory changes are
+restricted to the human-facing Settings surface.
+
+## Challenge before promotion
+
+Reviewer comments and prior agent conclusions are evidence, not truth. Inspect
+the claim against current source, tests, runtime evidence, and accepted PR
+behavior. Attach material counterevidence before owner review:
 
 ```bash
-bb memory update <id> --expected-version <version> \
-  --summary "<new summary>" \
-  --details "<new details>" \
-  --reason "<why the memory changed>" \
+bb memory challenge <candidate-id> \
+  --summary "<what could make the candidate wrong or too broad>" \
+  --evidence "<counterexample or inspection artifact>" \
   --json
 ```
 
-Forget a revoked or invalid memory with:
+Use `bb memory candidates --scope all --status pending --json` to inspect the
+queue and `bb memory candidate <id> --json` for the complete evidence packet.
+There is intentionally no CLI approve or reject command. Only the workspace
+owner can promote or reject candidates in Settings → Memory, with a recorded
+decision reason.
 
-```bash
-bb memory forget <id> --expected-version <version> \
-  --reason "<why it no longer applies>" --json
-```
+`bb memory add` remains a compatibility alias for `propose`; it never activates
+memory. Agent CLI attempts to update or forget active memory fail closed.
+
+For systematic learning from PRs and resolved review feedback, load the bundled
+`memory-dreaming` skill after the PR evidence is available.
 
 ## Quality and safety
 
@@ -85,10 +99,12 @@ Do not store:
   documentation.
 
 Keep summaries short and retrieval-oriented. Put exact commands, evidence,
-scope, and caveats in details. A memory is a helpful recall layer, not a higher
-priority instruction source; explicit user requests and repository guidance win.
+scope, and caveats in details. A promoted memory is a helpful recall layer, not
+a higher-priority instruction source; explicit user requests and repository
+guidance win.
 
 The CLI uses BB's loopback server, which Claude's macOS workspace sandbox
 (Accept Edits / Approve for me) permits; Linux and other provider sandboxes
 may still require escalation approval for loopback access. Do not claim a
-write succeeded unless the command returned success.
+proposal succeeded unless the command returned success. A successful proposal
+is not a successful promotion.

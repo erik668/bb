@@ -11,6 +11,20 @@ import {
   type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import {
+  CANDIDATE_STATUSES,
+  CandidateStore,
+  SETTINGS_OWNER_ACTOR,
+  type CandidateChallenge,
+  type CandidateDecisionReceipt,
+  type CandidateStatus,
+  type MemoryCandidate,
+} from "./candidate-store.js";
+export type {
+  CandidateChallenge,
+  CandidateDecisionReceipt,
+  MemoryCandidate,
+} from "./candidate-store.js";
 
 const CATALOG_MAX_CHARS = 3_900;
 const DEFAULT_RESULT_LIMIT = 20;
@@ -26,12 +40,12 @@ const MEMORY_KINDS = [
   "reference",
 ] as const;
 
-type MemoryKind = (typeof MEMORY_KINDS)[number];
-type MemoryScope = "global" | "project";
-type ReadScope = MemoryScope | "all";
+export type MemoryKind = (typeof MEMORY_KINDS)[number];
+export type MemoryScope = "global" | "project";
+export type ReadScope = MemoryScope | "all";
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
 
-interface MemoryRecord {
+export interface MemoryRecord {
   id: string;
   scope: MemoryScope;
   projectId: string | null;
@@ -70,6 +84,52 @@ const memoryRecordSchema: z.ZodType<MemoryRecord> = z
   })
   .strict();
 
+const candidateChallengeSchema: z.ZodType<CandidateChallenge> = z
+  .object({
+    id: z.string(),
+    summary: z.string(),
+    evidence: z.array(z.string()),
+    sourceThreadId: z.string().nullable(),
+    createdAt: z.number(),
+  })
+  .strict();
+
+const candidateDecisionReceiptSchema: z.ZodType<CandidateDecisionReceipt> = z
+  .object({
+    candidateId: z.string(),
+    decision: z.enum(["approve", "reject"]),
+    candidateVersion: z.number().int().positive(),
+    actor: z.literal(SETTINGS_OWNER_ACTOR),
+    reason: z.string(),
+    promotedMemoryId: z.string().nullable(),
+    decidedAt: z.number(),
+  })
+  .strict();
+
+const memoryCandidateSchema: z.ZodType<MemoryCandidate> = z
+  .object({
+    id: z.string(),
+    status: z.enum(CANDIDATE_STATUSES),
+    scope: z.enum(["global", "project"]),
+    projectId: z.string().nullable(),
+    name: z.string(),
+    summary: z.string(),
+    details: z.string(),
+    kind: memoryKindSchema,
+    tags: z.array(z.string()),
+    importance: z.number().int().min(0).max(100),
+    pinned: z.boolean(),
+    evidence: z.array(z.string()),
+    challenges: z.array(candidateChallengeSchema),
+    proposedByThreadId: z.string().nullable(),
+    proposalReason: z.string(),
+    version: z.number().int().positive(),
+    createdAt: z.number(),
+    updatedAt: z.number(),
+    decisionReceipt: candidateDecisionReceiptSchema.nullable(),
+  })
+  .strict();
+
 const memoryUpdateInputSchema = z
   .object({
     id: z.string(),
@@ -104,6 +164,41 @@ export const memoryRpcContract = defineRpcContract({
         deleted: z
           .object({ id: z.string(), version: z.number().int().positive() })
           .strict(),
+      })
+      .strict(),
+  },
+  listCandidates: {
+    input: z.null(),
+    output: z.object({ candidates: z.array(memoryCandidateSchema) }).strict(),
+  },
+  approveCandidate: {
+    input: z
+      .object({
+        id: z.string(),
+        expectedVersion: z.number().int().positive(),
+        reason: z.string(),
+      })
+      .strict(),
+    output: z
+      .object({
+        candidate: memoryCandidateSchema,
+        memory: memoryRecordSchema,
+        receipt: candidateDecisionReceiptSchema,
+      })
+      .strict(),
+  },
+  rejectCandidate: {
+    input: z
+      .object({
+        id: z.string(),
+        expectedVersion: z.number().int().positive(),
+        reason: z.string(),
+      })
+      .strict(),
+    output: z
+      .object({
+        candidate: memoryCandidateSchema,
+        receipt: candidateDecisionReceiptSchema,
       })
       .strict(),
   },
@@ -150,6 +245,15 @@ class CliError extends Error {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isUniqueConstraintError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "SQLITE_CONSTRAINT_UNIQUE" ||
+      error.code === "SQLITE_CONSTRAINT_PRIMARYKEY")
+  );
 }
 
 function parseTags(raw: unknown): string[] {
@@ -294,6 +398,18 @@ function parseKind(value: string | undefined): MemoryKind {
   return kind;
 }
 
+function parseCandidateStatusOption(
+  value: string | undefined,
+): CandidateStatus {
+  const status = value ?? "pending";
+  if (!CANDIDATE_STATUSES.some((candidate) => candidate === status)) {
+    throw new CliError(
+      `status must be one of: ${CANDIDATE_STATUSES.join(", ")}`,
+    );
+  }
+  return status as CandidateStatus;
+}
+
 function parseInteger(
   label: string,
   value: string | undefined,
@@ -312,16 +428,6 @@ function parseInteger(
     );
   }
   return parsed;
-}
-
-function parseBoolean(
-  label: string,
-  value: string | undefined,
-): boolean | undefined {
-  if (value === undefined) return undefined;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new CliError(`${label} must be true or false`);
 }
 
 function parseArgv(argv: string[]): ParsedArgv {
@@ -444,75 +550,6 @@ function memorySnapshot(memory: MemoryRecord): Record<string, unknown> {
 
 class MemoryStore {
   constructor(private readonly db: PluginDatabase) {}
-
-  add(input: MemoryCreate): MemoryRecord {
-    const now = Date.now();
-    const id = createMemoryId();
-    const record: MemoryRecord = {
-      id,
-      scope: input.scope,
-      projectId: input.projectId,
-      name: validateName(input.name),
-      summary: validateText("summary", input.summary, 400),
-      details: validateText("details", input.details, 16_000),
-      kind: input.kind,
-      tags: validateTags(input.tags),
-      importance: input.importance,
-      pinned: input.pinned,
-      sourceThreadId: input.sourceThreadId,
-      writeReason: validateText("reason", input.writeReason, 500),
-      version: 1,
-      createdAt: now,
-      updatedAt: now,
-    };
-    try {
-      this.db.transaction(() => {
-        this.db
-          .prepare(
-            `INSERT INTO memories (
-               id, scope, scope_key, project_id, name, summary, details, kind,
-               tags_json, importance, pinned, source_thread_id, write_reason,
-               version, created_at, updated_at, deleted_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
-          )
-          .run(
-            record.id,
-            record.scope,
-            scopeKey(record.scope, record.projectId),
-            record.projectId,
-            record.name,
-            record.summary,
-            record.details,
-            record.kind,
-            JSON.stringify(record.tags),
-            record.importance,
-            record.pinned ? 1 : 0,
-            record.sourceThreadId,
-            record.writeReason,
-            record.version,
-            record.createdAt,
-            record.updatedAt,
-          );
-        this.insertHistory(
-          record,
-          "create",
-          record.sourceThreadId,
-          record.writeReason,
-        );
-      })();
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes("UNIQUE constraint failed")
-      ) {
-        throw new CliError(
-          `an active ${record.scope} memory named "${record.name}" already exists`,
-        );
-      }
-      throw error;
-    }
-    return record;
-  }
 
   update(
     id: string,
@@ -737,6 +774,62 @@ class MemoryStore {
       .all(id, ...scoped.params, limit);
   }
 
+  buildMemoryRecord(input: MemoryCreate): MemoryRecord {
+    const now = Date.now();
+    return {
+      id: createMemoryId(),
+      scope: input.scope,
+      projectId: input.projectId,
+      name: validateName(input.name),
+      summary: validateText("summary", input.summary, 400),
+      details: validateText("details", input.details, 16_000),
+      kind: input.kind,
+      tags: validateTags(input.tags),
+      importance: input.importance,
+      pinned: input.pinned,
+      sourceThreadId: input.sourceThreadId,
+      writeReason: validateText("reason", input.writeReason, 500),
+      version: 1,
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  insertMemoryRecord(record: MemoryRecord): void {
+    this.db
+      .prepare(
+        `INSERT INTO memories (
+           id, scope, scope_key, project_id, name, summary, details, kind,
+           tags_json, importance, pinned, source_thread_id, write_reason,
+           version, created_at, updated_at, deleted_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+      )
+      .run(
+        record.id,
+        record.scope,
+        scopeKey(record.scope, record.projectId),
+        record.projectId,
+        record.name,
+        record.summary,
+        record.details,
+        record.kind,
+        JSON.stringify(record.tags),
+        record.importance,
+        record.pinned ? 1 : 0,
+        record.sourceThreadId,
+        record.writeReason,
+        record.version,
+        record.createdAt,
+        record.updatedAt,
+      );
+    this.insertHistory(
+      record,
+      "create",
+      record.sourceThreadId,
+      record.writeReason,
+    );
+  }
+
   private insertHistory(
     memory: MemoryRecord,
     action: "create" | "update" | "forget",
@@ -780,12 +873,42 @@ function displayMemory(memory: MemoryRecord, includeDetails: boolean): string {
   return lines.join("\n");
 }
 
+function displayCandidate(
+  candidate: MemoryCandidate,
+  includeDetails: boolean,
+): string {
+  const lines = [
+    `${candidate.id} v${candidate.version} [${candidate.status}/${candidate.scope}/${candidate.kind}] ${candidate.name}`,
+    `  ${candidate.summary}`,
+    `  evidence=${candidate.evidence.length} challenges=${candidate.challenges.length}`,
+  ];
+  if (includeDetails) {
+    lines.push(
+      "",
+      candidate.details,
+      "",
+      "Evidence:",
+      ...candidate.evidence.map((item) => `- ${item}`),
+      "Challenges:",
+      ...(candidate.challenges.length > 0
+        ? candidate.challenges.map(
+            (challenge) =>
+              `- ${challenge.summary} (${challenge.evidence.length} evidence item(s))`,
+          )
+        : ["- none"]),
+      `Proposal reason: ${candidate.proposalReason}`,
+      `Proposed by thread: ${candidate.proposedByThreadId ?? "none"}`,
+    );
+  }
+  return lines.join("\n");
+}
+
 function renderCatalog(store: MemoryStore, projectId: string): string {
   const { memories, total } = store.list("all", projectId, MAX_RESULT_LIMIT);
   const header = [
     "Memory index",
     "The entries below are summaries, not full records. Use `bb memory search <query> --scope all --json` and `bb memory get <id> --json` to progressively disclose details.",
-    "You may proactively save durable learning with `bb memory add`. Use project scope for repository-specific facts and global scope only for broadly applicable user preferences or workflows. Never store secrets, transient status, guesses, or rules already guaranteed by AGENTS.md.",
+    "You may propose durable learning with `bb memory propose`; proposals are not active until the workspace owner approves them in Settings → Memory. Use project scope for repository-specific facts and global scope only for broadly applicable user preferences or workflows. Never store secrets, transient status, guesses, or rules already guaranteed by AGENTS.md.",
     "",
   ].join("\n");
   if (memories.length === 0) return `${header}No memories are stored yet.`;
@@ -823,9 +946,11 @@ const USAGE = [
   "  bb memory catalog [--scope all|project|global] [--limit N] [--json]",
   "  bb memory search <query...> [--scope all|project|global] [--limit N] [--json]",
   "  bb memory get <id-or-name> [--scope all|project|global] [--json]",
-  "  bb memory add --scope project|global --name NAME --summary TEXT --details TEXT --reason TEXT [--kind KIND] [--tag TAG]... [--importance 0-100] [--pinned] [--json]",
-  "  bb memory update <id> --expected-version N --reason TEXT [--summary TEXT] [--details TEXT] [--kind KIND] [--tag TAG]... [--importance 0-100] [--pinned true|false] [--json]",
-  "  bb memory forget <id> --expected-version N --reason TEXT [--json]",
+  "  bb memory propose --scope project|global --name NAME --summary TEXT --details TEXT --reason TEXT --evidence TEXT [--evidence TEXT]... [--kind KIND] [--tag TAG]... [--importance 0-100] [--pinned] [--json]",
+  "  bb memory add ...  # compatibility alias for propose; never activates memory",
+  "  bb memory candidates [--scope all|project|global] [--status pending|approved|rejected] [--limit N] [--json]",
+  "  bb memory candidate <id> [--json]",
+  "  bb memory challenge <candidate-id> --summary TEXT --evidence TEXT [--evidence TEXT]... [--json]",
   "  bb memory history <id> [--limit N] [--json]",
 ].join("\n");
 
@@ -929,8 +1054,77 @@ export default async function plugin(bb: BbPluginApi) {
      CREATE TRIGGER IF NOT EXISTS memories_fts_delete AFTER DELETE ON memories BEGIN
        DELETE FROM memories_fts WHERE memory_id = old.id;
      END;`,
+    `CREATE TABLE IF NOT EXISTS memory_candidates (
+       id TEXT PRIMARY KEY,
+       status TEXT NOT NULL CHECK (status IN ('pending', 'approved', 'rejected')),
+       scope TEXT NOT NULL CHECK (scope IN ('global', 'project')),
+       scope_key TEXT NOT NULL,
+       project_id TEXT,
+       name TEXT NOT NULL,
+       summary TEXT NOT NULL,
+       details TEXT NOT NULL,
+       kind TEXT NOT NULL,
+       tags_json TEXT NOT NULL,
+       importance INTEGER NOT NULL CHECK (importance BETWEEN 0 AND 100),
+       pinned INTEGER NOT NULL CHECK (pinned IN (0, 1)),
+       evidence_json TEXT NOT NULL,
+       proposed_by_thread_id TEXT,
+       proposal_reason TEXT NOT NULL,
+       version INTEGER NOT NULL,
+       created_at INTEGER NOT NULL,
+       updated_at INTEGER NOT NULL,
+       CHECK ((scope = 'global' AND project_id IS NULL) OR (scope = 'project' AND project_id IS NOT NULL))
+     );
+     CREATE UNIQUE INDEX IF NOT EXISTS memory_candidates_pending_scope_name
+       ON memory_candidates(scope_key, name) WHERE status = 'pending';
+     CREATE INDEX IF NOT EXISTS memory_candidates_review_queue
+       ON memory_candidates(status, updated_at DESC, name);
+     CREATE TABLE IF NOT EXISTS memory_candidate_challenges (
+       id TEXT PRIMARY KEY,
+       candidate_id TEXT NOT NULL REFERENCES memory_candidates(id),
+       summary TEXT NOT NULL,
+       evidence_json TEXT NOT NULL,
+       source_thread_id TEXT,
+       created_at INTEGER NOT NULL
+     );
+     CREATE INDEX IF NOT EXISTS memory_candidate_challenges_candidate
+       ON memory_candidate_challenges(candidate_id, created_at ASC);
+     CREATE TABLE IF NOT EXISTS memory_candidate_decisions (
+       candidate_id TEXT PRIMARY KEY REFERENCES memory_candidates(id),
+       decision TEXT NOT NULL CHECK (decision IN ('approve', 'reject')),
+       candidate_version INTEGER NOT NULL,
+       actor TEXT NOT NULL CHECK (actor = 'memory-settings-owner'),
+       reason TEXT NOT NULL,
+       promoted_memory_id TEXT REFERENCES memories(id),
+       created_at INTEGER NOT NULL
+     );`,
   ]);
   const store = new MemoryStore(db);
+  const candidates = new CandidateStore<MemoryRecord>(db, {
+    validateName,
+    validateText,
+    validateTags,
+    scopeKey,
+    scopeSql,
+    normalizeMemoryKind: (value) => (isMemoryKind(value) ? value : "fact"),
+    buildMemory(candidate, decisionReason) {
+      return store.buildMemoryRecord({
+        scope: candidate.scope,
+        projectId: candidate.projectId,
+        name: candidate.name,
+        summary: candidate.summary,
+        details: candidate.details,
+        kind: candidate.kind,
+        tags: candidate.tags,
+        importance: candidate.importance,
+        pinned: candidate.pinned,
+        sourceThreadId: candidate.proposedByThreadId,
+        writeReason: `Promoted from ${candidate.id}: ${decisionReason}`,
+      });
+    },
+    insertMemory: (memory) => store.insertMemoryRecord(memory),
+    isUniqueConstraintError,
+  });
 
   bb.rpc.register(memoryRpcContract, {
     listMemories() {
@@ -974,6 +1168,34 @@ export default async function plugin(bb: BbPluginApi) {
       );
       return { deleted: { id: memory.id, version: memory.version } };
     },
+    listCandidates() {
+      return { candidates: candidates.listAdmin("pending") };
+    },
+    approveCandidate(input) {
+      const result = candidates.decide(
+        input.id,
+        input.expectedVersion,
+        "approve",
+        input.reason,
+      );
+      if (!result.memory) {
+        throw new Error("approval did not create a memory");
+      }
+      return {
+        candidate: result.candidate,
+        memory: result.memory,
+        receipt: result.receipt,
+      };
+    },
+    rejectCandidate(input) {
+      const result = candidates.decide(
+        input.id,
+        input.expectedVersion,
+        "reject",
+        input.reason,
+      );
+      return { candidate: result.candidate, receipt: result.receipt };
+    },
   });
 
   bb.agents.contributeInstructions(({ projectId }) =>
@@ -1003,21 +1225,32 @@ export default async function plugin(bb: BbPluginApi) {
           "bb memory get <id-or-name> [--scope all|project|global] [--json]",
       },
       {
+        name: "propose",
+        summary: "Propose a memory for workspace-owner review",
+        usage:
+          "bb memory propose --scope project|global --name NAME --summary TEXT --details TEXT --reason TEXT --evidence TEXT [options]",
+      },
+      {
         name: "add",
-        summary: "Save a project or global memory",
-        usage:
-          "bb memory add --scope project|global --name NAME --summary TEXT --details TEXT --reason TEXT [options]",
+        summary: "Compatibility alias for propose; never activates memory",
+        usage: "bb memory add [same options as propose]",
       },
       {
-        name: "update",
-        summary: "Update a memory with version checking",
+        name: "candidates",
+        summary: "List candidate memories and review state",
         usage:
-          "bb memory update <id> --expected-version N --reason TEXT [options]",
+          "bb memory candidates [--scope all|project|global] [--status pending|approved|rejected] [--limit N] [--json]",
       },
       {
-        name: "forget",
-        summary: "Soft-delete a memory with version checking",
-        usage: "bb memory forget <id> --expected-version N --reason TEXT",
+        name: "candidate",
+        summary: "Read one complete candidate memory",
+        usage: "bb memory candidate <id> [--json]",
+      },
+      {
+        name: "challenge",
+        summary: "Attach counterevidence before owner review",
+        usage:
+          "bb memory challenge <id> --summary TEXT --evidence TEXT [--evidence TEXT]... [--json]",
       },
       {
         name: "history",
@@ -1094,9 +1327,9 @@ export default async function plugin(bb: BbPluginApi) {
               : displayMemory(memory, true),
           };
         }
-        if (command === "add") {
+        if (command === "propose" || command === "add") {
           const scoped = writeScope(args, ctx);
-          const memory = store.add({
+          const candidate = candidates.propose({
             ...scoped,
             name: requireOption(args, "name"),
             summary: requireOption(args, "summary"),
@@ -1109,94 +1342,80 @@ export default async function plugin(bb: BbPluginApi) {
               max: 100,
             }),
             pinned: args.flags.has("pinned"),
-            sourceThreadId: ctx.threadId ?? null,
-            writeReason: requireOption(args, "reason"),
+            evidence: args.options.get("evidence") ?? [],
+            proposedByThreadId: ctx.threadId ?? null,
+            proposalReason: requireOption(args, "reason"),
           });
           return {
             exitCode: 0,
             stdout: wantsJson
-              ? jsonOutput({ ok: true, memory })
-              : `Saved ${memory.id} v${memory.version} (${memory.scope}/${memory.name}).`,
+              ? jsonOutput({ ok: true, candidate })
+              : `Proposed ${candidate.id} v${candidate.version} (${candidate.scope}/${candidate.name}); workspace-owner approval is required in Settings → Memory.`,
           };
         }
-        if (command === "update") {
-          const id = args.positionals[0];
-          if (!id) throw new CliError("update requires a memory id");
-          const tags = args.options.has("tag")
-            ? args.options.get("tag")
-            : undefined;
-          const importance = args.options.has("importance")
-            ? parseInteger("importance", option(args, "importance"), {
-                min: 0,
-                max: 100,
-              })
-            : undefined;
-          const kind = args.options.has("kind")
-            ? parseKind(option(args, "kind"))
-            : undefined;
-          const pinned = parseBoolean("pinned", option(args, "pinned"));
-          if (
-            !args.options.has("summary") &&
-            !args.options.has("details") &&
-            kind === undefined &&
-            tags === undefined &&
-            importance === undefined &&
-            pinned === undefined
-          ) {
-            throw new CliError("update requires at least one field to change");
-          }
-          const memory = store.update(
-            id,
-            {
-              expectedVersion: parseInteger(
-                "expected-version",
-                requireOption(args, "expected-version"),
-                { min: 1, max: Number.MAX_SAFE_INTEGER },
-              ),
-              summary: option(args, "summary"),
-              details: option(args, "details"),
-              kind,
-              tags,
-              importance,
-              pinned,
-              sourceThreadId: ctx.threadId ?? null,
-              writeReason: requireOption(args, "reason"),
-            },
+        if (command === "candidates") {
+          const scope = readScope(args);
+          const status = parseCandidateStatusOption(option(args, "status"));
+          const limit = parseInteger("limit", option(args, "limit"), {
+            defaultValue: DEFAULT_RESULT_LIMIT,
+            min: 1,
+            max: MAX_RESULT_LIMIT,
+          });
+          const listedCandidates = candidates.list(
+            scope,
             ctx.projectId,
-          );
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({ ok: true, memory })
-              : `Updated ${memory.id} to v${memory.version}.`,
-          };
-        }
-        if (command === "forget") {
-          const id = args.positionals[0];
-          if (!id) throw new CliError("forget requires a memory id");
-          const memory = store.forget(
-            id,
-            parseInteger(
-              "expected-version",
-              requireOption(args, "expected-version"),
-              {
-                min: 1,
-                max: Number.MAX_SAFE_INTEGER,
-              },
-            ),
-            requireOption(args, "reason"),
-            ctx.threadId ?? null,
-            ctx.projectId,
+            status,
+            limit,
           );
           return {
             exitCode: 0,
             stdout: wantsJson
               ? jsonOutput({
                   ok: true,
-                  forgotten: { id: memory.id, version: memory.version },
+                  scope,
+                  status,
+                  candidates: listedCandidates,
                 })
-              : `Forgot ${memory.id} at v${memory.version}.`,
+              : listedCandidates
+                  .map((candidate) => displayCandidate(candidate, false))
+                  .join("\n") || "No memory candidates.",
           };
+        }
+        if (command === "candidate") {
+          const id = args.positionals[0];
+          if (!id) throw new CliError("candidate requires an id");
+          const candidate = candidates.get(id, ctx.projectId);
+          if (!candidate) {
+            throw new CliError(`memory candidate "${id}" was not found`);
+          }
+          return {
+            exitCode: 0,
+            stdout: wantsJson
+              ? jsonOutput({ ok: true, candidate })
+              : displayCandidate(candidate, true),
+          };
+        }
+        if (command === "challenge") {
+          const id = args.positionals[0];
+          if (!id) throw new CliError("challenge requires a candidate id");
+          const candidate = candidates.challenge(
+            id,
+            requireOption(args, "summary"),
+            args.options.get("evidence") ?? [],
+            ctx.threadId ?? null,
+            ctx.projectId,
+          );
+          return {
+            exitCode: 0,
+            stdout: wantsJson
+              ? jsonOutput({ ok: true, candidate })
+              : `Challenged ${candidate.id}; review version is now v${candidate.version}.`,
+          };
+        }
+        if (command === "update" || command === "forget") {
+          throw new CliError(
+            `active-memory ${command} is restricted to Settings → Memory so agents cannot bypass workspace-owner review`,
+          );
         }
         if (command === "history") {
           const id = args.positionals[0];

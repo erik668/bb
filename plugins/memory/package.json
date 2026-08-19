@@ -1,6 +1,6 @@
 {
   "name": "bb-plugin-memory",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Provider-independent durable memory for agents. We recommend disabling provider-native memory when using this plugin.",
@@ -17,8 +17,10 @@
   "files": [
     "dist",
     "server.ts",
+    "candidate-store.ts",
     "app.tsx",
     "skills",
+    "DREAMING.md",
     "README.md"
   ],
   "engines": {
