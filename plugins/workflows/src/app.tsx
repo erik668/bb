@@ -43,7 +43,11 @@ import {
   workflowRunsSignalThreadId,
 } from "./realtime-channel.js";
 import type { workflowUiRpcContract } from "./ui-contract.js";
-import type { WorkflowCallView, WorkflowRunView } from "./ui-contract.js";
+import type {
+  WorkflowCallView,
+  WorkflowCheckpointView,
+  WorkflowRunView,
+} from "./ui-contract.js";
 
 type RunLoadState =
   | { status: "loading" }
@@ -58,6 +62,16 @@ type ActiveRunsLoadState =
   | { status: "loading" }
   | { status: "ready"; runs: WorkflowRunView[] }
   | { status: "error" };
+
+type RunDetailsLoadState =
+  | { status: "loading" }
+  | {
+      status: "ready";
+      runId: string | null;
+      checkpoints: WorkflowCheckpointView[];
+      refreshError: string | null;
+    }
+  | { status: "error"; runId: string | null; message: string };
 
 interface SharedWorkflowView {
   callsById: ReadonlyMap<string, WorkflowCallView>;
@@ -381,6 +395,59 @@ function useWorkflowRun(
   return { state, refresh };
 }
 
+function useWorkflowRunDetails(
+  threadId: string,
+  runId: string | null,
+  active: boolean,
+  enabled = true,
+): RunDetailsLoadState {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [state, setState] = useState<RunDetailsLoadState>({
+    status: "loading",
+  });
+  const requestSequence = useRef(0);
+
+  const refresh = useCallback(async () => {
+    if (!enabled) return;
+    const sequence = ++requestSequence.current;
+    try {
+      const result = await rpc.call("workflowRunDetails", { threadId, runId });
+      if (sequence === requestSequence.current) {
+        setState({
+          status: "ready",
+          runId,
+          checkpoints: result.checkpoints,
+          refreshError: null,
+        });
+      }
+    } catch (error) {
+      if (sequence === requestSequence.current) {
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) =>
+          current.status === "ready"
+            ? { ...current, refreshError: message }
+            : { status: "error", runId, message },
+        );
+      }
+    }
+  }, [enabled, rpc, runId, threadId]);
+
+  useEffect(() => {
+    setState({ status: "loading" });
+    if (enabled) void refresh();
+    return () => {
+      requestSequence.current += 1;
+    };
+  }, [enabled, refresh]);
+
+  useRealtime(WORKFLOW_RUNS_REALTIME_CHANNEL, (payload) => {
+    if (enabled && workflowRunsSignalThreadId(payload) === threadId)
+      void refresh();
+  });
+  useVisibleActivePolling(refresh, active);
+  return state;
+}
+
 function subscribeDocumentVisibility(onChange: () => void): () => void {
   document.addEventListener("visibilitychange", onChange);
   return () => document.removeEventListener("visibilitychange", onChange);
@@ -550,7 +617,13 @@ function WorkflowStatusBanner() {
   return <WorkflowStatusBannerLoaded threadId={view.scope.threadId} />;
 }
 
-function WorkflowComposerCard({ run }: { run: WorkflowRunView }) {
+function WorkflowComposerCard({
+  run,
+  threadId,
+}: {
+  run: WorkflowRunView;
+  threadId: string;
+}) {
   const navigate = useBbNavigate();
   const [expanded, setExpanded] = useState(false);
   const bodyId = useId();
@@ -591,6 +664,11 @@ function WorkflowComposerCard({ run }: { run: WorkflowRunView }) {
             >
               {run.name}
             </span>
+            {run.originThreadId === threadId ? null : (
+              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-2xs text-muted-foreground">
+                Related
+              </span>
+            )}
             {agentCount === 0 ? null : (
               <span
                 className={activityMetaClass(
@@ -670,11 +748,20 @@ function WorkflowStatusBannerLoaded({ threadId }: { threadId: string }) {
   const { state } = useActiveWorkflowRuns(threadId);
 
   if (state.status !== "ready" || state.runs.length === 0) return null;
+  const relatedCount = state.runs.filter(
+    (run) => run.originThreadId !== threadId,
+  ).length;
 
   return (
     <section aria-label="Active workflows" className="space-y-2">
+      <div className="flex items-center justify-between px-0.5 text-2xs font-medium text-subtle-foreground">
+        <span>
+          {relatedCount > 0 ? "Related workflows" : "Active workflows"}
+        </span>
+        <span className="tabular-nums">{state.runs.length} active</span>
+      </div>
       {state.runs.map((run) => (
-        <WorkflowComposerCard key={run.id} run={run} />
+        <WorkflowComposerCard key={run.id} run={run} threadId={threadId} />
       ))}
     </section>
   );
@@ -873,6 +960,363 @@ function WorkflowRunPanel({ threadId, params }: PluginThreadPanelProps) {
   );
 }
 
+type CheckpointStatus = WorkflowCheckpointView["checkpoint"]["status"];
+type CheckpointByKind<
+  Kind extends WorkflowCheckpointView["checkpoint"]["kind"],
+> = WorkflowCheckpointView & {
+  checkpoint: Extract<WorkflowCheckpointView["checkpoint"], { kind: Kind }>;
+};
+
+function isCheckpointKind<
+  Kind extends WorkflowCheckpointView["checkpoint"]["kind"],
+>(entry: WorkflowCheckpointView, kind: Kind): entry is CheckpointByKind<Kind> {
+  return entry.checkpoint.kind === kind;
+}
+
+function checkpointStatusLabel(status: CheckpointStatus): string {
+  return status === "succeeded"
+    ? "Complete"
+    : `${status.slice(0, 1).toUpperCase()}${status.slice(1)}`;
+}
+
+function CheckpointStatus({ status }: { status: CheckpointStatus }) {
+  const className = cn(
+    "inline-flex shrink-0 items-center gap-1 text-2xs font-medium",
+    status === "succeeded" && "text-success",
+    status === "failed" && "text-destructive-text",
+    (status === "blocked" || status === "interrupted") && "text-warning-text",
+    (status === "pending" || status === "skipped") && "text-subtle-foreground",
+    status === "running" && "text-foreground",
+  );
+  return (
+    <span className={className}>
+      {status === "succeeded" ? (
+        <Icon name="Check" className="size-3" aria-hidden />
+      ) : status === "failed" ? (
+        <Icon name="CircleX" className="size-3" aria-hidden />
+      ) : status === "blocked" || status === "interrupted" ? (
+        <Icon name="AlertTriangle" className="size-3" aria-hidden />
+      ) : status === "skipped" ? (
+        <Icon name="Pause" className="size-3" aria-hidden />
+      ) : (
+        <Icon
+          name={status === "running" ? "Circle" : "Clock"}
+          className={cn("size-3", status === "running" && "animate-pulse")}
+          aria-hidden
+        />
+      )}
+      {checkpointStatusLabel(status)}
+    </span>
+  );
+}
+
+function CheckpointDisclosure({
+  title,
+  status,
+  meta,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  status: CheckpointStatus;
+  meta?: string | null;
+  defaultOpen?: boolean;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const contentId = useId();
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-muted/20">
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-muted/50"
+        aria-expanded={open}
+        aria-controls={contentId}
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon
+          name="ChevronDown"
+          className={cn(
+            "size-3.5 shrink-0 text-subtle-foreground transition-transform",
+            open ? "rotate-180" : "-rotate-90",
+          )}
+          aria-hidden
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium text-foreground">
+            {title}
+          </span>
+          {meta === null || meta === undefined ? null : (
+            <span className="mt-0.5 block truncate text-2xs text-subtle-foreground">
+              {meta}
+            </span>
+          )}
+        </span>
+        <CheckpointStatus status={status} />
+      </button>
+      {open ? (
+        <div id={contentId} className="border-t border-border-seam px-3 py-2.5">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function OpenWorkerButton({ childThreadId }: { childThreadId: string | null }) {
+  const navigate = useBbNavigate();
+  if (childThreadId === null) return null;
+  return (
+    <Button
+      type="button"
+      variant="ghost"
+      size="sm"
+      className="mt-2 h-7 px-2 text-2xs"
+      onClick={() => navigate.toThread(childThreadId)}
+    >
+      Open worker thread
+      <Icon name="ArrowRight" className="size-3" aria-hidden />
+    </Button>
+  );
+}
+
+function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
+  if (state.status === "loading") {
+    return (
+      <div aria-label="Loading workflow details" className="space-y-2">
+        <Skeleton className="h-9 w-full" />
+        <Skeleton className="h-9 w-full" />
+      </div>
+    );
+  }
+  if (state.status === "error") {
+    return <RefreshWarning message={state.message} />;
+  }
+  if (state.checkpoints.length === 0) {
+    return (
+      <div className="space-y-2">
+        {state.refreshError === null ? null : (
+          <RefreshWarning message={state.refreshError} />
+        )}
+        <p className="text-xs leading-relaxed text-subtle-foreground">
+          This workflow has not published structured execution details.
+        </p>
+      </div>
+    );
+  }
+  const plans = state.checkpoints.filter((entry) =>
+    isCheckpointKind(entry, "plan"),
+  );
+  const workItems = state.checkpoints.filter((entry) =>
+    isCheckpointKind(entry, "work-item"),
+  );
+  const verifications = state.checkpoints.filter((entry) =>
+    isCheckpointKind(entry, "verification"),
+  );
+  const workItemLabels = new Map(
+    plans
+      .flatMap((entry) => entry.checkpoint.items)
+      .map((item) => [
+        item.id,
+        item.ticketRef === null
+          ? item.title
+          : `${item.title} (${item.ticketRef})`,
+      ]),
+  );
+  for (const entry of workItems) {
+    const item = entry.checkpoint;
+    workItemLabels.set(
+      item.id,
+      item.ticketRef === null
+        ? item.title
+        : `${item.title} (${item.ticketRef})`,
+    );
+  }
+  return (
+    <div className="space-y-4">
+      {state.refreshError === null ? null : (
+        <RefreshWarning message={state.refreshError} />
+      )}
+      {plans.length === 0 ? null : (
+        <section aria-labelledby="workflow-plan-heading">
+          <h3
+            id="workflow-plan-heading"
+            className="mb-2 text-xs font-medium text-muted-foreground"
+          >
+            Selected plan
+          </h3>
+          <div className="space-y-2">
+            {plans.map((entry) => {
+              const plan = entry.checkpoint;
+              return (
+                <CheckpointDisclosure
+                  key={entry.id}
+                  title={plan.title}
+                  status={plan.status}
+                  meta={`${plan.items.length} ${plan.items.length === 1 ? "work item" : "work items"}`}
+                  defaultOpen
+                >
+                  {plan.summary === null ? null : (
+                    <p className="mb-2 text-xs leading-relaxed text-muted-foreground">
+                      {plan.summary}
+                    </p>
+                  )}
+                  {plan.detail === null ? null : (
+                    <pre className="mb-2 whitespace-pre-wrap rounded bg-muted px-2 py-1.5 font-sans text-xs leading-relaxed text-muted-foreground">
+                      {plan.detail}
+                    </pre>
+                  )}
+                  <ol className="divide-y divide-border-seam">
+                    {plan.items.map((item) => (
+                      <li key={item.id} className="py-2 first:pt-0 last:pb-0">
+                        <div className="flex items-start gap-2">
+                          <span className="min-w-0 flex-1 text-xs font-medium text-foreground">
+                            {item.title}
+                          </span>
+                          {item.ticketRef === null ? null : (
+                            <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
+                              {item.ticketRef}
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-subtle-foreground">
+                          {item.objective}
+                        </p>
+                        {item.detail === null ? null : (
+                          <pre className="mt-1 whitespace-pre-wrap font-sans text-xs leading-relaxed text-muted-foreground">
+                            {item.detail}
+                          </pre>
+                        )}
+                      </li>
+                    ))}
+                  </ol>
+                </CheckpointDisclosure>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {workItems.length === 0 ? null : (
+        <section aria-labelledby="workflow-implementation-heading">
+          <h3
+            id="workflow-implementation-heading"
+            className="mb-2 text-xs font-medium text-muted-foreground"
+          >
+            Implementation
+          </h3>
+          <div className="space-y-2">
+            {workItems.map((entry) => {
+              const item = entry.checkpoint;
+              return (
+                <CheckpointDisclosure
+                  key={entry.id}
+                  title={item.title}
+                  status={item.status}
+                  meta={item.ticketRef}
+                  defaultOpen={
+                    item.status === "running" ||
+                    item.status === "failed" ||
+                    item.status === "blocked" ||
+                    item.status === "interrupted"
+                  }
+                >
+                  {item.summary === null ? null : (
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {item.summary}
+                    </p>
+                  )}
+                  {item.blocker === null ? null : (
+                    <p className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-xs text-warning-text">
+                      Blocker: {item.blocker}
+                    </p>
+                  )}
+                  {item.changedFiles.length === 0 ? null : (
+                    <div className="mt-2">
+                      <p className="mb-1 text-2xs font-medium text-subtle-foreground">
+                        Changed files
+                      </p>
+                      <ul className="space-y-0.5">
+                        {item.changedFiles.map((file) => (
+                          <li
+                            key={file}
+                            className="break-all font-mono text-2xs text-muted-foreground"
+                          >
+                            {file}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  <OpenWorkerButton childThreadId={entry.childThreadId} />
+                </CheckpointDisclosure>
+              );
+            })}
+          </div>
+        </section>
+      )}
+      {verifications.length === 0 ? null : (
+        <section aria-labelledby="workflow-verification-heading">
+          <h3
+            id="workflow-verification-heading"
+            className="mb-2 text-xs font-medium text-muted-foreground"
+          >
+            Verification
+          </h3>
+          <div className="space-y-2">
+            {verifications.map((entry) => {
+              const verification = entry.checkpoint;
+              const counts = verification.counts;
+              const countSummary =
+                counts === null
+                  ? null
+                  : `${counts.passed} passed · ${counts.failed} failed · ${counts.skipped} skipped`;
+              const workItemLabel =
+                verification.workItemId === null
+                  ? "Run-wide verification"
+                  : (workItemLabels.get(verification.workItemId) ??
+                    `Unknown work item (${verification.workItemId})`);
+              return (
+                <CheckpointDisclosure
+                  key={entry.id}
+                  title={verification.title}
+                  status={verification.status}
+                  meta={countSummary}
+                  defaultOpen={
+                    verification.status === "running" ||
+                    verification.status === "failed" ||
+                    verification.status === "blocked" ||
+                    verification.status === "interrupted"
+                  }
+                >
+                  <p className="mb-2 text-2xs text-subtle-foreground">
+                    For: {workItemLabel}
+                  </p>
+                  {verification.summary === null ? null : (
+                    <p className="text-xs leading-relaxed text-muted-foreground">
+                      {verification.summary}
+                    </p>
+                  )}
+                  {verification.command === null ? null : (
+                    <div className="mt-2">
+                      <p className="mb-1 text-2xs font-medium text-subtle-foreground">
+                        Command
+                      </p>
+                      <code className="block whitespace-pre-wrap break-all rounded bg-muted px-2 py-1.5 text-2xs text-foreground">
+                        {verification.command}
+                      </code>
+                    </div>
+                  )}
+                  <OpenWorkerButton childThreadId={entry.childThreadId} />
+                </CheckpointDisclosure>
+              );
+            })}
+          </div>
+        </section>
+      )}
+    </div>
+  );
+}
+
 function WorkflowRunPanelLoaded({
   threadId,
   runId,
@@ -886,6 +1330,18 @@ function WorkflowRunPanelLoaded({
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
   const run = state.status === "ready" ? state.run : null;
+  const detailsRunId = runId ?? run?.id ?? null;
+  const detailsState = useWorkflowRunDetails(
+    threadId,
+    detailsRunId,
+    run !== null && isRunActive(run),
+    runId !== null || run !== null,
+  );
+  const pinnedDetailsState: RunDetailsLoadState =
+    (detailsState.status === "ready" || detailsState.status === "error") &&
+    detailsState.runId !== detailsRunId
+      ? { status: "loading" }
+      : detailsState;
   const shared = useMemo(
     () => (run === null ? null : buildSharedWorkflowView(run)),
     [run],
@@ -948,6 +1404,22 @@ function WorkflowRunPanelLoaded({
           </span>
           <span className="ml-auto font-mono">{run.id.slice(-8)}</span>
         </div>
+        {run.originThreadId === threadId ? null : (
+          <div className="mt-3 flex items-center justify-between rounded-md border border-border-seam bg-muted/40 px-2.5 py-2 text-xs text-muted-foreground">
+            <span>
+              Related workflow executing in another agent thread. Open that
+              thread to control it.
+            </span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => navigate.toThread(run.originThreadId)}
+            >
+              Open thread
+            </Button>
+          </div>
+        )}
         <WorkflowPhaseStrip
           progress={shared.progress}
           currentPhaseIndex={shared.currentPhaseIndex}
@@ -989,6 +1461,8 @@ function WorkflowRunPanelLoaded({
           />
         </div>
         <div className="my-4 h-px bg-border-seam" />
+        <WorkflowCheckpointDetails state={pinnedDetailsState} />
+        <div className="my-4 h-px bg-border-seam" />
         <h3 className="mb-2 text-xs font-medium text-muted-foreground">
           Run details
         </h3>
@@ -1011,7 +1485,7 @@ function WorkflowRunPanelLoaded({
           </dd>
         </dl>
       </div>
-      {isRunActive(run) ? (
+      {isRunActive(run) && run.originThreadId === threadId ? (
         <div className="border-t border-border-seam p-3">
           <Button
             type="button"

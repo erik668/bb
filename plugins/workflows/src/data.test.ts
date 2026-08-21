@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   attachCallThread,
   cancelRun,
@@ -7,8 +7,11 @@ import {
   createRun,
   deleteExpiredTerminalRuns,
   getCall,
+  getLatestRunForThread,
   getRunRequired,
   incrementRepairAttempts,
+  listWorkflowCheckpointsForRun,
+  listActiveRunsForThread,
   listCallsForRunPage,
   migrations,
   queueCallProviderRetry,
@@ -17,7 +20,12 @@ import {
   settleRun,
   startCall,
   storeStructuredResult,
+  upsertWorkflowCheckpoint,
 } from "./data.js";
+import {
+  MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
+  MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+} from "./workflow-checkpoint.js";
 
 describe("workflow durable data", () => {
   let db: Database.Database;
@@ -28,12 +36,18 @@ describe("workflow durable data", () => {
     db.exec(migrations.join("\n"));
   });
 
-  afterEach(() => db.close());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    db.close();
+  });
 
   function newRun() {
     return createRun(db, {
       projectId: "project-1",
       originThreadId: "thread-1",
+      presentationThreadId: "thread-1",
+      parentRunId: null,
+      rootRunId: "",
       environmentId: "environment-1",
       originProvider: "codex",
       originModel: "gpt-test",
@@ -61,6 +75,501 @@ describe("workflow durable data", () => {
     reasoningLevel: "medium",
     permissionMode: "full",
   } as const;
+
+  it("backfills presentation and root ownership for legacy runs", () => {
+    const legacyDb = new Database(":memory:");
+    legacyDb.pragma("foreign_keys = ON");
+    try {
+      legacyDb.exec(migrations.slice(0, -1).join("\n"));
+      legacyDb
+        .prepare(
+          `INSERT INTO workflow_runs (
+             id, project_id, origin_thread_id, environment_id,
+             origin_provider, origin_model, origin_reasoning_level,
+             origin_permission_mode, name, source, source_hash, args_json,
+             status, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "wfr_legacy",
+          "project-1",
+          "thread-legacy",
+          "environment-1",
+          "codex",
+          "gpt-test",
+          "medium",
+          "full",
+          "legacy-workflow",
+          "return null",
+          "hash",
+          "null",
+          "queued",
+          1,
+        );
+
+      legacyDb.exec(migrations.at(-1)!);
+
+      expect(getRunRequired(legacyDb, "wfr_legacy")).toMatchObject({
+        originThreadId: "thread-legacy",
+        presentationThreadId: "thread-legacy",
+        parentRunId: null,
+        rootRunId: "wfr_legacy",
+      });
+      expect(getLatestRunForThread(legacyDb, "thread-legacy")?.id).toBe(
+        "wfr_legacy",
+      );
+      expect(
+        listActiveRunsForThread(legacyDb, "thread-legacy").map((run) => run.id),
+      ).toEqual(["wfr_legacy"]);
+    } finally {
+      legacyDb.close();
+    }
+  });
+
+  it("upserts the latest checkpoint state without duplicating its position", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const call = startCall(db, {
+      runId: run.id,
+      callIndex: 0,
+      cacheKey: "checkpoint",
+      prompt: "report progress",
+      options: {
+        selection: null,
+        outputSchema: null,
+        title: "Implement",
+        phase: "Execute",
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+
+    upsertWorkflowCheckpoint(db, {
+      runId: run.id,
+      checkpointId: "section-1",
+      checkpointJson: '{"kind":"work-item","status":"running"}',
+      phase: "Execute",
+      sourceCallId: call.id,
+    });
+    const created = listWorkflowCheckpointsForRun(db, run.id)[0]!;
+
+    upsertWorkflowCheckpoint(db, {
+      runId: run.id,
+      checkpointId: "section-1",
+      checkpointJson: '{"kind":"work-item","status":"succeeded"}',
+      phase: "Verify",
+      sourceCallId: null,
+    });
+
+    expect(listWorkflowCheckpointsForRun(db, run.id)).toEqual([
+      expect.objectContaining({
+        id: created.id,
+        checkpointId: "section-1",
+        checkpointJson: '{"kind":"work-item","status":"succeeded"}',
+        phase: "Verify",
+        sourceCallId: call.id,
+        createdAt: created.createdAt,
+      }),
+    ]);
+  });
+
+  it("rejects cross-worker and worker-to-orchestrator checkpoint overwrites", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const firstCall = startCall(db, {
+      runId: run.id,
+      callIndex: 0,
+      cacheKey: "first-checkpoint-owner",
+      prompt: "first",
+      options: {
+        selection: null,
+        outputSchema: null,
+        title: "First",
+        phase: "Execute",
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+    const secondCall = startCall(db, {
+      runId: run.id,
+      callIndex: 1,
+      cacheKey: "second-checkpoint-owner",
+      prompt: "second",
+      options: {
+        selection: null,
+        outputSchema: null,
+        title: "Second",
+        phase: "Execute",
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "worker-progress",
+        checkpointJson: '{"kind":"work-item","status":"running"}',
+        phase: "Execute",
+        sourceCallId: firstCall.id,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "worker-progress",
+        checkpointJson: '{"kind":"work-item","status":"failed"}',
+        phase: "Execute",
+        sourceCallId: secondCall.id,
+      }),
+    ).toBe("ownership_conflict");
+
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "selected-plan",
+        checkpointJson: '{"kind":"plan","status":"succeeded"}',
+        phase: "Plan",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "selected-plan",
+        checkpointJson: '{"kind":"plan","status":"failed"}',
+        phase: "Plan",
+        sourceCallId: firstCall.id,
+      }),
+    ).toBe("ownership_conflict");
+
+    expect(
+      listWorkflowCheckpointsForRun(db, run.id).map((row) => ({
+        checkpointId: row.checkpointId,
+        checkpointJson: row.checkpointJson,
+        sourceCallId: row.sourceCallId,
+      })),
+    ).toEqual([
+      {
+        checkpointId: "worker-progress",
+        checkpointJson: '{"kind":"work-item","status":"running"}',
+        sourceCallId: firstCall.id,
+      },
+      {
+        checkpointId: "selected-plan",
+        checkpointJson: '{"kind":"plan","status":"succeeded"}',
+        sourceCallId: null,
+      },
+    ]);
+  });
+
+  it("rejects changing checkpoint kind for a stable ID", () => {
+    const run = newRun();
+    markRunning(run.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "stable-id",
+        checkpointJson: '{"kind":"work-item","status":"running"}',
+        phase: "Execute",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "stable-id",
+        checkpointJson: '{"kind":"verification","status":"running"}',
+        phase: "Verify",
+        sourceCallId: null,
+      }),
+    ).toBe("kind_conflict");
+  });
+
+  it("rejects checkpoint writes after the run becomes terminal", () => {
+    const run = newRun();
+    markRunning(run.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "section-1",
+        checkpointJson: '{"kind":"work-item","status":"running"}',
+        phase: "Execute",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    db.prepare(
+      `UPDATE workflow_runs SET status = 'succeeded' WHERE id = ?`,
+    ).run(run.id);
+
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "section-1",
+        checkpointJson: '{"kind":"work-item","status":"failed"}',
+        phase: "Deliver",
+        sourceCallId: null,
+      }),
+    ).toBe("inactive");
+    expect(listWorkflowCheckpointsForRun(db, run.id)[0]).toMatchObject({
+      checkpointJson: '{"kind":"work-item","status":"running"}',
+      phase: "Execute",
+    });
+  });
+
+  it("terminalizes unfinished call checkpoints without overwriting completed state", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const call = startCall(db, {
+      runId: run.id,
+      callIndex: 0,
+      cacheKey: "terminal-checkpoint",
+      prompt: "report progress",
+      options: {
+        selection: null,
+        outputSchema: null,
+        title: "Implement",
+        phase: "Execute",
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+    for (const [checkpointId, status] of [
+      ["unfinished", "running"],
+      ["finished", "succeeded"],
+    ] as const) {
+      expect(
+        upsertWorkflowCheckpoint(db, {
+          runId: run.id,
+          checkpointId,
+          checkpointJson: JSON.stringify({ kind: "work-item", status }),
+          phase: "Execute",
+          sourceCallId: call.id,
+        }),
+      ).toBe("accepted");
+    }
+
+    settleCall(db, {
+      id: call.id,
+      status: "failed",
+      result: null,
+      error: "worker deleted",
+    });
+
+    expect(
+      listWorkflowCheckpointsForRun(db, run.id).map((row) => [
+        row.checkpointId,
+        JSON.parse(row.checkpointJson).status,
+      ]),
+    ).toEqual([
+      ["unfinished", "interrupted"],
+      ["finished", "succeeded"],
+    ]);
+  });
+
+  it("terminalizes unfinished orchestrator checkpoints when the run settles", () => {
+    const run = newRun();
+    markRunning(run.id);
+    for (const [checkpointId, status] of [
+      ["pending-plan", "pending"],
+      ["blocked-item", "blocked"],
+    ] as const) {
+      expect(
+        upsertWorkflowCheckpoint(db, {
+          runId: run.id,
+          checkpointId,
+          checkpointJson: JSON.stringify({ kind: "work-item", status }),
+          phase: "Execute",
+          sourceCallId: null,
+        }),
+      ).toBe("accepted");
+    }
+
+    expect(cancelRun(db, run.id)).toBe(true);
+
+    expect(
+      listWorkflowCheckpointsForRun(db, run.id).map((row) => [
+        row.checkpointId,
+        JSON.parse(row.checkpointJson).status,
+      ]),
+    ).toEqual([
+      ["pending-plan", "interrupted"],
+      ["blocked-item", "blocked"],
+    ]);
+
+    const timedOutRun = newRun();
+    markRunning(timedOutRun.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: timedOutRun.id,
+        checkpointId: "timed-out-check",
+        checkpointJson: '{"kind":"verification","status":"running"}',
+        phase: "Verify",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    settleRun(db, {
+      id: timedOutRun.id,
+      status: "failed",
+      result: null,
+      error: "Workflow run timed out",
+    });
+    expect(
+      JSON.parse(
+        listWorkflowCheckpointsForRun(db, timedOutRun.id)[0]!.checkpointJson,
+      ).status,
+    ).toBe("interrupted");
+  });
+
+  it("preserves insertion order for same-millisecond checkpoints and upserts", () => {
+    vi.spyOn(Date, "now").mockReturnValue(123);
+    const run = newRun();
+    markRunning(run.id);
+    for (const checkpointId of ["second-by-name", "first-by-name"]) {
+      expect(
+        upsertWorkflowCheckpoint(db, {
+          runId: run.id,
+          checkpointId,
+          checkpointJson: '{"kind":"work-item","status":"running"}',
+          phase: "Execute",
+          sourceCallId: null,
+        }),
+      ).toBe("accepted");
+    }
+    const before = listWorkflowCheckpointsForRun(db, run.id);
+    expect(before.map((row) => row.checkpointId)).toEqual([
+      "second-by-name",
+      "first-by-name",
+    ]);
+
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "second-by-name",
+        checkpointJson: '{"kind":"work-item","status":"succeeded"}',
+        phase: "Verify",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      listWorkflowCheckpointsForRun(db, run.id).map((row) => row.ordinal),
+    ).toEqual(before.map((row) => row.ordinal));
+  });
+
+  it("enforces row and aggregate-byte limits while allowing updates at the cap", () => {
+    const rowLimitedRun = newRun();
+    markRunning(rowLimitedRun.id);
+    for (let index = 0; index < MAX_WORKFLOW_CHECKPOINTS_PER_RUN; index += 1) {
+      expect(
+        upsertWorkflowCheckpoint(db, {
+          runId: rowLimitedRun.id,
+          checkpointId: `item-${index}`,
+          checkpointJson: "{}",
+          phase: null,
+          sourceCallId: null,
+        }),
+      ).toBe("accepted");
+    }
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: rowLimitedRun.id,
+        checkpointId: "one-over",
+        checkpointJson: "{}",
+        phase: null,
+        sourceCallId: null,
+      }),
+    ).toBe("limit_exceeded");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: rowLimitedRun.id,
+        checkpointId: "item-0",
+        checkpointJson: '{"updated":true}',
+        phase: null,
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    const byteLimitedRun = newRun();
+    markRunning(byteLimitedRun.id);
+    const atByteLimit = JSON.stringify(
+      "x".repeat(MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN - 2),
+    );
+    expect(Buffer.byteLength(atByteLimit, "utf8")).toBe(
+      MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
+    );
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: byteLimitedRun.id,
+        checkpointId: "at-byte-limit",
+        checkpointJson: atByteLimit,
+        phase: null,
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: byteLimitedRun.id,
+        checkpointId: "one-over",
+        checkpointJson: "0",
+        phase: null,
+        sourceCallId: null,
+      }),
+    ).toBe("limit_exceeded");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: byteLimitedRun.id,
+        checkpointId: "at-byte-limit",
+        checkpointJson: JSON.stringify(
+          "x".repeat(MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN - 3),
+        ),
+        phase: null,
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+  });
+
+  it("reserves aggregate byte headroom for interrupted terminalization", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const prefix = '{"kind":"work-item","status":"running","padding":"';
+    const suffix = '"}';
+    const targetBytes = MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN - 4;
+    const checkpointJson = `${prefix}${"x".repeat(
+      targetBytes - Buffer.byteLength(prefix + suffix, "utf8"),
+    )}${suffix}`;
+    expect(Buffer.byteLength(checkpointJson, "utf8")).toBe(targetBytes);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "near-terminal-limit",
+        checkpointJson,
+        phase: "Execute",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "would-consume-reserve",
+        checkpointJson: "0",
+        phase: null,
+        sourceCallId: null,
+      }),
+    ).toBe("limit_exceeded");
+
+    settleRun(db, {
+      id: run.id,
+      status: "cancelled",
+      result: null,
+      error: null,
+    });
+    const terminalJson = listWorkflowCheckpointsForRun(db, run.id)[0]!
+      .checkpointJson;
+    expect(JSON.parse(terminalJson)).toMatchObject({ status: "interrupted" });
+    expect(Buffer.byteLength(terminalJson, "utf8")).toBe(
+      MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
+    );
+  });
 
   it("records replay safety without a concurrency barrier", () => {
     const run = newRun();
@@ -244,6 +753,20 @@ describe("workflow durable data", () => {
     db.prepare(
       `UPDATE workflow_calls SET status = 'running', child_thread_id = 'child-1' WHERE id = ?`,
     ).run(call.id);
+    for (const [checkpointId, status] of [
+      ["restart-running", "running"],
+      ["restart-finished", "succeeded"],
+    ] as const) {
+      expect(
+        upsertWorkflowCheckpoint(db, {
+          runId: run.id,
+          checkpointId,
+          checkpointJson: JSON.stringify({ kind: "work-item", status }),
+          phase: "Execute",
+          sourceCallId: call.id,
+        }),
+      ).toBe("accepted");
+    }
 
     expect(recoverInterruptedRuns(db)).toEqual(["child-1"]);
     expect(getRunRequired(db, run.id).status).toBe("queued");
@@ -251,6 +774,15 @@ describe("workflow durable data", () => {
       status: "cancelled",
       error: "Plugin restarted",
     });
+    expect(
+      listWorkflowCheckpointsForRun(db, run.id).map((row) => [
+        row.checkpointId,
+        JSON.parse(row.checkpointJson).status,
+      ]),
+    ).toEqual([
+      ["restart-running", "interrupted"],
+      ["restart-finished", "succeeded"],
+    ]);
   });
 
   it("persists JSON null but requires it to rerun instead of replaying", () => {
@@ -280,6 +812,9 @@ describe("workflow durable data", () => {
     const second = createRun(db, {
       projectId: "project-1",
       originThreadId: "thread-1",
+      presentationThreadId: "thread-1",
+      parentRunId: null,
+      rootRunId: "",
       environmentId: "environment-1",
       originProvider: "codex",
       originModel: "gpt-test",
@@ -535,6 +1070,9 @@ describe("workflow durable data", () => {
     const retainedChild = createRun(db, {
       projectId: "project-1",
       originThreadId: "thread-1",
+      presentationThreadId: "thread-1",
+      parentRunId: null,
+      rootRunId: "",
       environmentId: "environment-1",
       originProvider: "codex",
       originModel: "gpt-test",
@@ -549,6 +1087,16 @@ describe("workflow durable data", () => {
       resumedFromRunId: parent.id,
     });
     const expired = newRun();
+    markRunning(expired.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: expired.id,
+        checkpointId: "expired-plan",
+        checkpointJson: '{"kind":"plan"}',
+        phase: "Plan",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
     db.prepare(
       `UPDATE workflow_runs SET status = 'failed', notification_sent = 1,
        finished_at = ?, settings_json = json_set(settings_json, '$.retentionDays', 1)
@@ -562,6 +1110,7 @@ describe("workflow durable data", () => {
     expect(() => getRunRequired(db, expired.id)).toThrow(
       "Unknown workflow run",
     );
+    expect(listWorkflowCheckpointsForRun(db, expired.id)).toEqual([]);
   });
 
   it("deletes an entirely expired resume chain in one bounded sweep", () => {
@@ -569,6 +1118,9 @@ describe("workflow durable data", () => {
     const child = createRun(db, {
       projectId: "project-1",
       originThreadId: "thread-1",
+      presentationThreadId: "thread-1",
+      parentRunId: null,
+      rootRunId: "",
       environmentId: "environment-1",
       originProvider: "codex",
       originModel: "gpt-test",

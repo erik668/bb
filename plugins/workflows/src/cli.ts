@@ -229,6 +229,9 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     id: run.id,
     projectId: run.projectId,
     originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
     environmentId: run.environmentId,
     originProvider: originProvider.value,
     originProviderTruncated: originProvider.truncated,
@@ -280,6 +283,9 @@ function listRunSummary(run: WorkflowRunRow) {
   return {
     id: run.id,
     originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
     environmentId: run.environmentId,
     name: name.value,
     nameTruncated: name.truncated,
@@ -322,6 +328,10 @@ function runReferenceLogRecord(run: WorkflowRunRow, exportedAt: number) {
     logVersion: 1,
     exportedAt,
     id: run.id,
+    originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
     name: run.name,
     status: run.status,
     phase: run.phase,
@@ -358,7 +368,7 @@ export function registerWorkflowCli(
         name: "run",
         summary: "Start a workflow and return immediately",
         usage:
-          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>]",
+          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>]",
       },
       {
         name: "validate",
@@ -370,6 +380,11 @@ export function registerWorkflowCli(
         name: "status",
         summary: "Show a compact workflow run summary",
         usage: "bb workflows status <run-id>",
+      },
+      {
+        name: "details",
+        summary: "Show structured plan, implementation, and verification state",
+        usage: "bb workflows details <run-id>",
       },
       {
         name: "history",
@@ -399,6 +414,7 @@ export function registerWorkflowCli(
             "--name",
             "--args",
             "--resume",
+            "--present-in",
           ]);
           const context = requireContext(ctx);
           const prepared = await prepareWorkflowSource(
@@ -409,6 +425,7 @@ export function registerWorkflowCli(
           const run = await service.start({
             projectId: context.projectId,
             originThreadId: context.threadId,
+            presentationThreadId: options.get("--present-in") ?? null,
             source: prepared.source,
             args: parseJsonOption(options.get("--args")),
             resumedFromRunId: options.get("--resume") ?? null,
@@ -442,6 +459,26 @@ export function registerWorkflowCli(
             throw new Error(`Unknown workflow run ${runId}`);
           }
           return success(statusSummary(page));
+        }
+        if (command === "details") {
+          const { positionals } = parseArguments(argv.slice(1), [], "details");
+          const context = requireContext(ctx);
+          const runId = positionals[0]!;
+          const run = service.get(runId);
+          if (run === null || run.projectId !== context.projectId) {
+            throw new Error(`Unknown workflow run ${runId}`);
+          }
+          return success({
+            runId,
+            checkpoints: service.inspectCheckpoints(runId).map((entry) => ({
+              id: entry.id,
+              checkpoint: entry.checkpoint,
+              phase: entry.phase,
+              childThreadId: entry.childThreadId,
+              createdAt: entry.createdAt,
+              updatedAt: entry.updatedAt,
+            })),
+          });
         }
         if (command === "history") {
           const { options, positionals } = parseArguments(
@@ -517,7 +554,7 @@ export function registerWorkflowCli(
           return success({ runId, stopped: await service.stop(runId) });
         }
         return failure(
-          "Usage: bb workflows <run|validate|status|history|list|stop> [options]",
+          "Usage: bb workflows <run|validate|status|details|history|list|stop> [options]",
         );
       } catch (error) {
         return failure(error instanceof Error ? error.message : String(error));

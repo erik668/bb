@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import type { WorkflowRunView } from "./ui-contract.js";
+import type { WorkflowCheckpointView, WorkflowRunView } from "./ui-contract.js";
 
 const app = await loadPluginApp(() => import("./app"));
 
@@ -20,6 +20,10 @@ const message = {
 
 const run: WorkflowRunView = {
   id: "wfr_11111111-1111-4111-8111-111111111111",
+  originThreadId: "thr_origin",
+  presentationThreadId: "thr_origin",
+  parentRunId: null,
+  rootRunId: "wfr_11111111-1111-4111-8111-111111111111",
   name: "Review the release",
   description: "Run independent checks before shipping.",
   status: "running",
@@ -81,6 +85,99 @@ const run: WorkflowRunView = {
   startedAt: 1_000,
   finishedAt: null,
 };
+
+const checkpoints: WorkflowCheckpointView[] = [
+  {
+    id: "wcp_plan",
+    checkpoint: {
+      kind: "plan",
+      id: "selected-plan",
+      title: "Release readiness plan",
+      status: "succeeded",
+      summary: "Ship the two accepted tickets, then run focused checks.",
+      detail:
+        "Lane: implementation\nCoverage: full\nGate: both tickets must verify before delivery",
+      items: [
+        {
+          id: "ticket-101",
+          title: "Expose workflow details",
+          objective: "Render the full accepted plan in the workflow panel.",
+          detail: "Owner: UI worker\nDependency: durable checkpoint API",
+          ticketRef: "BB-101",
+        },
+        {
+          id: "ticket-102",
+          title: "Track verification",
+          objective: "Show exact commands and their latest result.",
+          detail:
+            "Owner: verification worker\nGate: focused and full suites pass",
+          ticketRef: "BB-102",
+        },
+      ],
+    },
+    phase: "Plan",
+    childThreadId: null,
+    createdAt: 1_000,
+    updatedAt: 1_000,
+  },
+  {
+    id: "wcp_work",
+    checkpoint: {
+      kind: "work-item",
+      id: "ticket-101",
+      title: "Expose workflow details",
+      status: "running",
+      summary: "The durable read path is complete; panel work is underway.",
+      ticketRef: "BB-101",
+      changedFiles: ["plugins/workflows/src/app.tsx"],
+      blocker: null,
+    },
+    phase: "Implement",
+    childThreadId: "thr_worker_2",
+    createdAt: 2_000,
+    updatedAt: 2_500,
+  },
+  {
+    id: "wcp_verify",
+    checkpoint: {
+      kind: "verification",
+      id: "ticket-101:focused-tests",
+      title: "Focused workflow tests",
+      status: "succeeded",
+      summary: "All selected tests passed.",
+      workItemId: "ticket-101",
+      command: "pnpm exec vitest run src/app.test.tsx",
+      counts: { passed: 8, failed: 0, skipped: 1 },
+    },
+    phase: "Verify",
+    childThreadId: "thr_worker_2",
+    createdAt: 3_000,
+    updatedAt: 3_500,
+  },
+];
+
+function workCheckpoint(
+  id: string,
+  status: WorkflowCheckpointView["checkpoint"]["status"],
+): WorkflowCheckpointView {
+  return {
+    id: `wcp_${id}`,
+    checkpoint: {
+      kind: "work-item",
+      id,
+      title: id.replaceAll("-", " "),
+      status,
+      summary: `${id} summary`,
+      ticketRef: null,
+      changedFiles: [],
+      blocker: status === "blocked" ? `${id} blocker` : null,
+    },
+    phase: "Implement",
+    childThreadId: null,
+    createdAt: 2_000,
+    updatedAt: 2_500,
+  };
+}
 
 describe("workflows app registration", () => {
   it("registers the composer banner, chat directive, and thread panel action", () => {
@@ -144,6 +241,31 @@ describe("workflow composer banner", () => {
         name: /open workflow review.*in side panel/i,
       }),
     ).toBeTruthy();
+  });
+
+  it("labels workflows presented from another origin thread as related", async () => {
+    const relatedRun: WorkflowRunView = {
+      ...run,
+      originThreadId: "thr_worker",
+      presentationThreadId: "thr_root",
+    };
+    const slot = renderSlot(
+      banner,
+      {},
+      {
+        composer: {
+          scope: { kind: "thread", threadId: "thr_root" },
+        },
+        rpc: {
+          workflowActiveRuns: () => ({ runs: [relatedRun] }),
+        },
+      },
+    );
+
+    await slot.findByText("Related workflows");
+    expect(slot.getByText("1 active")).toBeTruthy();
+    expect(slot.getByText("Related")).toBeTruthy();
+    expect(slot.getByText("Review the release")).toBeTruthy();
   });
 
   it("matches the native collapsed summary and expands with an accessible toggle", async () => {
@@ -662,6 +784,132 @@ describe("workflow-preview directive", () => {
 });
 
 describe("workflow thread panel", () => {
+  it("shows related-run provenance and opens the execution origin thread", async () => {
+    const relatedRun: WorkflowRunView = {
+      ...run,
+      originThreadId: "thr_worker",
+      presentationThreadId: "thr_root",
+    };
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_root", params: { runId: relatedRun.id } },
+      {
+        rpc: {
+          workflowRunView: (input) => {
+            expect(input).toEqual({
+              threadId: "thr_root",
+              runId: relatedRun.id,
+            });
+            return { run: relatedRun };
+          },
+          workflowRunDetails: () => ({ checkpoints: [] }),
+        },
+      },
+    );
+
+    await slot.findByText(/Related workflow executing in another agent thread/);
+    expect(slot.queryByRole("button", { name: "Stop workflow" })).toBeNull();
+    fireEvent.click(slot.getByRole("button", { name: "Open thread" }));
+    expect(slot.navigateCalls).toContainEqual({
+      method: "toThread",
+      threadId: "thr_worker",
+    });
+  });
+
+  it("pins latest-run details to the run resolved for the panel header", async () => {
+    let resolveRun: ((value: { run: WorkflowRunView }) => void) | null = null;
+    const pendingRun = new Promise<{ run: WorkflowRunView }>((resolve) => {
+      resolveRun = resolve;
+    });
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: null },
+      {
+        rpc: {
+          workflowRunView: () => pendingRun,
+          workflowRunDetails: (input) => {
+            expect(input).toEqual({ threadId: "thr_origin", runId: run.id });
+            return { checkpoints };
+          },
+        },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    expect(
+      slot.rpcCalls.filter((call) => call.method === "workflowRunDetails"),
+    ).toHaveLength(0);
+
+    await act(async () => {
+      resolveRun?.({ run });
+      await pendingRun;
+    });
+    await slot.findByRole("heading", { name: "Selected plan" });
+    expect(
+      slot.rpcCalls.filter((call) => call.method === "workflowRunDetails"),
+    ).toHaveLength(1);
+  });
+
+  it("hides prior details while a newer latest run resolves its own ledger", async () => {
+    vi.useFakeTimers();
+    let currentRun = run;
+    let resolveNewDetails:
+      | ((value: { checkpoints: WorkflowCheckpointView[] }) => void)
+      | null = null;
+    const pendingNewDetails = new Promise<{
+      checkpoints: WorkflowCheckpointView[];
+    }>((resolve) => {
+      resolveNewDetails = resolve;
+    });
+    const newerRun: WorkflowRunView = {
+      ...run,
+      id: "wfr_22222222-2222-4222-8222-222222222222",
+      name: "Newer workflow run",
+    };
+    const newerCheckpoints: WorkflowCheckpointView[] = checkpoints.map(
+      (entry) =>
+        entry.checkpoint.kind === "plan"
+          ? {
+              ...entry,
+              runId: newerRun.id,
+              checkpoint: {
+                ...entry.checkpoint,
+                title: "New selected plan",
+              },
+            }
+          : { ...entry, runId: newerRun.id },
+    );
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: null },
+      {
+        rpc: {
+          workflowRunView: () => ({ run: currentRun }),
+          workflowRunDetails: (input) =>
+            (input as { runId: string }).runId === newerRun.id
+              ? pendingNewDetails
+              : { checkpoints },
+        },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    expect(slot.getByRole("heading", { name: "Selected plan" })).toBeTruthy();
+
+    currentRun = newerRun;
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(slot.getByText("Newer workflow run")).toBeTruthy();
+    expect(slot.queryByRole("heading", { name: "Selected plan" })).toBeNull();
+
+    await act(async () => {
+      resolveNewDetails?.({ checkpoints: newerCheckpoints });
+      await pendingNewDetails;
+    });
+    expect(
+      slot.getByRole("button", { name: /New selected plan/ }),
+    ).toBeTruthy();
+  });
+
   it("opens worker threads and stops an active run through typed RPC", async () => {
     let stopped = false;
     const slot = renderSlot(
@@ -672,6 +920,7 @@ describe("workflow thread panel", () => {
           workflowRunView: () => ({
             run: stopped ? { ...run, status: "cancelled" as const } : run,
           }),
+          workflowRunDetails: () => ({ checkpoints: [] }),
           workflowStopRun: (input) => {
             expect(input).toEqual({ threadId: "thr_origin", runId: run.id });
             stopped = true;
@@ -685,6 +934,11 @@ describe("workflow thread panel", () => {
     );
 
     await slot.findByText("Run independent checks before shipping.");
+    expect(
+      slot.getByText(
+        "This workflow has not published structured execution details.",
+      ),
+    ).toBeTruthy();
     // The settled Discover phase starts collapsed; the active phase is open.
     expect(slot.queryByText("Inspect implementation")).toBeNull();
     expect(slot.getByText("Adversarial review")).toBeTruthy();
@@ -705,6 +959,183 @@ describe("workflow thread panel", () => {
     });
   });
 
+  it("expands the selected plan, per-ticket progress, and exact verification status", async () => {
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: (input) => {
+            expect(input).toEqual({ threadId: "thr_origin", runId: run.id });
+            return { checkpoints };
+          },
+        },
+      },
+    );
+
+    await slot.findByRole("heading", { name: "Selected plan" });
+    expect(slot.getAllByText("BB-101")).toHaveLength(2);
+    expect(
+      slot.getByText("Render the full accepted plan in the workflow panel."),
+    ).toBeTruthy();
+    expect(slot.getByText(/Lane: implementation/)).toBeTruthy();
+    expect(slot.getByText(/Owner: UI worker/)).toBeTruthy();
+    expect(slot.getByText("plugins/workflows/src/app.tsx")).toBeTruthy();
+
+    const verificationToggle = slot.getByRole("button", {
+      name: /focused workflow tests/i,
+    });
+    expect(verificationToggle.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(verificationToggle);
+    expect(
+      slot.getByText("pnpm exec vitest run src/app.test.tsx"),
+    ).toBeTruthy();
+    expect(slot.getByText("8 passed · 0 failed · 1 skipped")).toBeTruthy();
+    expect(
+      slot.getByText("For: Expose workflow details (BB-101)"),
+    ).toBeTruthy();
+
+    fireEvent.click(
+      slot.getAllByRole("button", { name: /open worker thread/i })[0]!,
+    );
+    expect(slot.navigateCalls).toContainEqual({
+      method: "toThread",
+      threadId: "thr_worker_2",
+    });
+  });
+
+  it("refreshes live details for the matching thread and stops polling when terminal", async () => {
+    vi.useFakeTimers();
+    let currentRun = run;
+    let currentDetails = [workCheckpoint("live-implementation", "running")];
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run: currentRun }),
+          workflowRunDetails: () => ({ checkpoints: currentDetails }),
+        },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    expect(
+      slot.getByRole("button", { name: /live implementation.*running/i }),
+    ).toBeTruthy();
+    const detailCallCount = () =>
+      slot.rpcCalls.filter((call) => call.method === "workflowRunDetails")
+        .length;
+    expect(detailCallCount()).toBe(1);
+
+    await slot.emitRealtime("workflow-runs", { threadId: "thr_other" });
+    expect(detailCallCount()).toBe(1);
+
+    currentDetails = [workCheckpoint("live-implementation", "succeeded")];
+    await slot.emitRealtime("workflow-runs", { threadId: "thr_origin" });
+    expect(detailCallCount()).toBe(2);
+    expect(
+      slot.getByRole("button", { name: /live implementation.*complete/i }),
+    ).toBeTruthy();
+
+    currentDetails = [workCheckpoint("live-implementation", "failed")];
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(detailCallCount()).toBe(3);
+    expect(
+      slot.getByRole("button", { name: /live implementation.*failed/i }),
+    ).toBeTruthy();
+
+    currentRun = { ...run, status: "succeeded", finishedAt: 4_000 };
+    currentDetails = [workCheckpoint("live-implementation", "succeeded")];
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    const terminalCallCount = detailCallCount();
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(detailCallCount()).toBe(terminalCallCount);
+    slot.unmount();
+  });
+
+  it("renders every checkpoint status and sparse optional detail safely", async () => {
+    const statuses = [
+      ["pending-item", "pending", "Pending", false],
+      ["running-item", "running", "Running", true],
+      ["complete-item", "succeeded", "Complete", false],
+      ["failed-item", "failed", "Failed", true],
+      ["blocked-item", "blocked", "Blocked", true],
+      ["skipped-item", "skipped", "Skipped", false],
+      ["interrupted-item", "interrupted", "Interrupted", true],
+    ] as const;
+    const sparseDetails: WorkflowCheckpointView[] = [
+      {
+        id: "wcp_empty_plan",
+        checkpoint: {
+          kind: "plan",
+          id: "empty-plan",
+          title: "Empty selected plan",
+          status: "pending",
+          summary: null,
+          detail: null,
+          items: [],
+        },
+        phase: "Plan",
+        childThreadId: null,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      ...statuses.map(([id, status]) => workCheckpoint(id, status)),
+      {
+        id: "wcp_sparse_verification",
+        checkpoint: {
+          kind: "verification",
+          id: "sparse-verification",
+          title: "Sparse verification",
+          status: "pending",
+          summary: null,
+          workItemId: null,
+          command: null,
+          counts: null,
+        },
+        phase: "Verify",
+        childThreadId: null,
+        createdAt: 3,
+        updatedAt: 3,
+      },
+    ];
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({ checkpoints: sparseDetails }),
+        },
+      },
+    );
+
+    await slot.findByText("0 work items");
+    for (const [id, , label, expanded] of statuses) {
+      const button = slot.getByRole("button", {
+        name: new RegExp(`${id.replaceAll("-", " ")}.*${label}`, "i"),
+      });
+      expect(button.getAttribute("aria-expanded")).toBe(String(expanded));
+    }
+    expect(slot.getByText(/Blocker:/).textContent).toContain(
+      "blocked-item blocker",
+    );
+    const sparseToggle = slot.getByRole("button", {
+      name: /sparse verification.*pending/i,
+    });
+    fireEvent.click(sparseToggle);
+    expect(slot.queryByText("Command")).toBeNull();
+    expect(
+      slot.queryByText(/\d+ passed · \d+ failed · \d+ skipped/),
+    ).toBeNull();
+    expect(slot.queryByText("Changed files")).toBeNull();
+    expect(
+      slot.queryByRole("button", { name: /open worker thread/i }),
+    ).toBeNull();
+  });
+
   it("rejects restored panel params with unknown fields", async () => {
     const slot = renderSlot(
       app.threadPanelActions[0]!,
@@ -720,5 +1151,55 @@ describe("workflow thread panel", () => {
     );
     expect(slot.getByRole("alert").parentElement?.className).toContain("p-4");
     expect(slot.rpcCalls).toEqual([]);
+  });
+
+  it("keeps the run usable when structured details fail to refresh", async () => {
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => {
+            throw new Error("Checkpoint service unavailable");
+          },
+        },
+      },
+    );
+
+    await slot.findByText("Run independent checks before shipping.");
+    expect(slot.getByRole("status").textContent).toContain(
+      "Checkpoint service unavailable",
+    );
+    expect(slot.getByRole("button", { name: "Stop workflow" })).toBeTruthy();
+  });
+
+  it("preserves the last good ledger when a later details refresh fails", async () => {
+    let failRefresh = false;
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => {
+            if (failRefresh) throw new Error("Temporary checkpoint failure");
+            return { checkpoints };
+          },
+        },
+      },
+    );
+
+    await slot.findByText(/Lane: implementation/);
+    failRefresh = true;
+    await slot.emitRealtime("workflow-runs", { threadId: "thr_origin" });
+
+    await waitFor(() => {
+      expect(slot.getByRole("status").textContent).toContain(
+        "Temporary checkpoint failure",
+      );
+    });
+    expect(slot.getByText(/Lane: implementation/)).toBeTruthy();
+    expect(slot.getByText(/Owner: UI worker/)).toBeTruthy();
   });
 });

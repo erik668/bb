@@ -1,5 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { workflowCheckpointSchema } from "./workflow-checkpoint.js";
 
 const workflowRunStatusSchema = z.enum([
   "queued",
@@ -41,6 +42,10 @@ const workflowPhaseViewSchema = z
 const workflowRunViewSchema = z
   .object({
     id: z.string(),
+    originThreadId: z.string(),
+    presentationThreadId: z.string(),
+    parentRunId: z.string().nullable(),
+    rootRunId: z.string(),
     name: z.string(),
     description: z.string(),
     status: workflowRunStatusSchema,
@@ -52,6 +57,17 @@ const workflowRunViewSchema = z
     createdAt: z.number(),
     startedAt: z.number().nullable(),
     finishedAt: z.number().nullable(),
+  })
+  .strict();
+
+const workflowCheckpointViewSchema = z
+  .object({
+    id: z.string(),
+    checkpoint: workflowCheckpointSchema,
+    phase: z.string().nullable(),
+    childThreadId: z.string().nullable(),
+    createdAt: z.number(),
+    updatedAt: z.number(),
   })
   .strict();
 
@@ -75,6 +91,12 @@ export const workflowUiRpcContract = defineRpcContract({
     input: runLookupInputSchema,
     output: z.object({ run: workflowRunViewSchema.nullable() }).strict(),
   },
+  workflowRunDetails: {
+    input: runLookupInputSchema,
+    output: z
+      .object({ checkpoints: z.array(workflowCheckpointViewSchema) })
+      .strict(),
+  },
   workflowStopRun: {
     input: z
       .object({
@@ -91,3 +113,6 @@ export const workflowUiRpcContract = defineRpcContract({
 export type WorkflowCallView = z.infer<typeof workflowCallViewSchema>;
 export type WorkflowPhaseView = z.infer<typeof workflowPhaseViewSchema>;
 export type WorkflowRunView = z.infer<typeof workflowRunViewSchema>;
+export type WorkflowCheckpointView = z.infer<
+  typeof workflowCheckpointViewSchema
+>;

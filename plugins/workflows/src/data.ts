@@ -2,6 +2,10 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ResolvedWorkflowExecutionSelection } from "./cache.js";
 import type { JsonValue, WorkflowAgentOptions } from "./types.js";
+import {
+  MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
+  MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+} from "./workflow-checkpoint.js";
 
 export type Db = Database.Database;
 type WorkflowRunStatus =
@@ -21,6 +25,9 @@ export interface WorkflowRunRow {
   id: string;
   projectId: string;
   originThreadId: string;
+  presentationThreadId: string;
+  parentRunId: string | null;
+  rootRunId: string;
   environmentId: string;
   originProvider: string;
   originModel: string;
@@ -83,6 +90,26 @@ export interface WorkflowCallCounts {
   cancelled: number;
 }
 
+export interface WorkflowCheckpointRow {
+  id: string;
+  runId: string;
+  checkpointId: string;
+  checkpointJson: string;
+  phase: string | null;
+  sourceCallId: string | null;
+  childThreadId: string | null;
+  ordinal: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type UpsertWorkflowCheckpointOutcome =
+  | "accepted"
+  | "inactive"
+  | "limit_exceeded"
+  | "ownership_conflict"
+  | "kind_conflict";
+
 type StoreStructuredResultOutcome =
   | "accepted"
   | "idempotent"
@@ -110,8 +137,14 @@ function optionalCall(value: unknown): WorkflowCallRow | null {
   return value === undefined ? null : callRow(value);
 }
 
+function checkpointRow(value: unknown): WorkflowCheckpointRow {
+  return value as WorkflowCheckpointRow;
+}
+
 const RUN_SELECT = `
   SELECT id, project_id AS projectId, origin_thread_id AS originThreadId,
+    presentation_thread_id AS presentationThreadId,
+    parent_run_id AS parentRunId, root_run_id AS rootRunId,
     environment_id AS environmentId, origin_provider AS originProvider,
     origin_model AS originModel, origin_reasoning_level AS originReasoningLevel,
     origin_permission_mode AS originPermissionMode,
@@ -221,6 +254,31 @@ export const migrations = [
   `UPDATE workflow_runs SET replay_barrier_index = NULL
      WHERE replay_safety_version = 1;`,
   `ALTER TABLE workflow_calls ADD COLUMN provider_retry_attempts INTEGER NOT NULL DEFAULT 0;`,
+  `CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+     id TEXT PRIMARY KEY,
+     run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+     checkpoint_id TEXT NOT NULL,
+     checkpoint_json TEXT NOT NULL,
+     phase TEXT,
+     source_call_id TEXT REFERENCES workflow_calls(id) ON DELETE SET NULL,
+     ordinal INTEGER NOT NULL,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     UNIQUE(run_id, checkpoint_id)
+   );
+   CREATE INDEX IF NOT EXISTS workflow_checkpoints_run_created_idx
+     ON workflow_checkpoints(run_id, ordinal);`,
+  `ALTER TABLE workflow_runs ADD COLUMN presentation_thread_id TEXT;
+   ALTER TABLE workflow_runs ADD COLUMN parent_run_id TEXT REFERENCES workflow_runs(id) ON DELETE SET NULL;
+   ALTER TABLE workflow_runs ADD COLUMN root_run_id TEXT;
+   UPDATE workflow_runs
+     SET presentation_thread_id = origin_thread_id
+     WHERE presentation_thread_id IS NULL;
+   UPDATE workflow_runs SET root_run_id = id WHERE root_run_id IS NULL;
+   CREATE INDEX IF NOT EXISTS workflow_runs_presentation_created_idx
+     ON workflow_runs(presentation_thread_id, created_at DESC);
+   CREATE INDEX IF NOT EXISTS workflow_runs_root_created_idx
+     ON workflow_runs(root_run_id, created_at ASC);`,
 ];
 
 export function createRun(
@@ -246,20 +304,23 @@ export function createRun(
 ): WorkflowRunRow {
   const id = `wfr_${randomUUID()}`;
   const now = Date.now();
+  const rootRunId = input.rootRunId || id;
   db.prepare(
     `INSERT INTO workflow_runs (
-       id, project_id, origin_thread_id, environment_id, origin_provider,
+       id, project_id, origin_thread_id, presentation_thread_id,
+       parent_run_id, root_run_id, environment_id, origin_provider,
        origin_model, origin_reasoning_level, origin_permission_mode,
        name, source, source_hash,
        args_json, settings_json, status, resumed_from_run_id,
        replay_safety_version, created_at
      ) VALUES (
-       @id, @projectId, @originThreadId, @environmentId, @originProvider,
+       @id, @projectId, @originThreadId, @presentationThreadId,
+       @parentRunId, @rootRunId, @environmentId, @originProvider,
        @originModel, @originReasoningLevel, @originPermissionMode,
        @name, @source, @sourceHash,
        @argsJson, @settingsJson, 'queued', @resumedFromRunId, 1, @now
      )`,
-  ).run({ id, now, ...input });
+  ).run({ id, now, ...input, rootRunId });
   return getRunRequired(db, id);
 }
 
@@ -286,6 +347,21 @@ export function getLatestRunForOriginThread(
   );
 }
 
+export function getLatestRunForThread(
+  db: Db,
+  threadId: string,
+): WorkflowRunRow | null {
+  return optionalRun(
+    db
+      .prepare(
+        `${RUN_SELECT}
+         WHERE origin_thread_id = ? OR presentation_thread_id = ?
+         ORDER BY created_at DESC, workflow_runs.rowid DESC LIMIT 1`,
+      )
+      .get(threadId, threadId),
+  );
+}
+
 export function listActiveRunsForOriginThread(
   db: Db,
   originThreadId: string,
@@ -296,6 +372,21 @@ export function listActiveRunsForOriginThread(
        ORDER BY created_at DESC, workflow_runs.rowid DESC`,
     )
     .all(originThreadId)
+    .map(runRow);
+}
+
+export function listActiveRunsForThread(
+  db: Db,
+  threadId: string,
+): WorkflowRunRow[] {
+  return db
+    .prepare(
+      `${RUN_SELECT}
+       WHERE (origin_thread_id = ? OR presentation_thread_id = ?)
+         AND status IN ('queued', 'running')
+       ORDER BY created_at DESC, workflow_runs.rowid DESC`,
+    )
+    .all(threadId, threadId)
     .map(runRow);
 }
 
@@ -340,6 +431,24 @@ export function claimQueuedRun(
   })();
 }
 
+function interruptWorkflowCheckpoints(
+  db: Db,
+  args: { runId?: string; sourceCallId?: string; now: number },
+): void {
+  const selector =
+    args.runId === undefined
+      ? "source_call_id = @sourceCallId"
+      : "run_id = @runId";
+  db.prepare(
+    `UPDATE workflow_checkpoints
+     SET checkpoint_json = json_set(
+       checkpoint_json, '$.status', 'interrupted'
+     ), updated_at = @now
+     WHERE ${selector}
+       AND json_extract(checkpoint_json, '$.status') IN ('pending', 'running')`,
+  ).run(args);
+}
+
 export function settleRun(
   db: Db,
   args: {
@@ -377,6 +486,7 @@ export function settleRun(
        error = 'Parent workflow finished before this call', finished_at = ?
        WHERE run_id = ? AND status IN ('queued', 'running')`,
     ).run(now, args.id);
+    interruptWorkflowCheckpoints(db, { runId: args.id, now });
     return outstanding;
   })();
 }
@@ -385,6 +495,149 @@ export function updateRunPhase(db: Db, id: string, phase: string): void {
   db.prepare(
     `UPDATE workflow_runs SET phase = ? WHERE id = ? AND status = 'running'`,
   ).run(phase, id);
+}
+
+export function upsertWorkflowCheckpoint(
+  db: Db,
+  input: {
+    runId: string;
+    checkpointId: string;
+    checkpointJson: string;
+    phase: string | null;
+    sourceCallId: string | null;
+  },
+): UpsertWorkflowCheckpointOutcome {
+  return db.transaction(() => {
+    const run = db
+      .prepare(`SELECT status FROM workflow_runs WHERE id = ?`)
+      .get(input.runId) as { status: WorkflowRunStatus } | undefined;
+    if (run?.status !== "running") return "inactive";
+
+    const existing = db
+      .prepare(
+        `SELECT length(CAST(checkpoint_json AS BLOB)) AS bytes,
+           source_call_id AS sourceCallId,
+           json_extract(checkpoint_json, '$.kind') AS kind,
+           CASE WHEN json_extract(checkpoint_json, '$.status') IN ('pending', 'running')
+             THEN 4 ELSE 0 END AS interruptionReserveBytes
+         FROM workflow_checkpoints
+         WHERE run_id = ? AND checkpoint_id = ?`,
+      )
+      .get(input.runId, input.checkpointId) as
+      | {
+          bytes: number;
+          sourceCallId: string | null;
+          kind: string;
+          interruptionReserveBytes: number;
+        }
+      | undefined;
+    const incoming = JSON.parse(input.checkpointJson) as {
+      kind: string;
+      status: string;
+    };
+    if (
+      existing !== undefined &&
+      input.sourceCallId !== null &&
+      existing.sourceCallId !== input.sourceCallId
+    ) {
+      return "ownership_conflict";
+    }
+    if (
+      existing !== undefined &&
+      typeof existing.kind === "string" &&
+      typeof incoming.kind === "string" &&
+      existing.kind !== incoming.kind
+    ) {
+      return "kind_conflict";
+    }
+    const totals = db
+      .prepare(
+        `SELECT COUNT(*) AS count,
+           COALESCE(SUM(length(CAST(checkpoint_json AS BLOB))), 0) AS bytes,
+           COALESCE(SUM(CASE
+             WHEN json_extract(checkpoint_json, '$.status') IN ('pending', 'running')
+             THEN 4 ELSE 0 END), 0) AS interruptionReserveBytes,
+           COALESCE(MAX(ordinal), -1) AS maximumOrdinal
+         FROM workflow_checkpoints WHERE run_id = ?`,
+      )
+      .get(input.runId) as {
+      count: number;
+      bytes: number;
+      interruptionReserveBytes: number;
+      maximumOrdinal: number;
+    };
+    const checkpointBytes = Buffer.byteLength(input.checkpointJson, "utf8");
+    const incomingInterruptionReserveBytes = ["pending", "running"].includes(
+      incoming.status,
+    )
+      ? 4
+      : 0;
+    const nextReservedTotalBytes =
+      totals.bytes +
+      totals.interruptionReserveBytes -
+      (existing?.bytes ?? 0) -
+      (existing?.interruptionReserveBytes ?? 0) +
+      checkpointBytes +
+      incomingInterruptionReserveBytes;
+    if (
+      nextReservedTotalBytes > MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN ||
+      (existing === undefined &&
+        totals.count >= MAX_WORKFLOW_CHECKPOINTS_PER_RUN)
+    ) {
+      return "limit_exceeded";
+    }
+
+    const now = Date.now();
+    if (existing !== undefined) {
+      db.prepare(
+        `UPDATE workflow_checkpoints
+         SET checkpoint_json = @checkpointJson, phase = @phase,
+           source_call_id = COALESCE(@sourceCallId, source_call_id),
+           updated_at = @now
+         WHERE run_id = @runId AND checkpoint_id = @checkpointId`,
+      ).run({ ...input, now });
+      return "accepted";
+    }
+    db.prepare(
+      `INSERT INTO workflow_checkpoints (
+         id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+         ordinal, created_at, updated_at
+       ) VALUES (
+         @id, @runId, @checkpointId, @checkpointJson, @phase, @sourceCallId,
+         @ordinal, @now, @now
+       )`,
+    ).run({
+      id: `wcp_${randomUUID()}`,
+      ...input,
+      ordinal: totals.maximumOrdinal + 1,
+      now,
+    });
+    return "accepted";
+  })();
+}
+
+export function listWorkflowCheckpointsForRun(
+  db: Db,
+  runId: string,
+): WorkflowCheckpointRow[] {
+  return db
+    .prepare(
+      `SELECT checkpoint.id, checkpoint.run_id AS runId,
+         checkpoint.checkpoint_id AS checkpointId,
+         checkpoint.checkpoint_json AS checkpointJson, checkpoint.phase,
+         checkpoint.source_call_id AS sourceCallId,
+         call.child_thread_id AS childThreadId,
+         checkpoint.ordinal,
+         checkpoint.created_at AS createdAt,
+         checkpoint.updated_at AS updatedAt
+       FROM workflow_checkpoints AS checkpoint
+       LEFT JOIN workflow_calls AS call ON call.id = checkpoint.source_call_id
+       WHERE checkpoint.run_id = ?
+       ORDER BY checkpoint.ordinal
+       LIMIT ?`,
+    )
+    .all(runId, MAX_WORKFLOW_CHECKPOINTS_PER_RUN + 1)
+    .map(checkpointRow);
 }
 
 export function markNotificationSent(db: Db, id: string): void {
@@ -436,6 +689,9 @@ export function beginNotificationAttempt(db: Db, id: string): boolean {
 
 export function recoverInterruptedRuns(db: Db): string[] {
   return db.transaction(() => {
+    const runRows = db
+      .prepare(`SELECT id FROM workflow_runs WHERE status = 'running'`)
+      .all() as Array<{ id: string }>;
     const childRows = db
       .prepare(
         `SELECT calls.child_thread_id AS childThreadId
@@ -446,6 +702,9 @@ export function recoverInterruptedRuns(db: Db): string[] {
       )
       .all() as Array<{ childThreadId: string }>;
     const now = Date.now();
+    for (const run of runRows) {
+      interruptWorkflowCheckpoints(db, { runId: run.id, now });
+    }
     db.prepare(
       `UPDATE workflow_calls SET status = 'succeeded', error = NULL, finished_at = ?
        WHERE status = 'running' AND result_json IS NOT NULL AND run_id IN (
@@ -713,19 +972,32 @@ export function settleCall(
     result: JsonValue | null;
     error: string | null;
   },
-): void {
-  db.prepare(
-    `UPDATE workflow_calls SET status = @status,
-       result_json = COALESCE(result_json, @resultJson), error = @error,
-       finished_at = @now WHERE id = @id AND status IN ('queued', 'running')`,
-  ).run({
-    id: args.id,
-    status: args.status,
-    resultJson:
-      args.status === "succeeded" ? JSON.stringify(args.result) : null,
-    error: args.error,
-    now: Date.now(),
-  });
+): string | null {
+  return db.transaction(() => {
+    const call = db
+      .prepare(`SELECT run_id AS runId FROM workflow_calls WHERE id = ?`)
+      .get(args.id) as { runId: string } | undefined;
+    if (call === undefined) return null;
+    const now = Date.now();
+    const changed = db
+      .prepare(
+        `UPDATE workflow_calls SET status = @status,
+         result_json = COALESCE(result_json, @resultJson), error = @error,
+         finished_at = @now
+         WHERE id = @id AND status IN ('queued', 'running')`,
+      )
+      .run({
+        id: args.id,
+        status: args.status,
+        resultJson:
+          args.status === "succeeded" ? JSON.stringify(args.result) : null,
+        error: args.error,
+        now,
+      }).changes;
+    if (changed === 0) return null;
+    interruptWorkflowCheckpoints(db, { sourceCallId: args.id, now });
+    return call.runId;
+  })();
 }
 
 function equalJsonValues(left: JsonValue, right: JsonValue): boolean {
@@ -766,6 +1038,7 @@ export function cancelRun(db: Db, id: string): boolean {
       `UPDATE workflow_calls SET status = 'cancelled', error = 'Cancelled', finished_at = ?
        WHERE run_id = ? AND status IN ('queued', 'running')`,
     ).run(now, id);
+    if (changed === 1) interruptWorkflowCheckpoints(db, { runId: id, now });
     return changed === 1;
   })();
 }

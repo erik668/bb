@@ -130,6 +130,22 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
 - `phase(title: string)`: start a new phase; subsequent `agent()` calls are
   grouped under this title. An agent-level `phase` overrides only that call and
   does not change the current phase.
+- `checkpoint(value)`: durably upsert one structured `plan`, `work-item`, or
+  `verification` row by its stable `id`. The row inherits the current phase and
+  remains available after the run finishes. Use this for the selected plan,
+  exact implementation state, and actual verification commands/results; never
+  infer results or parse progress back out of labels and prose. A `plan` must
+  include nullable multiline `detail` on the plan and each item; use it to
+  preserve the complete bounded route, roles, dependencies, gates, and
+  verification strategy that a human needs to review. Status may be `pending`,
+  `running`, `succeeded`, `failed`, `blocked`, `skipped`, or `interrupted`.
+  Unfinished rows are terminalized as `interrupted` if their worker or run ends.
+  A worker may update only rows it originally created; sibling workers cannot
+  reuse those stable IDs. The orchestrator may reconcile or terminalize any
+  row, but no update may change a row's checkpoint kind. Byte-limit admission
+  reserves enough headroom for terminalizing unfinished rows.
+  Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
+  run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass
   arrays/objects as actual JSON values, NOT as a JSON-encoded string. Use this to
   parameterize named workflows — for example, pass a research question, target
@@ -220,11 +236,13 @@ alias for BB's existing `outputSchema`. Either spelling remains supported.
 The canonical structured-result field is `outputSchema`. `phase`, `label`, and
 `title` are display-only.
 
-That worker receives only the `bb_workflow_result` plugin tool. It MUST call the
-tool exactly once at the end of its response with `{ value: ... }` to provide
-the structured output. BB validates the value with Ajv. The initial invalid
-attempt gets at most two corrective retries; a third invalid submission fails
-the call. There is no hidden normalization-agent pass.
+That worker receives `bb_workflow_checkpoint` and `bb_workflow_result`. When the
+prompt assigns stable plan, work-item, or verification IDs, it can use the
+checkpoint tool to report truthful live state. It MUST call the result tool
+exactly once at the end of its response with `{ value: ... }` to provide the
+structured output. BB validates the value with Ajv. The initial invalid attempt
+gets at most two corrective retries; a third invalid submission fails the call.
+There is no hidden normalization-agent pass.
 
 ## Pipeline by default
 
@@ -420,6 +438,21 @@ without rendering a user-facing message. Delivery is duplicate-tolerant
 at-least-once because `threads.send` has no idempotency key. CLI status polling
 remains authoritative.
 
+Runs distinguish execution ownership from human presentation. The origin
+thread continues to own the environment, permissions, and completion
+notification. The presentation thread receives the active progress card,
+realtime updates, and inspector access. A workflow launched from a hidden
+worker inherits its parent run's presentation thread and root run, or otherwise
+uses its nearest visible ancestor. For a CLI launch, `--present-in <thread-id>`
+explicitly selects the presentation thread without moving execution. The
+bounded `status` and `list` output and both `history` run-record forms include
+`originThreadId`, `presentationThreadId`, `parentRunId`, and `rootRunId`. The
+presentation target must be a visible thread in the same project and
+environment, must be the origin or one of its ancestors, and must be available
+from the same BB server; workflows do not federate state across servers.
+Presentation-thread inspection is read-only; stop control remains with the
+origin thread.
+
 `list` also returns compact summaries; it is safe for discovery but is not a
 substitute for the redirected detailed history.
 
@@ -472,8 +505,9 @@ bb workflows validate --file .bb/workflows/review-change.js
 bb workflows validate --name review-change
 bb workflows run --script '<javascript>' --args '<json>'
 bb workflows run --file .bb/workflows/review-change.js --resume <run-id>
-bb workflows run --name review-change
+bb workflows run --name review-change --present-in <thread-id>
 bb workflows status <run-id>
+bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>

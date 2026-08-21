@@ -10,8 +10,12 @@ import {
 } from "./settings.js";
 import type { JsonValue } from "./types.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
+import { checkpointToolInputSchema } from "./workflow-checkpoint.js";
 import { workflowUiRpcContract } from "./ui-contract.js";
-import { buildWorkflowRunView } from "./ui-view.js";
+import {
+  buildWorkflowCheckpointView,
+  buildWorkflowRunView,
+} from "./ui-view.js";
 
 const sourceInputFields = {
   script: z
@@ -109,7 +113,10 @@ export default async function plugin(bb: BbPluginApi) {
         ? service.inspectLatestForThread(threadId)
         : service.inspect(runId);
     if (run === null) return null;
-    if (run.originThreadId !== threadId) {
+    if (
+      run.originThreadId !== threadId &&
+      run.presentationThreadId !== threadId
+    ) {
       throw new Error("This workflow run is not available in this thread");
     }
     return run;
@@ -127,9 +134,25 @@ export default async function plugin(bb: BbPluginApi) {
       const run = workflowForThread(threadId, runId);
       return { run: run === null ? null : buildWorkflowRunView(run) };
     },
+    workflowRunDetails({ threadId, runId }) {
+      const run = workflowForThread(threadId, runId);
+      return {
+        checkpoints:
+          run === null
+            ? []
+            : service
+                .inspectCheckpoints(run.id)
+                .map(buildWorkflowCheckpointView),
+      };
+    },
     async workflowStopRun({ threadId, runId }) {
       const run = workflowForThread(threadId, runId);
       if (run === null) throw new Error(`Unknown workflow run ${runId}`);
+      if (run.originThreadId !== threadId) {
+        throw new Error(
+          "Only the workflow origin thread can stop this workflow run",
+        );
+      }
       const stopped = await service.stop(run.id);
       const latest = workflowForThread(threadId, run.id);
       if (latest === null) throw new Error(`Unknown workflow run ${runId}`);
@@ -168,6 +191,18 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.agents.registerTool({
+    name: "bb_workflow_checkpoint",
+    description:
+      "Report durable structured progress for the active workflow call. Use stable checkpoint IDs so later calls update the same plan, work item, or verification row. Report only state the worker actually knows; do not infer test results or changed files.",
+    parameters: checkpointToolInputSchema,
+    execute({ checkpoint }, ctx) {
+      const result = service.submitCheckpoint(ctx.threadId, checkpoint);
+      if (result.ok) return jsonResult({ accepted: true });
+      return errorResult(result.error);
+    },
+  });
+
+  bb.agents.registerTool({
     name: "bb_workflow_result",
     description:
       'Use this tool to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response with {"value": ...} to provide the structured output.',
@@ -191,15 +226,19 @@ export default async function plugin(bb: BbPluginApi) {
     const worker = service.agentConfiguration(context.thread.id);
     if (worker !== null) {
       return {
-        tools:
-          worker.terminal || worker.resultParameters === null
-            ? []
-            : [
-                {
-                  name: "bb_workflow_result",
-                  parameters: worker.resultParameters,
-                },
-              ],
+        tools: worker.terminal
+          ? []
+          : [
+              "bb_workflow_checkpoint",
+              ...(worker.resultParameters === null
+                ? []
+                : [
+                    {
+                      name: "bb_workflow_result",
+                      parameters: worker.resultParameters,
+                    },
+                  ]),
+            ],
         skills: [],
         ...(worker.instructions === null
           ? {}
@@ -208,10 +247,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (context.origin.pluginId === bb.pluginId) {
       return {
-        tools: ["bb_workflow_result"],
+        tools: ["bb_workflow_checkpoint", "bb_workflow_result"],
         skills: [],
         instructions:
-          "You are starting as a BB workflow worker. Follow the workflow prompt. Your final text IS the return value, not a human-facing message. If the prompt requests structured output, call bb_workflow_result exactly once at the end of your response.",
+          "You are starting as a BB workflow worker. Follow the workflow prompt. When the prompt assigns stable plan, work-item, or verification IDs, report truthful progress with bb_workflow_checkpoint. Your final text IS the return value, not a human-facing message. If the prompt requests structured output, call bb_workflow_result exactly once at the end of your response.",
       };
     }
     return {

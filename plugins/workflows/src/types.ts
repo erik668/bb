@@ -82,6 +82,7 @@ export interface WorkflowCapabilities {
     options: WorkflowAgentOptions,
     signal: AbortSignal,
   ): Promise<JsonValue>;
+  checkpoint?(value: JsonValue, phase: string | null): void;
   workflow?(
     nameOrRef: WorkflowReference,
     args: JsonValue,

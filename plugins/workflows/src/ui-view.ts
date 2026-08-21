@@ -1,10 +1,27 @@
 import { parseWorkflowSource } from "./parser.js";
-import type { WorkflowRunInspection } from "./service.js";
+import type {
+  WorkflowCheckpointInspection,
+  WorkflowRunInspection,
+} from "./service.js";
 import type {
   WorkflowCallView,
+  WorkflowCheckpointView,
   WorkflowPhaseView,
   WorkflowRunView,
 } from "./ui-contract.js";
+
+export function buildWorkflowCheckpointView(
+  inspection: WorkflowCheckpointInspection,
+): WorkflowCheckpointView {
+  return {
+    id: inspection.id,
+    checkpoint: inspection.checkpoint,
+    phase: inspection.phase,
+    childThreadId: inspection.childThreadId,
+    createdAt: inspection.createdAt,
+    updatedAt: inspection.updatedAt,
+  };
+}
 
 const MAX_FALLBACK_LABEL_LENGTH = 80;
 
@@ -81,6 +98,10 @@ export function buildWorkflowRunView(
 
   return {
     id: run.id,
+    originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
     name: run.name,
     description: metadata.description,
     status: run.status,

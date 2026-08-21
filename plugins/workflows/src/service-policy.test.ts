@@ -1,10 +1,16 @@
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import {
+  createFakePluginHost,
+  makeThreadResponse,
+} from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  attachCallThread,
+  claimQueuedRun,
   deleteExpiredTerminalRuns,
   getCall,
   getRunRequired,
   migrations,
+  startCall,
 } from "./data.js";
 import plugin from "./server.js";
 import {
@@ -68,6 +74,17 @@ function setup(
   let childCount = 0;
   let originDeleted = false;
   const workers = new Map<string, WorkerState>();
+  const threads = new Map([
+    [
+      "origin",
+      makeThreadResponse({
+        id: "origin",
+        projectId: "project-test",
+        environmentId: "environment-1",
+        providerId: "codex",
+      }),
+    ],
+  ]);
   const { bb, harness } = createFakePluginHost({
     pluginId: "workflows",
     sdk: {
@@ -80,12 +97,7 @@ function setup(
                 code: "thread_not_found",
               });
             }
-            return {
-              id: threadId,
-              environmentId: "environment-1",
-              providerId: "codex",
-              status: "idle",
-            } as never;
+            return threads.get(threadId)!;
           }
           const worker = workers.get(threadId);
           if (worker?.deleted) {
@@ -94,12 +106,15 @@ function setup(
               code: "thread_not_found",
             });
           }
-          return {
+          const configured = threads.get(threadId);
+          if (configured !== undefined) return configured;
+          return makeThreadResponse({
             id: threadId,
+            projectId: "project-test",
             environmentId: "environment-1",
             providerId: "codex",
             status: worker?.status ?? "active",
-          } as never;
+          });
         },
         output: async ({ threadId }) => ({
           output: workers.get(threadId)?.output ?? null,
@@ -172,10 +187,15 @@ function setup(
   bb.storage.migrate(db, migrations);
   const service = createWorkflowService(bb, db, settings);
 
-  async function start(workflowSource: string) {
+  async function start(
+    workflowSource: string,
+    options: {
+      originThreadId?: string;
+    } = {},
+  ) {
     return service.start({
       projectId: "project-test",
-      originThreadId: "origin",
+      originThreadId: options.originThreadId ?? "origin",
       source: workflowSource,
       args: null,
       resumedFromRunId: null,
@@ -190,6 +210,21 @@ function setup(
     workers,
     start,
     childCount: () => childCount,
+    setThread: (
+      threadId: string,
+      overrides: Parameters<typeof makeThreadResponse>[0] = {},
+    ) => {
+      threads.set(
+        threadId,
+        makeThreadResponse({
+          id: threadId,
+          projectId: "project-test",
+          environmentId: "environment-1",
+          providerId: "codex",
+          ...overrides,
+        }),
+      );
+    },
     deleteOrigin: () => {
       originDeleted = true;
     },
@@ -909,6 +944,12 @@ describe("workflow service policy integration", () => {
     const run = await test.start(
       source(`return await agent("never");`, "signal-run"),
     );
+    expect(run).toMatchObject({
+      originThreadId: "origin",
+      presentationThreadId: "origin",
+      parentRunId: null,
+      rootRunId: run.id,
+    });
     expect(signalsFor("origin")).toHaveLength(1);
     const controller = new AbortController();
     const worker = test.service.runWorker(controller.signal);
@@ -924,6 +965,83 @@ describe("workflow service policy integration", () => {
     expect(signalsFor("origin")).toHaveLength(afterStop);
     controller.abort();
     await worker;
+  });
+
+  it("surfaces a hidden origin on its nearest visible ancestor without duplicate signals", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.setThread("root-visible", { visibility: "visible" });
+    test.setThread("middle-hidden", {
+      visibility: "hidden",
+      parentThreadId: "root-visible",
+    });
+    test.setThread("worker-hidden", {
+      visibility: "hidden",
+      parentThreadId: "middle-hidden",
+    });
+
+    const run = await test.start(source("return null", "hidden-origin"), {
+      originThreadId: "worker-hidden",
+    });
+    const runSignals = test.harness.realtimeSignals.filter(
+      (signal) => signal.channel === "workflow-runs",
+    );
+
+    expect(run).toMatchObject({
+      originThreadId: "worker-hidden",
+      presentationThreadId: "root-visible",
+      parentRunId: null,
+      rootRunId: run.id,
+    });
+    expect(
+      runSignals.map(
+        (signal) => (signal.payload as { threadId: string }).threadId,
+      ),
+    ).toEqual(["worker-hidden", "root-visible"]);
+  });
+
+  it("inherits presentation and root IDs when a workflow worker launches a nested run", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const parent = await test.start(source("return null", "causal-parent"));
+    expect(claimQueuedRun(test.db, 4)?.id).toBe(parent.id);
+    const parentCall = startCall(test.db, {
+      runId: parent.id,
+      callIndex: 0,
+      cacheKey: "causal-child",
+      prompt: "launch nested workflow",
+      options: {
+        selection: null,
+        outputSchema: null,
+        title: null,
+        phase: null,
+      },
+      selection: {
+        providerId: "codex",
+        model: "gpt-test",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+      },
+      replay: null,
+    });
+    expect(attachCallThread(test.db, parentCall.id, "nested-worker")).toBe(
+      true,
+    );
+    test.setThread("nested-worker", {
+      visibility: "hidden",
+      parentThreadId: "unrelated-visible-parent",
+    });
+
+    const nested = await test.start(source("return null", "causal-child"), {
+      originThreadId: "nested-worker",
+    });
+
+    expect(nested).toMatchObject({
+      originThreadId: "nested-worker",
+      presentationThreadId: "origin",
+      parentRunId: parent.id,
+      rootRunId: parent.id,
+    });
   });
 
   it("does not create or orphan a call when cancellation wins catalog or spawn", async () => {

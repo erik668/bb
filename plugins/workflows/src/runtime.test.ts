@@ -63,6 +63,77 @@ describe("workflow QuickJS runtime", () => {
     expect(phase).toHaveBeenCalledWith("Inspect");
   });
 
+  it("emits structured checkpoints with the current phase", async () => {
+    const checkpoint = vi.fn();
+    const result = await executeWorkflowScript({
+      args: null,
+      body: `
+        phase("Plan");
+        checkpoint({
+          kind: "plan",
+          id: "selected-plan",
+          title: "Selected plan",
+          status: "succeeded",
+          summary: "Three work items",
+          detail: null,
+          items: [],
+        });
+        return "done";
+      `,
+      capabilities: {
+        agent: async () => null,
+        checkpoint,
+        log: vi.fn(),
+        phase: vi.fn(),
+      } as WorkflowCapabilities & {
+        checkpoint(value: unknown, phase: string | null): void;
+      },
+    });
+
+    expect(result).toBe("done");
+    expect(checkpoint).toHaveBeenCalledWith(
+      {
+        kind: "plan",
+        id: "selected-plan",
+        title: "Selected plan",
+        status: "succeeded",
+        summary: "Three work items",
+        detail: null,
+        items: [],
+      },
+      "Plan",
+    );
+  });
+
+  it("rejects a checkpoint without a value", async () => {
+    await expect(
+      executeWorkflowScript({
+        args: null,
+        body: "checkpoint(); return null;",
+        capabilities: {
+          agent: async () => null,
+          checkpoint: vi.fn(),
+          log: vi.fn(),
+          phase: vi.fn(),
+        },
+      }),
+    ).rejects.toThrow("checkpoint value is required");
+  });
+
+  it("rejects checkpoint calls when the host has no checkpoint capability", async () => {
+    await expect(
+      executeWorkflowScript({
+        args: null,
+        body: "checkpoint({ id: 'selected-plan' }); return null;",
+        capabilities: {
+          agent: async () => null,
+          log: vi.fn(),
+          phase: vi.fn(),
+        },
+      }),
+    ).rejects.toThrow("checkpoint capability is unavailable");
+  });
+
   it("canonicalizes labels and deterministically inherits the current phase", async () => {
     const calls: Array<{
       prompt: string;

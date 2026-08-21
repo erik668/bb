@@ -7,9 +7,10 @@ inside QuickJS while delegating actual reasoning to ordinary BB threads.
 The author-facing native surface is intentionally one tool:
 `bb_workflow_run`. Validation, inspection, listing, and cancellation use the
 `bb workflows` CLI documented below. Provider and model discovery uses BB's
-built-in `bb provider` commands. Structured workers separately
-receive only `bb_workflow_result`; ordinary authoring agents never receive that
-worker tool.
+built-in `bb provider` commands. Workflow workers separately receive
+`bb_workflow_checkpoint` for durable plan, work-item, and verification
+progress. Structured workers additionally receive `bb_workflow_result`;
+ordinary authoring agents never receive either worker tool.
 
 ## Progress UI
 
@@ -26,23 +27,42 @@ shows run state, declared phases, the active phase's workers, elapsed time, and
 an action that opens the full workflow inspector in the thread's right panel.
 While a thread has queued or running workflows, the plugin also contributes a
 status card above that thread's composer. It lists every active run with its
-current phase and agent-call progress and lets the user stop a run in place;
-the card disappears when the thread has no active runs.
+current phase and agent-call progress and opens the full inspector; the card
+disappears when the thread has no active runs.
 The panel shows every phase and worker, links attached workers to their BB
-threads, reports cache and result state, and can stop an active run. It may also
-be opened directly from the thread panel action, in which case it shows that
-thread's latest run.
+threads, and progressively discloses the selected plan, per-ticket or per-work
+item implementation state, changed files, blockers, exact verification
+commands, and pass/fail/skip counts when the workflow publishes them. It also
+reports cache and result state. In the origin thread it can stop an active run;
+in a presentation thread it is read-only and links to the origin for control.
+It may be opened directly from the thread panel action, in which case it shows
+that thread's latest run.
+
+Execution ownership and human presentation are tracked separately. The origin
+thread still owns the environment, permissions, and completion notification;
+the presentation thread receives the active card, realtime updates, and
+inspector access. A visible top-level launch presents in its origin thread. A
+workflow launched from a hidden worker inherits its parent run's presentation
+thread and root run, or otherwise falls back to its nearest visible ancestor.
+CLI launches can override the presentation target with `--present-in
+<thread-id>`. `status`, `list`, and `history` expose `originThreadId`,
+`presentationThreadId`, `parentRunId`, and `rootRunId` for provenance. A
+presentation target must be a visible thread in the same project and
+environment and must be the origin or one of its ancestors. It must also be
+available from the same BB server; this does not federate workflow state across
+servers.
 
 Both surfaces are implemented by the plugin app with `@bb/shared-ui` controls
 and BB theme tokens. Directive attributes and restored panel parameters are
 treated as untrusted input. The backend additionally binds every requested run
-to the directive message or panel thread, so a run ID from another thread
-cannot be inspected or stopped through these UI RPCs. The service publishes a
-`workflow-runs` realtime signal for the origin thread when a run starts, is
-claimed, settles, or is cancelled, so the composer status surface learns about
-new runs without a standing poll; it and the active message cards poll once
-per second only while a run is active and the page is visible, refresh once
-when the page or the realtime connection comes back, and stop when terminal.
+to the directive message or panel thread, so a run ID from an unrelated thread
+cannot be inspected through these UI RPCs. Only the origin thread may stop a
+run. The service publishes a deduplicated `workflow-runs` realtime signal for
+the origin and presentation threads when a run starts, is claimed, settles, or
+is cancelled, so the composer status surface learns about new runs without a
+standing poll; it and the active message cards poll once per second only while
+a run is active and the page is visible, refresh once when the page or the
+realtime connection comes back, and stop when terminal.
 
 The security boundary is the QuickJS context: workflow code has JSON data and
 explicit orchestration capabilities, but no Node, filesystem, shell, network,
@@ -67,6 +87,26 @@ fields and malformed entries are rejected. Declaration order is preserved.
 `phase(title)` changes the current phase, and later agent calls inherit it.
 An agent-level `phase` applies only to that call and does not change the current
 phase.
+
+`checkpoint(value)` durably upserts structured progress by `value.id` and
+inherits the current phase. Supported checkpoint kinds are `plan`, `work-item`,
+and `verification`. Reuse stable IDs to update state instead of appending prose;
+the latest value stays inspectable after the run finishes. Workers can publish
+the same contract through `bb_workflow_checkpoint`, and their rows retain a
+link to the worker thread. Checkpoints are accepted only while the run and, for
+worker updates, the source call are active. A worker may update only rows it
+originally created; sibling workers cannot take over its stable IDs. The
+orchestrator may reconcile or terminalize any row, but no update may change a
+row's checkpoint kind. Plans carry bounded multiline
+`detail` on the plan and each item so the inspector can retain the complete
+human-reviewable route rather than only titles. Status is one of `pending`,
+`running`, `succeeded`, `failed`, `blocked`, `skipped`, or `interrupted`;
+unfinished rows become `interrupted` when their producer or run terminates.
+Each checkpoint is limited to 64 KiB/8,192 JSON nodes, and a run is limited to
+512 rows/4 MiB. Updating an existing stable ID remains allowed at the row cap
+when the aggregate byte cap is still satisfied. Admission reserves the small
+amount of byte headroom needed to terminalize `pending` and `running` rows as
+`interrupted`, so a valid ledger remains readable after termination.
 
 Workflow input follows the native Claude source modes: provide exactly one of
 an inline `script`, a workspace `scriptPath`, or a workflow `name`. The older
@@ -101,8 +141,9 @@ schema, and other deterministic failures are not retried. Retry attempts are
 persisted on the call so a plugin restart cannot reset the retry budget.
 
 Worker output is either the final assistant text or an Ajv-validated value
-submitted through `bb_workflow_result`. Structured workers receive two
-corrective retries after their initial invalid attempt.
+submitted through `bb_workflow_result`. All active workers can submit durable
+progress through `bb_workflow_checkpoint`; structured workers receive two
+corrective retries after their initial invalid result attempt.
 
 Workflow workers use BB's generic hidden-thread visibility. They remain
 out of sidebar organization without contributing unread/pending favicon
@@ -165,8 +206,9 @@ bb workflows validate --file .bb/workflows/review.js
 bb workflows validate --name review
 bb workflows run --script '<javascript>' --args '<json>'
 bb workflows run --file .bb/workflows/review.js --resume <run-id>
-bb workflows run --name review
+bb workflows run --name review --present-in <thread-id>
 bb workflows status <run-id>
+bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>

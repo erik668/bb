@@ -62,13 +62,28 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
   bb workflows run (--script '<javascript>'|--source '<javascript>'|
                    --file <path>|--name <name>)
                    [--args '<json>'] [--resume <run-id>]
+                   [--present-in <thread-id>]
   bb workflows status <run-id>
+  bb workflows details <run-id>
   bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]
   bb workflows list [--limit <1-50>]
   bb workflows stop <run-id>
 
-Commands must run from a BB project thread. Workflows has six plugin
-settings, configurable with `bb plugin config workflows set <key> <value>`:
+Use `details` for durable structured selected-plan, work-item/ticket, and
+verification state. Use paged `history` for the chronological run and agent-call
+event stream. `--present-in` surfaces a CLI-launched run's active card and
+inspector in another thread while its origin retains execution, environment,
+permission, and completion-notification ownership. Hidden workflow workers
+otherwise inherit their parent run's presentation/root relationship or use the
+nearest visible ancestor. An explicit presentation target must be a visible
+thread in the same project and environment and must be the origin or one of its
+ancestors. Presentation-thread inspection is read-only; stop control remains
+with the origin. The target must be available from the same BB server;
+workflows do not federate state across servers. Status, list, and history run
+records include
+`originThreadId`, `presentationThreadId`, `parentRunId`, and `rootRunId`.
+Commands must run from a BB project thread. Workflows has six plugin settings,
+configurable with `bb plugin config workflows set <key> <value>`:
 `maxActiveRuns` (default 4, range 1–32), `maxConcurrentAgents` (8, 1–64),
 `maxAgentCalls` (100, 1–1000), `totalRunTimeoutMs` (86400000, 60000–604800000),
 `retentionDays` (30, 1–3650), and `maxNotificationBytes` (16384,

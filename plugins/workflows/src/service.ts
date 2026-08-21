@@ -18,13 +18,14 @@ import {
   deleteExpiredTerminalRuns,
   getCall,
   getCallByChildThread,
-  getLatestRunForOriginThread,
+  getLatestRunForThread,
   getRun,
   getRunRequired,
   incrementRepairAttempts,
   listCallsForRun,
   listCallsForRunPage,
-  listActiveRunsForOriginThread,
+  listWorkflowCheckpointsForRun,
+  listActiveRunsForThread,
   listRuns,
   listPendingNotificationRuns,
   listRunningCalls,
@@ -40,9 +41,11 @@ import {
   startCall,
   storeStructuredResult,
   updateRunPhase,
+  upsertWorkflowCheckpoint,
   type Db,
   type WorkflowCallCounts,
   type WorkflowCallRow,
+  type WorkflowCheckpointRow,
   type WorkflowRunRow,
 } from "./data.js";
 import { parseWorkflowSource } from "./parser.js";
@@ -64,6 +67,13 @@ import type {
 } from "./types.js";
 import { parseStoredAgentOptions } from "./validation.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
+import {
+  MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
+  MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+  WORKFLOW_CHECKPOINT_LIMITS,
+  workflowCheckpointSchema,
+  type WorkflowCheckpoint,
+} from "./workflow-checkpoint.js";
 
 const executionValuesSchema = z.object({
   model: z.string().min(1),
@@ -266,6 +276,33 @@ function assertBoundedJson(
   }
 }
 
+function serializeWorkflowCheckpoint(value: unknown): {
+  checkpoint: WorkflowCheckpoint;
+  json: string;
+} {
+  const checkpoint = workflowCheckpointSchema.parse(value);
+  assertBoundedJson(
+    checkpoint,
+    "Workflow checkpoint",
+    WORKFLOW_CHECKPOINT_LIMITS,
+  );
+  const json = JSON.stringify(checkpoint);
+  const interruptionReserveBytes = ["pending", "running"].includes(
+    checkpoint.status,
+  )
+    ? 4
+    : 0;
+  if (
+    Buffer.byteLength(json, "utf8") + interruptionReserveBytes >
+    WORKFLOW_CHECKPOINT_LIMITS.bytes
+  ) {
+    throw new Error(
+      `Workflow checkpoint exceeds the ${WORKFLOW_CHECKPOINT_LIMITS.bytes} byte limit after terminal status reservation`,
+    );
+  }
+  return { checkpoint, json };
+}
+
 function validateValue(
   schema: JsonSchema,
   value: JsonValue,
@@ -346,6 +383,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 interface StartWorkflowInput {
   projectId: string;
   originThreadId: string;
+  presentationThreadId?: string | null;
   source: string;
   args: JsonValue;
   resumedFromRunId: string | null;
@@ -362,6 +400,7 @@ export interface WorkflowService {
   ): WorkflowRunInspectionPage | null;
   inspectLatestForThread(threadId: string): WorkflowRunInspection | null;
   inspectActiveForThread(threadId: string): WorkflowRunInspection[];
+  inspectCheckpoints(runId: string): WorkflowCheckpointInspection[];
   list(projectId: string, limit: number): WorkflowRunRow[];
   stop(runId: string): Promise<boolean>;
   updateSettings(settings: WorkflowSettings): void;
@@ -373,6 +412,10 @@ export interface WorkflowService {
     threadId: string,
     value: JsonValue,
   ): Promise<{ ok: true } | { ok: false; terminal: boolean; error: string }>;
+  submitCheckpoint(
+    threadId: string,
+    checkpoint: WorkflowCheckpoint,
+  ): { ok: true } | { ok: false; terminal: boolean; error: string };
   agentConfiguration(threadId: string): {
     /** Parameter schema for bb_workflow_result; null when the call is not a
      * running structured call. */
@@ -401,6 +444,13 @@ export interface WorkflowRunInspectionPage {
   run: WorkflowRunRow;
   calls: WorkflowCallInspection[];
   callCounts: WorkflowCallCounts;
+}
+
+export interface WorkflowCheckpointInspection extends Omit<
+  WorkflowCheckpointRow,
+  "checkpointJson"
+> {
+  checkpoint: WorkflowCheckpoint;
 }
 
 export function createWorkflowService(
@@ -437,6 +487,22 @@ export function createWorkflowService(
     });
   }
 
+  function publishRunChanged(run: WorkflowRunRow): void {
+    for (const threadId of new Set([
+      run.originThreadId,
+      run.presentationThreadId,
+    ])) {
+      publishRunsChanged(threadId);
+    }
+  }
+
+  function settleCallAndPublish(args: Parameters<typeof settleCall>[1]): void {
+    const runId = settleCall(db, args);
+    if (runId === null) return;
+    const run = getRun(db, runId);
+    if (run !== null) publishRunChanged(run);
+  }
+
   async function stopChild(threadId: string): Promise<void> {
     const pending = childStops.get(threadId);
     if (pending !== undefined) return pending;
@@ -470,9 +536,115 @@ export function createWorkflowService(
       }),
     );
     return {
+      thread,
       environmentId: thread.environmentId,
       providerId: thread.providerId,
       ...defaults,
+    };
+  }
+
+  async function nearestVisiblePresentationThread(
+    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+  ): Promise<string> {
+    let current = origin;
+    const visited = new Set<string>();
+    while (current.visibility === "hidden" && current.parentThreadId !== null) {
+      if (visited.has(current.id)) {
+        throw new Error("Workflow presentation ancestry contains a cycle");
+      }
+      visited.add(current.id);
+      const parent = await bb.sdk.threads.get({
+        threadId: current.parentThreadId,
+      });
+      assertPresentationScope(origin, parent);
+      current = parent;
+    }
+    return current.id;
+  }
+
+  function assertPresentationScope(
+    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+    presentation: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+  ): void {
+    if (presentation.projectId !== origin.projectId) {
+      throw new Error(
+        "Workflow presentation thread must use the origin project",
+      );
+    }
+    if (presentation.environmentId !== origin.environmentId) {
+      throw new Error(
+        "Workflow presentation thread must use the origin environment",
+      );
+    }
+  }
+
+  async function resolveExplicitPresentationThread(
+    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+    targetThreadId: string,
+  ): Promise<string> {
+    let current = origin;
+    const visited = new Set<string>();
+    while (true) {
+      if (current.id === targetThreadId) {
+        if (current.visibility === "hidden") {
+          throw new Error("Workflow presentation thread must be visible");
+        }
+        return current.id;
+      }
+      if (current.parentThreadId === null) {
+        throw new Error(
+          "Workflow presentation thread must be the origin or one of its ancestors",
+        );
+      }
+      if (visited.has(current.id)) {
+        throw new Error("Workflow presentation ancestry contains a cycle");
+      }
+      visited.add(current.id);
+      const parent = await bb.sdk.threads.get({
+        threadId: current.parentThreadId,
+      });
+      assertPresentationScope(origin, parent);
+      current = parent;
+    }
+  }
+
+  async function resolveRunRelationship(
+    input: StartWorkflowInput,
+    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+  ): Promise<{
+    presentationThreadId: string;
+    parentRunId: string | null;
+    rootRunId: string;
+  }> {
+    const parentCall = getCallByChildThread(db, input.originThreadId);
+    const parentRun = parentCall === null ? null : getRun(db, parentCall.runId);
+    if (
+      parentRun !== null &&
+      (parentRun.projectId !== input.projectId ||
+        parentRun.environmentId !== origin.environmentId)
+    ) {
+      throw new Error(
+        "Workflow causal parent must use the origin project and environment",
+      );
+    }
+    let presentationThreadId: string;
+    if (
+      input.presentationThreadId === undefined ||
+      input.presentationThreadId === null
+    ) {
+      presentationThreadId =
+        parentRun?.presentationThreadId ??
+        (await nearestVisiblePresentationThread(origin));
+    } else {
+      presentationThreadId = await resolveExplicitPresentationThread(
+        origin,
+        input.presentationThreadId,
+      );
+    }
+    return {
+      presentationThreadId,
+      parentRunId: parentRun?.id ?? null,
+      rootRunId: parentRun?.rootRunId ?? "",
     };
   }
 
@@ -499,6 +671,7 @@ export function createWorkflowService(
         throw new Error(`Workflow args are invalid: ${validation.error}`);
     }
     const origin = await resolveOrigin(input);
+    const relationship = await resolveRunRelationship(input, origin.thread);
     if (input.resumedFromRunId !== null) {
       const previous = getRun(db, input.resumedFromRunId);
       if (previous === null || previous.projectId !== input.projectId) {
@@ -520,6 +693,9 @@ export function createWorkflowService(
     const created = createRun(db, {
       projectId: input.projectId,
       originThreadId: input.originThreadId,
+      presentationThreadId: relationship.presentationThreadId,
+      parentRunId: relationship.parentRunId,
+      rootRunId: relationship.rootRunId,
       environmentId: origin.environmentId,
       originProvider: origin.providerId,
       originModel: origin.model,
@@ -532,7 +708,7 @@ export function createWorkflowService(
       settingsJson: JSON.stringify(currentSettings),
       resumedFromRunId: input.resumedFromRunId,
     });
-    publishRunsChanged(created.originThreadId);
+    publishRunChanged(created);
     return created;
   }
 
@@ -567,6 +743,28 @@ export function createWorkflowService(
     };
   }
 
+  function inspectCheckpoints(runId: string): WorkflowCheckpointInspection[] {
+    const rows = listWorkflowCheckpointsForRun(db, runId);
+    if (rows.length > MAX_WORKFLOW_CHECKPOINTS_PER_RUN) {
+      throw new Error(
+        `Workflow checkpoint count exceeds the ${MAX_WORKFLOW_CHECKPOINTS_PER_RUN} row limit`,
+      );
+    }
+    let totalBytes = 0;
+    return rows.map((row) => {
+      totalBytes += Buffer.byteLength(row.checkpointJson, "utf8");
+      if (totalBytes > MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN) {
+        throw new Error(
+          `Workflow checkpoints exceed the ${MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN} byte run limit`,
+        );
+      }
+      const { checkpoint } = serializeWorkflowCheckpoint(
+        parseJson(row.checkpointJson, "workflow checkpoint"),
+      );
+      return { ...row, checkpoint };
+    });
+  }
+
   function inspectPage(
     runId: string,
     afterCallIndex: number,
@@ -594,12 +792,12 @@ export function createWorkflowService(
   function inspectLatestForThread(
     threadId: string,
   ): WorkflowRunInspection | null {
-    const run = getLatestRunForOriginThread(db, threadId);
+    const run = getLatestRunForThread(db, threadId);
     return run === null ? null : inspect(run.id);
   }
 
   function inspectActiveForThread(threadId: string): WorkflowRunInspection[] {
-    return listActiveRunsForOriginThread(db, threadId).map((run) => {
+    return listActiveRunsForThread(db, threadId).map((run) => {
       const inspection = inspect(run.id);
       if (inspection === null) {
         throw new Error(`Unknown workflow run ${run.id}`);
@@ -665,9 +863,7 @@ export function createWorkflowService(
     const permissionMode = executionValuesSchema.shape.permissionMode.parse(
       run.originPermissionMode,
     );
-    if (
-      !provider.capabilities.permissionModes.includes(permissionMode)
-    ) {
+    if (!provider.capabilities.permissionModes.includes(permissionMode)) {
       throw new Error(
         `Permission mode ${JSON.stringify(run.originPermissionMode)} is not supported by provider ${requested.provider}`,
       );
@@ -920,7 +1116,7 @@ export function createWorkflowService(
     const options = parseStoredAgentOptions(JSON.parse(call.optionsJson));
     if (options.outputSchema !== null) {
       if (call.resultJson !== null) {
-        settleCall(db, {
+        settleCallAndPublish({
           id: call.id,
           status: "succeeded",
           result: parseJson(call.resultJson, "structured result"),
@@ -959,7 +1155,7 @@ export function createWorkflowService(
       if (fallback.parsed && fallback.validation.valid) {
         const stored = storeStructuredResult(db, call.id, fallback.value);
         if (stored === "accepted" || stored === "idempotent") {
-          settleCall(db, {
+          settleCallAndPublish({
             id: call.id,
             status: "succeeded",
             result: fallback.value,
@@ -982,7 +1178,12 @@ export function createWorkflowService(
         : fallback.error;
       if (attempts > MAX_REPAIR_ATTEMPTS) {
         const error = `Structured output failed after ${MAX_REPAIR_ATTEMPTS} corrective turns: ${detail}`;
-        settleCall(db, { id: call.id, status: "failed", result: null, error });
+        settleCallAndPublish({
+          id: call.id,
+          status: "failed",
+          result: null,
+          error,
+        });
         wakeCall(call);
         await stopChild(threadId);
         return;
@@ -1005,7 +1206,7 @@ export function createWorkflowService(
         return;
       } catch (error) {
         const correctionError = `Could not request structured-output correction: ${message(error)}`;
-        settleCall(db, {
+        settleCallAndPublish({
           id: call.id,
           status: "failed",
           result: null,
@@ -1015,7 +1216,7 @@ export function createWorkflowService(
         await stopChild(threadId);
       }
     } else {
-      settleCall(db, {
+      settleCallAndPublish({
         id: call.id,
         status: "succeeded",
         result: output ?? "",
@@ -1051,7 +1252,12 @@ export function createWorkflowService(
   function failThreadCall(threadId: string, error: string): void {
     const call = getCallByChildThread(db, threadId);
     if (call === null || call.status !== "running") return;
-    settleCall(db, { id: call.id, status: "failed", result: null, error });
+    settleCallAndPublish({
+      id: call.id,
+      status: "failed",
+      result: null,
+      error,
+    });
     wakeCall(call);
   }
 
@@ -1080,7 +1286,7 @@ export function createWorkflowService(
     if (validation.valid) {
       const stored = storeStructuredResult(db, call.id, resolved.value);
       if (stored === "accepted") {
-        settleCall(db, {
+        settleCallAndPublish({
           id: call.id,
           status: "succeeded",
           result: resolved.value,
@@ -1121,7 +1327,12 @@ export function createWorkflowService(
     }
     if (attempts > MAX_REPAIR_ATTEMPTS) {
       const error = `Structured output failed after ${MAX_REPAIR_ATTEMPTS} corrective retries: ${validation.error}`;
-      settleCall(db, { id: call.id, status: "failed", result: null, error });
+      settleCallAndPublish({
+        id: call.id,
+        status: "failed",
+        result: null,
+        error,
+      });
       wakeCall(call);
       await stopChild(threadId);
       return { ok: false, terminal: true, error };
@@ -1131,6 +1342,60 @@ export function createWorkflowService(
       terminal: false,
       error: `Value does not match the required schema (${validation.error}). Correct it and retry; ${MAX_REPAIR_ATTEMPTS - attempts + 1} corrective ${MAX_REPAIR_ATTEMPTS - attempts + 1 === 1 ? "retry remains" : "retries remain"}.`,
     };
+  }
+
+  function submitCheckpoint(
+    threadId: string,
+    value: WorkflowCheckpoint,
+  ): { ok: true } | { ok: false; terminal: boolean; error: string } {
+    const call = getCallByChildThread(db, threadId);
+    if (call === null) {
+      return {
+        ok: false,
+        terminal: true,
+        error: "This thread is not an active workflow worker",
+      };
+    }
+    if (call.status !== "running") {
+      return {
+        ok: false,
+        terminal: true,
+        error: "This workflow call is no longer active",
+      };
+    }
+    let serialized: ReturnType<typeof serializeWorkflowCheckpoint>;
+    try {
+      serialized = serializeWorkflowCheckpoint(value);
+    } catch (error) {
+      return { ok: false, terminal: false, error: message(error) };
+    }
+    const { checkpoint, json } = serialized;
+    const options = parseStoredAgentOptions(JSON.parse(call.optionsJson));
+    const outcome = upsertWorkflowCheckpoint(db, {
+      runId: call.runId,
+      checkpointId: checkpoint.id,
+      checkpointJson: json,
+      phase: options.phase,
+      sourceCallId: call.id,
+    });
+    if (outcome !== "accepted") {
+      const error =
+        outcome === "inactive"
+          ? "This workflow call is no longer active"
+          : outcome === "ownership_conflict"
+            ? "This checkpoint ID is owned by the workflow or another worker"
+            : outcome === "kind_conflict"
+              ? "A checkpoint ID cannot change checkpoint kind"
+              : "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail";
+      return {
+        ok: false,
+        terminal: outcome === "inactive",
+        error,
+      };
+    }
+    const run = getRun(db, call.runId);
+    if (run !== null) publishRunChanged(run);
+    return { ok: true };
   }
 
   function agentConfiguration(threadId: string) {
@@ -1147,8 +1412,8 @@ export function createWorkflowService(
         call.status !== "running"
           ? "This workflow worker is already terminal. Do not perform more work."
           : options.outputSchema === null
-            ? null
-            : `You are a BB workflow worker. Submit your final value with bb_workflow_result. Required schema: ${JSON.stringify(options.outputSchema)}`,
+            ? "You are a BB workflow worker. When the workflow prompt assigns stable plan, work-item, or verification IDs, report truthful progress with bb_workflow_checkpoint."
+            : `You are a BB workflow worker. When the workflow prompt assigns stable plan, work-item, or verification IDs, report truthful progress with bb_workflow_checkpoint. Submit your final value with bb_workflow_result. Required schema: ${JSON.stringify(options.outputSchema)}`,
     };
   }
 
@@ -1208,7 +1473,7 @@ export function createWorkflowService(
   ): Promise<void> {
     const outstanding = settleRun(db, args);
     const settled = getRun(db, args.id);
-    if (settled !== null) publishRunsChanged(settled.originThreadId);
+    if (settled !== null) publishRunChanged(settled);
     controllers.get(args.id)?.abort();
     for (const call of outstanding) wakeCall(call);
     await stopChildren(
@@ -1348,6 +1613,34 @@ export function createWorkflowService(
       phase(title) {
         updateRunPhase(db, run.id, title);
       },
+      checkpoint(value, phase) {
+        const { checkpoint, json } = serializeWorkflowCheckpoint(value);
+        const outcome = upsertWorkflowCheckpoint(db, {
+          runId: run.id,
+          checkpointId: checkpoint.id,
+          checkpointJson: json,
+          phase,
+          sourceCallId: null,
+        });
+        if (outcome === "inactive")
+          throw new Error("Workflow is no longer active");
+        if (outcome === "limit_exceeded") {
+          throw new Error(
+            "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail",
+          );
+        }
+        if (outcome === "ownership_conflict") {
+          throw new Error(
+            "Workflow checkpoint ID is owned by another workflow writer",
+          );
+        }
+        if (outcome === "kind_conflict") {
+          throw new Error(
+            "Workflow checkpoint ID cannot change checkpoint kind",
+          );
+        }
+        publishRunChanged(run);
+      },
     };
     try {
       const result = await executeWorkflowScript({
@@ -1474,7 +1767,7 @@ export function createWorkflowService(
       while (active.size < currentSettings.maxActiveRuns) {
         const run = claimQueuedRun(db, currentSettings.maxActiveRuns);
         if (run === null) break;
-        publishRunsChanged(run.originThreadId);
+        publishRunChanged(run);
         const controller = new AbortController();
         controllers.set(run.id, controller);
         signal.addEventListener("abort", () => controller.abort(), {
@@ -1513,7 +1806,7 @@ export function createWorkflowService(
     const stopped = cancelRun(db, runId);
     if (stopped) {
       const run = getRun(db, runId);
-      if (run !== null) publishRunsChanged(run.originThreadId);
+      if (run !== null) publishRunChanged(run);
     }
     controllers.get(runId)?.abort();
     await stopChildren(childThreadIds);
@@ -1527,6 +1820,7 @@ export function createWorkflowService(
     inspectPage,
     inspectLatestForThread,
     inspectActiveForThread,
+    inspectCheckpoints,
     list: (projectId, limit) => listRuns(db, { projectId, limit }),
     stop,
     updateSettings(settings) {
@@ -1539,6 +1833,7 @@ export function createWorkflowService(
     onThreadDeleted: (threadId) =>
       failThreadCall(threadId, "Workflow worker was deleted"),
     submitStructuredResult,
+    submitCheckpoint,
     agentConfiguration,
   };
 }
