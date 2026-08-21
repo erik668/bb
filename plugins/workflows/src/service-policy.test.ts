@@ -615,7 +615,7 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("settles later nested launches before propagating an earlier parallel failure", async () => {
+  it("settles a later nested launch and returns null for an earlier parallel failure", async () => {
     const test = setup();
     harnesses.push(test.harness);
     const reads: string[] = [];
@@ -651,9 +651,9 @@ describe("workflow service policy integration", () => {
     test.service.onThreadIdle("child-1", "inline");
     await eventually(() => {
       const terminal = getRunRequired(test.db, run.id);
-      expect(terminal.status).toBe("failed");
-      expect(terminal.resultJson).toBeNull();
-      expect(terminal.error).toContain("missing first child");
+      expect(terminal.status).toBe("succeeded");
+      expect(terminal.resultJson).toBe('[null,"inline"]');
+      expect(terminal.error).toBeNull();
     });
     controller.abort();
     await worker;

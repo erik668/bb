@@ -163,9 +163,11 @@ and phase/progress record. A child cannot invoke a grandchild.
 
 ## Settings
 
-Workflows declares six plugin settings:
+Workflows declares seven plugin settings:
 
 - `maxActiveRuns` limits runs dispatched at once across the plugin.
+- `maxGlobalConcurrentAgents` limits live agent calls across all workflow runs
+  in this BB host.
 - `maxConcurrentAgents` limits live agent calls within one run, including its
   child workflow.
 - `maxAgentCalls` bounds the shared parent/child call count.
@@ -174,10 +176,13 @@ Workflows declares six plugin settings:
   and retained resume ancestors.
 - `maxNotificationBytes` bounds completion messages by UTF-8 byte length.
 
-`maxActiveRuns` is live plugin-global dispatch policy: changing it immediately
-changes how many queued runs the worker may claim. The other five values are
-snapshotted into each new run and remain fixed for that run, including a resumed
-run. Saving settings does not require a plugin reload.
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global policy.
+Changing `maxActiveRuns` immediately changes how many queued runs the worker may
+claim. Increasing global agent admission releases queued calls; decreasing it
+does not cancel calls already active and blocks new admission until usage falls
+below the new limit. The other five values are snapshotted into each new run and
+remain fixed for that run, including a resumed run. Saving settings does not
+require a plugin reload.
 Terminal runs send an agent-only completion input back to the origin thread. It
 steers an active origin immediately or starts a turn when the origin is idle,
 while remaining absent from the user-facing timeline and search. Polling the

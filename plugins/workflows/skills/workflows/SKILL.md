@@ -529,8 +529,11 @@ so no parent notification applies; a hidden thread that does have a parent
 still reports its turns and blockers to it. Workflows does not create a
 temporary Workflow folder.
 
-`maxActiveRuns` is live plugin-global dispatch policy. Shared parent/child agent
-concurrency and call count, total run timeout, retention, and UTF-8
-completion-message size are snapshotted per run. `status` is bounded
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global policy.
+Increasing global agent admission releases queued calls; decreasing it does not
+cancel active calls and blocks new admission until usage falls below the new
+limit. Shared parent/child per-run agent concurrency and call count, total run
+timeout, retention, and UTF-8 completion-message size are snapshotted per run.
+`status` is bounded
 to compact progress and call counts. Paged JSONL `history` carries ordered
 call-level execution, cache, child-thread, repair, result, and error details.

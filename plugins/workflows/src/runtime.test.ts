@@ -467,7 +467,7 @@ describe("workflow QuickJS runtime", () => {
     expect(calls).toEqual(["first", "second"]);
   });
 
-  it("settles every parallel thunk and rejects the aggregate on any failure", async () => {
+  it("settles every parallel thunk and returns null for a failed task", async () => {
     const calls: string[] = [];
     let releaseLast = (): void => undefined;
     const last = new Promise<string>((resolve) => {
@@ -492,7 +492,9 @@ describe("workflow QuickJS runtime", () => {
       },
     });
 
-    await vi.waitFor(() => expect(calls).toEqual(["fails", "succeeds", "last"]));
+    await vi.waitFor(() =>
+      expect(calls).toEqual(["fails", "succeeds", "last"]),
+    );
     let settled = false;
     void execution
       .finally(() => {
@@ -503,7 +505,7 @@ describe("workflow QuickJS runtime", () => {
     expect(settled).toBe(false);
 
     releaseLast();
-    await expect(execution).rejects.toThrow("boom");
+    await expect(execution).resolves.toEqual([null, "ok", "last"]);
   });
 
   it("starts parallel agent calls in array order through the FIFO semaphore", async () => {

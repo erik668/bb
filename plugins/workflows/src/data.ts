@@ -160,8 +160,8 @@ function checkpointRow(value: unknown): WorkflowCheckpointRow {
 
 const RUN_SELECT = `
   SELECT id, project_id AS projectId, origin_thread_id AS originThreadId,
-    presentation_thread_id AS presentationThreadId,
-    parent_run_id AS parentRunId, root_run_id AS rootRunId,
+    COALESCE(presentation_thread_id, origin_thread_id) AS presentationThreadId,
+    parent_run_id AS parentRunId, COALESCE(root_run_id, id) AS rootRunId,
     environment_id AS environmentId, origin_provider AS originProvider,
     origin_model AS originModel, origin_reasoning_level AS originReasoningLevel,
     origin_permission_mode AS originPermissionMode,

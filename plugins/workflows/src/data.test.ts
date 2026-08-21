@@ -1,5 +1,6 @@
 import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
@@ -79,6 +80,22 @@ describe("workflow durable data", () => {
     permissionMode: "full",
   } as const;
 
+  // SHA-256 of migration IDs 0..10 from the installed production build.
+  // These IDs are immutable because the host migration ledger records only IDs.
+  const productionMigrationHashes = [
+    "cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6",
+    "25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071",
+    "caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d",
+    "d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1",
+    "ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14",
+    "8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1",
+    "e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465",
+    "eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337",
+    "a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2",
+    "e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89",
+    "bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d",
+  ] as const;
+
   // Frozen compatibility fixture from the strict stored-options reader in
   // the base build. New durable fields must not leak into options_json.
   const baseStoredAgentOptionsSchema = z
@@ -102,6 +119,11 @@ describe("workflow durable data", () => {
     const productionDb = bb.storage.database();
     try {
       const productionMigrationCount = 11;
+      expect(
+        migrations
+          .slice(0, productionMigrationCount)
+          .map((sql) => createHash("sha256").update(sql).digest("hex")),
+      ).toEqual(productionMigrationHashes);
       bb.storage.migrate(
         productionDb,
         migrations.slice(0, productionMigrationCount),
@@ -112,7 +134,9 @@ describe("workflow durable data", () => {
           .prepare("SELECT id FROM _bb_migrations ORDER BY id")
           .pluck()
           .all(),
-      ).toEqual(Array.from({ length: productionMigrationCount }, (_, id) => id));
+      ).toEqual(
+        Array.from({ length: productionMigrationCount }, (_, id) => id),
+      );
       expect(
         productionDb
           .prepare(
@@ -255,6 +279,66 @@ describe("workflow durable data", () => {
           .pluck()
           .all(),
       ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
+
+      productionDb
+        .prepare(
+          `INSERT INTO workflow_runs (
+             id, project_id, origin_thread_id, environment_id,
+             origin_provider, origin_model, origin_reasoning_level,
+             origin_permission_mode, name, source, source_hash, args_json,
+             status, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "wfr_rollback_legacy",
+          "project-1",
+          "thread-rollback-legacy",
+          "environment-1",
+          "codex",
+          "gpt-test",
+          "medium",
+          "full",
+          "rollback-legacy-workflow",
+          "return null",
+          "rollback-hash",
+          "null",
+          "queued",
+          3,
+        );
+
+      const rollbackLegacy = getRunRequired(
+        productionDb,
+        "wfr_rollback_legacy",
+      );
+      expect(rollbackLegacy).toMatchObject({
+        presentationThreadId: "thread-rollback-legacy",
+        parentRunId: null,
+        rootRunId: "wfr_rollback_legacy",
+      });
+      expect(
+        createRun(productionDb, {
+          projectId: rollbackLegacy.projectId,
+          originThreadId: "thread-current-child",
+          presentationThreadId: rollbackLegacy.presentationThreadId,
+          parentRunId: rollbackLegacy.id,
+          rootRunId: rollbackLegacy.rootRunId,
+          environmentId: rollbackLegacy.environmentId,
+          originProvider: "codex",
+          originModel: "gpt-test",
+          originReasoningLevel: "medium",
+          originPermissionMode: "full",
+          name: "current-child-workflow",
+          source: "return null",
+          sourceHash: "child-hash",
+          argsJson: "null",
+          settingsJson: "{}",
+          resumedFromRunId: null,
+        }),
+      ).toMatchObject({
+        presentationThreadId: "thread-rollback-legacy",
+        parentRunId: "wfr_rollback_legacy",
+        rootRunId: "wfr_rollback_legacy",
+      });
     } finally {
       await harness.dispose();
     }
