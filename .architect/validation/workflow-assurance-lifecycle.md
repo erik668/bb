@@ -59,10 +59,8 @@ bb provider models codex --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models claude-code --environment "$BB_ENVIRONMENT_ID" --json
 bb workflows validate --script "$(< /Users/erik/.bb/thread-storage/workflow-router-pipeline-staged-assurance.candidate.js)"
 bb workflows validate --script "$(< /Users/erik/.bb/thread-storage/workflow-router-staged-assurance.candidate.js)"
-node --check /Users/erik/.bb/thread-storage/workflow-router-pipeline-staged-assurance.candidate.js
-node --check /Users/erik/.bb/thread-storage/workflow-router-staged-assurance.candidate.js
 ```
 
 - Final parent SHA-256: `7679cbc1fc0ae8052e47a121116b69280e16e8f88b26cc0649244270c8eb145d`
 - Final child SHA-256: `ebb7dc776d1d21dc2fde7ae6c04b8df3dee4e9757a60f705780e350530fe1367`
-- Final validator/provider/test results on 2026-08-21 in `env_88g5eb749t`: both workflow validators returned `valid: true` (validator-reported source lengths: 87,677-byte parent; 29,312-byte child); provider discovery confirmed `codex/gpt-5.4-mini/medium`, `codex/gpt-5.6-sol/high`, `codex/gpt-5.6-luna/medium`, and `claude-code/claude-fable-5/high`; the QuickJS lifecycle matrix passed 7/7 tests; the workflows plugin passed 257/257 tests across 14 files and package typecheck, including the schema-valid terminal-reserve boundary regression and causal presentation authorization coverage; both candidates passed `node --check`; and `git diff --check` reported no diagnostics.
+- Final validator/provider/test results on 2026-08-21 in `env_88g5eb749t`: both workflow validators returned `valid: true` (validator-reported source lengths: 87,677-byte parent; 29,312-byte child); provider discovery confirmed `codex/gpt-5.4-mini/medium`, `codex/gpt-5.6-sol/high`, `codex/gpt-5.6-luna/medium`, and `claude-code/claude-fable-5/high`; the QuickJS lifecycle matrix passed 7/7 tests; the workflows plugin passed 257/257 tests across 14 files and package typecheck, including the schema-valid terminal-reserve boundary regression and causal presentation authorization coverage; and `git diff --check` reported no diagnostics. Plain `node --check` is not a valid gate for BB workflow source because the workflow runtime intentionally permits top-level `return`.
