@@ -47,6 +47,13 @@ function callView(
     reasoningLevel: call.execution.reasoningLevel,
     cached: call.source === "cached",
     childThreadId: call.childThreadId,
+    promptBytes: call.promptBytes,
+    contextMinimumTokens:
+      call.options.contextRequirement?.minimumTokens ?? null,
+    contextFit: call.contextFit,
+    observedContextUsedTokens: call.observedContextUsedTokens,
+    observedModelContextWindow: call.observedModelContextWindow,
+    contextUsageEstimated: call.contextUsageEstimated,
     providerRetryAttempts: call.providerRetryAttempts,
     repairAttempts: call.repairAttempts,
     error: call.error,

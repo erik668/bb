@@ -1,5 +1,10 @@
 import { createHash } from "node:crypto";
-import type { JsonSchema, JsonValue } from "./types.js";
+import type {
+  JsonSchema,
+  JsonValue,
+  WorkflowContextProfile,
+  WorkflowContextRequirement,
+} from "./types.js";
 
 /**
  * Bump this whenever the meaning or encoding of a cache identity changes.
@@ -36,6 +41,8 @@ export interface WorkflowCallCacheInput {
   prompt: string;
   selection: ResolvedWorkflowExecutionSelection;
   outputSchema: JsonSchema | null;
+  contextRequirement: WorkflowContextRequirement | null;
+  contextProfile: WorkflowContextProfile | null;
   executionSemantics: WorkflowCallExecutionSemantics;
 }
 
@@ -189,7 +196,7 @@ export function canonicalizeJson(value: unknown): string {
 export function computeWorkflowCallCacheKey(
   input: WorkflowCallCacheInput,
 ): string {
-  const semanticInput: WorkflowCallCacheInput = {
+  const semanticInput = {
     version: input.version,
     previousCacheKey: input.previousCacheKey,
     prompt: input.prompt,
@@ -200,6 +207,15 @@ export function computeWorkflowCallCacheKey(
       permissionMode: input.selection.permissionMode,
     },
     outputSchema: input.outputSchema,
+    // Preserve v1 identities for calls that predate context requirements.
+    // A declared requirement is semantic because it requires a live capacity
+    // observation rather than replaying an unmeasured historical result.
+    ...(input.contextRequirement === null
+      ? {}
+      : { contextRequirement: input.contextRequirement }),
+    ...(input.contextProfile === null
+      ? {}
+      : { contextProfile: input.contextProfile }),
     executionSemantics: {
       workerPromptVersion: input.executionSemantics.workerPromptVersion,
       resultProtocolVersion: input.executionSemantics.resultProtocolVersion,

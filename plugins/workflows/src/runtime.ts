@@ -579,10 +579,14 @@ const DSL_SOURCE = `
       if (!(index in tasks)) throw new TypeError("parallel thunks cannot be sparse");
       if (typeof tasks[index] !== "function") throw new TypeError("parallel entries must be functions");
     }
-    return Promise.all(tasks.map(async (task) => {
-      try { return await task(); }
-      catch { return null; }
+    const outcomes = await Promise.all(tasks.map(async (task) => {
+      try { return { ok: true, value: await task() }; }
+      catch (error) { return { ok: false, error }; }
     }));
+    for (const outcome of outcomes) {
+      if (!outcome.ok) throw outcome.error;
+    }
+    return outcomes.map((outcome) => outcome.value);
   };
   const pipeline = async (items, ...stages) => {
     if (!Array.isArray(items)) throw new TypeError("pipeline items must be an array");

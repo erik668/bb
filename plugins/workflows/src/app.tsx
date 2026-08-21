@@ -286,6 +286,30 @@ function shortModelName(model: string): string {
   return model.replace(/^claude-/, "").replace(/-\d{8}$/, "");
 }
 
+function compactTokens(tokens: number): string {
+  if (tokens >= 1_000_000) {
+    return `${Number((tokens / 1_000_000).toFixed(1))}M`;
+  }
+  if (tokens >= 1_000) return `${Math.round(tokens / 1_000)}k`;
+  return String(tokens);
+}
+
+function contextMetadata(call: WorkflowCallView): string | null {
+  if (call.contextFit === "untracked" || call.contextMinimumTokens === null)
+    return null;
+  const requirement = compactTokens(call.contextMinimumTokens);
+  if (call.contextFit === "unknown") return `context ≥${requirement} · unknown`;
+  if (call.observedModelContextWindow === null)
+    return `context ≥${requirement} · unknown`;
+  const capacity = compactTokens(call.observedModelContextWindow);
+  const used =
+    call.observedContextUsedTokens === null
+      ? null
+      : compactTokens(call.observedContextUsedTokens);
+  const observation = used === null ? capacity : `${used}/${capacity}`;
+  return `context ${observation} · ${call.contextFit} ≥${requirement}`;
+}
+
 function workflowAgentState(
   status: WorkflowCallView["status"],
 ): WorkflowProgressAgentState {
@@ -321,27 +345,35 @@ function buildSharedWorkflowView(run: WorkflowRunView): SharedWorkflowView {
     ...run.unphasedCalls,
   ].sort((left, right) => left.index - right.index);
   const callsById = new Map(calls.map((call) => [call.id, call] as const));
-  const agents: WorkflowProgressAgent[] = calls.map((call) => ({
-    id: call.id,
-    actionable: call.childThreadId !== null,
-    index: call.index + 1,
-    label: call.label,
-    state: workflowAgentState(call.status),
-    model: call.model,
-    attempt: call.providerRetryAttempts + call.repairAttempts + 1,
-    cached: call.cached,
-    lastProgressAt: call.finishedAt ?? call.startedAt ?? call.createdAt,
-    phaseIndex:
-      call.phase === null
-        ? (otherWorkIndex ?? undefined)
-        : phaseIndexByTitle.get(call.phase),
-    error: call.error ?? undefined,
-    durationMs:
-      call.startedAt !== null && call.finishedAt !== null
-        ? Math.max(0, call.finishedAt - call.startedAt)
-        : undefined,
-    metadata: [call.provider, shortModelName(call.model), call.reasoningLevel],
-  }));
+  const agents: WorkflowProgressAgent[] = calls.map((call) => {
+    const context = contextMetadata(call);
+    return {
+      id: call.id,
+      actionable: call.childThreadId !== null,
+      index: call.index + 1,
+      label: call.label,
+      state: workflowAgentState(call.status),
+      model: call.model,
+      attempt: call.providerRetryAttempts + call.repairAttempts + 1,
+      cached: call.cached,
+      lastProgressAt: call.finishedAt ?? call.startedAt ?? call.createdAt,
+      phaseIndex:
+        call.phase === null
+          ? (otherWorkIndex ?? undefined)
+          : phaseIndexByTitle.get(call.phase),
+      error: call.error ?? undefined,
+      durationMs:
+        call.startedAt !== null && call.finishedAt !== null
+          ? Math.max(0, call.finishedAt - call.startedAt)
+          : undefined,
+      metadata: [
+        call.provider,
+        shortModelName(call.model),
+        call.reasoningLevel,
+        ...(context === null ? [] : [context]),
+      ],
+    };
+  });
   return {
     callsById,
     currentPhaseIndex:

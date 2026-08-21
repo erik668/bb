@@ -44,6 +44,12 @@ const run: WorkflowRunView = {
           reasoningLevel: "medium",
           cached: false,
           childThreadId: "thr_worker_1",
+          promptBytes: 120,
+          contextMinimumTokens: null,
+          contextFit: "untracked",
+          observedContextUsedTokens: null,
+          observedModelContextWindow: null,
+          contextUsageEstimated: null,
           providerRetryAttempts: 0,
           repairAttempts: 0,
           error: null,
@@ -68,6 +74,12 @@ const run: WorkflowRunView = {
           reasoningLevel: "high",
           cached: false,
           childThreadId: "thr_worker_2",
+          promptBytes: 2_400,
+          contextMinimumTokens: 1_000_000,
+          contextFit: "undersized",
+          observedContextUsedTokens: 180_000,
+          observedModelContextWindow: 258_400,
+          contextUsageEstimated: false,
           providerRetryAttempts: 0,
           repairAttempts: 0,
           error: null,
@@ -521,7 +533,11 @@ describe("workflow-preview directive", () => {
     expect(slot.getByText("Discover")).toBeTruthy();
     expect(slot.getAllByText("Review")).toHaveLength(1);
     expect(slot.getByText("Adversarial review")).toBeTruthy();
-    expect(slot.getByText("claude · opus-4-6 · high")).toBeTruthy();
+    expect(
+      slot.getByText(
+        "claude · opus-4-6 · high · context 180k/258k · undersized ≥1M",
+      ),
+    ).toBeTruthy();
     // A live run has no "Running" pill, and only the top-level header
     // shimmers — phase and agent rows stay static (agents have spinners).
     expect(slot.queryByText("Running")).toBeNull();

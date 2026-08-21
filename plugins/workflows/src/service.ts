@@ -33,6 +33,7 @@ import {
   markCallReplayedSameRun,
   markNotificationSent,
   queueCallProviderRetry,
+  recordCallContextUsage,
   recordNotificationFailure,
   recoverInterruptedRuns,
   settleNotificationUndeliverable,
@@ -54,6 +55,7 @@ import { executeWorkflowScript } from "./runtime.js";
 import {
   DEFAULT_WORKFLOW_SETTINGS,
   parseStoredWorkflowSettings,
+  workflowRunSettingsSnapshot,
   type WorkflowSettings,
 } from "./settings.js";
 import { workflowReferenceToSourceInput } from "./source-resolution.js";
@@ -63,9 +65,14 @@ import type {
   NestedWorkflowContext,
   WorkflowAgentOptions,
   WorkflowCapabilities,
+  WorkflowContextProfile,
   WorkflowReference,
 } from "./types.js";
-import { parseStoredAgentOptions } from "./validation.js";
+import {
+  parseContextProfile,
+  parseContextRequirement,
+  parseStoredAgentOptions,
+} from "./validation.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
 import {
   MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
@@ -109,6 +116,64 @@ const PROVIDER_RETRY_DELAYS_MS = [1_000, 4_000] as const;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+interface GlobalAdmissionCall {
+  signal: AbortSignal;
+  resolve: (release: () => void) => void;
+  reject: (error: unknown) => void;
+  abort: () => void;
+  state: "queued" | "settled";
+}
+
+class GlobalAgentAdmission {
+  private active = 0;
+  private readonly queue: GlobalAdmissionCall[] = [];
+
+  constructor(private readonly limit: () => number) {}
+
+  acquire(signal: AbortSignal): Promise<() => void> {
+    if (signal.aborted) return Promise.reject(new Error("Workflow cancelled"));
+    return new Promise((resolve, reject) => {
+      const call: GlobalAdmissionCall = {
+        signal,
+        resolve,
+        reject,
+        state: "queued",
+        abort: () => {
+          if (call.state !== "queued") return;
+          call.state = "settled";
+          signal.removeEventListener("abort", call.abort);
+          reject(new Error("Workflow cancelled"));
+          this.drain();
+        },
+      };
+      signal.addEventListener("abort", call.abort, { once: true });
+      this.queue.push(call);
+      this.drain();
+    });
+  }
+
+  refresh(): void {
+    this.drain();
+  }
+
+  private drain(): void {
+    while (this.active < this.limit() && this.queue.length > 0) {
+      const call = this.queue.shift();
+      if (call === undefined || call.state !== "queued") continue;
+      call.state = "settled";
+      call.signal.removeEventListener("abort", call.abort);
+      this.active += 1;
+      let released = false;
+      call.resolve(() => {
+        if (released) return;
+        released = true;
+        this.active -= 1;
+        this.drain();
+      });
+    }
+  }
 }
 
 export function isRetryableProviderFailure(error: unknown): boolean {
@@ -433,6 +498,7 @@ export interface WorkflowCallInspection extends WorkflowCallRow {
     reasoningLevel: string;
     permissionMode: string;
   };
+  contextFit: "untracked" | "unknown" | "fit" | "undersized";
   source: "cached" | "live";
 }
 
@@ -460,6 +526,9 @@ export function createWorkflowService(
 ): WorkflowService {
   let shuttingDown = false;
   let currentSettings = initialSettings;
+  const globalAgentAdmission = new GlobalAgentAdmission(
+    () => currentSettings.maxGlobalConcurrentAgents,
+  );
   const controllers = new Map<string, AbortController>();
   const idleHandlers = new Set<string>();
   const handlerTasks = new Set<Promise<void>>();
@@ -705,7 +774,7 @@ export function createWorkflowService(
       source: input.source,
       sourceHash: createHash("sha256").update(input.source).digest("hex"),
       argsJson: JSON.stringify(input.args),
-      settingsJson: JSON.stringify(currentSettings),
+      settingsJson: JSON.stringify(workflowRunSettingsSnapshot(currentSettings)),
       resumedFromRunId: input.resumedFromRunId,
     });
     publishRunChanged(created);
@@ -718,18 +787,49 @@ export function createWorkflowService(
     );
   }
 
+  function optionsForCall(call: WorkflowCallRow): WorkflowAgentOptions {
+    const stored = parseStoredAgentOptions(
+      parseJson(call.optionsJson, "workflow call options"),
+    );
+    const contextRequirement =
+      call.contextMinimumTokens === null
+        ? stored.contextRequirement
+        : parseContextRequirement({
+            minimumTokens: call.contextMinimumTokens,
+          });
+    const contextProfile =
+      call.contextProfileJson === null
+        ? stored.contextProfile
+        : parseContextProfile(
+            parseJson(call.contextProfileJson, "workflow call context profile"),
+          );
+    return {
+      ...stored,
+      contextRequirement,
+      contextProfile,
+    };
+  }
+
   function inspectCall(call: WorkflowCallRow): WorkflowCallInspection {
+    const options = optionsForCall(call);
+    const minimumTokens = options.contextRequirement?.minimumTokens ?? null;
     return {
       ...call,
-      options: parseStoredAgentOptions(
-        parseJson(call.optionsJson, "workflow call options"),
-      ),
+      options,
       execution: {
         provider: call.resolvedProvider,
         model: call.resolvedModel,
         reasoningLevel: call.resolvedReasoningLevel,
         permissionMode: call.resolvedPermissionMode,
       },
+      contextFit:
+        minimumTokens === null
+          ? "untracked"
+          : call.observedModelContextWindow === null
+            ? "unknown"
+            : call.observedModelContextWindow >= minimumTokens
+              ? "fit"
+              : "undersized",
       source: call.replaySource === null ? "live" : "cached",
     };
   }
@@ -876,16 +976,51 @@ export function createWorkflowService(
     });
   }
 
+  function renderContextProfile(profile: WorkflowContextProfile): string {
+    const lines = [
+      "[Phase context manifest]",
+      "Load only the skills needed for this phase. The listed skills are required; if one is unavailable, stop and report it rather than silently substituting.",
+      "Memory queries are advisory and may be stale. Retrieve them only when relevant and available. The task prompt and referenced artifacts take precedence.",
+      "Artifact references are caller supplied and are not authenticated by Workflows. This manifest is task guidance, not an authorization boundary.",
+    ];
+    if (profile.requiredSkills.length > 0) {
+      lines.push("Required skills:");
+      lines.push(
+        ...profile.requiredSkills.map((value) => `- ${JSON.stringify(value)}`),
+      );
+    }
+    if (profile.memoryQueries.length > 0) {
+      lines.push("Memory retrieval queries:");
+      lines.push(
+        ...profile.memoryQueries.map((value) => `- ${JSON.stringify(value)}`),
+      );
+    }
+    if (profile.artifactRefs.length > 0) {
+      lines.push("Artifact references:");
+      lines.push(
+        ...profile.artifactRefs.map((value) => `- ${JSON.stringify(value)}`),
+      );
+    }
+    if (profile.stopCondition !== null) {
+      lines.push(`Stop condition: ${JSON.stringify(profile.stopCondition)}`);
+    }
+    return lines.join("\n");
+  }
+
   function childPrompt(
     run: WorkflowRunRow,
     prompt: string,
     options: WorkflowAgentOptions,
   ) {
     const header = `[BB workflow ${run.name} · run ${run.id}]`;
+    const phasePrompt =
+      options.contextProfile === null
+        ? prompt
+        : `${renderContextProfile(options.contextProfile)}\n\n${prompt}`;
     if (options.outputSchema === null) {
-      return `${header}\n\n${prompt}\n\nYour final text IS the return value (not a human-facing message), so return raw data.`;
+      return `${header}\n\n${phasePrompt}\n\nYour final text IS the return value (not a human-facing message), so return raw data.`;
     }
-    return `${header}\n\n${prompt}\n\nUse bb_workflow_result to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response with {"value": ...} to provide the structured output. The value must satisfy this JSON Schema:\n${JSON.stringify(options.outputSchema, null, 2)}\nIf the tool is unavailable during startup, return only the JSON value in your final response as a fallback. If the tool reports validation errors, correct the value and retry. You have at most ${MAX_REPAIR_ATTEMPTS} corrective retries.`;
+    return `${header}\n\n${phasePrompt}\n\nUse bb_workflow_result to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response with {"value": ...} to provide the structured output. The value must satisfy this JSON Schema:\n${JSON.stringify(options.outputSchema, null, 2)}\nIf the tool is unavailable during startup, return only the JSON value in your final response as a fallback. If the tool reports validation errors, correct the value and retry. You have at most ${MAX_REPAIR_ATTEMPTS} corrective retries.`;
   }
 
   function canReplayCall(run: WorkflowRunRow): boolean {
@@ -997,7 +1132,15 @@ export function createWorkflowService(
                 prompt,
                 options,
                 selection,
-                replay: { callId: candidate.id, result: reuse.result },
+                replay: {
+                  callId: candidate.id,
+                  result: reuse.result,
+                  observedContextUsedTokens:
+                    candidate.observedContextUsedTokens,
+                  observedModelContextWindow:
+                    candidate.observedModelContextWindow,
+                  contextUsageEstimated: candidate.contextUsageEstimated,
+                },
               });
               return reuse.result;
             }
@@ -1021,54 +1164,62 @@ export function createWorkflowService(
     while (true) {
       try {
         throwIfCancelled(signal);
-        const child = await bb.sdk.threads.spawn({
-          projectId: run.projectId,
-          environment: { type: "reuse", environmentId: run.environmentId },
-          prompt: childPrompt(run, prompt, options),
-          title: options.title ?? `${run.name} · ${callIndex + 1}`,
-          providerId: selection.providerId,
-          model: selection.model,
-          reasoningLevel: selection.reasoningLevel,
-          permissionMode: selection.permissionMode,
-          visibility: "hidden",
-        });
-        if (signal.aborted) {
-          await stopChild(child.id);
-          throw new Error("Workflow cancelled");
-        }
-        const attached = attachCallThread(db, call.id, child.id);
-        if (!attached || signal.aborted) {
-          await stopChild(child.id);
-          throw new Error("Workflow cancelled");
-        }
-        const stopOnAbort = () => void stopChild(child.id);
-        signal.addEventListener("abort", stopOnAbort, { once: true });
+        const releaseAdmission = await globalAgentAdmission.acquire(signal);
         try {
-          const current = await bb.sdk.threads.get({ threadId: child.id });
           throwIfCancelled(signal);
-          if (current.status === "idle") {
-            const output = await bb.sdk.threads.output({ threadId: child.id });
-            throwIfCancelled(signal);
-            onThreadIdle(child.id, output.output);
-          } else if (current.status === "error") {
-            failThreadCall(
-              child.id,
-              "Workflow worker failed before attachment completed",
-            );
-          }
-        } catch (error) {
+          const child = await bb.sdk.threads.spawn({
+            projectId: run.projectId,
+            environment: { type: "reuse", environmentId: run.environmentId },
+            prompt: childPrompt(run, prompt, options),
+            title: options.title ?? `${run.name} · ${callIndex + 1}`,
+            providerId: selection.providerId,
+            model: selection.model,
+            reasoningLevel: selection.reasoningLevel,
+            permissionMode: selection.permissionMode,
+            visibility: "hidden",
+          });
           if (signal.aborted) {
             await stopChild(child.id);
-            throw error;
+            throw new Error("Workflow cancelled");
           }
-          bb.log.warn(
-            `Could not reconcile new workflow worker ${child.id}: ${message(error)}`,
-          );
-        }
-        try {
-          return await waitForCall(call, signal);
+          const attached = attachCallThread(db, call.id, child.id);
+          if (!attached || signal.aborted) {
+            await stopChild(child.id);
+            throw new Error("Workflow cancelled");
+          }
+          const stopOnAbort = () => void stopChild(child.id);
+          signal.addEventListener("abort", stopOnAbort, { once: true });
+          try {
+            const current = await bb.sdk.threads.get({ threadId: child.id });
+            throwIfCancelled(signal);
+            if (current.status === "idle") {
+              const output = await bb.sdk.threads.output({
+                threadId: child.id,
+              });
+              throwIfCancelled(signal);
+              onThreadIdle(child.id, output.output);
+            } else if (current.status === "error") {
+              failThreadCall(
+                child.id,
+                "Workflow worker failed before attachment completed",
+              );
+            }
+          } catch (error) {
+            if (signal.aborted) {
+              await stopChild(child.id);
+              throw error;
+            }
+            bb.log.warn(
+              `Could not reconcile new workflow worker ${child.id}: ${message(error)}`,
+            );
+          }
+          try {
+            return await waitForCall(call, signal);
+          } finally {
+            signal.removeEventListener("abort", stopOnAbort);
+          }
         } finally {
-          signal.removeEventListener("abort", stopOnAbort);
+          releaseAdmission();
         }
       } catch (error) {
         throwIfCancelled(signal);
@@ -1107,13 +1258,33 @@ export function createWorkflowService(
     waiter.reject(new Error(latest?.error ?? "Workflow call failed"));
   }
 
+  async function captureCallContextUsage(
+    threadId: string,
+    callId: string,
+  ): Promise<void> {
+    try {
+      const timeline = await bb.sdk.threads.timeline({
+        threadId,
+        summaryOnly: "true",
+      });
+      const usage = timeline.contextWindowUsage;
+      if (usage === undefined) return;
+      recordCallContextUsage(db, callId, usage);
+    } catch (error) {
+      bb.log.warn(
+        `Could not capture context usage for workflow worker ${threadId}: ${message(error)}`,
+      );
+    }
+  }
+
   async function handleThreadIdle(
     threadId: string,
     output: string | null,
   ): Promise<void> {
     const call = getCallByChildThread(db, threadId);
     if (call === null || call.status !== "running") return;
-    const options = parseStoredAgentOptions(JSON.parse(call.optionsJson));
+    void captureCallContextUsage(threadId, call.id);
+    const options = optionsForCall(call);
     if (options.outputSchema !== null) {
       if (call.resultJson !== null) {
         settleCallAndPublish({
@@ -1273,7 +1444,8 @@ export function createWorkflowService(
         error: "This thread is not an active workflow worker",
       };
     }
-    const options = parseStoredAgentOptions(JSON.parse(call.optionsJson));
+    void captureCallContextUsage(threadId, call.id);
+    const options = optionsForCall(call);
     if (options.outputSchema === null) {
       return {
         ok: false,
@@ -1507,6 +1679,8 @@ export function createWorkflowService(
             prompt,
             selection,
             outputSchema: options.outputSchema,
+            contextRequirement: options.contextRequirement,
+            contextProfile: options.contextProfile,
             executionSemantics: {
               workerPromptVersion: WORKER_PROMPT_VERSION,
               resultProtocolVersion: RESULT_PROTOCOL_VERSION,
@@ -1825,6 +1999,7 @@ export function createWorkflowService(
     stop,
     updateSettings(settings) {
       currentSettings = settings;
+      globalAgentAdmission.refresh();
     },
     runWorker,
     onThreadIdle,

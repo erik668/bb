@@ -69,6 +69,12 @@ export interface WorkflowCallRow {
   resolvedPermissionMode: string;
   status: WorkflowCallStatus;
   childThreadId: string | null;
+  promptBytes: number;
+  contextMinimumTokens: number | null;
+  contextProfileJson: string | null;
+  observedContextUsedTokens: number | null;
+  observedModelContextWindow: number | null;
+  contextUsageEstimated: boolean | null;
   repairAttempts: number;
   providerRetryAttempts: number;
   resultJson: string | null;
@@ -120,6 +126,10 @@ interface RawRunRow extends Omit<WorkflowRunRow, "notificationSent"> {
   notificationSent: 0 | 1;
 }
 
+interface RawCallRow extends Omit<WorkflowCallRow, "contextUsageEstimated"> {
+  contextUsageEstimated: 0 | 1 | null;
+}
+
 function runRow(value: unknown): WorkflowRunRow {
   const row = value as RawRunRow;
   return { ...row, notificationSent: row.notificationSent === 1 };
@@ -130,7 +140,14 @@ function optionalRun(value: unknown): WorkflowRunRow | null {
 }
 
 function callRow(value: unknown): WorkflowCallRow {
-  return value as WorkflowCallRow;
+  const row = value as RawCallRow;
+  return {
+    ...row,
+    contextUsageEstimated:
+      row.contextUsageEstimated === null
+        ? null
+        : row.contextUsageEstimated === 1,
+  };
 }
 
 function optionalCall(value: unknown): WorkflowCallRow | null {
@@ -167,7 +184,13 @@ const CALL_SELECT = `
     resolved_provider AS resolvedProvider, resolved_model AS resolvedModel,
     resolved_reasoning_level AS resolvedReasoningLevel,
     resolved_permission_mode AS resolvedPermissionMode, status,
-    child_thread_id AS childThreadId, repair_attempts AS repairAttempts,
+    child_thread_id AS childThreadId, prompt_bytes AS promptBytes,
+    context_minimum_tokens AS contextMinimumTokens,
+    context_profile_json AS contextProfileJson,
+    observed_context_used_tokens AS observedContextUsedTokens,
+    observed_model_context_window AS observedModelContextWindow,
+    context_usage_estimated AS contextUsageEstimated,
+    repair_attempts AS repairAttempts,
     provider_retry_attempts AS providerRetryAttempts,
     result_json AS resultJson, error,
     replayed_from_call_id AS replayedFromCallId, replay_source AS replaySource,
@@ -254,6 +277,13 @@ export const migrations = [
   `UPDATE workflow_runs SET replay_barrier_index = NULL
      WHERE replay_safety_version = 1;`,
   `ALTER TABLE workflow_calls ADD COLUMN provider_retry_attempts INTEGER NOT NULL DEFAULT 0;`,
+  `ALTER TABLE workflow_calls ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0;
+   UPDATE workflow_calls SET prompt_bytes = length(CAST(prompt AS BLOB));
+   ALTER TABLE workflow_calls ADD COLUMN observed_context_used_tokens INTEGER;
+   ALTER TABLE workflow_calls ADD COLUMN observed_model_context_window INTEGER;
+   ALTER TABLE workflow_calls ADD COLUMN context_usage_estimated INTEGER;`,
+  `ALTER TABLE workflow_calls ADD COLUMN context_minimum_tokens INTEGER;`,
+  `ALTER TABLE workflow_calls ADD COLUMN context_profile_json TEXT;`,
   `CREATE TABLE IF NOT EXISTS workflow_checkpoints (
      id TEXT PRIMARY KEY,
      run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
@@ -815,7 +845,13 @@ export function startCall(
     prompt: string;
     options: WorkflowAgentOptions;
     selection: ResolvedWorkflowExecutionSelection;
-    replay: { callId: string; result: Exclude<JsonValue, null> } | null;
+    replay: {
+      callId: string;
+      result: Exclude<JsonValue, null>;
+      observedContextUsedTokens: number | null;
+      observedModelContextWindow: number | null;
+      contextUsageEstimated: boolean | null;
+    } | null;
   },
 ): WorkflowCallRow {
   return db.transaction(() => {
@@ -826,16 +862,27 @@ export function startCall(
     const existing = getCall(db, args.runId, args.callIndex);
     const now = Date.now();
     const id = existing?.id ?? `wfc_${randomUUID()}`;
+    const {
+      contextRequirement: _contextRequirement,
+      contextProfile: _contextProfile,
+      ...storedOptions
+    } = args.options;
     db.prepare(
       `INSERT INTO workflow_calls (
        id, run_id, call_index, cache_key, prompt, options_json,
        resolved_provider, resolved_model, resolved_reasoning_level,
-       resolved_permission_mode, status, result_json, replayed_from_call_id,
+       resolved_permission_mode, status, prompt_bytes, context_minimum_tokens,
+       context_profile_json,
+       observed_context_used_tokens, observed_model_context_window,
+       context_usage_estimated, result_json, replayed_from_call_id,
        replay_source, created_at, started_at, finished_at
      ) VALUES (
        @id, @runId, @callIndex, @cacheKey, @prompt, @optionsJson,
        @resolvedProvider, @resolvedModel, @resolvedReasoningLevel,
-       @resolvedPermissionMode, @status, @resultJson, @replayedFromCallId,
+       @resolvedPermissionMode, @status, @promptBytes, @contextMinimumTokens,
+       @contextProfileJson,
+       @observedContextUsedTokens, @observedModelContextWindow,
+       @contextUsageEstimated, @resultJson, @replayedFromCallId,
        @replaySource, @now, @now, @finishedAt
      ) ON CONFLICT(run_id, call_index) DO UPDATE SET
        cache_key = excluded.cache_key, prompt = excluded.prompt,
@@ -846,6 +893,12 @@ export function startCall(
        resolved_permission_mode = excluded.resolved_permission_mode,
        status = excluded.status,
        child_thread_id = NULL, repair_attempts = 0,
+       prompt_bytes = excluded.prompt_bytes,
+       context_minimum_tokens = excluded.context_minimum_tokens,
+       context_profile_json = excluded.context_profile_json,
+       observed_context_used_tokens = excluded.observed_context_used_tokens,
+       observed_model_context_window = excluded.observed_model_context_window,
+       context_usage_estimated = excluded.context_usage_estimated,
        result_json = excluded.result_json, error = NULL,
        replayed_from_call_id = excluded.replayed_from_call_id,
        replay_source = excluded.replay_source,
@@ -856,12 +909,30 @@ export function startCall(
       callIndex: args.callIndex,
       cacheKey: args.cacheKey,
       prompt: args.prompt,
-      optionsJson: JSON.stringify(args.options),
+      optionsJson: JSON.stringify(storedOptions),
       resolvedProvider: args.selection.providerId,
       resolvedModel: args.selection.model,
       resolvedReasoningLevel: args.selection.reasoningLevel,
       resolvedPermissionMode: args.selection.permissionMode,
       status: args.replay === null ? "queued" : "succeeded",
+      promptBytes: Buffer.byteLength(args.prompt, "utf8"),
+      contextMinimumTokens:
+        args.options.contextRequirement?.minimumTokens ?? null,
+      contextProfileJson:
+        args.options.contextProfile === null ||
+        args.options.contextProfile === undefined
+          ? null
+          : JSON.stringify(args.options.contextProfile),
+      observedContextUsedTokens: args.replay?.observedContextUsedTokens ?? null,
+      observedModelContextWindow:
+        args.replay?.observedModelContextWindow ?? null,
+      contextUsageEstimated:
+        args.replay?.contextUsageEstimated === undefined ||
+        args.replay.contextUsageEstimated === null
+          ? null
+          : args.replay.contextUsageEstimated
+            ? 1
+            : 0,
       resultJson:
         args.replay === null ? null : JSON.stringify(args.replay.result),
       replayedFromCallId: args.replay?.callId ?? null,
@@ -870,6 +941,54 @@ export function startCall(
       finishedAt: args.replay === null ? null : now,
     });
     return getCall(db, args.runId, args.callIndex)!;
+  })();
+}
+
+export function recordCallContextUsage(
+  db: Db,
+  callId: string,
+  usage: {
+    usedTokens: number | null;
+    modelContextWindow: number | null;
+    estimated: boolean;
+  },
+): void {
+  if (usage.usedTokens === null && usage.modelContextWindow === null) return;
+  db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT observed_context_used_tokens AS usedTokens,
+                context_usage_estimated AS estimated
+         FROM workflow_calls WHERE id = ?`,
+      )
+      .get(callId) as
+      | { usedTokens: number | null; estimated: 0 | 1 | null }
+      | undefined;
+    if (current === undefined) return;
+    const currentTokens = current.usedTokens ?? -1;
+    const nextTokens = usage.usedTokens ?? -1;
+    if (nextTokens < currentTokens) return;
+    if (
+      nextTokens === currentTokens &&
+      current.estimated === 0 &&
+      usage.estimated
+    ) {
+      return;
+    }
+    db.prepare(
+      `UPDATE workflow_calls SET
+         observed_context_used_tokens = @usedTokens,
+         observed_model_context_window = @modelContextWindow,
+         context_usage_estimated = @estimated,
+         last_activity_at = @now
+       WHERE id = @callId`,
+    ).run({
+      callId,
+      usedTokens: usage.usedTokens,
+      modelContextWindow: usage.modelContextWindow,
+      estimated: usage.estimated ? 1 : 0,
+      now: Date.now(),
+    });
   })();
 }
 

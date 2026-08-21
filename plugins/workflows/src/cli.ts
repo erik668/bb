@@ -11,7 +11,10 @@ import type {
 } from "./service.js";
 import type { WorkflowRunRow } from "./data.js";
 import type { WorkflowSourceInput } from "./source-resolution.js";
-import { parseStoredWorkflowSettings } from "./settings.js";
+import {
+  parseStoredWorkflowSettings,
+  workflowRunSettingsSnapshot,
+} from "./settings.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
 
 const STATUS_INLINE_RESULT_MAX_BYTES = 8 * 1024;
@@ -245,8 +248,10 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     nameTruncated: name.truncated,
     sourceHash: run.sourceHash,
     sourceBytes: new TextEncoder().encode(run.source).byteLength,
-    settings: parseStoredWorkflowSettings(
-      parseStoredJson(run.settingsJson, "workflow settings"),
+    settings: workflowRunSettingsSnapshot(
+      parseStoredWorkflowSettings(
+        parseStoredJson(run.settingsJson, "workflow settings"),
+      ),
     ),
     status: run.status,
     phase: phase.value,
@@ -311,8 +316,10 @@ function runLogRecord(run: WorkflowRunRow, exportedAt: number) {
     exportedAt,
     ...fields,
     args: parseStoredJson(argsJson, "workflow args"),
-    settings: parseStoredWorkflowSettings(
-      parseStoredJson(settingsJson, "workflow settings"),
+    settings: workflowRunSettingsSnapshot(
+      parseStoredWorkflowSettings(
+        parseStoredJson(settingsJson, "workflow settings"),
+      ),
     ),
     resultAvailable: resultJson !== null,
     result:

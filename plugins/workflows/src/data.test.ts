@@ -1,5 +1,7 @@
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   attachCallThread,
   cancelRun,
@@ -15,6 +17,7 @@ import {
   listCallsForRunPage,
   migrations,
   queueCallProviderRetry,
+  recordCallContextUsage,
   recoverInterruptedRuns,
   settleCall,
   settleRun,
@@ -76,12 +79,55 @@ describe("workflow durable data", () => {
     permissionMode: "full",
   } as const;
 
-  it("backfills presentation and root ownership for legacy runs", () => {
-    const legacyDb = new Database(":memory:");
-    legacyDb.pragma("foreign_keys = ON");
+  // Frozen compatibility fixture from the strict stored-options reader in
+  // the base build. New durable fields must not leak into options_json.
+  const baseStoredAgentOptionsSchema = z
+    .object({
+      selection: z
+        .object({
+          provider: z.string().min(1),
+          model: z.string().min(1),
+          reasoningLevel: z.string().min(1),
+        })
+        .strict()
+        .nullable(),
+      outputSchema: z.unknown().nullable(),
+      title: z.string().min(1).nullable(),
+      phase: z.string().min(1).nullable(),
+    })
+    .strict();
+
+  it("upgrades the production migration ledger without losing context telemetry", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "workflows" });
+    const productionDb = bb.storage.database();
     try {
-      legacyDb.exec(migrations.slice(0, -1).join("\n"));
-      legacyDb
+      const productionMigrationCount = 11;
+      bb.storage.migrate(
+        productionDb,
+        migrations.slice(0, productionMigrationCount),
+      );
+
+      expect(
+        productionDb
+          .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+          .pluck()
+          .all(),
+      ).toEqual(Array.from({ length: productionMigrationCount }, (_, id) => id));
+      expect(
+        productionDb
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_checkpoints'",
+          )
+          .get(),
+      ).toBeUndefined();
+      expect(
+        productionDb
+          .prepare("PRAGMA table_info(workflow_runs)")
+          .all()
+          .map((column) => (column as { name: string }).name),
+      ).not.toContain("presentation_thread_id");
+
+      productionDb
         .prepare(
           `INSERT INTO workflow_runs (
              id, project_id, origin_thread_id, environment_id,
@@ -107,22 +153,110 @@ describe("workflow durable data", () => {
           1,
         );
 
-      legacyDb.exec(migrations.at(-1)!);
+      productionDb
+        .prepare(
+          `INSERT INTO workflow_calls (
+             id, run_id, call_index, cache_key, prompt, options_json,
+             resolved_provider, resolved_model, resolved_reasoning_level,
+             resolved_permission_mode, status, prompt_bytes,
+             observed_context_used_tokens, observed_model_context_window,
+             context_usage_estimated, context_minimum_tokens,
+             context_profile_json, created_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          "wfc_legacy",
+          "wfr_legacy",
+          0,
+          "legacy-cache-key",
+          "legacy prompt",
+          "{}",
+          "codex",
+          "gpt-test",
+          "medium",
+          "full",
+          "succeeded",
+          321,
+          12_345,
+          114_688,
+          1,
+          65_536,
+          '{"profile":"production-sentinel"}',
+          2,
+        );
 
-      expect(getRunRequired(legacyDb, "wfr_legacy")).toMatchObject({
+      bb.storage.migrate(productionDb, migrations);
+
+      expect(
+        productionDb
+          .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+          .pluck()
+          .all(),
+      ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
+      expect(migrations).toHaveLength(13);
+      expect(getRunRequired(productionDb, "wfr_legacy")).toMatchObject({
         originThreadId: "thread-legacy",
         presentationThreadId: "thread-legacy",
         parentRunId: null,
         rootRunId: "wfr_legacy",
       });
-      expect(getLatestRunForThread(legacyDb, "thread-legacy")?.id).toBe(
+      expect(getLatestRunForThread(productionDb, "thread-legacy")?.id).toBe(
         "wfr_legacy",
       );
       expect(
-        listActiveRunsForThread(legacyDb, "thread-legacy").map((run) => run.id),
+        listActiveRunsForThread(productionDb, "thread-legacy").map(
+          (run) => run.id,
+        ),
       ).toEqual(["wfr_legacy"]);
+      expect(
+        productionDb
+          .prepare(
+            `SELECT prompt_bytes AS promptBytes,
+               observed_context_used_tokens AS observedContextUsedTokens,
+               observed_model_context_window AS observedModelContextWindow,
+               context_usage_estimated AS contextUsageEstimated,
+               context_minimum_tokens AS contextMinimumTokens,
+               context_profile_json AS contextProfileJson
+             FROM workflow_calls WHERE id = ?`,
+          )
+          .get("wfc_legacy"),
+      ).toEqual({
+        promptBytes: 321,
+        observedContextUsedTokens: 12_345,
+        observedModelContextWindow: 114_688,
+        contextUsageEstimated: 1,
+        contextMinimumTokens: 65_536,
+        contextProfileJson: '{"profile":"production-sentinel"}',
+      });
+      expect(
+        productionDb
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_checkpoints'",
+          )
+          .get(),
+      ).toEqual({ name: "workflow_checkpoints" });
+      expect(
+        productionDb
+          .prepare("PRAGMA table_info(workflow_runs)")
+          .all()
+          .map((column) => (column as { name: string }).name),
+      ).toEqual(
+        expect.arrayContaining([
+          "presentation_thread_id",
+          "parent_run_id",
+          "root_run_id",
+        ]),
+      );
+
+      expect(() => bb.storage.migrate(productionDb, migrations)).not.toThrow();
+      expect(
+        productionDb
+          .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+          .pluck()
+          .all(),
+      ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
     } finally {
-      legacyDb.close();
+      await harness.dispose();
     }
   });
 
@@ -137,6 +271,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: "Implement",
         phase: "Execute",
       },
@@ -184,6 +320,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: "First",
         phase: "Execute",
       },
@@ -198,6 +336,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: "Second",
         phase: "Execute",
       },
@@ -328,6 +468,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: "Implement",
         phase: "Execute",
       },
@@ -607,6 +749,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -624,6 +768,7 @@ describe("workflow durable data", () => {
       cacheKey: "cache",
       optionsJson:
         '{"selection":null,"outputSchema":null,"title":null,"phase":null}',
+      promptBytes: 7,
       resolvedProvider: "codex",
       resolvedModel: "gpt-test",
       resolvedReasoningLevel: "medium",
@@ -631,6 +776,222 @@ describe("workflow durable data", () => {
       status: "succeeded",
       resultJson: '{"answer":42}',
       replaySource: null,
+    });
+  });
+
+  it("stores context requirements and phase profiles outside rollback-readable options JSON", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const call = startCall(db, {
+      runId: run.id,
+      callIndex: 0,
+      cacheKey: "rollback-readable-options",
+      prompt: "inspect",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: { minimumTokens: 1_000_000 },
+        contextProfile: {
+          requiredSkills: ["implementation-loop"],
+          memoryQueries: ["workflow replay"],
+          artifactRefs: [".architect/design/approved.md"],
+          stopCondition: "targeted verification passes",
+        },
+        title: null,
+        phase: null,
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+
+    const stored = db
+      .prepare(
+        `SELECT options_json AS optionsJson,
+                context_minimum_tokens AS contextMinimumTokens,
+                context_profile_json AS contextProfileJson
+         FROM workflow_calls WHERE id = ?`,
+      )
+      .get(call.id) as {
+      optionsJson: string;
+      contextMinimumTokens: number | null;
+      contextProfileJson: string | null;
+    };
+    expect(stored).toEqual({
+      optionsJson:
+        '{"selection":null,"outputSchema":null,"title":null,"phase":null}',
+      contextMinimumTokens: 1_000_000,
+      contextProfileJson:
+        '{"requiredSkills":["implementation-loop"],"memoryQueries":["workflow replay"],"artifactRefs":[".architect/design/approved.md"],"stopCondition":"targeted verification passes"}',
+    });
+    expect(() =>
+      baseStoredAgentOptionsSchema.parse(JSON.parse(stored.optionsJson)),
+    ).not.toThrow();
+    expect(getCall(db, run.id, 0)).toMatchObject({
+      contextMinimumTokens: 1_000_000,
+      contextProfileJson:
+        '{"requiredSkills":["implementation-loop"],"memoryQueries":["workflow replay"],"artifactRefs":[".architect/design/approved.md"],"stopCondition":"targeted verification passes"}',
+      optionsJson:
+        '{"selection":null,"outputSchema":null,"title":null,"phase":null}',
+    });
+  });
+
+  it("retains a coherent peak context observation", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const call = startCall(db, {
+      runId: run.id,
+      callIndex: 0,
+      cacheKey: "context-fit",
+      prompt: "inspect é",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: { minimumTokens: 1_000_000 },
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+
+    recordCallContextUsage(db, call.id, {
+      usedTokens: null,
+      modelContextWindow: null,
+      estimated: true,
+    });
+    recordCallContextUsage(db, call.id, {
+      usedTokens: 180_000,
+      modelContextWindow: 258_400,
+      estimated: true,
+    });
+    recordCallContextUsage(db, call.id, {
+      usedTokens: 160_000,
+      modelContextWindow: null,
+      estimated: false,
+    });
+
+    expect(getCall(db, run.id, 0)).toMatchObject({
+      promptBytes: Buffer.byteLength("inspect é", "utf8"),
+      observedContextUsedTokens: 180_000,
+      observedModelContextWindow: 258_400,
+      contextUsageEstimated: true,
+    });
+
+    recordCallContextUsage(db, call.id, {
+      usedTokens: 180_000,
+      modelContextWindow: 1_000_000,
+      estimated: false,
+    });
+    recordCallContextUsage(db, call.id, {
+      usedTokens: 180_000,
+      modelContextWindow: 200_000,
+      estimated: true,
+    });
+    expect(getCall(db, run.id, 0)).toMatchObject({
+      observedContextUsedTokens: 180_000,
+      observedModelContextWindow: 1_000_000,
+      contextUsageEstimated: false,
+    });
+
+    const laterPeak = startCall(db, {
+      runId: run.id,
+      callIndex: 1,
+      cacheKey: "context-fit-later-peak",
+      prompt: "inspect later",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+    recordCallContextUsage(db, laterPeak.id, {
+      usedTokens: 160_000,
+      modelContextWindow: 1_000_000,
+      estimated: false,
+    });
+    recordCallContextUsage(db, laterPeak.id, {
+      usedTokens: 180_000,
+      modelContextWindow: 258_400,
+      estimated: true,
+    });
+    expect(getCall(db, run.id, 1)).toMatchObject({
+      observedContextUsedTokens: 180_000,
+      observedModelContextWindow: 258_400,
+      contextUsageEstimated: true,
+    });
+  });
+
+  it("copies context observations into a resumed replay row", () => {
+    const sourceRun = newRun();
+    markRunning(sourceRun.id);
+    const source = startCall(db, {
+      runId: sourceRun.id,
+      callIndex: 0,
+      cacheKey: "context-replay",
+      prompt: "inspect",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: { minimumTokens: 1_000_000 },
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: resolvedSelection,
+      replay: null,
+    });
+    recordCallContextUsage(db, source.id, {
+      usedTokens: 300_000,
+      modelContextWindow: 1_000_000,
+      estimated: false,
+    });
+    settleCall(db, {
+      id: source.id,
+      status: "succeeded",
+      result: { answer: 42 },
+      error: null,
+    });
+    const measuredSource = getCall(db, sourceRun.id, 0);
+    expect(measuredSource).not.toBeNull();
+
+    const resumedRun = newRun();
+    markRunning(resumedRun.id);
+    const replay = startCall(db, {
+      runId: resumedRun.id,
+      callIndex: 0,
+      cacheKey: "context-replay",
+      prompt: "inspect",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: { minimumTokens: 1_000_000 },
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: resolvedSelection,
+      replay: {
+        callId: source.id,
+        result: { answer: 42 },
+        observedContextUsedTokens: measuredSource!.observedContextUsedTokens,
+        observedModelContextWindow: measuredSource!.observedModelContextWindow,
+        contextUsageEstimated: measuredSource!.contextUsageEstimated,
+      },
+    });
+
+    expect(replay).toMatchObject({
+      status: "succeeded",
+      replayedFromCallId: source.id,
+      replaySource: "resumed-run",
+      observedContextUsedTokens: 300_000,
+      observedModelContextWindow: 1_000_000,
+      contextUsageEstimated: false,
     });
   });
 
@@ -645,6 +1006,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -688,6 +1051,8 @@ describe("workflow durable data", () => {
         options: {
           selection: null,
           outputSchema: null,
+          contextRequirement: null,
+          contextProfile: null,
           title: null,
           phase: null,
         },
@@ -744,6 +1109,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -796,6 +1163,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -837,6 +1206,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -862,6 +1233,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: { type: "object" },
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -900,6 +1273,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: { type: "number" },
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -965,6 +1340,8 @@ describe("workflow durable data", () => {
       options: {
         selection: null,
         outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
         title: null,
         phase: null,
       },
@@ -1014,6 +1391,8 @@ describe("workflow durable data", () => {
           options: {
             selection: null,
             outputSchema: null,
+            contextRequirement: null,
+            contextProfile: null,
             title: null,
             phase: null,
           },
@@ -1040,6 +1419,8 @@ describe("workflow durable data", () => {
         options: {
           selection: null,
           outputSchema: null,
+          contextRequirement: null,
+          contextProfile: null,
           title: null,
           phase: null,
         },
