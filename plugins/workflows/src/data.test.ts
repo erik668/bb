@@ -7,15 +7,18 @@ import {
   attachCallThread,
   cancelRun,
   countCallsForRun,
+  countRunsForCampaign,
   createRun,
   deleteExpiredTerminalRuns,
   getCall,
   getLatestRunForThread,
+  getFirstRunForCampaignScope,
   getRunRequired,
   incrementRepairAttempts,
   listWorkflowCheckpointsForRun,
   listActiveRunsForThread,
   listCallsForRunPage,
+  listRunsForCampaign,
   migrations,
   queueCallProviderRetry,
   recordCallContextUsage,
@@ -217,12 +220,13 @@ describe("workflow durable data", () => {
           .pluck()
           .all(),
       ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
-      expect(migrations).toHaveLength(13);
+      expect(migrations).toHaveLength(14);
       expect(getRunRequired(productionDb, "wfr_legacy")).toMatchObject({
         originThreadId: "thread-legacy",
         presentationThreadId: "thread-legacy",
         parentRunId: null,
         rootRunId: "wfr_legacy",
+        campaignId: "wfr_legacy",
       });
       expect(getLatestRunForThread(productionDb, "thread-legacy")?.id).toBe(
         "wfr_legacy",
@@ -269,6 +273,7 @@ describe("workflow durable data", () => {
           "presentation_thread_id",
           "parent_run_id",
           "root_run_id",
+          "campaign_id",
         ]),
       );
 
@@ -314,7 +319,26 @@ describe("workflow durable data", () => {
         presentationThreadId: "thread-rollback-legacy",
         parentRunId: null,
         rootRunId: "wfr_rollback_legacy",
+        campaignId: "wfr_rollback_legacy",
       });
+      expect(
+        getFirstRunForCampaignScope(productionDb, {
+          campaignId: rollbackLegacy.campaignId,
+          projectId: rollbackLegacy.projectId,
+          environmentId: rollbackLegacy.environmentId,
+        })?.id,
+      ).toBe(rollbackLegacy.id);
+      expect(
+        countRunsForCampaign(productionDb, rollbackLegacy.campaignId),
+      ).toBe(1);
+      expect(
+        listRunsForCampaign(productionDb, {
+          campaignId: rollbackLegacy.campaignId,
+          projectId: rollbackLegacy.projectId,
+          environmentId: rollbackLegacy.environmentId,
+          presentationThreadId: rollbackLegacy.presentationThreadId,
+        }).map((run) => run.id),
+      ).toEqual([rollbackLegacy.id]);
       expect(
         createRun(productionDb, {
           projectId: rollbackLegacy.projectId,
@@ -333,12 +357,17 @@ describe("workflow durable data", () => {
           argsJson: "null",
           settingsJson: "{}",
           resumedFromRunId: null,
+          campaignId: rollbackLegacy.campaignId,
         }),
       ).toMatchObject({
         presentationThreadId: "thread-rollback-legacy",
         parentRunId: "wfr_rollback_legacy",
         rootRunId: "wfr_rollback_legacy",
+        campaignId: "wfr_rollback_legacy",
       });
+      expect(
+        countRunsForCampaign(productionDb, rollbackLegacy.campaignId),
+      ).toBe(2);
     } finally {
       await harness.dispose();
     }

@@ -1239,15 +1239,34 @@ describe("workflows plugin", () => {
       parentRunId: null,
       rootRunId: runId,
     });
+    const continued = await harness.runCli(
+      [
+        "run",
+        "--script",
+        `export const meta = {
+          name: "related-continuation",
+          description: "Campaign continuation test",
+          phases: [],
+        };
+        return null;`,
+        "--campaign",
+        runId,
+      ],
+      { threadId: "root-thread", projectId: "project-test" },
+    );
+    expect(continued.exitCode).toBe(0);
+    const continuationId = (
+      JSON.parse(continued.stdout ?? "{}") as { runId: string }
+    ).runId;
     await expect(
       harness.callRpc("workflowActiveRuns", { threadId: "root-thread" }),
     ).resolves.toMatchObject({
       runs: [
         {
-          id: runId,
-          originThreadId: "origin-child",
+          id: continuationId,
+          originThreadId: "root-thread",
           presentationThreadId: "root-thread",
-          rootRunId: runId,
+          rootRunId: continuationId,
         },
       ],
     });
@@ -1256,13 +1275,48 @@ describe("workflows plugin", () => {
         threadId: "root-thread",
         runId,
       }),
+    ).resolves.toMatchObject({ run: { id: continuationId } });
+    await expect(
+      harness.callRpc("workflowRunView", {
+        threadId: "origin-child",
+        runId,
+      }),
     ).resolves.toMatchObject({ run: { id: runId } });
     await expect(
       harness.callRpc("workflowRunDetails", {
-        threadId: "root-thread",
+        threadId: "origin-child",
         runId,
       }),
-    ).resolves.toEqual({ checkpoints: [] });
+    ).resolves.toMatchObject({ checkpoints: [], campaign: null });
+    const campaignDetails = (await harness.callRpc("workflowRunDetails", {
+      threadId: "root-thread",
+      runId,
+    })) as {
+      checkpoints: unknown[];
+      campaign: {
+        id: string;
+        detailedRunLimit: number;
+        omittedCheckpointRunCount: number;
+        runs: Array<{
+          run: { id: string };
+          checkpointsOmitted: boolean;
+        }>;
+      } | null;
+    };
+    expect(campaignDetails).toMatchObject({
+      checkpoints: [],
+      campaign: {
+        id: runId,
+        detailedRunLimit: 4,
+        omittedCheckpointRunCount: 0,
+      },
+    });
+    expect(campaignDetails.campaign?.runs.map((entry) => entry.run.id)).toEqual(
+      [runId, continuationId],
+    );
+    expect(
+      campaignDetails.campaign?.runs.map((entry) => entry.checkpointsOmitted),
+    ).toEqual([false, false]);
     await expect(
       harness.callRpc("workflowRunView", {
         threadId: "unrelated",

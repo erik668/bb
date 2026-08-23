@@ -1,6 +1,7 @@
 export const meta = {
   name: "workflow-router-pipeline",
-  description: "Plan and explicitly execute bounded routed sections with risk-first red-team escalation",
+  description:
+    "Plan and explicitly execute bounded routed sections with risk-first red-team escalation",
   inputSchema: {
     type: "object",
     required: ["objective"],
@@ -10,6 +11,7 @@ export const meta = {
       context: { type: "string", maxLength: 8192 },
       executionMode: { enum: ["plan-only", "execute"] },
       allowMutations: { type: "boolean" },
+      concurrentMutations: { type: "boolean" },
       maxSections: { type: "integer", minimum: 1, maximum: 8 },
       maxWorkerCalls: { type: "integer", minimum: 1, maximum: 100 },
       lifecycleStage: {
@@ -21,7 +23,9 @@ export const meta = {
           "post-shakedown-availability",
         ],
       },
-      psaMode: { enum: ["audit", "remediate", "re-audit", "availability-decision"] },
+      psaMode: {
+        enum: ["audit", "remediate", "re-audit", "availability-decision"],
+      },
       mvpContract: {
         type: "object",
         required: [
@@ -110,8 +114,16 @@ export const meta = {
               additionalProperties: false,
               properties: {
                 signal: { type: "string", minLength: 1, maxLength: 192 },
-                successThreshold: { type: "string", minLength: 1, maxLength: 192 },
-                alertThreshold: { type: "string", minLength: 1, maxLength: 192 },
+                successThreshold: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 192,
+                },
+                alertThreshold: {
+                  type: "string",
+                  minLength: 1,
+                  maxLength: 192,
+                },
               },
             },
           },
@@ -145,7 +157,15 @@ export const meta = {
       },
       mvpApproval: {
         type: "object",
-        required: ["decisionRef", "evidenceRef", "decidedByHuman", "contractId", "contractRevision", "decision", "rationale"],
+        required: [
+          "decisionRef",
+          "evidenceRef",
+          "decidedByHuman",
+          "contractId",
+          "contractRevision",
+          "decision",
+          "rationale",
+        ],
         additionalProperties: false,
         properties: {
           decisionRef: { type: "string", minLength: 1, maxLength: 256 },
@@ -159,7 +179,15 @@ export const meta = {
       },
       shakedownLaunchApproval: {
         type: "object",
-        required: ["decisionRef", "evidenceRef", "decidedByHuman", "contractId", "contractRevision", "decision", "rationale"],
+        required: [
+          "decisionRef",
+          "evidenceRef",
+          "decidedByHuman",
+          "contractId",
+          "contractRevision",
+          "decision",
+          "rationale",
+        ],
         additionalProperties: false,
         properties: {
           decisionRef: { type: "string", minLength: 1, maxLength: 256 },
@@ -179,7 +207,15 @@ export const meta = {
       customerFeedback: { type: "string", maxLength: 8192 },
       designStabilityDecision: {
         type: "object",
-        required: ["decisionRef", "evidenceRef", "decidedByHuman", "contractId", "contractRevision", "decision", "rationale"],
+        required: [
+          "decisionRef",
+          "evidenceRef",
+          "decidedByHuman",
+          "contractId",
+          "contractRevision",
+          "decision",
+          "rationale",
+        ],
         additionalProperties: false,
         properties: {
           decisionRef: { type: "string", minLength: 1, maxLength: 256 },
@@ -198,7 +234,15 @@ export const meta = {
       },
       availabilityApproval: {
         type: "object",
-        required: ["decisionRef", "evidenceRef", "decidedByHuman", "contractId", "contractRevision", "decision", "rationale"],
+        required: [
+          "decisionRef",
+          "evidenceRef",
+          "decidedByHuman",
+          "contractId",
+          "contractRevision",
+          "decision",
+          "rationale",
+        ],
         additionalProperties: false,
         properties: {
           decisionRef: { type: "string", minLength: 1, maxLength: 256 },
@@ -213,12 +257,27 @@ export const meta = {
     },
   },
   phases: [
-    { title: "Define MVP", detail: "Draft the human-approved shakedown contract" },
+    {
+      title: "Define MVP",
+      detail: "Draft the human-approved shakedown contract",
+    },
     { title: "Plan", detail: "Route, decompose, and assign bounded coverage" },
-    { title: "Admit", detail: "Fit complete section profiles within the run budget" },
-    { title: "Execute", detail: "Run admitted sections with deterministic worker roles" },
-    { title: "Stability", detail: "Assess shakedown evidence without replacing the human decision" },
-    { title: "Deliver", detail: "Return results, skipped coverage, and human gates" },
+    {
+      title: "Admit",
+      detail: "Fit complete section profiles within the run budget",
+    },
+    {
+      title: "Execute",
+      detail: "Run admitted sections with deterministic worker roles",
+    },
+    {
+      title: "Stability",
+      detail: "Assess shakedown evidence without replacing the human decision",
+    },
+    {
+      title: "Deliver",
+      detail: "Return results, skipped coverage, and human gates",
+    },
   ],
 };
 
@@ -228,15 +287,35 @@ const taskResultSchema = {
   additionalProperties: false,
   properties: {
     summary: { type: "string", minLength: 1, maxLength: 2048 },
-    evidence: { type: "array", maxItems: 16, items: { type: "string", maxLength: 1024 } },
-    risks: { type: "array", maxItems: 16, items: { type: "string", maxLength: 1024 } },
-    changedFiles: { type: "array", maxItems: 64, items: { type: "string", maxLength: 512 } },
+    evidence: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", maxLength: 1024 },
+    },
+    risks: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", maxLength: 1024 },
+    },
+    changedFiles: {
+      type: "array",
+      maxItems: 64,
+      items: { type: "string", maxLength: 512 },
+    },
     verifications: {
       type: "array",
       maxItems: 32,
       items: {
         type: "object",
-        required: ["title", "command", "status", "summary", "passed", "failed", "skipped"],
+        required: [
+          "title",
+          "command",
+          "status",
+          "summary",
+          "passed",
+          "failed",
+          "skipped",
+        ],
         additionalProperties: false,
         properties: {
           title: { type: "string", minLength: 1, maxLength: 256 },
@@ -252,6 +331,37 @@ const taskResultSchema = {
   },
 };
 
+const oracleClosureResultSchema = {
+  type: "object",
+  required: [
+    ...taskResultSchema.required,
+    "acceptanceInventory",
+    "contradictionsResolved",
+    "closureEvidence",
+  ],
+  additionalProperties: false,
+  properties: {
+    ...taskResultSchema.properties,
+    acceptanceInventory: {
+      type: "array",
+      minItems: 1,
+      maxItems: 64,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
+    },
+    contradictionsResolved: {
+      type: "array",
+      maxItems: 32,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
+    },
+    closureEvidence: {
+      type: "array",
+      minItems: 1,
+      maxItems: 32,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
+    },
+  },
+};
+
 const reviewResultSchema = {
   type: "object",
   required: ["verdict", "findings"],
@@ -260,17 +370,76 @@ const reviewResultSchema = {
     verdict: { enum: ["pass", "concern", "blocked"] },
     findings: {
       type: "array",
+      maxItems: 100,
       items: {
         type: "object",
         required: ["severity", "classification", "summary", "evidence"],
         additionalProperties: false,
         properties: {
           severity: { enum: ["critical", "high", "medium", "low"] },
-          classification: { enum: ["patch-level", "approach-level", "human-gate"] },
-          summary: { type: "string", minLength: 1 },
-          evidence: { type: "string", minLength: 1 },
+          classification: {
+            enum: [
+              "patch-level",
+              "approach-level",
+              "dependency-deadlock",
+              "human-gate",
+            ],
+          },
+          summary: { type: "string", minLength: 1, maxLength: 1024 },
+          evidence: { type: "string", minLength: 1, maxLength: 1024 },
         },
       },
+    },
+  },
+};
+
+const promotionGateResultSchema = {
+  type: "object",
+  required: [
+    "verdict",
+    "rationale",
+    "findings",
+    "affectedSectionIds",
+    "designFeedback",
+  ],
+  additionalProperties: false,
+  properties: {
+    verdict: { enum: ["promote", "repair", "recommend-redesign", "blocked"] },
+    rationale: { type: "string", minLength: 1, maxLength: 2048 },
+    findings: {
+      type: "array",
+      maxItems: 32,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
+    },
+    affectedSectionIds: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: 64 },
+    },
+    designFeedback: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
+    },
+  },
+};
+
+const designChallengeResultSchema = {
+  type: "object",
+  required: ["verdict", "rationale", "counterarguments", "evidenceGaps"],
+  additionalProperties: false,
+  properties: {
+    verdict: { enum: ["agree", "patch-sufficient", "insufficient-evidence"] },
+    rationale: { type: "string", minLength: 1, maxLength: 2048 },
+    counterarguments: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
+    },
+    evidenceGaps: {
+      type: "array",
+      maxItems: 16,
+      items: { type: "string", minLength: 1, maxLength: 1024 },
     },
   },
 };
@@ -287,7 +456,13 @@ const redTeamSynthesisSchema = {
 
 const architectProposalSchema = {
   type: "object",
-  required: ["perspective", "recommendations", "risks", "openQuestions", "contractSuggestions"],
+  required: [
+    "perspective",
+    "recommendations",
+    "risks",
+    "openQuestions",
+    "contractSuggestions",
+  ],
   additionalProperties: false,
   properties: {
     perspective: { type: "string", minLength: 1, maxLength: 192 },
@@ -440,11 +615,22 @@ const shakedownContractSchema = {
 
 const stabilityAssessmentSchema = {
   type: "object",
-  required: ["recommendation", "designChangeSignals", "residualRisks", "evidenceGaps", "rationale"],
+  required: [
+    "recommendation",
+    "designChangeSignals",
+    "residualRisks",
+    "evidenceGaps",
+    "rationale",
+  ],
   additionalProperties: false,
   properties: {
-    recommendation: { enum: ["stable", "material-change", "insufficient-evidence"] },
-    designChangeSignals: { type: "array", items: { type: "string", minLength: 1 } },
+    recommendation: {
+      enum: ["stable", "material-change", "insufficient-evidence"],
+    },
+    designChangeSignals: {
+      type: "array",
+      items: { type: "string", minLength: 1 },
+    },
     residualRisks: { type: "array", items: { type: "string", minLength: 1 } },
     evidenceGaps: { type: "array", items: { type: "string", minLength: 1 } },
     rationale: { type: "string", minLength: 1 },
@@ -452,10 +638,10 @@ const stabilityAssessmentSchema = {
 };
 
 const currentPlanContractVersion = "workflow-router.execution-plan.v1";
-const stagedPlanContractVersion = "workflow-router.execution-plan.v2";
+const stagedPlanContractVersion = "workflow-router.execution-plan.v3";
 const currentRouteContractVersion = "workflow-router.route-decision.v1";
 const currentPolicyVersion = "workflow-router.fanout-policy.v2";
-const stagedPolicyVersion = "workflow-router.fanout-policy.v3";
+const stagedPolicyVersion = "workflow-router.fanout-policy.v4";
 const knownAssuranceClasses = [
   "mvp-definition",
   "mvp-functionality",
@@ -475,6 +661,11 @@ const knownPsaComponents = [
   "performance",
   "accessibility",
   "compliance",
+];
+const knownExecutionKinds = [
+  "oracle-closure",
+  "production-unit",
+  "supporting-assurance",
 ];
 const dueStageForAssuranceClass = {
   "mvp-definition": "mvp-definition",
@@ -583,7 +774,14 @@ function decisionMatches(decision, contract, expectedDecision) {
   );
 }
 
-function writeGateCheckpoint(id, title, status, summary, blocker) {
+function writeGateCheckpoint(
+  id,
+  title,
+  status,
+  summary,
+  blocker,
+  dependsOn = [],
+) {
   checkpoint({
     kind: "work-item",
     id,
@@ -593,6 +791,48 @@ function writeGateCheckpoint(id, title, status, summary, blocker) {
     ticketRef: null,
     changedFiles: [],
     blocker,
+    dependsOn,
+    nodeType: "gate",
+  });
+}
+
+function summarizeBoundedStrings(values, maxItems, label) {
+  if (values.length <= maxItems) return values;
+  const retained = values.slice(0, maxItems - 1);
+  retained.push(
+    `${values.length - retained.length} additional ${label} omitted; inspect the full workflow result.`,
+  );
+  return retained;
+}
+
+function writeTransitionCheckpoint({
+  id,
+  title,
+  status,
+  summary = null,
+  actor,
+  fromState,
+  toState,
+  workItemIds = [],
+  rationale,
+  evidenceRefs = [],
+}) {
+  checkpoint({
+    kind: "transition",
+    id,
+    title,
+    status,
+    summary,
+    actor,
+    fromState,
+    toState,
+    workItemIds,
+    rationale,
+    evidenceRefs: summarizeBoundedStrings(
+      evidenceRefs,
+      100,
+      "evidence references",
+    ),
   });
 }
 
@@ -643,7 +883,11 @@ function approvedContractForRouter(contract, approval) {
       nondeferrable: true,
     });
   }
-  for (let index = 0; index < contract.temporaryLimitations.length; index += 1) {
+  for (
+    let index = 0;
+    index < contract.temporaryLimitations.length;
+    index += 1
+  ) {
     items.push({
       id: `temporary-limitation-${index + 1}`,
       kind: "temporary-limitation",
@@ -672,7 +916,11 @@ function approvedContractForRouter(contract, approval) {
     statement: `${contract.support.owner}; response: ${contract.support.responseTarget}; escalation: ${contract.support.escalationPath}`,
     nondeferrable: true,
   });
-  for (let index = 0; index < contract.designInvalidationSignals.length; index += 1) {
+  for (
+    let index = 0;
+    index < contract.designInvalidationSignals.length;
+    index += 1
+  ) {
     items.push({
       id: `design-invalidating-feedback-${index + 1}`,
       kind: "design-invalidating-feedback",
@@ -712,7 +960,9 @@ function humanDecisionEvidenceForRouter() {
   if (isObject(args.shakedownLaunchApproval)) {
     append(
       "shakedown-build",
-      args.shakedownLaunchApproval.decision === "approved" ? "approve" : "revise",
+      args.shakedownLaunchApproval.decision === "approved"
+        ? "approve"
+        : "revise",
       args.shakedownLaunchApproval,
     );
   }
@@ -742,18 +992,26 @@ function sameArray(left, right) {
 }
 
 function expectedModelProfile(route, section, matchedTriggers) {
-  const requiredSkills = Array.isArray(section.requiredSkills) ? section.requiredSkills : [];
-  const secondaryGates = Array.isArray(route.secondaryGates) ? route.secondaryGates : [];
+  const requiredSkills = Array.isArray(section.requiredSkills)
+    ? section.requiredSkills
+    : [];
+  const secondaryGates = Array.isArray(route.secondaryGates)
+    ? route.secondaryGates
+    : [];
   const securityTesting =
     section.coverage === "red-team" &&
     (secondaryGates.includes("security-boundary") ||
-      matchedTriggers.some((trigger) => securityTestingRiskTriggers.includes(trigger)) ||
+      matchedTriggers.some((trigger) =>
+        securityTestingRiskTriggers.includes(trigger),
+      ) ||
       requiredSkills.includes("owasp-security"));
   if (securityTesting) return "fable-security";
 
   const tasteHeavy =
     route.lane === "design-packaging" ||
-    secondaryGates.some((gate) => gate === "active-design" || gate === "ui-product") ||
+    secondaryGates.some(
+      (gate) => gate === "active-design" || gate === "ui-product",
+    ) ||
     requiredSkills.some((skill) => tasteSkills.includes(skill));
   if (tasteHeavy) return "fable-taste";
 
@@ -795,14 +1053,21 @@ function validatePlan(plan, expected) {
   if (plan.route.objective !== expected.objective) {
     errors.push("route objective does not match the current request");
   }
-  if (!knownLanes.includes(plan.route.lane)) errors.push("route lane is unknown");
+  if (!knownLanes.includes(plan.route.lane))
+    errors.push("route lane is unknown");
   if (
     !Array.isArray(plan.route.secondaryGates) ||
-    plan.route.secondaryGates.some((gate) => !knownSecondaryGates.includes(gate))
+    plan.route.secondaryGates.some(
+      (gate) => !knownSecondaryGates.includes(gate),
+    )
   ) {
     errors.push("route secondaryGates are malformed or unknown");
   }
-  if (!Array.isArray(plan.sections) || plan.sections.length < 1 || plan.sections.length > 8) {
+  if (
+    !Array.isArray(plan.sections) ||
+    plan.sections.length < 1 ||
+    plan.sections.length > 8
+  ) {
     errors.push("plan sections must contain between 1 and 8 items");
     return errors;
   }
@@ -833,20 +1098,28 @@ function validatePlan(plan, expected) {
     if (
       !Array.isArray(section.riskTriggers) ||
       section.riskTriggers.length === 0 ||
-      section.riskTriggers.some((trigger) => !knownRiskTriggers.includes(trigger)) ||
-      (section.riskTriggers.includes("none") && section.riskTriggers.length !== 1)
+      section.riskTriggers.some(
+        (trigger) => !knownRiskTriggers.includes(trigger),
+      ) ||
+      (section.riskTriggers.includes("none") &&
+        section.riskTriggers.length !== 1)
     ) {
       errors.push(`${label} riskTriggers are malformed or unknown`);
       continue;
     }
-    const matchedTriggers = section.riskTriggers.filter((trigger) => trigger !== "none");
+    const matchedTriggers = section.riskTriggers.filter(
+      (trigger) => trigger !== "none",
+    );
     if (matchedTriggers.length > 0 && section.coverage !== "red-team") {
       errors.push(`${label} risk triggers require red-team coverage`);
     }
     if (!sameArray(section.workerRoles, policy.workerRoles)) {
       errors.push(`${label} workerRoles do not match coverage policy`);
     }
-    if (section.agentCalls !== policy.agentCalls) {
+    const expectedSectionAgentCalls =
+      policy.agentCalls +
+      (staged && section.executionKind === "production-unit" ? 1 : 0);
+    if (section.agentCalls !== expectedSectionAgentCalls) {
       errors.push(`${label} agentCalls do not match coverage policy`);
     }
     if (section.findingsOnly !== policy.findingsOnly) {
@@ -858,9 +1131,15 @@ function validatePlan(plan, expected) {
     if (!Array.isArray(section.requiredSkills)) {
       errors.push(`${label} requiredSkills must be an array`);
     }
-    const expectedProfile = expectedModelProfile(plan.route, section, matchedTriggers);
+    const expectedProfile = expectedModelProfile(
+      plan.route,
+      section,
+      matchedTriggers,
+    );
     if (section.modelProfile !== expectedProfile) {
-      errors.push(`${label} modelProfile does not match deterministic routing policy`);
+      errors.push(
+        `${label} modelProfile does not match deterministic routing policy`,
+      );
     }
     if (staged) {
       if (!knownAssuranceClasses.includes(section.assuranceClass)) {
@@ -869,10 +1148,41 @@ function validatePlan(plan, expected) {
       if (!knownPsaComponents.includes(section.psaComponent)) {
         errors.push(`${label} psaComponent is unknown`);
       }
+      if (!knownExecutionKinds.includes(section.executionKind)) {
+        errors.push(`${label} executionKind is unknown`);
+      }
+      if (
+        !Array.isArray(section.ownedPaths) ||
+        section.ownedPaths.some(
+          (path) =>
+            typeof path !== "string" ||
+            path.length === 0 ||
+            path.startsWith("/") ||
+            path.split("/").includes(".."),
+        )
+      ) {
+        errors.push(`${label} ownedPaths are malformed`);
+      } else {
+        if (
+          section.mutationIntent === "mutate" &&
+          section.ownedPaths.length === 0
+        ) {
+          errors.push(`${label} mutating work requires ownedPaths`);
+        }
+        if (
+          section.mutationIntent === "read-only" &&
+          section.ownedPaths.length > 0
+        ) {
+          errors.push(`${label} read-only work must not declare ownedPaths`);
+        }
+      }
       if (
         !Array.isArray(section.dependsOn) ||
-        section.dependsOn.some((dependency) =>
-          !plan.sections.slice(0, index).some((candidate) => candidate.id === dependency),
+        section.dependsOn.some(
+          (dependency) =>
+            !plan.sections
+              .slice(0, index)
+              .some((candidate) => candidate.id === dependency),
         )
       ) {
         errors.push(`${label} dependencies must reference earlier sections`);
@@ -891,28 +1201,40 @@ function validatePlan(plan, expected) {
         (expected.psaMode === "audit" || expected.psaMode === "re-audit") &&
         section.verificationRequired !== true
       ) {
-        errors.push(`${label} PSA audit and re-audit work requires verification`);
+        errors.push(
+          `${label} PSA audit and re-audit work requires verification`,
+        );
       }
-      if (typeof section.exitCriterion !== "string" || section.exitCriterion.length === 0) {
+      if (
+        typeof section.exitCriterion !== "string" ||
+        section.exitCriterion.length === 0
+      ) {
         errors.push(`${label} exitCriterion must be non-empty`);
       }
-      if (section.dueStage !== dueStageForAssuranceClass[section.assuranceClass]) {
+      if (
+        section.dueStage !== dueStageForAssuranceClass[section.assuranceClass]
+      ) {
         errors.push(`${label} dueStage does not match assuranceClass`);
       }
       if (
         (expected.lifecycleStage === "customer-shakedown" ||
           (expected.lifecycleStage === "post-shakedown-availability" &&
-            (expected.psaMode === "audit" || expected.psaMode === "re-audit"))) &&
+            (expected.psaMode === "audit" ||
+              expected.psaMode === "re-audit"))) &&
         section.mutationIntent !== "read-only"
       ) {
-        errors.push(`${label} must be read-only in the current lifecycle stage`);
+        errors.push(
+          `${label} must be read-only in the current lifecycle stage`,
+        );
       }
       if (
         expected.lifecycleStage === "post-shakedown-availability" &&
         section.assuranceClass === "post-shakedown-assurance" &&
         section.psaComponent === "none"
       ) {
-        errors.push(`${label} post-shakedown assurance requires a PSA component`);
+        errors.push(
+          `${label} post-shakedown assurance requires a PSA component`,
+        );
       }
       if (matchedTriggers.length > 0) {
         if (
@@ -920,14 +1242,102 @@ function validatePlan(plan, expected) {
           section.mutationIntent !== "read-only" ||
           section.verificationRequired !== true
         ) {
-          errors.push(`${label} risk triggers must remain nondeferrable, read-only, and verification-required`);
+          errors.push(
+            `${label} risk triggers must remain nondeferrable, read-only, and verification-required`,
+          );
         }
       }
     }
-    requestedAgentCalls += policy.agentCalls;
+    requestedAgentCalls += expectedSectionAgentCalls;
     if (section.coverage === "red-team") redTeamSections += 1;
   }
-  if (new Set(ids).size !== ids.length) errors.push("section ids must be unique");
+  if (new Set(ids).size !== ids.length)
+    errors.push("section ids must be unique");
+
+  if (staged && expected.lifecycleStage === "shakedown-build") {
+    const oracleSections = plan.sections.filter(
+      (section) => section.executionKind === "oracle-closure",
+    );
+    const productionSections = plan.sections.filter(
+      (section) => section.executionKind === "production-unit",
+    );
+    if (oracleSections.length !== 1) {
+      errors.push(
+        `shakedown-build requires exactly one oracle-closure section; received ${oracleSections.length}`,
+      );
+    }
+    if (productionSections.length === 0) {
+      errors.push(
+        "shakedown-build requires at least one production-unit section",
+      );
+    }
+    if (oracleSections.length === 1) {
+      const oracleSection = oracleSections[0];
+      if (
+        oracleSection.mutationIntent !== "mutate" ||
+        oracleSection.verificationRequired !== true ||
+        !["standard", "thorough"].includes(oracleSection.coverage)
+      ) {
+        errors.push(
+          "oracle-closure must be mutating, verification-required, and use standard or thorough coverage",
+        );
+      }
+      for (const productionSection of productionSections) {
+        if (!(productionSection.dependsOn || []).includes(oracleSection.id)) {
+          errors.push(
+            `production-unit ${productionSection.id} must directly depend on oracle-closure ${oracleSection.id}`,
+          );
+        }
+        if (productionSection.mutationIntent !== "mutate") {
+          errors.push(
+            `production-unit ${productionSection.id} must declare mutating intent`,
+          );
+        }
+      }
+      for (
+        let leftIndex = 0;
+        leftIndex < productionSections.length;
+        leftIndex += 1
+      ) {
+        const left = productionSections[leftIndex];
+        for (
+          let rightIndex = leftIndex + 1;
+          rightIndex < productionSections.length;
+          rightIndex += 1
+        ) {
+          const right = productionSections[rightIndex];
+          const leftPaths = Array.isArray(left.ownedPaths)
+            ? left.ownedPaths
+            : [];
+          const rightPaths = Array.isArray(right.ownedPaths)
+            ? right.ownedPaths
+            : [];
+          const overlap = leftPaths.some((leftPath) =>
+            rightPaths.some(
+              (rightPath) =>
+                leftPath === rightPath ||
+                leftPath.startsWith(`${rightPath.replace(/\/$/, "")}/`) ||
+                rightPath.startsWith(`${leftPath.replace(/\/$/, "")}/`),
+            ),
+          );
+          if (overlap) {
+            errors.push(
+              `production-unit ${left.id} and ${right.id} have overlapping ownedPaths`,
+            );
+          }
+        }
+      }
+    }
+  }
+  if (staged && expected.lifecycleStage !== "shakedown-build") {
+    for (const section of plan.sections) {
+      if (section.executionKind !== "supporting-assurance") {
+        errors.push(
+          `${section.id} executionKind is valid only during shakedown-build`,
+        );
+      }
+    }
+  }
 
   if (!isObject(plan.totals)) {
     errors.push("plan totals must be an object");
@@ -938,27 +1348,41 @@ function validatePlan(plan, expected) {
   ) {
     errors.push("plan totals do not match sections");
   }
-  if (!Array.isArray(plan.warnings) || plan.warnings.some((warning) => typeof warning !== "string")) {
+  if (
+    !Array.isArray(plan.warnings) ||
+    plan.warnings.some((warning) => typeof warning !== "string")
+  ) {
     errors.push("plan warnings must be an array of strings");
   }
   if (staged) {
-    if (!isObject(plan.lifecycle) || plan.lifecycle.stage !== expected.lifecycleStage) {
+    if (
+      !isObject(plan.lifecycle) ||
+      plan.lifecycle.stage !== expected.lifecycleStage
+    ) {
       errors.push("plan lifecycle does not match the requested stage");
     } else {
       if (plan.lifecycle.psaMode !== expected.psaMode) {
-        errors.push("plan lifecycle PSA mode does not match the current request");
+        errors.push(
+          "plan lifecycle PSA mode does not match the current request",
+        );
       }
       if (
         plan.lifecycle.approvedShakedownContract?.contractVersion !==
         expected.approvedContractVersion
       ) {
-        errors.push("plan lifecycle contract version does not match the approved contract");
+        errors.push(
+          "plan lifecycle contract version does not match the approved contract",
+        );
       }
       if (!sameArray(plan.lifecycle.evidenceRefs, expected.evidenceRefs)) {
-        errors.push("plan lifecycle evidence refs do not match the current request");
+        errors.push(
+          "plan lifecycle evidence refs do not match the current request",
+        );
       }
       if (!sameArray(plan.lifecycle.findingRefs, expected.findingRefs)) {
-        errors.push("plan lifecycle finding refs do not match the current request");
+        errors.push(
+          "plan lifecycle finding refs do not match the current request",
+        );
       }
     }
     if (!isObject(plan.validation) || plan.validation.valid !== true) {
@@ -991,7 +1415,10 @@ function validatePlan(plan, expected) {
 }
 
 async function selectedAgent(section, role, prompt, label, schema) {
-  if (section.modelProfile === "fable-security" || section.modelProfile === "fable-taste") {
+  if (
+    section.modelProfile === "fable-security" ||
+    section.modelProfile === "fable-taste"
+  ) {
     return agent(prompt, {
       provider: "claude-code",
       model: "claude-fable-5",
@@ -1001,7 +1428,10 @@ async function selectedAgent(section, role, prompt, label, schema) {
       schema,
     });
   }
-  if (section.modelProfile === "cost-efficient-implementation" && role === "owner") {
+  if (
+    section.modelProfile === "cost-efficient-implementation" &&
+    role === "owner"
+  ) {
     return agent(prompt, {
       provider: "codex",
       model: "gpt-5.6-luna",
@@ -1013,7 +1443,8 @@ async function selectedAgent(section, role, prompt, label, schema) {
   }
   if (
     section.modelProfile === "frontier-judgment" ||
-    (section.modelProfile === "cost-efficient-implementation" && role !== "owner")
+    (section.modelProfile === "cost-efficient-implementation" &&
+      role !== "owner")
   ) {
     return agent(prompt, {
       provider: "codex",
@@ -1044,7 +1475,8 @@ function coveragePriority(coverage) {
 }
 
 function skillsInstruction(section) {
-  if (section.requiredSkills.length === 0) return "No routed skills were assigned to this section.";
+  if (section.requiredSkills.length === 0)
+    return "No routed skills were assigned to this section.";
   return `Use these routed skills when available: ${section.requiredSkills.join(", ")}.`;
 }
 
@@ -1082,37 +1514,32 @@ function sectionMayMutate(section) {
   );
 }
 
-async function executeNormalOwner(section) {
-  const owner = await selectedAgent(
-    section,
-    "owner",
-    `Role: owner
-Section: ${section.title}
-Objective: ${section.objective}
-Parent objective: ${args.objective}
-Context: ${args.context || "None supplied."}
-${skillsInstruction(section)}
-Mutations authorized for this section: ${sectionMayMutate(section) ? "yes" : "no"}
-
-Progress contract:
-- The parent workflow owns work-item ID ${section.id} and transitions it around this call. Do not publish or update that work-item checkpoint from the worker.
-- Give each selected verification the stable ID ${section.id}:verification-N (1-based). Report the exact command as running before execution, then update the same ID with its actual result and pass/fail/skip counts.
-- Return changedFiles and verifications explicitly. Use empty arrays when this bounded section changes no files or selects no executable checks.
-
-Execute only this bounded section. Do not spawn or delegate to additional agents; the workflow owns orchestration. ${
-      sectionMayMutate(section)
-        ? "Edits are explicitly authorized; keep them scoped to the section and parent objective."
-        : "Do not edit files or external state; return analysis and evidence only."
-    } Return a concise result with concrete evidence, exact changed files, exact verification commands and results, and unresolved risks.`,
-    `${section.id}:owner`,
-    taskResultSchema,
+function verificationBlockedFor(section, result) {
+  const hasFailedVerification = result.verifications.some(
+    (verification) =>
+      verification.status === "failed" || verification.failed > 0,
   );
+  const missingRequiredVerification =
+    section.verificationRequired === true && result.verifications.length === 0;
+  const missingPassedRequiredVerification =
+    section.verificationRequired === true &&
+    !result.verifications.some(
+      (verification) =>
+        verification.status === "passed" && verification.failed === 0,
+    );
+  return (
+    hasFailedVerification ||
+    missingRequiredVerification ||
+    missingPassedRequiredVerification
+  );
+}
 
-  for (let index = 0; index < owner.verifications.length; index += 1) {
-    const verification = owner.verifications[index];
+function writeVerificationCheckpoints(section, result, idPrefix) {
+  for (let index = 0; index < result.verifications.length; index += 1) {
+    const verification = result.verifications[index];
     checkpoint({
       kind: "verification",
-      id: `${section.id}:verification-${index + 1}`,
+      id: `${section.id}:${idPrefix}-${index + 1}`,
       title: verification.title,
       status:
         verification.status === "passed"
@@ -1130,25 +1557,78 @@ Execute only this bounded section. Do not spawn or delegate to additional agents
       },
     });
   }
+}
+
+function changedFileWithinOwnedPaths(section, changedFile) {
+  if (lifecycleStage === null) return true;
+  if (section.mutationIntent !== "mutate") return false;
+  return (section.ownedPaths || []).some((ownedPath) => {
+    const normalized = ownedPath.endsWith("/")
+      ? ownedPath.slice(0, -1)
+      : ownedPath;
+    return (
+      changedFile === normalized || changedFile.startsWith(`${normalized}/`)
+    );
+  });
+}
+
+function reportedScopeViolationsFor(section, result) {
+  return (result.changedFiles || []).filter(
+    (changedFile) => !changedFileWithinOwnedPaths(section, changedFile),
+  );
+}
+
+function ownerExecutionInstruction(section) {
+  if (section.executionKind === "oracle-closure") {
+    return `Before production begins, inventory the complete related acceptance closure: frozen tests, fixtures, helpers, public seams, legacy compatibility expectations, and contradictory oracles. Repair every contradiction within this section's scope, including expectations that preserve behavior the approved MVP intentionally eliminates. Return acceptanceInventory, contradictionsResolved, and closureEvidence; do not claim completeness without repository-grounded search evidence.`;
+  }
+  if (section.executionKind === "production-unit") {
+    return "Implement this production unit against the already approved oracle closure. Do not weaken, rewrite, or bypass the frozen acceptance boundary to make production work pass.";
+  }
+  return "Execute the bounded supporting-assurance objective without expanding into unrelated production work.";
+}
+
+async function executeNormalOwner(section) {
+  const owner = await selectedAgent(
+    section,
+    "owner",
+    `Role: owner
+Section: ${section.title}
+Objective: ${section.objective}
+Parent objective: ${args.objective}
+Context: ${args.context || "None supplied."}
+${skillsInstruction(section)}
+Mutations authorized for this section: ${sectionMayMutate(section) ? "yes" : "no"}
+Execution kind: ${section.executionKind || "legacy"}
+Owned mutation paths: ${JSON.stringify(section.ownedPaths || [])}
+${ownerExecutionInstruction(section)}
+
+Progress contract:
+- The parent workflow owns work-item ID ${section.id} and transitions it around this call. Do not publish or update that work-item checkpoint from the worker.
+- Give each selected verification the stable ID ${section.id}:verification-N (1-based). Report the exact command as running before execution, then update the same ID with its actual result and pass/fail/skip counts.
+- Return changedFiles and verifications explicitly. Use empty arrays when this bounded section changes no files or selects no executable checks.
+
+Execute only this bounded section. Do not spawn or delegate to additional agents; the workflow owns orchestration. ${
+      sectionMayMutate(section)
+        ? "Edits are explicitly authorized only inside ownedPaths; keep them scoped to the section and parent objective."
+        : "Do not edit files or external state; return analysis and evidence only."
+    } Return a concise result with concrete evidence, exact changed files, exact verification commands and results, and unresolved risks.`,
+    `${section.id}:owner`,
+    section.executionKind === "oracle-closure"
+      ? oracleClosureResultSchema
+      : taskResultSchema,
+  );
+
+  writeVerificationCheckpoints(section, owner, "verification");
 
   return owner;
 }
 
 async function reviewNormalSection(section, owner) {
-  const hasFailedVerification = owner.verifications.some(
-    (verification) => verification.status === "failed" || verification.failed > 0,
-  );
-  const missingRequiredVerification =
-    section.verificationRequired === true && owner.verifications.length === 0;
-  const missingPassedRequiredVerification =
-    section.verificationRequired === true &&
-    !owner.verifications.some(
-      (verification) => verification.status === "passed" && verification.failed === 0,
-    );
+  const reportedScopeViolations = reportedScopeViolationsFor(section, owner);
   const verificationBlocked =
-    hasFailedVerification ||
-    missingRequiredVerification ||
-    missingPassedRequiredVerification;
+    verificationBlockedFor(section, owner) ||
+    reportedScopeViolations.length > 0;
   const criticRoles = section.workerRoles.slice(1);
   if (criticRoles.length === 0) {
     return {
@@ -1159,31 +1639,34 @@ async function reviewNormalSection(section, owner) {
       missingWorkers: [],
       humanGate: false,
       verificationBlocked,
+      reportedScopeViolations,
     };
   }
 
   const criticResults = await parallel(
-    criticRoles.map(
-      (role) => async () => {
-        try {
-          return await selectedAgent(
-            section,
-            role,
-            `Role: ${role}
+    criticRoles.map((role) => async () => {
+      try {
+        return await selectedAgent(
+          section,
+          role,
+          `Role: ${role}
 Section: ${section.title}
 Section objective: ${section.objective}
 Owner result: ${JSON.stringify(owner)}
 ${skillsInstruction(section)}
 
-Review the owner result against the section objective. Do not edit files or external state. Do not spawn other agents. Construct concrete failure scenarios and distinguish patch-level, approach-level, and human-gate findings.`,
-            `${section.id}:${role}`,
-            reviewResultSchema,
-          );
-        } catch {
-          return null;
-        }
-      },
-    ),
+Review the owner result against the section objective. ${
+            section.executionKind === "oracle-closure"
+              ? "Independently test whether the claimed acceptance inventory is complete and whether any frozen test, fixture, helper, or legacy expectation still contradicts the approved behavior. Production must not start unless this closure is clean."
+              : "Check the implementation against the approved oracle closure and do not recommend weakening acceptance behavior."
+          } Do not edit files or external state. Do not spawn other agents. Construct concrete failure scenarios and distinguish patch-level, approach-level, dependency-deadlock, and human-gate findings. Classify a dependency-deadlock when the current gate requires a production-owned component that the same gate defers or prohibits its owning unit from building; do not recommend a fake adapter or repeated bounded repair for that condition.`,
+          `${section.id}:${role}`,
+          reviewResultSchema,
+        );
+      } catch {
+        return null;
+      }
+    }),
   );
 
   const workers = [{ role: "owner", result: owner }];
@@ -1207,6 +1690,7 @@ Review the owner result against the section objective. Do not edit files or exte
     missingWorkers,
     humanGate,
     verificationBlocked,
+    reportedScopeViolations,
   };
 }
 
@@ -1215,16 +1699,156 @@ async function executeNormalSection(section) {
   return reviewNormalSection(section, owner);
 }
 
+async function executeProductionUnitSection(section) {
+  const initialResult = await executeNormalSection(section);
+  const reviewWorkers = initialResult.workers.slice(1);
+  const findings = reviewWorkers.flatMap(
+    (worker) => worker.result.findings || [],
+  );
+  const nonPatchFindings = findings.filter(
+    (finding) => finding.classification !== "patch-level",
+  );
+  const designLevelFindings = nonPatchFindings.filter(
+    (finding) =>
+      finding.classification === "approach-level" ||
+      finding.classification === "dependency-deadlock",
+  );
+  const dependencyDeadlockFindings = designLevelFindings.filter(
+    (finding) => finding.classification === "dependency-deadlock",
+  );
+  const unexplainedBlockedReview = reviewWorkers.some(
+    (worker) =>
+      worker.result.verdict === "blocked" &&
+      (worker.result.findings || []).length === 0,
+  );
+  if (
+    initialResult.missingWorkers.length > 0 ||
+    initialResult.humanGate ||
+    initialResult.reportedScopeViolations.length > 0 ||
+    nonPatchFindings.length > 0 ||
+    unexplainedBlockedReview
+  ) {
+    const criticFindingDriven =
+      nonPatchFindings.length > 0 &&
+      initialResult.missingWorkers.length === 0 &&
+      initialResult.reportedScopeViolations.length === 0 &&
+      !unexplainedBlockedReview;
+    writeTransitionCheckpoint({
+      id: `${section.id}:review-escalation`,
+      title: `${section.title} review escalation`,
+      status: "blocked",
+      actor: criticFindingDriven ? "critic" : "system",
+      fromState: "implementation-review",
+      toState: designLevelFindings.length > 0
+        ? "redesign-candidate"
+        : "blocked",
+      workItemIds: [section.id],
+      rationale:
+        nonPatchFindings.length > 0
+          ? "Independent review found evidence that is not safely repairable as a bounded patch."
+          : "Independent review is incomplete, human-gated, or reported a scope violation.",
+      evidenceRefs: reviewWorkers.flatMap((worker) =>
+        (worker.result.findings || []).map((finding) => finding.evidence),
+      ),
+    });
+    return {
+      ...initialResult,
+      repairApplied: false,
+      designEscalationSuggested: designLevelFindings.length > 0,
+      dependencyDeadlockSuggested: dependencyDeadlockFindings.length > 0,
+    };
+  }
+
+  const needsRepair = initialResult.verificationBlocked || findings.length > 0;
+  if (!needsRepair) {
+    return {
+      ...initialResult,
+      repairApplied: false,
+      designEscalationSuggested: false,
+    };
+  }
+
+  writeTransitionCheckpoint({
+    id: `${section.id}:repair-start`,
+    title: `${section.title} bounded repair`,
+    status: "running",
+    actor: "orchestrator",
+    fromState: "implementation-review",
+    toState: "patch-repair",
+    workItemIds: [section.id],
+    rationale: initialResult.verificationBlocked
+      ? "Focused verification failed or was incomplete and critics found no approach-level reason to redesign."
+      : "Independent critics reported only patch-level findings.",
+    evidenceRefs: findings.map((finding) => finding.evidence),
+  });
+
+  const originalOwner = initialResult.workers.find(
+    (worker) => worker.role === "owner",
+  )?.result;
+  const repair = await selectedAgent(
+    section,
+    "owner",
+    `Role: repair-owner
+Production unit: ${section.title}
+Section objective: ${section.objective}
+Approved oracle closure dependency: ${JSON.stringify(section.dependsOn || [])}
+Owned mutation paths: ${JSON.stringify(section.ownedPaths || [])}
+Original owner result: ${JSON.stringify(originalOwner)}
+Independent patch-level findings: ${JSON.stringify(findings)}
+Verification blocked: ${initialResult.verificationBlocked === true ? "yes" : "no"}
+${skillsInstruction(section)}
+
+Repair only the concrete patch-level findings and failed or missing verification in this production unit. Do not redesign the approach, weaken the approved acceptance closure, or absorb sibling work. If the evidence reveals an approach-level or human decision instead, make no speculative patch and return that unresolved risk explicitly. Return exact changed files and fresh verification results.`,
+    `${section.id}:repair-owner`,
+    taskResultSchema,
+  );
+  writeVerificationCheckpoints(section, repair, "repair-verification");
+  const repairReportedScopeViolations = reportedScopeViolationsFor(
+    section,
+    repair,
+  );
+  const repairVerificationBlocked =
+    verificationBlockedFor(section, repair) ||
+    repairReportedScopeViolations.length > 0;
+  writeTransitionCheckpoint({
+    id: `${section.id}:repair-result`,
+    title: `${section.title} repair result`,
+    status: repairVerificationBlocked ? "blocked" : "succeeded",
+    actor: "orchestrator",
+    fromState: "patch-repair",
+    toState: repairVerificationBlocked ? "blocked" : "reviewed-and-verified",
+    workItemIds: [section.id],
+    rationale: repairVerificationBlocked
+      ? "Fresh repair verification or owned-path checks did not clear the unit."
+      : "The bounded repair completed with fresh verification and no reported owned-path violation.",
+    evidenceRefs: (repair.verifications || []).map(
+      (verification) => verification.command,
+    ),
+  });
+  return {
+    ...initialResult,
+    status: repairVerificationBlocked ? "blocked" : "completed",
+    workers: [
+      ...initialResult.workers,
+      { role: "repair-owner", result: repair },
+    ],
+    repairApplied: true,
+    repairedFindingSummaries: findings.map((finding) => finding.summary),
+    designEscalationSuggested: false,
+    verificationBlocked: repairVerificationBlocked,
+    reportedScopeViolations: repairReportedScopeViolations,
+  };
+}
+
 async function executeRedTeamSection(section) {
   const criticRoles = section.workerRoles.slice(0, -1);
   const criticResults = await parallel(
-    criticRoles.map(
-      (role) => async () => {
-        try {
-          return await selectedAgent(
-            section,
-            role,
-            `Role: ${role}
+    criticRoles.map((role) => async () => {
+      try {
+        return await selectedAgent(
+          section,
+          role,
+          `Role: ${role}
 High-risk section: ${section.title}
 Section objective: ${section.objective}
 Parent objective: ${args.objective}
@@ -1235,14 +1859,13 @@ Context: ${args.context || "None supplied."}
 	${securityTestingInstruction(section)}
 
 	Run a findings-only adversarial pass. Do not edit files or external state. Do not spawn other agents. Test both whether the proposed work introduces issues and whether it actually solves the stated problem. Every finding needs concrete evidence; reject plausible but unverified holes.`,
-            `${section.id}:${role}`,
-            reviewResultSchema,
-          );
-        } catch {
-          return null;
-        }
-      },
-    ),
+          `${section.id}:${role}`,
+          reviewResultSchema,
+        );
+      } catch {
+        return null;
+      }
+    }),
   );
 
   const survivingCritiques = [];
@@ -1314,10 +1937,12 @@ Verification contract:
     section.verificationRequired === true &&
     (synthesis === null ||
       synthesis.verifications.some(
-        (verification) => verification.status === "failed" || verification.failed > 0,
+        (verification) =>
+          verification.status === "failed" || verification.failed > 0,
       ) ||
       !synthesis.verifications.some(
-        (verification) => verification.status === "passed" && verification.failed === 0,
+        (verification) =>
+          verification.status === "passed" && verification.failed === 0,
       ));
 
   return {
@@ -1339,8 +1964,8 @@ const effectiveAllowMutations =
   lifecycleStage === null || lifecycleStage === "shakedown-build"
     ? args.allowMutations === true
     : lifecycleStage === "post-shakedown-availability" &&
-        args.psaMode === "remediate" &&
-        args.allowMutations === true;
+      args.psaMode === "remediate" &&
+      args.allowMutations === true;
 
 if (args.psaMode && lifecycleStage !== "post-shakedown-availability") {
   phase("Deliver");
@@ -1348,7 +1973,7 @@ if (args.psaMode && lifecycleStage !== "post-shakedown-availability") {
     contractVersion:
       lifecycleStage === null
         ? "workflow-router.pipeline-result.v1"
-        : "workflow-router.pipeline-result.v2",
+        : "workflow-router.pipeline-result.v3",
     status: "blocked",
     plan: null,
     budget: budget(),
@@ -1361,7 +1986,9 @@ if (args.psaMode && lifecycleStage !== "post-shakedown-availability") {
             gateState: "psa-mode-outside-availability",
             contractRef: lifecycleContractRef(args.mvpContract),
           },
-    limitations: ["psaMode is accepted only during post-shakedown-availability."],
+    limitations: [
+      "psaMode is accepted only during post-shakedown-availability.",
+    ],
   };
 }
 
@@ -1383,23 +2010,29 @@ Define what a shakedown-ready MVP should be for a controlled, reduced-risk custo
         schema: architectProposalSchema,
       }),
     () =>
-      agent(`Role: systems, data, and integration architect\n${sharedDesignPrompt}`, {
-        label: "MVP systems architecture",
-        phase: "Define MVP",
-        provider: "codex",
-        model: "gpt-5.6-sol",
-        reasoningLevel: "high",
-        schema: architectProposalSchema,
-      }),
+      agent(
+        `Role: systems, data, and integration architect\n${sharedDesignPrompt}`,
+        {
+          label: "MVP systems architecture",
+          phase: "Define MVP",
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          reasoningLevel: "high",
+          schema: architectProposalSchema,
+        },
+      ),
     () =>
-      agent(`Role: shakedown safety, operations, and reversibility architect\n${sharedDesignPrompt}`, {
-        label: "MVP shakedown architecture",
-        phase: "Define MVP",
-        provider: "codex",
-        model: "gpt-5.6-sol",
-        reasoningLevel: "high",
-        schema: architectProposalSchema,
-      }),
+      agent(
+        `Role: shakedown safety, operations, and reversibility architect\n${sharedDesignPrompt}`,
+        {
+          label: "MVP shakedown architecture",
+          phase: "Define MVP",
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          reasoningLevel: "high",
+          schema: architectProposalSchema,
+        },
+      ),
   ]);
   const successfulArchitects = architectResults.filter(Boolean);
   if (successfulArchitects.length !== 3) {
@@ -1412,7 +2045,7 @@ Define what a shakedown-ready MVP should be for a controlled, reduced-risk custo
     );
     phase("Deliver");
     return {
-      contractVersion: "workflow-router.pipeline-result.v2",
+      contractVersion: "workflow-router.pipeline-result.v3",
       status: "blocked",
       plan: null,
       budget: budget(),
@@ -1427,7 +2060,9 @@ Define what a shakedown-ready MVP should be for a controlled, reduced-risk custo
           requiredEvidenceRefs: [],
         },
       },
-      limitations: ["A shakedown contract is not synthesized from an incomplete architecture cohort."],
+      limitations: [
+        "A shakedown contract is not synthesized from an incomplete architecture cohort.",
+      ],
     };
   }
 
@@ -1453,17 +2088,22 @@ Synthesize a single draft contract for human review. Reconcile disagreements exp
     id: "selected-plan",
     title: "Draft shakedown-ready MVP contract",
     status: "blocked",
-    summary: "Three architecture perspectives were synthesized; explicit human approval is required before build admission.",
+    summary:
+      "Three architecture perspectives were synthesized; explicit human approval is required before build admission.",
     detail: JSON.stringify({ lifecycleStage, contractDraft }, null, 2),
     items: successfulArchitects.map((proposal, index) => ({
       id: `architecture-perspective-${index + 1}`,
       title: proposal.perspective,
       objective: proposal.recommendations.join("\n"),
-      detail: JSON.stringify({
-        risks: proposal.risks,
-        openQuestions: proposal.openQuestions,
-        contractSuggestions: proposal.contractSuggestions,
-      }, null, 2),
+      detail: JSON.stringify(
+        {
+          risks: proposal.risks,
+          openQuestions: proposal.openQuestions,
+          contractSuggestions: proposal.contractSuggestions,
+        },
+        null,
+        2,
+      ),
       ticketRef: null,
     })),
   });
@@ -1476,7 +2116,7 @@ Synthesize a single draft contract for human review. Reconcile disagreements exp
   );
   phase("Deliver");
   return {
-    contractVersion: "workflow-router.pipeline-result.v2",
+    contractVersion: "workflow-router.pipeline-result.v3",
     status: "awaiting-human-mvp-approval",
     plan: { contractDraft, architecturePerspectives: successfulArchitects },
     budget: budget(),
@@ -1491,7 +2131,9 @@ Synthesize a single draft contract for human review. Reconcile disagreements exp
         requiredEvidenceRefs: [],
       },
     },
-    limitations: ["Architecture agents can draft and challenge the MVP contract but cannot approve it."],
+    limitations: [
+      "Architecture agents can draft and challenge the MVP contract but cannot approve it.",
+    ],
   };
 }
 
@@ -1504,7 +2146,7 @@ const routerDecisionEvidence = humanDecisionEvidenceForRouter();
 const stagedResultVersion =
   lifecycleStage === null
     ? "workflow-router.pipeline-result.v1"
-    : "workflow-router.pipeline-result.v2";
+    : "workflow-router.pipeline-result.v3";
 const contractRef = lifecycleContractRef(args.mvpContract);
 
 if (approvedRouterContract !== null) {
@@ -1532,7 +2174,9 @@ if (approvedRouterContract !== null) {
         gateState: "duplicate-contract-item-ids",
         contractRef,
       },
-      limitations: ["No planner or worker calls were admitted from an ambiguous contract."],
+      limitations: [
+        "No planner or worker calls were admitted from an ambiguous contract.",
+      ],
     };
   }
 }
@@ -1566,7 +2210,9 @@ if (
         requiredEvidenceRefs: [],
       },
     },
-    limitations: ["No planning or worker calls were admitted without matching human approval."],
+    limitations: [
+      "No planning or worker calls were admitted without matching human approval.",
+    ],
   };
 }
 
@@ -1604,7 +2250,11 @@ if (
 
 if (lifecycleStage === "design-stability") {
   if (
-    !decisionMatches(args.shakedownLaunchApproval, args.mvpContract, "approved") ||
+    !decisionMatches(
+      args.shakedownLaunchApproval,
+      args.mvpContract,
+      "approved",
+    ) ||
     !Array.isArray(args.shakedownEvidenceRefs) ||
     args.shakedownEvidenceRefs.length === 0
   ) {
@@ -1632,7 +2282,9 @@ if (lifecycleStage === "design-stability") {
           requiredEvidenceRefs: [],
         },
       },
-      limitations: ["The design-stability assessor does not infer customer evidence."],
+      limitations: [
+        "The design-stability assessor does not infer customer evidence.",
+      ],
     };
   }
   phase("Stability");
@@ -1693,7 +2345,8 @@ Assess whether the evidence suggests incremental hardening or a material change 
       stage: lifecycleStage,
       gateState,
       contractRef,
-      humanDecisionRef: humanDecision === null ? null : humanDecision.decisionRef,
+      humanDecisionRef:
+        humanDecision === null ? null : humanDecision.decisionRef,
       humanDecisionEvidenceRef:
         humanDecision === null ? null : humanDecision.evidenceRef,
       nextGate: matchingStable
@@ -1714,12 +2367,16 @@ Assess whether the evidence suggests incremental hardening or a material change 
               requiredEvidenceRefs: args.shakedownEvidenceRefs,
             },
     },
-    limitations: ["The assessor is advisory; only the supplied human decision controls PSA admission."],
+    limitations: [
+      "The assessor is advisory; only the supplied human decision controls PSA admission.",
+    ],
   };
 }
 
 if (lifecycleStage === "post-shakedown-availability") {
-  if (!decisionMatches(args.designStabilityDecision, args.mvpContract, "stable")) {
+  if (
+    !decisionMatches(args.designStabilityDecision, args.mvpContract, "stable")
+  ) {
     const materialChange = decisionMatches(
       args.designStabilityDecision,
       args.mvpContract,
@@ -1732,7 +2389,9 @@ if (lifecycleStage === "post-shakedown-availability") {
       materialChange
         ? "Material design-changing feedback requires a revised MVP contract before PSA."
         : "A matching human design-stability decision is required before PSA.",
-      materialChange ? "redesign-required" : "awaiting-human-design-stability-decision",
+      materialChange
+        ? "redesign-required"
+        : "awaiting-human-design-stability-decision",
     );
     phase("Deliver");
     return {
@@ -1757,7 +2416,9 @@ if (lifecycleStage === "post-shakedown-availability") {
           requiredEvidenceRefs: args.shakedownEvidenceRefs || [],
         },
       },
-      limitations: ["PSA launched zero workers because the human stability gate did not pass."],
+      limitations: [
+        "PSA launched zero workers because the human stability gate did not pass.",
+      ],
     };
   }
   if (!args.psaMode) {
@@ -1778,7 +2439,9 @@ if (lifecycleStage === "post-shakedown-availability") {
           requiredEvidenceRefs: args.shakedownEvidenceRefs || [],
         },
       },
-      limitations: ["PSA mode is explicit so audits and mutations cannot be conflated."],
+      limitations: [
+        "PSA mode is explicit so audits and mutations cannot be conflated.",
+      ],
     };
   }
   if (args.psaMode === "availability-decision") {
@@ -1943,43 +2606,57 @@ checkpoint({
   title: `Selected ${plan.route.lane} plan`,
   status: plan.truncation === null ? "succeeded" : "blocked",
   summary: `${plan.sections.length} bounded ${plan.sections.length === 1 ? "section" : "sections"}; ${plan.totals.requestedAgentCalls} requested worker calls.`,
-  detail: JSON.stringify({
-    contractVersion: plan.contractVersion,
-    objective: plan.objective,
-    route: plan.route,
-    policyVersion: plan.policyVersion,
-    lifecycleStage,
-    psaMode: args.psaMode || null,
-    contractRef,
-    humanDecisionRefs: routerDecisionEvidence.map((decision) => decision.evidenceRefs).flat(),
-    truncation: plan.truncation,
-    totals: plan.totals,
-    warnings: plan.warnings,
-    validation: plan.validation || null,
-  }, null, 2),
+  detail: JSON.stringify(
+    {
+      contractVersion: plan.contractVersion,
+      objective: plan.objective,
+      route: plan.route,
+      policyVersion: plan.policyVersion,
+      lifecycleStage,
+      psaMode: args.psaMode || null,
+      contractRef,
+      humanDecisionRefs: routerDecisionEvidence
+        .map((decision) => decision.evidenceRefs)
+        .flat(),
+      truncation: plan.truncation,
+      totals: plan.totals,
+      warnings: plan.warnings,
+      validation: plan.validation || null,
+    },
+    null,
+    2,
+  ),
   items: plan.sections.map((section) => ({
     id: section.id,
     title: section.title,
     objective: section.objective,
-    detail: JSON.stringify({
-      coverage: section.coverage,
-      riskTriggers: section.riskTriggers,
-      riskReason: section.riskReason,
-      requiredSkills: section.requiredSkills,
-      workerRoles: section.workerRoles,
-      agentCalls: section.agentCalls,
-      findingsOnly: section.findingsOnly,
-      humanGate: section.humanGate,
-      assuranceClass: section.assuranceClass || null,
-      psaComponent: section.psaComponent || "none",
-      dueStage: section.dueStage || null,
-      dependsOn: section.dependsOn || [],
-      mutationIntent: section.mutationIntent || null,
-      contractItemRefs: section.contractItemRefs || [],
-      verificationRequired: section.verificationRequired === true,
-      exitCriterion: section.exitCriterion || null,
-    }, null, 2),
+    detail: JSON.stringify(
+      {
+        coverage: section.coverage,
+        riskTriggers: section.riskTriggers,
+        riskReason: section.riskReason,
+        requiredSkills: section.requiredSkills,
+        workerRoles: section.workerRoles,
+        agentCalls: section.agentCalls,
+        findingsOnly: section.findingsOnly,
+        humanGate: section.humanGate,
+        assuranceClass: section.assuranceClass || null,
+        psaComponent: section.psaComponent || "none",
+        dueStage: section.dueStage || null,
+        dependsOn: section.dependsOn || [],
+        mutationIntent: section.mutationIntent || null,
+        contractItemRefs: section.contractItemRefs || [],
+        verificationRequired: section.verificationRequired === true,
+        exitCriterion: section.exitCriterion || null,
+        executionKind: section.executionKind || null,
+        ownedPaths: section.ownedPaths || [],
+      },
+      null,
+      2,
+    ),
     ticketRef: null,
+    dependsOn: section.dependsOn || [],
+    nodeType: "work",
   })),
 });
 
@@ -2010,7 +2687,7 @@ if ((args.executionMode || "plan-only") === "plan-only") {
       "Taste-heavy and authorized security-testing profiles route to Fable; bounded implementation owners route to Luna; judgment roles and unclassified work route to Sol.",
       "Security-testing authorization and read-only behavior are instruction-guided; use a restricted environment when capability isolation is required.",
       "Workers inherit the origin filesystem permission mode; read-only behavior is instruction-guided rather than capability-isolated.",
-      "Mutating owner sections require allowMutations: true and are serialized in the shared workspace.",
+      "Mutating sections require allowMutations: true and serialize by default. concurrentMutations: true opts shakedown production units into best-effort fan-out after oracle approval; declared ownedPaths and changedFiles are worker-reported safeguards, not authoritative filesystem isolation.",
     ],
   };
 }
@@ -2050,18 +2727,40 @@ for (const section of plan.sections) {
     ticketRef: null,
     changedFiles: [],
     blocker: null,
+    dependsOn: section.dependsOn || [],
+    nodeType: "work",
   });
+}
+if (lifecycleStage === "shakedown-build") {
+  writeGateCheckpoint(
+    "gate:shakedown-promotion",
+    "Shared shakedown promotion gate",
+    "pending",
+    "Awaiting oracle approval and every independent production-unit pipeline.",
+    null,
+    plan.sections.map((section) => section.id),
+  );
 }
 
 phase("Admit");
 const beforeExecution = budget();
-const runtimeWorkerCapacity = Math.max(0, beforeExecution.maxAgentCalls - beforeExecution.agentCalls);
-const workerCallLimit = Math.min(args.maxWorkerCalls || runtimeWorkerCapacity, runtimeWorkerCapacity);
+const runtimeWorkerCapacity = Math.max(
+  0,
+  beforeExecution.maxAgentCalls - beforeExecution.agentCalls,
+);
+const finalGateAgentReserve = lifecycleStage === "shakedown-build" ? 2 : 0;
+const requestedWorkerCapacity = args.maxWorkerCalls || runtimeWorkerCapacity;
+const workerCallLimit = Math.min(
+  Math.max(0, requestedWorkerCapacity - finalGateAgentReserve),
+  Math.max(0, runtimeWorkerCapacity - finalGateAgentReserve),
+);
 function sectionIsDueInCurrentStage(section) {
   if (lifecycleStage === null) return true;
   if (section.assuranceClass === "nondeferrable-safety") return true;
   if (lifecycleStage === "shakedown-build") {
-    return ["mvp-functionality", "low-regret-psa-prep"].includes(section.assuranceClass);
+    return ["mvp-functionality", "low-regret-psa-prep"].includes(
+      section.assuranceClass,
+    );
   }
   if (lifecycleStage === "customer-shakedown") {
     return section.assuranceClass === "shakedown-learning";
@@ -2097,6 +2796,10 @@ for (const section of deferredSections) {
     ticketRef: null,
     changedFiles: [],
     blocker: null,
+    dependsOn:
+      plan.sections.find((candidate) => candidate.id === section.sectionId)
+        ?.dependsOn || [],
+    nodeType: "work",
   });
 }
 
@@ -2109,14 +2812,17 @@ const prioritizedSections = dueSections
         (args.psaMode === "audit" || args.psaMode === "re-audit"));
     return (
       Number(mandatory(right.section)) - Number(mandatory(left.section)) ||
-      coveragePriority(right.section.coverage) - coveragePriority(left.section.coverage) ||
+      coveragePriority(right.section.coverage) -
+        coveragePriority(left.section.coverage) ||
       left.index - right.index
     );
   });
 const admittedIds = [];
 const admittedIdSet = new Set();
 const skippedSections = [];
-const dueSectionById = new Map(dueSections.map((section) => [section.id, section]));
+const dueSectionById = new Map(
+  dueSections.map((section) => [section.id, section]),
+);
 let remainingWorkerCalls = workerCallLimit;
 for (const entry of prioritizedSections) {
   const section = entry.section;
@@ -2139,7 +2845,10 @@ for (const entry of prioritizedSections) {
     closure.push(candidate);
   };
   collectClosure(section);
-  const closureCalls = closure.reduce((sum, candidate) => sum + candidate.agentCalls, 0);
+  const closureCalls = closure.reduce(
+    (sum, candidate) => sum + candidate.agentCalls,
+    0,
+  );
   if (dependencyAvailable && closureCalls <= remainingWorkerCalls) {
     for (const candidate of closure) {
       admittedIds.push(candidate.id);
@@ -2152,7 +2861,9 @@ for (const entry of prioritizedSections) {
       title: section.title,
       coverage: section.coverage,
       requestedAgentCalls: section.agentCalls,
-      reason: dependencyAvailable ? "agent-call-budget" : "dependency-not-admitted",
+      reason: dependencyAvailable
+        ? "agent-call-budget"
+        : "dependency-not-admitted",
     });
     log(
       dependencyAvailable
@@ -2161,7 +2872,9 @@ for (const entry of prioritizedSections) {
     );
   }
 }
-let admittedSections = dueSections.filter((section) => admittedIds.includes(section.id));
+let admittedSections = dueSections.filter((section) =>
+  admittedIds.includes(section.id),
+);
 
 for (const section of skippedSections) {
   checkpoint({
@@ -2173,6 +2886,8 @@ for (const section of skippedSections) {
     ticketRef: null,
     changedFiles: [],
     blocker: section.reason,
+    dependsOn: dueSectionById.get(section.sectionId)?.dependsOn || [],
+    nodeType: "work",
   });
 }
 for (const section of admittedSections) {
@@ -2185,14 +2900,36 @@ for (const section of admittedSections) {
     ticketRef: null,
     changedFiles: [],
     blocker: null,
+    dependsOn: section.dependsOn || [],
+    nodeType: "work",
   });
 }
+
+writeTransitionCheckpoint({
+  id: "transition:admission",
+  title: "Execution admission",
+  status: skippedSections.length === 0 ? "succeeded" : "blocked",
+  actor: "orchestrator",
+  fromState: "selected-plan",
+  toState:
+    skippedSections.length === 0 ? "unit-pipelines" : "partial-admission",
+  workItemIds: admittedSections.map((section) => section.id),
+  rationale:
+    skippedSections.length === 0
+      ? "Every due dependency closure fit the worker budget and was admitted."
+      : `${skippedSections.length} due section(s) could not clear dependency, budget, or human-gate admission.`,
+  evidenceRefs: skippedSections.map(
+    (section) => `${section.sectionId}:${section.reason}`,
+  ),
+});
 
 if (
   dueSections.some(sectionMayMutate) &&
   dueSections.some((section) => section.coverage === "red-team")
 ) {
-  const gatedSections = admittedSections.filter((section) => section.coverage !== "red-team");
+  const gatedSections = admittedSections.filter(
+    (section) => section.coverage !== "red-team",
+  );
   for (const section of gatedSections) {
     skippedSections.push({
       sectionId: section.id,
@@ -2210,10 +2947,16 @@ if (
       ticketRef: null,
       changedFiles: [],
       blocker: "red-team-human-gate",
+      dependsOn: section.dependsOn || [],
+      nodeType: "work",
     });
-    log(`Skipped ${section.id} (${section.coverage}): a planned red-team section requires human review before mutations continue.`);
+    log(
+      `Skipped ${section.id} (${section.coverage}): a planned red-team section requires human review before mutations continue.`,
+    );
   }
-  admittedSections = admittedSections.filter((section) => section.coverage === "red-team");
+  admittedSections = admittedSections.filter(
+    (section) => section.coverage === "red-team",
+  );
 }
 
 function beginTrackedSection(section) {
@@ -2226,14 +2969,25 @@ function beginTrackedSection(section) {
     ticketRef: null,
     changedFiles: [],
     blocker: null,
+    dependsOn: section.dependsOn || [],
+    nodeType: "work",
   });
 }
 
 function finishTrackedSection(section, result) {
-  const ownerWorker =
+  const changedFiles =
     result === null
-      ? null
-      : result.workers.find((worker) => worker.role === "owner") || null;
+      ? []
+      : [
+          ...new Set(
+            result.workers
+              .filter(
+                (worker) =>
+                  worker.role === "owner" || worker.role === "repair-owner",
+              )
+              .flatMap((worker) => worker.result.changedFiles || []),
+          ),
+        ];
   const status =
     result === null
       ? "failed"
@@ -2252,13 +3006,15 @@ function finishTrackedSection(section, result) {
         ? "Section execution failed before a structured result was returned."
         : `Section finished with ${result.status} coverage status.`,
     ticketRef: null,
-    changedFiles: ownerWorker === null ? [] : ownerWorker.result.changedFiles,
+    changedFiles,
     blocker:
       status === "blocked"
         ? "Review findings, missing workers, or a required human gate prevented completion."
         : status === "failed"
           ? "Section execution failed."
           : null,
+    dependsOn: section.dependsOn || [],
+    nodeType: "work",
   });
 }
 
@@ -2269,7 +3025,9 @@ async function executeTrackedSection(section) {
     result =
       section.coverage === "red-team"
         ? await executeRedTeamSection(section)
-        : await executeNormalSection(section);
+        : section.executionKind === "production-unit"
+          ? await executeProductionUnitSection(section)
+          : await executeNormalSection(section);
     return result;
   } finally {
     finishTrackedSection(section, result);
@@ -2278,7 +3036,9 @@ async function executeTrackedSection(section) {
 
 phase("Execute");
 const executionResultsById = new Map();
-const remainingExecutionIds = new Set(admittedSections.map((section) => section.id));
+const remainingExecutionIds = new Set(
+  admittedSections.map((section) => section.id),
+);
 while (remainingExecutionIds.size > 0) {
   const readySections = admittedSections.filter(
     (section) =>
@@ -2288,7 +3048,9 @@ while (remainingExecutionIds.size > 0) {
       ),
   );
   if (readySections.length === 0) {
-    for (const section of admittedSections.filter((candidate) => remainingExecutionIds.has(candidate.id))) {
+    for (const section of admittedSections.filter((candidate) =>
+      remainingExecutionIds.has(candidate.id),
+    )) {
       const result = {
         sectionId: section.id,
         coverage: section.coverage,
@@ -2309,7 +3071,8 @@ while (remainingExecutionIds.size > 0) {
   const executableSections = [];
   for (const section of readySections) {
     const failedDependencies = (section.dependsOn || []).filter(
-      (dependencyId) => executionResultsById.get(dependencyId)?.status !== "completed",
+      (dependencyId) =>
+        executionResultsById.get(dependencyId)?.status !== "completed",
     );
     if (failedDependencies.length === 0) {
       executableSections.push(section);
@@ -2331,46 +3094,339 @@ while (remainingExecutionIds.size > 0) {
     remainingExecutionIds.delete(section.id);
   }
 
-  const ownerStates = new Map();
-  for (const section of executableSections.filter(sectionMayMutate)) {
-    beginTrackedSection(section);
-    let owner = null;
-    try {
-      owner = await executeNormalOwner(section);
-    } catch {}
-    ownerStates.set(section.id, owner);
+  const waveResultsById = new Map();
+  const serializedMutations = executableSections.filter(
+    (section) =>
+      sectionMayMutate(section) &&
+      (section.executionKind !== "production-unit" ||
+        args.concurrentMutations !== true),
+  );
+  for (const section of serializedMutations) {
+    waveResultsById.set(section.id, await executeTrackedSection(section));
   }
-  const waveResults =
-    executableSections.length === 0
+  const concurrentSections = executableSections.filter(
+    (section) => !serializedMutations.includes(section),
+  );
+  const concurrentResults =
+    concurrentSections.length === 0
       ? []
-      : await parallel(executableSections.map((section) => async () => {
-      if (!sectionMayMutate(section)) return executeTrackedSection(section);
-      const owner = ownerStates.get(section.id) || null;
-      let result = null;
-      try {
-        if (owner === null) return null;
-        result = await reviewNormalSection(section, owner);
-        return result;
-      } finally {
-        finishTrackedSection(section, result);
-      }
-        }));
+      : await pipeline(concurrentSections, async (section) =>
+          executeTrackedSection(section),
+        );
+  for (let index = 0; index < concurrentSections.length; index += 1) {
+    waveResultsById.set(concurrentSections[index].id, concurrentResults[index]);
+  }
+  const waveResults = executableSections.map((section) =>
+    waveResultsById.get(section.id),
+  );
   for (let index = 0; index < executableSections.length; index += 1) {
     executionResultsById.set(executableSections[index].id, waveResults[index]);
     remainingExecutionIds.delete(executableSections[index].id);
   }
 }
-const rawResults = admittedSections.map((section) => executionResultsById.get(section.id));
-const sectionResults = rawResults.map((result, index) =>
-  result || {
-    sectionId: admittedSections[index].id,
-    coverage: admittedSections[index].coverage,
-    status: "failed",
-    workers: [],
-    missingWorkers: [...admittedSections[index].workerRoles],
-    humanGate: admittedSections[index].humanGate,
-  },
+const rawResults = admittedSections.map((section) =>
+  executionResultsById.get(section.id),
 );
+const sectionResults = rawResults.map(
+  (result, index) =>
+    result || {
+      sectionId: admittedSections[index].id,
+      coverage: admittedSections[index].coverage,
+      status: "failed",
+      workers: [],
+      missingWorkers: [...admittedSections[index].workerRoles],
+      humanGate: admittedSections[index].humanGate,
+    },
+);
+
+function findingsFromSectionResult(result) {
+  return (result.workers || []).flatMap((worker) =>
+    Array.isArray(worker.result?.findings) ? worker.result.findings : [],
+  );
+}
+
+let promotionGate = null;
+let promotionDecisionActor = "system";
+let designEscalation = null;
+if (lifecycleStage === "shakedown-build") {
+  const promotionSectionIds = dueSections.map((section) => section.id);
+  const resultBySectionId = new Map(
+    sectionResults.map((result) => [result.sectionId, result]),
+  );
+  const designLevelSignals = sectionResults.flatMap((result) =>
+    findingsFromSectionResult(result)
+      .filter(
+        (finding) =>
+          finding.classification === "approach-level" ||
+          finding.classification === "dependency-deadlock",
+      )
+      .map((finding) => ({ sectionId: result.sectionId, finding })),
+  );
+  const dependencyDeadlockSignals = designLevelSignals.filter(
+    (signal) => signal.finding.classification === "dependency-deadlock",
+  );
+  const designSectionIds = new Set(
+    designLevelSignals.map((signal) => signal.sectionId),
+  );
+  const hardPromotionBlockers = promotionSectionIds.flatMap((sectionId) => {
+    const section = dueSectionById.get(sectionId);
+    const result = resultBySectionId.get(sectionId);
+    const blockers = [];
+    if (!result) return [{ sectionId, reason: "missing-result" }];
+    if (!Array.isArray(result.workers) || result.workers.length === 0) {
+      blockers.push({ sectionId, reason: "missing-workers" });
+    }
+    if ((result.missingWorkers || []).length > 0) {
+      blockers.push({ sectionId, reason: "incomplete-review" });
+    }
+    if (result.status !== "completed" && !designSectionIds.has(sectionId)) {
+      blockers.push({ sectionId, reason: `section-${result.status}` });
+    }
+    if (
+      result.verificationBlocked === true &&
+      !designSectionIds.has(sectionId)
+    ) {
+      blockers.push({ sectionId, reason: "verification-blocked" });
+    }
+    if (
+      result.blockingHumanGate === true ||
+      (result.blockingHumanGate === undefined && result.humanGate === true)
+    ) {
+      blockers.push({ sectionId, reason: "human-gate" });
+    }
+    if ((result.reportedScopeViolations || []).length > 0) {
+      blockers.push({ sectionId, reason: "reported-scope-violation" });
+    }
+    if (result.dependencyBlocked === true) {
+      blockers.push({ sectionId, reason: "dependency-blocked" });
+    }
+    if (
+      section?.verificationRequired === true &&
+      result.verificationBlocked !== false &&
+      !designSectionIds.has(sectionId)
+    ) {
+      blockers.push({ sectionId, reason: "verification-evidence-missing" });
+    }
+    return blockers;
+  });
+  if (hardPromotionBlockers.length > 0) {
+    const affectedSectionIds = [
+      ...new Set(hardPromotionBlockers.map((blocker) => blocker.sectionId)),
+    ];
+    promotionGate = {
+      verdict: "blocked",
+      rationale:
+        "Every launch-required shakedown section must have complete workers, verification, review, and gate evidence before promotion synthesis can run.",
+      findings: summarizeBoundedStrings(
+        hardPromotionBlockers.map(
+          (blocker) => `${blocker.sectionId}: ${blocker.reason}`,
+        ),
+        32,
+        "promotion blockers",
+      ),
+      affectedSectionIds,
+      designFeedback: [],
+    };
+  } else {
+    const scopeViolationSignals = sectionResults.flatMap((result) =>
+      (result.reportedScopeViolations || []).map((changedFile) => ({
+        sectionId: result.sectionId,
+        changedFile,
+      })),
+    );
+    try {
+      promotionGate = await agent(
+        `Role: cross-unit shakedown promotion synthesizer
+Approved shakedown contract: ${JSON.stringify(args.mvpContract)}
+Design invalidation signals: ${JSON.stringify(args.mvpContract?.designInvalidationSignals || [])}
+Oracle and production-unit results: ${JSON.stringify(sectionResults)}
+Design-level signals already classified by independent critics: ${JSON.stringify(designLevelSignals)}
+Dependency-deadlock signals: ${JSON.stringify(dependencyDeadlockSignals)}
+Owned-path violations detected by deterministic policy: ${JSON.stringify(scopeViolationSignals)}
+
+Synthesize across every work stream without editing files. Return promote only when the approved oracle closure and all production units are mutually coherent and verified. Return repair only for bounded patch-level residue. Return recommend-redesign when findings invalidate a shared assumption, conflict across arms, match a design-invalidation signal, cannot be repaired coherently inside one unit, or expose a dependency deadlock where the gate requires a production-owned component whose owning unit it simultaneously defers or prohibits. For a dependency deadlock, identify the minimum production walking skeleton that can invert the dependency without fake adapters, but leave scope authorization to the human. Return blocked for missing evidence or a human-gate issue. Critics classify evidence; you reconcile it, but you do not make the human redesign decision.`,
+        {
+          label: "Shakedown promotion review",
+          phase: "Execute",
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          reasoningLevel: "high",
+          schema: promotionGateResultSchema,
+        },
+      );
+      promotionDecisionActor = "synthesizer";
+      if (scopeViolationSignals.length > 0) {
+        promotionDecisionActor = "system";
+        promotionGate = {
+          verdict: "blocked",
+          rationale:
+            "At least one worker reported changing a file outside its declared ownedPaths, so promotion is blocked.",
+          findings: summarizeBoundedStrings(
+            scopeViolationSignals.map(
+              (signal) => `${signal.sectionId}: ${signal.changedFile}`,
+            ),
+            32,
+            "scope violations",
+          ),
+          affectedSectionIds: [
+            ...new Set(scopeViolationSignals.map((signal) => signal.sectionId)),
+          ],
+          designFeedback: [],
+        };
+      } else if (
+        designLevelSignals.length > 0 &&
+        promotionGate.verdict !== "recommend-redesign"
+      ) {
+        promotionDecisionActor = "system";
+        promotionGate = {
+          verdict: "recommend-redesign",
+          rationale:
+            dependencyDeadlockSignals.length > 0
+              ? "Independent critics found a gate dependency deadlock, so deterministic policy forbids another repair loop or promotion."
+              : "Independent critics reported approach-level findings, so deterministic policy forbids automatic patching or promotion.",
+          findings: summarizeBoundedStrings(
+            designLevelSignals.map(
+              (signal) => `${signal.sectionId}: ${signal.finding.summary}`,
+            ),
+            32,
+            "design-level findings",
+          ),
+          affectedSectionIds: [
+            ...new Set(designLevelSignals.map((signal) => signal.sectionId)),
+          ],
+          designFeedback: summarizeBoundedStrings(
+            designLevelSignals.map((signal) => signal.finding.evidence),
+            16,
+            "design feedback items",
+          ),
+        };
+      }
+    } catch {
+      promotionGate =
+        designLevelSignals.length > 0
+          ? {
+              verdict: "recommend-redesign",
+              rationale:
+                dependencyDeadlockSignals.length > 0
+                  ? "Independent critics found a gate dependency deadlock. The synthesis call failed, but deterministic policy still forbids another repair loop or promotion."
+                  : "Independent critics reported approach-level findings. The synthesis call failed, but deterministic policy still forbids automatic patching or promotion.",
+              findings: summarizeBoundedStrings(
+                designLevelSignals.map(
+                  (signal) => `${signal.sectionId}: ${signal.finding.summary}`,
+                ),
+                32,
+                "design-level findings",
+              ),
+              affectedSectionIds: [
+                ...new Set(
+                  designLevelSignals.map((signal) => signal.sectionId),
+                ),
+              ],
+              designFeedback: summarizeBoundedStrings(
+                designLevelSignals.map((signal) => signal.finding.evidence),
+                16,
+                "design feedback items",
+              ),
+            }
+          : {
+              verdict: "blocked",
+              rationale:
+                "The cross-unit promotion synthesizer did not return a valid result.",
+              findings: ["Shared promotion synthesis is incomplete."],
+              affectedSectionIds: promotionSectionIds,
+              designFeedback: [],
+            };
+    }
+  }
+
+  writeGateCheckpoint(
+    "gate:shakedown-promotion",
+    "Shared shakedown promotion gate",
+    promotionGate.verdict === "promote" ? "succeeded" : "blocked",
+    promotionGate.rationale,
+    promotionGate.verdict === "promote" ? null : promotionGate.verdict,
+    promotionSectionIds,
+  );
+  writeTransitionCheckpoint({
+    id: "transition:shakedown-promotion",
+    title: "Shakedown promotion decision",
+    status: promotionGate.verdict === "promote" ? "succeeded" : "blocked",
+    actor: promotionDecisionActor,
+    fromState: "unit-pipelines",
+    toState: promotionGate.verdict,
+    workItemIds: promotionGate.affectedSectionIds || promotionSectionIds,
+    rationale: promotionGate.rationale,
+    evidenceRefs: promotionGate.findings || [],
+  });
+
+  if (promotionGate.verdict === "recommend-redesign") {
+    let challenge;
+    try {
+      challenge = await agent(
+        `Role: independent redesign challenger
+Approved shakedown contract: ${JSON.stringify(args.mvpContract)}
+Independent unit results: ${JSON.stringify(sectionResults)}
+Cross-unit redesign recommendation: ${JSON.stringify(promotionGate)}
+Dependency-deadlock evidence: ${JSON.stringify(dependencyDeadlockSignals)}
+
+Pressure-test whether the redesign recommendation is warranted. Look for a coherent bounded patch that preserves the approved acceptance closure, but do not invent compatibility shims, fake production adapters, or repeated repair passes that merely conceal a gate dependency deadlock. If a production-owned dependency must move earlier, challenge the minimum walking-skeleton scope and its proof boundary. Identify counterarguments and evidence gaps. Do not edit files and do not make the human decision.`,
+        {
+          label: "Challenge redesign recommendation",
+          phase: "Execute",
+          provider: "codex",
+          model: "gpt-5.6-sol",
+          reasoningLevel: "high",
+          schema: designChallengeResultSchema,
+        },
+      );
+    } catch {
+      challenge = {
+        verdict: "insufficient-evidence",
+        rationale:
+          "The independent redesign challenge did not return a valid result.",
+        counterarguments: [],
+        evidenceGaps: ["Independent challenge missing."],
+      };
+    }
+    const dependencyDeadlock = dependencyDeadlockSignals.length > 0;
+    designEscalation = {
+      kind: dependencyDeadlock ? "dependency-deadlock" : "design-invalidation",
+      recommendation: promotionGate,
+      challenge,
+      recommendedAction: dependencyDeadlock
+        ? "human-approve-bounded-walking-skeleton-or-replan"
+        : "human-decide-repair-or-redesign",
+    };
+    writeGateCheckpoint(
+      "gate:design-escalation",
+      "Human redesign decision",
+      "blocked",
+      "Review the cross-unit synthesis and independent challenge before choosing repair or a revised design.",
+      dependencyDeadlock
+        ? "awaiting-human-walking-skeleton-decision"
+        : "awaiting-human-redesign-decision",
+      ["gate:shakedown-promotion"],
+    );
+    writeTransitionCheckpoint({
+      id: "transition:human-redesign-decision",
+      title: "Human redesign decision required",
+      status: "blocked",
+      actor: "orchestrator",
+      fromState: "recommend-redesign",
+      toState: dependencyDeadlock
+        ? "awaiting-human-walking-skeleton-decision"
+        : "awaiting-human-redesign-decision",
+      workItemIds: promotionGate.affectedSectionIds || [],
+      rationale:
+        "The cross-unit synthesis and an independent challenger must be reviewed by the human owner before repair or revised design begins.",
+      evidenceRefs: [
+        ...(promotionGate.findings || []),
+        ...(challenge.counterarguments || []),
+        ...(challenge.evidenceGaps || []),
+      ],
+    });
+  }
+}
 
 const hasBlocked = sectionResults.some(
   (result) => result.status === "failed" || result.status === "blocked",
@@ -2381,9 +3437,13 @@ const hasHumanGate = sectionResults.some((result) =>
     ? result.humanGate
     : result.blockingHumanGate === true,
 );
-const skippedRedTeam = skippedSections.some((section) => section.coverage === "red-team");
+const skippedRedTeam = skippedSections.some(
+  (section) => section.coverage === "red-team",
+);
 const skippedMandatoryCoverage = skippedSections.some((skipped) => {
-  const section = plan.sections.find((candidate) => candidate.id === skipped.sectionId);
+  const section = plan.sections.find(
+    (candidate) => candidate.id === skipped.sectionId,
+  );
   return (
     section?.assuranceClass === "nondeferrable-safety" ||
     (lifecycleStage === "post-shakedown-availability" &&
@@ -2421,6 +3481,8 @@ const completedPsaComponents = new Set(
 const missingPsaComponents = requiredPsaComponents.filter(
   (component) => !completedPsaComponents.has(component),
 );
+const promotionBlocksExecution =
+  lifecycleStage === "shakedown-build" && promotionGate?.verdict !== "promote";
 const executionStatus =
   sectionResults.length === 0 ||
   skippedRedTeam ||
@@ -2428,7 +3490,8 @@ const executionStatus =
   missingNondeferrableContractItemRefs.length > 0 ||
   missingPsaComponents.length > 0 ||
   hasBlocked ||
-  hasHumanGate
+  hasHumanGate ||
+  promotionBlocksExecution
     ? "blocked"
     : hasPartial || skippedSections.length > 0
       ? "partial"
@@ -2436,6 +3499,21 @@ const executionStatus =
 
 function lifecycleStatusForExecution() {
   if (lifecycleStage === null) return executionStatus;
+  if (
+    lifecycleStage === "shakedown-build" &&
+    promotionGate?.verdict === "recommend-redesign"
+  ) {
+    if (designEscalation?.kind === "dependency-deadlock") {
+      return "awaiting-human-walking-skeleton-decision";
+    }
+    return "awaiting-human-redesign-decision";
+  }
+  if (
+    lifecycleStage === "shakedown-build" &&
+    promotionGate?.verdict === "repair"
+  ) {
+    return "repair-required";
+  }
   if (executionStatus !== "completed") return "blocked";
   if (lifecycleStage === "shakedown-build") {
     return "awaiting-human-shakedown-launch";
@@ -2455,11 +3533,19 @@ const finalStatus = lifecycleStatusForExecution();
 function lifecycleResult() {
   if (lifecycleStage === null) return undefined;
   const nextGateByStatus = {
-    "awaiting-human-shakedown-launch": "approve-or-reject-reduced-risk-customer-shakedown",
-    "awaiting-human-design-stability-decision": "review-shakedown-evidence-then-run-design-stability-stage",
-    "awaiting-human-psa-review": "review-psa-findings-and-select-remediation-scope",
+    "awaiting-human-shakedown-launch":
+      "approve-or-reject-reduced-risk-customer-shakedown",
+    "awaiting-human-redesign-decision": "human-decide-repair-or-redesign",
+    "awaiting-human-walking-skeleton-decision":
+      "human-approve-bounded-walking-skeleton-or-replan",
+    "repair-required": "run-targeted-production-repair",
+    "awaiting-human-design-stability-decision":
+      "review-shakedown-evidence-then-run-design-stability-stage",
+    "awaiting-human-psa-review":
+      "review-psa-findings-and-select-remediation-scope",
     "awaiting-psa-re-audit": "run-psa-re-audit",
-    "awaiting-human-availability-decision": "approve-or-reject-post-shakedown-availability",
+    "awaiting-human-availability-decision":
+      "approve-or-reject-post-shakedown-availability",
     "availability-approved": "none",
     blocked: "resolve-blocked-or-missing-required-coverage",
   };
@@ -2477,7 +3563,8 @@ function lifecycleResult() {
     missingPsaComponents,
     nextGate: {
       owner:
-        finalStatus === "awaiting-psa-re-audit" || finalStatus === "availability-approved"
+        finalStatus === "awaiting-psa-re-audit" ||
+        finalStatus === "availability-approved"
           ? "workflow"
           : "human",
       decision: nextGateByStatus[finalStatus] || "review-execution-result",
@@ -2494,8 +3581,15 @@ return {
   budget: {
     beforeExecution,
     workerCallLimit,
-    admittedAgentCalls: admittedSections.reduce((sum, section) => sum + section.agentCalls, 0),
-    skippedAgentCalls: skippedSections.reduce((sum, section) => sum + section.requestedAgentCalls, 0),
+    finalGateAgentReserve,
+    admittedAgentCalls: admittedSections.reduce(
+      (sum, section) => sum + section.agentCalls,
+      0,
+    ),
+    skippedAgentCalls: skippedSections.reduce(
+      (sum, section) => sum + section.requestedAgentCalls,
+      0,
+    ),
     afterExecution: budget(),
   },
   execution: {
@@ -2508,6 +3602,8 @@ return {
     blockedHumanGateSectionIds: skippedSections
       .filter((section) => section.coverage === "red-team")
       .map((section) => section.sectionId),
+    promotionGate,
+    designEscalation,
   },
   lifecycle: lifecycleResult(),
   limitations: [
@@ -2515,6 +3611,6 @@ return {
     "Taste-heavy and authorized security-testing profiles route to Fable; bounded implementation owners route to Luna; judgment roles and unclassified work route to Sol.",
     "Security-testing authorization and read-only behavior are instruction-guided; use a restricted environment when capability isolation is required.",
     "Workers inherit the origin filesystem permission mode; read-only behavior is instruction-guided rather than capability-isolated.",
-    "Mutating owner sections require allowMutations: true and are serialized in the shared workspace.",
+    "Mutating sections require allowMutations: true and serialize by default. concurrentMutations: true opts shakedown production units into best-effort fan-out after oracle approval; declared ownedPaths and changedFiles are worker-reported safeguards, not authoritative filesystem isolation.",
   ],
 };

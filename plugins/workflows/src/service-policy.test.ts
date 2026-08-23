@@ -11,6 +11,7 @@ import {
   getCall,
   getRunRequired,
   migrations,
+  settleRun,
   startCall,
 } from "./data.js";
 import plugin from "./server.js";
@@ -23,6 +24,10 @@ import {
   DEFAULT_WORKFLOW_SETTINGS,
   type WorkflowSettings,
 } from "./settings.js";
+import {
+  MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+  MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
+} from "./workflow-campaign.js";
 
 async function eventually(
   assertion: () => void | Promise<void>,
@@ -231,6 +236,8 @@ function setup(
     options: {
       originThreadId?: string;
       resumedFromRunId?: string | null;
+      campaignId?: string | null;
+      presentationThreadId?: string | null;
     } = {},
   ) {
     return service.start({
@@ -239,6 +246,8 @@ function setup(
       source: workflowSource,
       args: null,
       resumedFromRunId: options.resumedFromRunId ?? null,
+      campaignId: options.campaignId ?? null,
+      presentationThreadId: options.presentationThreadId ?? null,
     });
   }
 
@@ -1457,7 +1466,264 @@ describe("workflow service policy integration", () => {
       presentationThreadId: "origin",
       parentRunId: parent.id,
       rootRunId: parent.id,
+      campaignId: parent.campaignId,
     });
+  });
+
+  it("aggregates independent continuations by explicit campaign without changing causal lineage", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-plan"));
+    const second = await test.start(source("return null", "campaign-build"), {
+      campaignId: first.campaignId,
+    });
+
+    expect(first.campaignId).toBe(first.id);
+    expect(second).toMatchObject({
+      campaignId: first.campaignId,
+      parentRunId: null,
+      rootRunId: second.id,
+      presentationThreadId: first.presentationThreadId,
+    });
+    expect(
+      test.service.inspectCampaign(first.id)?.runs.map(({ run }) => run.id),
+    ).toEqual([first.id, second.id]);
+    await expect(
+      test.start(source("return null", "unknown-campaign"), {
+        campaignId: "build:unknown",
+      }),
+    ).rejects.toThrow(/unknown workflow campaign/i);
+    test.db
+      .prepare(
+        "UPDATE workflow_runs SET presentation_thread_id = ? WHERE id = ?",
+      )
+      .run("other-presentation", second.id);
+    expect(() => test.service.inspectCampaign(first.id)).toThrow(
+      /campaign scope is inconsistent/i,
+    );
+  });
+
+  it("bounds campaign checkpoint hydration while retaining every run summary", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const runs = [await test.start(source("return null", "campaign-root"))];
+    for (let index = 1; index < 6; index += 1) {
+      runs.push(
+        await test.start(source("return null", `campaign-run-${index}`), {
+          campaignId: runs[0]!.campaignId,
+        }),
+      );
+    }
+    test.db
+      .prepare(
+        `INSERT INTO workflow_checkpoints (
+           id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+           ordinal, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, NULL, NULL, 0, 1, 1)`,
+      )
+      .run("wcp_omitted_invalid", runs[1]!.id, "invalid", "not-json");
+
+    const campaign = test.service.inspectCampaign(runs[0]!.id);
+    expect(campaign).not.toBeNull();
+    expect(campaign?.runs).toHaveLength(runs.length);
+    expect(campaign?.detailedRunLimit).toBe(
+      MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+    );
+    expect(campaign?.omittedCheckpointRunCount).toBe(2);
+    expect(
+      campaign?.runs
+        .filter((entry) => !entry.checkpointsOmitted)
+        .map((entry) => entry.run.id),
+    ).toEqual([runs[0]!.id, ...runs.slice(-3).map((run) => run.id)]);
+    expect(campaign?.runs.map((entry) => entry.run.id)).toEqual(
+      runs.map((run) => run.id),
+    );
+    expect(test.service.inspectCampaign(runs[1]!.id)?.runs).toHaveLength(
+      runs.length,
+    );
+  });
+
+  it("fails campaign inspection closed on project scope corruption", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-project"));
+    const second = await test.start(
+      source("return null", "campaign-project-2"),
+      {
+        campaignId: first.campaignId,
+      },
+    );
+    test.db
+      .prepare("UPDATE workflow_runs SET project_id = ? WHERE id = ?")
+      .run("other-project", second.id);
+    expect(() => test.service.inspectCampaign(first.id)).toThrow(
+      /campaign scope is inconsistent/i,
+    );
+  });
+
+  it("fails campaign inspection closed on environment scope corruption", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(
+      source("return null", "campaign-environment"),
+    );
+    const second = await test.start(
+      source("return null", "campaign-environment-2"),
+      { campaignId: first.campaignId },
+    );
+    test.db
+      .prepare("UPDATE workflow_runs SET environment_id = ? WHERE id = ?")
+      .run("other-environment", second.id);
+    expect(() => test.service.inspectCampaign(first.id)).toThrow(
+      /campaign scope is inconsistent/i,
+    );
+  });
+
+  it("rejects independent campaign continuation from an unrelated thread tree", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-origin"));
+    test.setThread("unrelated-root", { visibility: "visible" });
+    await expect(
+      test.start(source("return null", "unrelated-continuation"), {
+        originThreadId: "unrelated-root",
+        campaignId: first.campaignId,
+      }),
+    ).rejects.toThrow(/must be the origin or one of its ancestors/i);
+  });
+
+  it("rejects resuming a campaign from an unrelated thread tree", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "resume-origin"));
+    settleRun(test.db, {
+      id: first.id,
+      status: "succeeded",
+      result: null,
+      error: null,
+    });
+    test.setThread("unrelated-resume-root", { visibility: "visible" });
+    await expect(
+      test.start(source("return null", "unrelated-resume"), {
+        originThreadId: "unrelated-resume-root",
+        resumedFromRunId: first.id,
+      }),
+    ).rejects.toThrow(/must be the origin or one of its ancestors/i);
+  });
+
+  it("rejects an existing campaign presentation mismatch", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(
+      source("return null", "campaign-presentation"),
+    );
+    test.setThread("alternate-visible", {
+      visibility: "visible",
+      parentThreadId: "origin",
+    });
+    test.setThread("alternate-child", {
+      visibility: "hidden",
+      parentThreadId: "alternate-visible",
+    });
+    await expect(
+      test.start(source("return null", "presentation-mismatch"), {
+        originThreadId: "alternate-child",
+        campaignId: first.campaignId,
+        presentationThreadId: "alternate-visible",
+      }),
+    ).rejects.toThrow(/campaign must use one presentation thread/i);
+  });
+
+  it("rejects explicit campaign conflicts with causal and resumed lineage", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const parent = await test.start(source("return null", "lineage-parent"));
+    const other = await test.start(source("return null", "other-campaign"));
+    expect(claimQueuedRun(test.db, 4)?.id).toBe(parent.id);
+    const parentCall = startCall(test.db, {
+      runId: parent.id,
+      callIndex: 0,
+      cacheKey: "lineage-conflict",
+      prompt: "launch conflicting nested workflow",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: {
+        providerId: "codex",
+        model: "gpt-test",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+      },
+      replay: null,
+    });
+    expect(attachCallThread(test.db, parentCall.id, "conflicting-child")).toBe(
+      true,
+    );
+    test.setThread("conflicting-child", {
+      visibility: "hidden",
+      parentThreadId: "origin",
+    });
+    await expect(
+      test.start(source("return null", "causal-conflict"), {
+        originThreadId: "conflicting-child",
+        campaignId: other.campaignId,
+      }),
+    ).rejects.toThrow(/campaign must match its causal parent/i);
+
+    settleRun(test.db, {
+      id: parent.id,
+      status: "succeeded",
+      result: null,
+      error: null,
+    });
+    await expect(
+      test.start(source("return null", "resume-conflict"), {
+        resumedFromRunId: parent.id,
+        campaignId: other.campaignId,
+      }),
+    ).rejects.toThrow(/campaign must match.*resumed run/i);
+  });
+
+  it("atomically caps a campaign at the UI contract run limit", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-limit"));
+    for (
+      let index = 1;
+      index < MAX_WORKFLOW_RUNS_PER_CAMPAIGN - 1;
+      index += 1
+    ) {
+      await test.start(source("return null", `campaign-limit-${index}`), {
+        campaignId: first.campaignId,
+      });
+    }
+    const boundary = await Promise.allSettled([
+      test.start(source("return null", "campaign-limit-racer-a"), {
+        campaignId: first.campaignId,
+      }),
+      test.start(source("return null", "campaign-limit-racer-b"), {
+        campaignId: first.campaignId,
+      }),
+    ]);
+    expect(boundary.map((result) => result.status).sort()).toEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(test.service.inspectCampaign(first.id)?.runs).toHaveLength(
+      MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
+    );
+    await expect(
+      test.start(source("return null", "campaign-limit-101"), {
+        campaignId: first.campaignId,
+      }),
+    ).rejects.toThrow(
+      new RegExp(`cannot exceed ${MAX_WORKFLOW_RUNS_PER_CAMPAIGN} runs`, "i"),
+    );
   });
 
   it("does not create or orphan a call when cancellation wins catalog or spawn", async () => {
@@ -1582,6 +1848,10 @@ describe("workflow service policy integration", () => {
         `UPDATE workflow_runs SET status = 'succeeded', result_json = 'null', finished_at = ? WHERE id = ?`,
       )
       .run(Date.now(), ancestor.id);
+    test.setThread("origin-2", {
+      visibility: "hidden",
+      parentThreadId: "origin",
+    });
     await expect(
       test.service.start({
         projectId: "project-test",

@@ -16,6 +16,13 @@ const checkpointStatusSchema = z.enum([
   "skipped",
   "interrupted",
 ]);
+const checkpointDependencyIdsSchema = z
+  .array(checkpointIdSchema)
+  .max(100)
+  .refine((ids) => new Set(ids).size === ids.length, {
+    message: "Dependency IDs must be unique",
+  });
+const checkpointNodeTypeSchema = z.enum(["work", "gate"]);
 
 export const WORKFLOW_CHECKPOINT_LIMITS = {
   bytes: 64 * 1024,
@@ -42,6 +49,8 @@ const planCheckpointSchema = z
             objective: z.string().min(1).max(8_192),
             detail: z.string().min(1).max(16_384).nullable(),
             ticketRef: z.string().min(1).max(128).nullable(),
+            dependsOn: checkpointDependencyIdsSchema.optional(),
+            nodeType: checkpointNodeTypeSchema.optional(),
           })
           .strict(),
       )
@@ -61,6 +70,48 @@ const planCheckpointSchema = z
       }
       seen.add(id);
     }
+    const itemsById = new Map(checkpoint.items.map((item) => [item.id, item]));
+    for (let index = 0; index < checkpoint.items.length; index += 1) {
+      const item = checkpoint.items[index]!;
+      const dependencies = item.dependsOn ?? [];
+      for (
+        let dependencyIndex = 0;
+        dependencyIndex < dependencies.length;
+        dependencyIndex += 1
+      ) {
+        const dependencyId = dependencies[dependencyIndex]!;
+        if (dependencyId === item.id || !itemsById.has(dependencyId)) {
+          context.addIssue({
+            code: "custom",
+            message:
+              dependencyId === item.id
+                ? "Plan items cannot depend on themselves"
+                : `Unknown plan dependency ${dependencyId}`,
+            path: ["items", index, "dependsOn", dependencyIndex],
+          });
+        }
+      }
+    }
+    const visiting = new Set<string>();
+    const visited = new Set<string>();
+    const visit = (id: string): boolean => {
+      if (visiting.has(id)) return true;
+      if (visited.has(id)) return false;
+      visiting.add(id);
+      const item = itemsById.get(id);
+      const cyclic =
+        item?.dependsOn?.some((dependencyId) => visit(dependencyId)) ?? false;
+      visiting.delete(id);
+      visited.add(id);
+      return cyclic;
+    };
+    if (checkpoint.items.some((item) => visit(item.id))) {
+      context.addIssue({
+        code: "custom",
+        message: "Plan dependencies must be acyclic",
+        path: ["items"],
+      });
+    }
   });
 
 const workItemCheckpointSchema = z
@@ -73,6 +124,33 @@ const workItemCheckpointSchema = z
     ticketRef: z.string().min(1).max(128).nullable(),
     changedFiles: z.array(z.string().min(1).max(4_096)).max(500),
     blocker: z.string().min(1).max(4_096).nullable(),
+    dependsOn: checkpointDependencyIdsSchema.optional(),
+    nodeType: checkpointNodeTypeSchema.optional(),
+  })
+  .strict()
+  .superRefine((checkpoint, context) => {
+    if (checkpoint.dependsOn?.includes(checkpoint.id)) {
+      context.addIssue({
+        code: "custom",
+        message: "Work items cannot depend on themselves",
+        path: ["dependsOn"],
+      });
+    }
+  });
+
+const transitionCheckpointSchema = z
+  .object({
+    kind: z.literal("transition"),
+    id: checkpointIdSchema,
+    title: checkpointTitleSchema,
+    status: checkpointStatusSchema,
+    summary: checkpointSummarySchema,
+    actor: z.enum(["orchestrator", "synthesizer", "critic", "human", "system"]),
+    fromState: z.string().min(1).max(128).nullable(),
+    toState: z.string().min(1).max(128),
+    workItemIds: checkpointDependencyIdsSchema,
+    rationale: z.string().min(1).max(8_192),
+    evidenceRefs: z.array(z.string().min(1).max(1_024)).max(100),
   })
   .strict();
 
@@ -113,6 +191,7 @@ export const workflowCheckpointSchema = z.discriminatedUnion("kind", [
   planCheckpointSchema,
   workItemCheckpointSchema,
   verificationCheckpointSchema,
+  transitionCheckpointSchema,
 ]);
 
 export const checkpointToolInputSchema = z

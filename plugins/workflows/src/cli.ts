@@ -235,6 +235,7 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     presentationThreadId: run.presentationThreadId,
     parentRunId: run.parentRunId,
     rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     environmentId: run.environmentId,
     originProvider: originProvider.value,
     originProviderTruncated: originProvider.truncated,
@@ -291,6 +292,7 @@ function listRunSummary(run: WorkflowRunRow) {
     presentationThreadId: run.presentationThreadId,
     parentRunId: run.parentRunId,
     rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     environmentId: run.environmentId,
     name: name.value,
     nameTruncated: name.truncated,
@@ -339,6 +341,7 @@ function runReferenceLogRecord(run: WorkflowRunRow, exportedAt: number) {
     presentationThreadId: run.presentationThreadId,
     parentRunId: run.parentRunId,
     rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     name: run.name,
     status: run.status,
     phase: run.phase,
@@ -375,7 +378,7 @@ export function registerWorkflowCli(
         name: "run",
         summary: "Start a workflow and return immediately",
         usage:
-          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>]",
+          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]",
       },
       {
         name: "validate",
@@ -422,6 +425,7 @@ export function registerWorkflowCli(
             "--args",
             "--resume",
             "--present-in",
+            "--campaign",
           ]);
           const context = requireContext(ctx);
           const prepared = await prepareWorkflowSource(
@@ -433,11 +437,17 @@ export function registerWorkflowCli(
             projectId: context.projectId,
             originThreadId: context.threadId,
             presentationThreadId: options.get("--present-in") ?? null,
+            campaignId: options.get("--campaign") ?? null,
             source: prepared.source,
             args: parseJsonOption(options.get("--args")),
             resumedFromRunId: options.get("--resume") ?? null,
           });
-          return success({ runId: run.id, name: run.name, status: run.status });
+          return success({
+            runId: run.id,
+            campaignId: run.campaignId,
+            name: run.name,
+            status: run.status,
+          });
         }
         if (command === "validate") {
           const { options } = parseArguments(argv.slice(1), [
@@ -477,6 +487,7 @@ export function registerWorkflowCli(
           }
           return success({
             runId,
+            campaignId: run.campaignId,
             checkpoints: service.inspectCheckpoints(runId).map((entry) => ({
               id: entry.id,
               checkpoint: entry.checkpoint,
@@ -485,6 +496,21 @@ export function registerWorkflowCli(
               createdAt: entry.createdAt,
               updatedAt: entry.updatedAt,
             })),
+            campaignRuns:
+              service.inspectCampaign(runId)?.runs.map((entry) => ({
+                runId: entry.run.id,
+                name: entry.run.name,
+                status: entry.run.status,
+                checkpointsOmitted: entry.checkpointsOmitted,
+                checkpoints: entry.checkpoints.map((checkpoint) => ({
+                  id: checkpoint.id,
+                  checkpoint: checkpoint.checkpoint,
+                  phase: checkpoint.phase,
+                  childThreadId: checkpoint.childThreadId,
+                  createdAt: checkpoint.createdAt,
+                  updatedAt: checkpoint.updatedAt,
+                })),
+              })) ?? [],
           });
         }
         if (command === "history") {

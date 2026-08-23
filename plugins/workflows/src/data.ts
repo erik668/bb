@@ -6,6 +6,7 @@ import {
   MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
   MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
 } from "./workflow-checkpoint.js";
+import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 
 export type Db = Database.Database;
 type WorkflowRunStatus =
@@ -28,6 +29,7 @@ export interface WorkflowRunRow {
   presentationThreadId: string;
   parentRunId: string | null;
   rootRunId: string;
+  campaignId: string;
   environmentId: string;
   originProvider: string;
   originModel: string;
@@ -51,6 +53,16 @@ export interface WorkflowRunRow {
   notificationAttemptCount: number;
   notificationNextAttemptAt: number | null;
   notificationError: string | null;
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
+export interface WorkflowCampaignRunSummaryRow {
+  id: string;
+  campaignId: string;
+  name: string;
+  status: WorkflowRunRow["status"];
   createdAt: number;
   startedAt: number | null;
   finishedAt: number | null;
@@ -162,6 +174,7 @@ const RUN_SELECT = `
   SELECT id, project_id AS projectId, origin_thread_id AS originThreadId,
     COALESCE(presentation_thread_id, origin_thread_id) AS presentationThreadId,
     parent_run_id AS parentRunId, COALESCE(root_run_id, id) AS rootRunId,
+    COALESCE(campaign_id, id) AS campaignId,
     environment_id AS environmentId, origin_provider AS originProvider,
     origin_model AS originModel, origin_reasoning_level AS originReasoningLevel,
     origin_permission_mode AS originPermissionMode,
@@ -309,48 +322,80 @@ export const migrations = [
      ON workflow_runs(presentation_thread_id, created_at DESC);
    CREATE INDEX IF NOT EXISTS workflow_runs_root_created_idx
      ON workflow_runs(root_run_id, created_at ASC);`,
+  `ALTER TABLE workflow_runs ADD COLUMN campaign_id TEXT;
+   UPDATE workflow_runs SET campaign_id = id WHERE campaign_id IS NULL;
+   CREATE INDEX IF NOT EXISTS workflow_runs_campaign_created_idx
+     ON workflow_runs(campaign_id, created_at ASC);`,
 ];
+
+type CreateWorkflowRunInput = Omit<
+  WorkflowRunRow,
+  | "id"
+  | "campaignId"
+  | "status"
+  | "resultJson"
+  | "error"
+  | "phase"
+  | "replaySafetyVersion"
+  | "replayBarrierIndex"
+  | "notificationSent"
+  | "notificationOutcome"
+  | "notificationAttemptCount"
+  | "notificationNextAttemptAt"
+  | "notificationError"
+  | "createdAt"
+  | "startedAt"
+  | "finishedAt"
+> & { campaignId?: string };
 
 export function createRun(
   db: Db,
-  input: Omit<
-    WorkflowRunRow,
-    | "id"
-    | "status"
-    | "resultJson"
-    | "error"
-    | "phase"
-    | "replaySafetyVersion"
-    | "replayBarrierIndex"
-    | "notificationSent"
-    | "notificationOutcome"
-    | "notificationAttemptCount"
-    | "notificationNextAttemptAt"
-    | "notificationError"
-    | "createdAt"
-    | "startedAt"
-    | "finishedAt"
-  >,
+  input: CreateWorkflowRunInput,
 ): WorkflowRunRow {
   const id = `wfr_${randomUUID()}`;
   const now = Date.now();
   const rootRunId = input.rootRunId || id;
-  db.prepare(
-    `INSERT INTO workflow_runs (
+  const campaignId = input.campaignId || id;
+  db.transaction(() => {
+    if (input.campaignId) {
+      const { count } = db
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM workflow_runs
+            WHERE COALESCE(campaign_id, id) = ?
+              AND project_id = ?
+              AND environment_id = ?
+              AND COALESCE(presentation_thread_id, origin_thread_id) = ?`,
+        )
+        .get(
+          campaignId,
+          input.projectId,
+          input.environmentId,
+          input.presentationThreadId,
+        ) as { count: number };
+      if (count >= MAX_WORKFLOW_RUNS_PER_CAMPAIGN) {
+        throw new Error(
+          `Workflow campaign cannot exceed ${MAX_WORKFLOW_RUNS_PER_CAMPAIGN} runs`,
+        );
+      }
+    }
+    db.prepare(
+      `INSERT INTO workflow_runs (
        id, project_id, origin_thread_id, presentation_thread_id,
-       parent_run_id, root_run_id, environment_id, origin_provider,
+       parent_run_id, root_run_id, campaign_id, environment_id, origin_provider,
        origin_model, origin_reasoning_level, origin_permission_mode,
        name, source, source_hash,
        args_json, settings_json, status, resumed_from_run_id,
        replay_safety_version, created_at
      ) VALUES (
        @id, @projectId, @originThreadId, @presentationThreadId,
-       @parentRunId, @rootRunId, @environmentId, @originProvider,
+       @parentRunId, @rootRunId, @campaignId, @environmentId, @originProvider,
        @originModel, @originReasoningLevel, @originPermissionMode,
        @name, @source, @sourceHash,
        @argsJson, @settingsJson, 'queued', @resumedFromRunId, 1, @now
      )`,
-  ).run({ id, now, ...input, rootRunId });
+    ).run({ id, now, ...input, rootRunId, campaignId });
+  })();
   return getRunRequired(db, id);
 }
 
@@ -430,6 +475,66 @@ export function listRuns(
     )
     .all(args.projectId, args.limit)
     .map(runRow);
+}
+
+export function getFirstRunForCampaignScope(
+  db: Db,
+  args: { campaignId: string; projectId: string; environmentId: string },
+): WorkflowRunRow | null {
+  return optionalRun(
+    db
+      .prepare(
+        `${RUN_SELECT}
+           WHERE COALESCE(campaign_id, id) = ?
+             AND project_id = ? AND environment_id = ?
+           ORDER BY created_at ASC, workflow_runs.rowid ASC LIMIT 1`,
+      )
+      .get(args.campaignId, args.projectId, args.environmentId),
+  );
+}
+
+export function countRunsForCampaign(db: Db, campaignId: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM workflow_runs
+       WHERE COALESCE(campaign_id, id) = ?`,
+    )
+    .get(campaignId) as { count: number };
+  return row.count;
+}
+
+export function listRunsForCampaign(
+  db: Db,
+  args: {
+    campaignId: string;
+    projectId: string;
+    environmentId: string;
+    presentationThreadId: string;
+  },
+): WorkflowCampaignRunSummaryRow[] {
+  return db
+    .prepare(
+      `SELECT
+          id,
+          COALESCE(campaign_id, id) AS campaignId,
+          name,
+          status,
+          created_at AS createdAt,
+          started_at AS startedAt,
+          finished_at AS finishedAt
+         FROM workflow_runs
+         WHERE COALESCE(campaign_id, id) = ?
+           AND project_id = ?
+           AND environment_id = ?
+           AND COALESCE(presentation_thread_id, origin_thread_id) = ?
+         ORDER BY created_at ASC, workflow_runs.rowid ASC`,
+    )
+    .all(
+      args.campaignId,
+      args.projectId,
+      args.environmentId,
+      args.presentationThreadId,
+    ) as WorkflowCampaignRunSummaryRow[];
 }
 
 export function claimQueuedRun(

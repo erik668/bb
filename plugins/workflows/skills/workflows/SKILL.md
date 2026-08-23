@@ -130,8 +130,8 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
 - `phase(title: string)`: start a new phase; subsequent `agent()` calls are
   grouped under this title. An agent-level `phase` overrides only that call and
   does not change the current phase.
-- `checkpoint(value)`: durably upsert one structured `plan`, `work-item`, or
-  `verification` row by its stable `id`. The row inherits the current phase and
+- `checkpoint(value)`: durably upsert one structured `plan`, `work-item`,
+  `verification`, or `transition` row by its stable `id`. The row inherits the current phase and
   remains available after the run finishes. Use this for the selected plan,
   exact implementation state, and actual verification commands/results; never
   infer results or parse progress back out of labels and prose. A `plan` must
@@ -144,6 +144,12 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   reuse those stable IDs. The orchestrator may reconcile or terminalize any
   row, but no update may change a row's checkpoint kind. Byte-limit admission
   reserves enough headroom for terminalizing unfinished rows.
+  Plan items and work items may declare bounded `dependsOn` edges; plan-local
+  edges must reference known items and be acyclic. Work items may use
+  `nodeType: "gate"` for visible promotion or human-decision gates. Use a
+  `transition` checkpoint for a small number of meaningful state changes, with
+  explicit actor, source/target state, affected work items, rationale, and
+  evidence references. Do not turn transitions into a noisy log.
   Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
   run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass
@@ -237,7 +243,7 @@ The canonical structured-result field is `outputSchema`. `phase`, `label`, and
 `title` are display-only.
 
 That worker receives `bb_workflow_checkpoint` and `bb_workflow_result`. When the
-prompt assigns stable plan, work-item, or verification IDs, it can use the
+prompt assigns stable plan, work-item, verification, or transition IDs, it can use the
 checkpoint tool to report truthful live state. It MUST call the result tool
 exactly once at the end of its response with `{ value: ... }` to provide the
 structured output. BB validates the value with Ajv. The initial invalid attempt
@@ -429,7 +435,14 @@ paths, missing workspace roots, non-UTF-8 files, and sources over 512 KiB are
 rejected. QuickJS receives source text only; it never gets filesystem access.
 Plugin-bundled workflow discovery is not supported.
 
-`bb_workflow_run` also accepts optional JSON `args` and optional `resumeRunId`.
+`bb_workflow_run` also accepts optional JSON `args`, optional `resumeRunId`,
+and optional `campaignId`. Reuse a campaign ID when an independent top-level
+run continues the same human-visible build story. Causal child and resumed
+runs inherit the campaign and reject conflicts. Campaign aggregation remains
+restricted to one project, environment, and presentation thread, with at most
+100 runs per campaign. Campaign details list every run but hydrate checkpoint
+ledgers for only the selected run plus the newest runs, up to four total;
+older entries are explicitly marked `checkpointsOmitted`.
 It returns a durable run ID immediately. Use the compact `bb workflows status`
 summary, paged `bb workflows history`, `bb workflows list`, and
 `bb workflows stop` afterward. Completion is sent back as an agent-only input:
@@ -506,6 +519,7 @@ bb workflows validate --name review-change
 bb workflows run --script '<javascript>' --args '<json>'
 bb workflows run --file .bb/workflows/review-change.js --resume <run-id>
 bb workflows run --name review-change --present-in <thread-id>
+bb workflows run --name review-change --campaign <campaign-id>
 bb workflows status <run-id>
 bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100

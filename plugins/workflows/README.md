@@ -8,7 +8,7 @@ The author-facing native surface is intentionally one tool:
 `bb_workflow_run`. Validation, inspection, listing, and cancellation use the
 `bb workflows` CLI documented below. Provider and model discovery uses BB's
 built-in `bb provider` commands. Workflow workers separately receive
-`bb_workflow_checkpoint` for durable plan, work-item, and verification
+`bb_workflow_checkpoint` for durable plan, work-item, verification, and transition
 progress. Structured workers additionally receive `bb_workflow_result`;
 ordinary authoring agents never receive either worker tool.
 
@@ -33,6 +33,10 @@ The panel shows every phase and worker, links attached workers to their BB
 threads, and progressively discloses the selected plan, per-ticket or per-work
 item implementation state, changed files, blockers, exact verification
 commands, and pass/fail/skip counts when the workflow publishes them. It also
+renders dependency-aware work and gate nodes as a build DAG and keeps a
+structured transition log explaining repair, redesign, human-review, and
+promotion decisions. Top-level runs sharing a campaign ID appear as one
+chronological build story without losing their individual run IDs. It also
 reports cache and result state. In the origin thread it can stop an active run;
 in a presentation thread it is read-only and links to the origin for control.
 It may be opened directly from the thread panel action, in which case it shows
@@ -45,12 +49,23 @@ inspector access. A visible top-level launch presents in its origin thread. A
 workflow launched from a hidden worker inherits its parent run's presentation
 thread and root run, or otherwise falls back to its nearest visible ancestor.
 CLI launches can override the presentation target with `--present-in
-<thread-id>`. `status`, `list`, and `history` expose `originThreadId`,
-`presentationThreadId`, `parentRunId`, and `rootRunId` for provenance. A
+<thread-id>`. Independent continuation runs join a build story with `--campaign
+<campaign-id>` or the `campaignId` field on `bb_workflow_run`; causal children
+and resumed runs inherit it and reject conflicts. A campaign is restricted to
+one project, environment, and presentation thread and at most 100 runs.
+`status`, `list`, and
+`history` expose `originThreadId`,
+`presentationThreadId`, `parentRunId`, `rootRunId`, and `campaignId` for
+provenance. A
 presentation target must be a visible thread in the same project and
 environment and must be the origin or one of its ancestors. It must also be
 available from the same BB server; this does not federate workflow state across
-servers.
+servers. The inspector and `details` command always list all campaign runs, but
+hydrate checkpoint ledgers for only the selected run plus the newest runs, up
+to four ledgers total. The selected ledger stays in the primary checkpoint
+field instead of being duplicated in the campaign aggregate. Older runs are
+marked `checkpointsOmitted`; this caps the combined details response at 16 MiB
+while keeping its full chronology visible.
 
 Both surfaces are implemented by the plugin app with `@bb/shared-ui` controls
 and BB theme tokens. Directive attributes and restored panel parameters are
@@ -90,7 +105,11 @@ phase.
 
 `checkpoint(value)` durably upserts structured progress by `value.id` and
 inherits the current phase. Supported checkpoint kinds are `plan`, `work-item`,
-and `verification`. Reuse stable IDs to update state instead of appending prose;
+`verification`, and `transition`. Plan and work-item checkpoints may publish
+bounded `dependsOn` edges; plan-local dependencies must reference known items
+and remain acyclic. Work items may be typed as work or gate nodes. Transitions
+record the actor, source and target states, affected work items, rationale, and
+evidence references. Reuse stable IDs to update state instead of appending prose;
 the latest value stays inspectable after the run finishes. Workers can publish
 the same contract through `bb_workflow_checkpoint`, and their rows retain a
 link to the worker thread. Checkpoints are accepted only while the run and, for
@@ -212,6 +231,7 @@ bb workflows validate --name review
 bb workflows run --script '<javascript>' --args '<json>'
 bb workflows run --file .bb/workflows/review.js --resume <run-id>
 bb workflows run --name review --present-in <thread-id>
+bb workflows run --name review --campaign <campaign-id>
 bb workflows status <run-id>
 bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100

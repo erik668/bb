@@ -663,7 +663,10 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
 - Author and check sources with `bb workflows validate (--script <javascript>|
 --source <javascript>|--file <path>|--name <name>)`; start a background run
   with the same selector via `bb workflows run ... [--args <json>] [--resume
-<run-id>] [--present-in <thread-id>]`. The origin thread keeps execution,
+<run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]`. Use the
+  `campaignId` returned by a prior run to continue that existing build story;
+  unknown campaign IDs are rejected, and each campaign is capped at 100 runs.
+  The origin thread keeps execution,
   environment, permission, and completion-notification ownership; the optional
   presentation thread receives the active card, realtime updates, and inspector
   access. Hidden workflow workers otherwise inherit their parent run's
@@ -675,13 +678,18 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
 - Poll compact progress with `bb workflows status <run-id>` and list compact
   run summaries with `bb workflows list [--limit <1-50>]`. Inspect durable
   structured plan, work-item/ticket, and verification state with
-  `bb workflows details <run-id>`. For chronological details, redirect one bounded
+  `bb workflows details <run-id>`; it also lists every run in the selected
+  campaign as one build story. To bound the response, checkpoint ledgers are
+  hydrated for the selected run plus the newest runs, up to four total; older
+  entries are explicitly marked `checkpointsOmitted`. For chronological
+  details, redirect one bounded
   `bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]`
   JSONL page into `$BB_THREAD_STORAGE`, inspect it with file tools, and continue
   from the final page record's `nextCursor`. This shell redirection writes on
   the thread's execution host, including remote hosts; do not print the raw
   history into the agent transcript. Status, list, and history run records expose
-  `originThreadId`, `presentationThreadId`, `parentRunId`, and `rootRunId`.
+  `originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
+  `campaignId`.
   Cancel with `bb workflows stop <run-id>`.
 - Before choosing an explicit provider/model/reasoning tuple, run `bb provider
 list --environment "$BB_ENVIRONMENT_ID" --json`, then query only the chosen

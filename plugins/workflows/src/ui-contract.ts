@@ -1,5 +1,6 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 import { workflowCheckpointSchema } from "./workflow-checkpoint.js";
 
 const workflowRunStatusSchema = z.enum([
@@ -52,6 +53,7 @@ const workflowRunViewSchema = z
     presentationThreadId: z.string(),
     parentRunId: z.string().nullable(),
     rootRunId: z.string(),
+    campaignId: z.string(),
     name: z.string(),
     description: z.string(),
     status: workflowRunStatusSchema,
@@ -74,6 +76,37 @@ const workflowCheckpointViewSchema = z
     childThreadId: z.string().nullable(),
     createdAt: z.number(),
     updatedAt: z.number(),
+  })
+  .strict();
+
+const workflowCampaignRunSummarySchema = z
+  .object({
+    id: z.string(),
+    campaignId: z.string(),
+    name: z.string(),
+    status: workflowRunStatusSchema,
+    createdAt: z.number(),
+    startedAt: z.number().nullable(),
+    finishedAt: z.number().nullable(),
+  })
+  .strict();
+
+const workflowCampaignViewSchema = z
+  .object({
+    id: z.string(),
+    detailedRunLimit: z.number().int().positive(),
+    omittedCheckpointRunCount: z.number().int().nonnegative(),
+    runs: z
+      .array(
+        z
+          .object({
+            run: workflowCampaignRunSummarySchema,
+            checkpoints: z.array(workflowCheckpointViewSchema),
+            checkpointsOmitted: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(MAX_WORKFLOW_RUNS_PER_CAMPAIGN),
   })
   .strict();
 
@@ -100,7 +133,10 @@ export const workflowUiRpcContract = defineRpcContract({
   workflowRunDetails: {
     input: runLookupInputSchema,
     output: z
-      .object({ checkpoints: z.array(workflowCheckpointViewSchema) })
+      .object({
+        checkpoints: z.array(workflowCheckpointViewSchema),
+        campaign: workflowCampaignViewSchema.nullable().optional(),
+      })
       .strict(),
   },
   workflowStopRun: {
@@ -122,3 +158,4 @@ export type WorkflowRunView = z.infer<typeof workflowRunViewSchema>;
 export type WorkflowCheckpointView = z.infer<
   typeof workflowCheckpointViewSchema
 >;
+export type WorkflowCampaignView = z.infer<typeof workflowCampaignViewSchema>;

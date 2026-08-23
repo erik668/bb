@@ -63,6 +63,7 @@ describe("workflow UI view", () => {
       presentationThreadId: "thr_origin",
       parentRunId: null,
       rootRunId: "wfr_test",
+      campaignId: "wfr_test",
       environmentId: "env_test",
       originProvider: "codex",
       originModel: "gpt-test",

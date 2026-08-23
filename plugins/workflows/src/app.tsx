@@ -45,6 +45,7 @@ import {
 import type { workflowUiRpcContract } from "./ui-contract.js";
 import type {
   WorkflowCallView,
+  WorkflowCampaignView,
   WorkflowCheckpointView,
   WorkflowRunView,
 } from "./ui-contract.js";
@@ -69,6 +70,8 @@ type RunDetailsLoadState =
       status: "ready";
       runId: string | null;
       checkpoints: WorkflowCheckpointView[];
+      campaignRuns: WorkflowCampaignView["runs"];
+      omittedCheckpointRunCount: number;
       refreshError: string | null;
     }
   | { status: "error"; runId: string | null; message: string };
@@ -419,6 +422,10 @@ function useWorkflowRun(
     };
   }, [refresh]);
 
+  useRealtime(WORKFLOW_RUNS_REALTIME_CHANNEL, (payload) => {
+    if (workflowRunsSignalThreadId(payload) === threadId) void refresh();
+  });
+
   const shouldPoll =
     state.status === "error" ||
     (state.status === "ready" && state.run !== null && isRunActive(state.run));
@@ -448,7 +455,14 @@ function useWorkflowRunDetails(
         setState({
           status: "ready",
           runId,
-          checkpoints: result.checkpoints,
+          checkpoints: [
+            ...result.checkpoints,
+            ...(result.campaign?.runs.flatMap((entry) => entry.checkpoints) ??
+              []),
+          ],
+          campaignRuns: result.campaign?.runs ?? [],
+          omittedCheckpointRunCount:
+            result.campaign?.omittedCheckpointRunCount ?? 0,
           refreshError: null,
         });
       }
@@ -1112,6 +1126,315 @@ function OpenWorkerButton({ childThreadId }: { childThreadId: string | null }) {
   );
 }
 
+interface BuildDagNode {
+  id: string;
+  title: string;
+  status: CheckpointStatus;
+  dependsOn: string[];
+  nodeType: "work" | "gate";
+}
+
+interface BuildDagView {
+  layers: BuildDagNode[][];
+  diagnostics: string[];
+  diagnosticTitle: string;
+}
+
+function buildDagLayers(
+  checkpoints: WorkflowCheckpointView[],
+  checkpointDetailsOmitted = false,
+): BuildDagView {
+  const nodes = new Map<string, BuildDagNode>();
+  for (const entry of checkpoints) {
+    if (isCheckpointKind(entry, "plan")) {
+      for (const item of entry.checkpoint.items) {
+        nodes.set(item.id, {
+          id: item.id,
+          title: item.title,
+          status: "pending",
+          dependsOn: item.dependsOn ?? [],
+          nodeType: item.nodeType ?? "work",
+        });
+      }
+    }
+    if (isCheckpointKind(entry, "work-item")) {
+      const item = entry.checkpoint;
+      const planned = nodes.get(item.id);
+      nodes.set(item.id, {
+        id: item.id,
+        title: item.title,
+        status: item.status,
+        dependsOn:
+          item.dependsOn === undefined
+            ? (planned?.dependsOn ?? [])
+            : item.dependsOn,
+        nodeType:
+          item.nodeType === undefined
+            ? (planned?.nodeType ?? "work")
+            : item.nodeType,
+      });
+    }
+  }
+  const unknownDependencies = [...nodes.values()].flatMap((node) =>
+    node.dependsOn
+      .filter((dependencyId) => !nodes.has(dependencyId))
+      .map((dependencyId) =>
+        checkpointDetailsOmitted
+          ? `Dependency ${dependencyId} referenced by ${node.id} may be in an omitted older ledger.`
+          : `Unknown dependency ${dependencyId} referenced by ${node.id}.`,
+      ),
+  );
+  const diagnostics = [...unknownDependencies];
+  const levels = new Map<string, number>();
+  for (let pass = 0; pass < nodes.size; pass += 1) {
+    let changed = false;
+    for (const node of nodes.values()) {
+      if (levels.has(node.id)) continue;
+      const dependencyLevels = node.dependsOn
+        .filter((id) => nodes.has(id))
+        .map((id) => levels.get(id))
+        .filter((level): level is number => level !== undefined);
+      const knownDependencyCount = node.dependsOn.filter((id) =>
+        nodes.has(id),
+      ).length;
+      if (dependencyLevels.length === knownDependencyCount) {
+        levels.set(
+          node.id,
+          dependencyLevels.length === 0 ? 0 : Math.max(...dependencyLevels) + 1,
+        );
+        changed = true;
+      }
+    }
+    if (!changed) break;
+  }
+  const cyclicOrBlocked = [...nodes.keys()].filter((id) => !levels.has(id));
+  if (cyclicOrBlocked.length > 0) {
+    diagnostics.push(
+      `Cyclic or cycle-blocked dependencies affect: ${cyclicOrBlocked.join(", ")}.`,
+    );
+  }
+  const fallbackLevel = Math.max(-1, ...levels.values()) + 1;
+  const layers: BuildDagNode[][] = [];
+  for (const node of nodes.values()) {
+    const level = levels.get(node.id) ?? fallbackLevel;
+    (layers[level] ??= []).push(node);
+  }
+  const hasIncompleteDiagnostics =
+    checkpointDetailsOmitted && unknownDependencies.length > 0;
+  const hasInvalidDiagnostics =
+    (!checkpointDetailsOmitted && unknownDependencies.length > 0) ||
+    cyclicOrBlocked.length > 0;
+  return {
+    layers,
+    diagnostics,
+    diagnosticTitle:
+      hasIncompleteDiagnostics && hasInvalidDiagnostics
+        ? "Invalid or incomplete build graph"
+        : hasIncompleteDiagnostics
+          ? "Incomplete build graph"
+          : "Invalid build graph",
+  };
+}
+
+function CampaignRunList({ runs }: { runs: WorkflowCampaignView["runs"] }) {
+  if (runs.length <= 1) return null;
+  return (
+    <ol className="space-y-1" aria-label="Campaign runs">
+      {runs.map(({ run }, index) => (
+        <li
+          key={run.id}
+          className="flex items-center gap-2 rounded border border-border-seam px-2 py-1.5"
+        >
+          <span className="font-mono text-2xs text-subtle-foreground">
+            {index + 1}
+          </span>
+          <span className="min-w-0 flex-1 truncate text-xs text-foreground">
+            {run.name}
+          </span>
+          <CheckpointStatus
+            status={
+              run.status === "cancelled"
+                ? "interrupted"
+                : run.status === "queued"
+                  ? "pending"
+                  : run.status
+            }
+          />
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function WorkflowDag({ graph }: { graph: BuildDagView }) {
+  if (graph.layers.length === 0) return null;
+  const labels = new Map(
+    graph.layers.flat().map((node) => [node.id, node.title]),
+  );
+  return (
+    <div aria-label="Build dependency graph" className="space-y-1.5">
+      <p className="text-2xs font-medium text-subtle-foreground">Build DAG</p>
+      {graph.diagnostics.length === 0 ? null : (
+        <div
+          role="alert"
+          className="rounded border border-warning/20 bg-warning/5 px-2 py-1.5 text-2xs text-warning-text"
+        >
+          <p className="font-medium">{graph.diagnosticTitle}</p>
+          <ul className="mt-1 list-disc space-y-0.5 pl-4">
+            {graph.diagnostics.map((diagnostic) => (
+              <li key={diagnostic}>{diagnostic}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {graph.layers.map((layer, index) => (
+        <div key={layer.map((node) => node.id).join(":")}>
+          {index === 0 ? null : (
+            <div
+              className="flex justify-center py-0.5 text-subtle-foreground"
+              aria-hidden
+            >
+              <Icon name="ArrowDown" className="size-3" />
+            </div>
+          )}
+          <div
+            className="grid gap-1.5"
+            style={{
+              gridTemplateColumns: `repeat(${Math.min(layer.length, 3)}, minmax(0, 1fr))`,
+            }}
+          >
+            {layer.map((node) => (
+              <div
+                key={node.id}
+                className="min-w-0 rounded border border-border-seam bg-muted/30 px-2 py-1.5"
+              >
+                <div className="flex items-start gap-1.5">
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+                    {node.title}
+                  </span>
+                  {node.nodeType === "gate" ? (
+                    <span className="rounded bg-muted px-1 py-0.5 text-2xs text-subtle-foreground">
+                      Gate
+                    </span>
+                  ) : null}
+                </div>
+                <CheckpointStatus status={node.status} />
+                {node.dependsOn.length === 0 ? null : (
+                  <p className="mt-1 truncate text-2xs text-subtle-foreground">
+                    After:{" "}
+                    {node.dependsOn
+                      .map((id) => labels.get(id) ?? id)
+                      .join(", ")}
+                  </p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TransitionNotes({
+  checkpoints,
+}: {
+  checkpoints: WorkflowCheckpointView[];
+}) {
+  const transitions = checkpoints.filter((entry) =>
+    isCheckpointKind(entry, "transition"),
+  );
+  if (transitions.length === 0) return null;
+  return (
+    <div>
+      <p className="mb-1.5 text-2xs font-medium text-subtle-foreground">
+        Transition notes
+      </p>
+      <ol className="space-y-1.5">
+        {transitions.map((entry) => {
+          const transition = entry.checkpoint;
+          return (
+            <li
+              key={entry.id}
+              className="rounded border border-border-seam px-2 py-1.5"
+            >
+              <div className="flex items-start gap-2">
+                <span className="min-w-0 flex-1 text-xs font-medium text-foreground">
+                  {transition.title}
+                </span>
+                <span className="text-2xs text-subtle-foreground">
+                  {transition.actor}
+                </span>
+              </div>
+              <p className="mt-1 text-2xs text-subtle-foreground">
+                {transition.fromState ?? "start"} → {transition.toState}
+              </p>
+              <p className="mt-1 whitespace-pre-wrap text-xs leading-relaxed text-muted-foreground">
+                {transition.rationale}
+              </p>
+            </li>
+          );
+        })}
+      </ol>
+    </div>
+  );
+}
+
+function WorkflowBuildStory({
+  state,
+}: {
+  state: Extract<RunDetailsLoadState, { status: "ready" }>;
+}) {
+  const graph = buildDagLayers(
+    state.checkpoints,
+    state.omittedCheckpointRunCount > 0,
+  );
+  const hasTransitions = state.checkpoints.some((entry) =>
+    isCheckpointKind(entry, "transition"),
+  );
+  if (
+    graph.layers.length === 0 &&
+    !hasTransitions &&
+    state.campaignRuns.length <= 1
+  ) {
+    return null;
+  }
+  return (
+    <section
+      aria-labelledby="workflow-build-story-heading"
+      className="space-y-3"
+    >
+      <div>
+        <h3
+          id="workflow-build-story-heading"
+          className="text-xs font-medium text-muted-foreground"
+        >
+          Build story
+        </h3>
+        {state.campaignRuns.length > 1 ? (
+          <p className="mt-1 text-2xs text-subtle-foreground">
+            {state.campaignRuns.length} related runs, shown as one campaign.
+          </p>
+        ) : null}
+      </div>
+      <CampaignRunList runs={state.campaignRuns} />
+      {state.omittedCheckpointRunCount === 0 ? null : (
+        <div
+          role="status"
+          className="rounded border border-border-seam bg-muted/30 px-2 py-1.5 text-2xs text-subtle-foreground"
+        >
+          Checkpoint details for {state.omittedCheckpointRunCount} older
+          campaign{" "}
+          {state.omittedCheckpointRunCount === 1 ? "run was" : "runs were"}{" "}
+          omitted to keep the inspector responsive. Every run remains listed.
+        </div>
+      )}
+      <WorkflowDag graph={graph} />
+      <TransitionNotes checkpoints={state.checkpoints} />
+    </section>
+  );
+}
+
 function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
   if (state.status === "loading") {
     return (
@@ -1124,7 +1447,7 @@ function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
   if (state.status === "error") {
     return <RefreshWarning message={state.message} />;
   }
-  if (state.checkpoints.length === 0) {
+  if (state.checkpoints.length === 0 && state.campaignRuns.length <= 1) {
     return (
       <div className="space-y-2">
         {state.refreshError === null ? null : (
@@ -1169,6 +1492,7 @@ function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
       {state.refreshError === null ? null : (
         <RefreshWarning message={state.refreshError} />
       )}
+      <WorkflowBuildStory state={state} />
       {plans.length === 0 ? null : (
         <section aria-labelledby="workflow-plan-heading">
           <h3

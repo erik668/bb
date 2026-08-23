@@ -176,7 +176,7 @@ describe("workflows CLI argument validation", () => {
         (command) => command.name === "run",
       )?.usage,
     ).toBe(
-      "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>]",
+      "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]",
     );
     const run = harness.registrations.agentTools.find(
       (tool) => tool.name === "bb_workflow_run",

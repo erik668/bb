@@ -62,7 +62,7 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
   bb workflows run (--script '<javascript>'|--source '<javascript>'|
                    --file <path>|--name <name>)
                    [--args '<json>'] [--resume <run-id>]
-                   [--present-in <thread-id>]
+                   [--present-in <thread-id>] [--campaign <campaign-id>]
   bb workflows status <run-id>
   bb workflows details <run-id>
   bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]
@@ -71,7 +71,13 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
 
 Use `details` for durable structured selected-plan, work-item/ticket, and
 verification state. Use paged `history` for the chronological run and agent-call
-event stream. `--present-in` surfaces a CLI-launched run's active card and
+event stream. `details` lists every run in the selected campaign, but hydrates
+checkpoint ledgers for only the selected run plus the newest runs, up to four
+total. Older entries are explicitly marked `checkpointsOmitted`.
+Use the `campaignId` returned by a prior run with `--campaign` to continue that
+existing build story; an unknown campaign ID is rejected, and a campaign is
+capped at 100 runs. `--present-in`
+surfaces a CLI-launched run's active card and
 inspector in another thread while its origin retains execution, environment,
 permission, and completion-notification ownership. Hidden workflow workers
 otherwise inherit their parent run's presentation/root relationship or use the
@@ -81,7 +87,8 @@ ancestors. Presentation-thread inspection is read-only; stop control remains
 with the origin. The target must be available from the same BB server;
 workflows do not federate state across servers. Status, list, and history run
 records include
-`originThreadId`, `presentationThreadId`, `parentRunId`, and `rootRunId`.
+`originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
+`campaignId`.
 Commands must run from a BB project thread. Workflows has six plugin settings,
 configurable with `bb plugin config workflows set <key> <value>`:
 `maxActiveRuns` (default 4, range 1–32), `maxConcurrentAgents` (8, 1–64),

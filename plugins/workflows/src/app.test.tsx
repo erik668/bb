@@ -24,6 +24,7 @@ const run: WorkflowRunView = {
   presentationThreadId: "thr_origin",
   parentRunId: null,
   rootRunId: "wfr_11111111-1111-4111-8111-111111111111",
+  campaignId: "campaign-release",
   name: "Review the release",
   description: "Run independent checks before shipping.",
   status: "running",
@@ -116,6 +117,8 @@ const checkpoints: WorkflowCheckpointView[] = [
           objective: "Render the full accepted plan in the workflow panel.",
           detail: "Owner: UI worker\nDependency: durable checkpoint API",
           ticketRef: "BB-101",
+          dependsOn: [],
+          nodeType: "work",
         },
         {
           id: "ticket-102",
@@ -124,6 +127,8 @@ const checkpoints: WorkflowCheckpointView[] = [
           detail:
             "Owner: verification worker\nGate: focused and full suites pass",
           ticketRef: "BB-102",
+          dependsOn: ["ticket-101"],
+          nodeType: "work",
         },
       ],
     },
@@ -143,6 +148,8 @@ const checkpoints: WorkflowCheckpointView[] = [
       ticketRef: "BB-101",
       changedFiles: ["plugins/workflows/src/app.tsx"],
       blocker: null,
+      dependsOn: [],
+      nodeType: "work",
     },
     phase: "Implement",
     childThreadId: "thr_worker_2",
@@ -183,6 +190,8 @@ function workCheckpoint(
       ticketRef: null,
       changedFiles: [],
       blocker: status === "blocked" ? `${id} blocker` : null,
+      dependsOn: [],
+      nodeType: "work",
     },
     phase: "Implement",
     childThreadId: null,
@@ -845,7 +854,74 @@ describe("workflow thread panel", () => {
           workflowRunView: () => pendingRun,
           workflowRunDetails: (input) => {
             expect(input).toEqual({ threadId: "thr_origin", runId: run.id });
-            return { checkpoints };
+            return {
+              checkpoints,
+              campaign: {
+                id: run.campaignId,
+                detailedRunLimit: 4,
+                omittedCheckpointRunCount: 1,
+                runs: [
+                  {
+                    run: { ...run, status: "succeeded", finishedAt: 2_000 },
+                    checkpoints: [],
+                    checkpointsOmitted: false,
+                  },
+                  {
+                    run: {
+                      ...run,
+                      id: "wfr_campaign_build",
+                      name: "Build accepted units",
+                    },
+                    checkpoints: [
+                      {
+                        id: "wcp_gate",
+                        checkpoint: {
+                          kind: "work-item",
+                          id: "promotion-gate",
+                          title: "Promotion gate",
+                          status: "blocked",
+                          summary: "Awaiting a human redesign decision.",
+                          ticketRef: null,
+                          changedFiles: [],
+                          blocker: "approach-level feedback",
+                          dependsOn: [],
+                          nodeType: "work",
+                        },
+                        phase: "Promote",
+                        childThreadId: null,
+                        createdAt: 4_000,
+                        updatedAt: 4_000,
+                      },
+                      {
+                        id: "wcp_transition",
+                        checkpoint: {
+                          kind: "transition",
+                          id: "decision:promotion",
+                          title: "Promotion decision",
+                          status: "blocked",
+                          summary: null,
+                          actor: "synthesizer",
+                          fromState: "implementation-review",
+                          toState: "awaiting-human-redesign-decision",
+                          workItemIds: ["ticket-101", "ticket-102"],
+                          rationale:
+                            "Critics found conflicting approach-level evidence across both units.",
+                          evidenceRefs: [
+                            "critic:ticket-101",
+                            "critic:ticket-102",
+                          ],
+                        },
+                        phase: "Promote",
+                        childThreadId: null,
+                        createdAt: 4_100,
+                        updatedAt: 4_100,
+                      },
+                    ],
+                    checkpointsOmitted: false,
+                  },
+                ],
+              },
+            };
           },
         },
       },
@@ -861,9 +937,105 @@ describe("workflow thread panel", () => {
       await pendingRun;
     });
     await slot.findByRole("heading", { name: "Selected plan" });
+    expect(slot.getByRole("heading", { name: "Build story" })).toBeTruthy();
+    expect(slot.getByLabelText("Build dependency graph")).toBeTruthy();
+    expect(
+      slot.getByText("2 related runs, shown as one campaign."),
+    ).toBeTruthy();
+    expect(
+      slot.getByText(/Checkpoint details for 1 older campaign run was omitted/),
+    ).toBeTruthy();
+    expect(slot.getByText("After: Expose workflow details")).toBeTruthy();
+    expect(slot.queryByText("After: Track verification")).toBeNull();
+    expect(slot.queryByText("Gate")).toBeNull();
+    expect(
+      slot.getByText(
+        "Critics found conflicting approach-level evidence across both units.",
+      ),
+    ).toBeTruthy();
     expect(
       slot.rpcCalls.filter((call) => call.method === "workflowRunDetails"),
     ).toHaveLength(1);
+  });
+
+  it("warns when merged campaign work items contain unknown or cyclic dependencies", async () => {
+    const unknown = workCheckpoint("unknown-ref", "running");
+    const cycleA = workCheckpoint("cycle-a", "pending");
+    const cycleB = workCheckpoint("cycle-b", "pending");
+    if (unknown.checkpoint.kind !== "work-item") throw new Error("test setup");
+    if (cycleA.checkpoint.kind !== "work-item") throw new Error("test setup");
+    if (cycleB.checkpoint.kind !== "work-item") throw new Error("test setup");
+    unknown.checkpoint.dependsOn = ["missing-node"];
+    cycleA.checkpoint.dependsOn = ["cycle-b"];
+    cycleB.checkpoint.dependsOn = ["cycle-a"];
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [unknown, cycleA, cycleB],
+            campaign: null,
+          }),
+        },
+      },
+    );
+
+    expect(await slot.findByText("Invalid build graph")).toBeTruthy();
+    expect(
+      slot.getByText(
+        "Unknown dependency missing-node referenced by unknown-ref.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.getByText(
+        "Cyclic or cycle-blocked dependencies affect: cycle-a, cycle-b.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("labels unresolved dependencies as incomplete when older ledgers were omitted", async () => {
+    const unknown = workCheckpoint("cross-run-work", "running");
+    if (unknown.checkpoint.kind !== "work-item") throw new Error("test setup");
+    unknown.checkpoint.dependsOn = ["historical-plan-item"];
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [unknown],
+            campaign: {
+              id: run.campaignId,
+              detailedRunLimit: 4,
+              omittedCheckpointRunCount: 1,
+              runs: [
+                {
+                  run,
+                  checkpoints: [],
+                  checkpointsOmitted: false,
+                },
+                {
+                  run: { ...run, id: "wfr_omitted", name: "Older run" },
+                  checkpoints: [],
+                  checkpointsOmitted: true,
+                },
+              ],
+            },
+          }),
+        },
+      },
+    );
+
+    expect(await slot.findByText("Incomplete build graph")).toBeTruthy();
+    expect(
+      slot.getByText(
+        "Dependency historical-plan-item referenced by cross-run-work may be in an omitted older ledger.",
+      ),
+    ).toBeTruthy();
+    expect(slot.queryByText("Invalid build graph")).toBeNull();
   });
 
   it("hides prior details while a newer latest run resolves its own ledger", async () => {

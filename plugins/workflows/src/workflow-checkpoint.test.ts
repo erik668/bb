@@ -18,6 +18,8 @@ describe("workflow checkpoint contract", () => {
             objective: "Confirm the current failure shape.",
             detail: "Role: scout\nVerification: capture the failing output",
             ticketRef: "TASK-23",
+            dependsOn: [],
+            nodeType: "work",
           },
         ],
       }),
@@ -35,6 +37,8 @@ describe("workflow checkpoint contract", () => {
           objective: "Confirm the current failure shape.",
           detail: "Role: scout\nVerification: capture the failing output",
           ticketRef: "TASK-23",
+          dependsOn: [],
+          nodeType: "work",
         },
       ],
     });
@@ -50,6 +54,8 @@ describe("workflow checkpoint contract", () => {
       ticketRef: null,
       changedFiles: [],
       blocker: null,
+      dependsOn: [],
+      nodeType: "work" as const,
     };
     expect(workflowCheckpointSchema.parse(workItem)).toEqual(workItem);
     expect(() =>
@@ -94,6 +100,59 @@ describe("workflow checkpoint contract", () => {
         counts: { passed: 52, failed: 0, skipped: 0 },
       }),
     ).toMatchObject({ kind: "verification", status: "succeeded" });
+  });
+
+  it("accepts an acyclic dependency graph and rejects unknown or cyclic edges", () => {
+    const item = (id: string, dependsOn: string[] = []) => ({
+      id,
+      title: id,
+      objective: `Deliver ${id}.`,
+      detail: null,
+      ticketRef: null,
+      dependsOn,
+      nodeType: "work" as const,
+    });
+    const plan = {
+      kind: "plan" as const,
+      id: "selected-plan",
+      title: "Selected plan",
+      status: "succeeded" as const,
+      summary: null,
+      detail: null,
+      items: [item("oracle"), item("build", ["oracle"])],
+    };
+    expect(workflowCheckpointSchema.parse(plan)).toMatchObject(plan);
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        ...plan,
+        items: [item("build", ["missing"])],
+      }),
+    ).toThrow(/Unknown plan dependency/);
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        ...plan,
+        items: [item("a", ["b"]), item("b", ["a"])],
+      }),
+    ).toThrow(/acyclic/);
+  });
+
+  it("accepts structured transition rationale", () => {
+    expect(
+      workflowCheckpointSchema.parse({
+        kind: "transition",
+        id: "decision:promotion",
+        title: "Promotion decision",
+        status: "blocked",
+        summary: "Shared assumptions need human review.",
+        actor: "synthesizer",
+        fromState: "implementation-review",
+        toState: "awaiting-human-redesign-decision",
+        workItemIds: ["unit-a", "unit-b"],
+        rationale:
+          "Independent critics found conflicting approach-level evidence across both units.",
+        evidenceRefs: ["critic:unit-a", "critic:unit-b"],
+      }),
+    ).toMatchObject({ kind: "transition", actor: "synthesizer" });
   });
 
   it("rejects succeeded verification with failed results", () => {

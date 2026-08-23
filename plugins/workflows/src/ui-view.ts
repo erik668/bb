@@ -109,6 +109,7 @@ export function buildWorkflowRunView(
     presentationThreadId: run.presentationThreadId,
     parentRunId: run.parentRunId,
     rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     name: run.name,
     description: metadata.description,
     status: run.status,

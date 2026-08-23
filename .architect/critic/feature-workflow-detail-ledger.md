@@ -1,98 +1,106 @@
-SHA: 970204852ab0b0228700be969710052d71a387cf
+SHA: 8bb8fbd0b57b1b5c5c5ca9c1566d05f791f5ee99
 VERDICT: PASS
-CRITIC: codex-migration-merge-critic-20260821
+CRITIC: codex-pre-handoff-critic-20260822
 
-# Independent post-remediation pre-promotion review
+# Independent pre-handoff review: workflow build story
 
-Finding count: 0 blocking / 1 warning / 0 nit.
+I am an independent reviewer and did not author the implementation under review.
 
-## Finding
+Finding count: 0 blocking / 4 warnings / 0 nits.
 
-### Warning: workflow UI remains a large edit surface
+No blocking correctness, authorization, migration, or handoff-evidence findings remain at this SHA.
+
+## Warnings
+
+### 1. Rollback-compatible campaign predicates do not use the existing campaign index
+
+- **Severity:** warn
+- **Lens:** distinguished-engineer-review / simplify
+- **Location:** `plugins/workflows/src/data.ts:359-375,480-537`
+- **Scenario:** Correct rollback compatibility requires treating `campaign_id IS NULL` as the run's own ID. The current `COALESCE(campaign_id,id) = ?` predicates do that correctly, but SQLite plans them as full `workflow_runs` scans rather than using `workflow_runs_campaign_created_idx`. Campaign continuation and inspection can therefore become slower as retained run history grows.
+- **Evidence:** An independent SQLite `EXPLAIN QUERY PLAN` against the same table/index shape returned `SCAN workflow_runs`.
+- **Fix:** If retained history becomes material, use a sargable dual predicate or add an expression index matching `COALESCE(campaign_id,id)` and prove the query plan. This is not a blocker for the current bounded, single-customer installation.
+
+### 2. Mutation testing was not attempted
+
+- **Severity:** warn
+- **Lens:** test-reviewer
+- **Location:** campaign authorization/hydration, DAG merge, checkpoint validation, and migration tests
+- **Scenario:** The 301-test suite is broad and the independent review found regressions that were repaired, but no mutation run proves every boundary assertion fails under targeted logic changes.
+- **Fix:** Before wider multi-customer rollout, mutate campaign ancestry, rollback projection, detailed-run selection, scope-count comparison, `dependsOn` presence merge, and promotion-status mapping; retain assertions that kill those mutations.
+
+### 3. `app.tsx` remains a large coupled edit surface
 
 - **Severity:** warn
 - **Lens:** code-standards #3 / simplify
-- **Location:** `plugins/workflows/src/app.tsx:398-448,620-768,963-1350`
-- **Scenario:** The checkpoint loader, causal run card, and three ledger renderers leave `app.tsx` at 1,557 lines. No correctness defect was found in this review, but polling, stale-request suppression, provenance controls, and detail rendering still share a large edit surface.
-- **Fix:** In a follow-up, extract the checkpoint hook and ledger renderer into focused modules while preserving the RPC/UI tests. This is not a promotion blocker.
+- **Location:** `plugins/workflows/src/app.tsx:437-485,1129-1435`
+- **Scenario:** `CampaignRunList`, `WorkflowDag`, and `TransitionNotes` are focused components, but details loading, stale-request handling, graph projection, and the surrounding inspector remain in a very large module.
+- **Fix:** In a follow-up, extract the campaign-details loader and build-story projection while preserving the RPC/component tests.
+
+### 4. Browser evidence reports 192 warnings without preserving their content
+
+- **Severity:** warn
+- **Lens:** factuality-claim-review / UI evidence quality
+- **Location:** `output/playwright/workflow-campaign-inspector-console.txt`
+- **Scenario:** The recorded Playwright console probe proves zero error-level messages, but reports 192 warnings without samples. This is sufficient for the stated zero-error gate, not for a claim of a fully clean console.
+- **Fix:** Future evidence should retain warning text or explicitly classify known dev-environment noise.
 
 ## Prior blocker resolution
 
-### Rollback-era causal projection — resolved
+### Campaign payload cliff — resolved
 
-`RUN_SELECT` now normalizes rows written by a rolled-back build with `COALESCE(presentation_thread_id, origin_thread_id)` and `COALESCE(root_run_id, id)`. The regression applies migrations 0..12, inserts a run through the legacy column list after migration 12, observes non-null presentation/root IDs, and creates a causal child that inherits the normalized presentation/root identity. `plugins/workflows/src/data.ts:160-171`; `plugins/workflows/src/data.test.ts:117-345`.
+Campaigns still retain 100 lightweight chronological run summaries, but only the selected run plus newest runs are detailed, up to four ledgers total. The selected ledger remains in the primary field and is not duplicated; older entries are marked `checkpointsOmitted`. Four independently bounded 4 MiB ledgers cap checkpoint detail at 16 MiB. `plugins/workflows/src/workflow-campaign.ts:3-10`; `plugins/workflows/src/data.ts:506-537`; `plugins/workflows/src/service.ts:545-558,978-1032`; `plugins/workflows/src/server.ts:171-199`; `plugins/workflows/src/ui-contract.ts:82-111`.
 
-Independent in-memory reproduction with the real migrations produced:
+The regression retains every summary, selects the requested run plus newest three, and places malformed JSON in an omitted older ledger to prove it is not hydrated. `plugins/workflows/src/service-policy.test.ts:1506-1544`. The UI truthfully distinguishes an incomplete cross-run graph from an invalid graph when dependencies may live in omitted history. `plugins/workflows/src/app.tsx:1143-1236,1383-1435`; `plugins/workflows/src/app.test.tsx:998-1039`.
 
-```json
-{
-  "parent": {
-    "presentationThreadId": "t",
-    "rootRunId": "wfr_rollback"
-  },
-  "child": {
-    "presentationThreadId": "t",
-    "parentRunId": "wfr_rollback",
-    "rootRunId": "wfr_rollback"
-  }
-}
-```
+### Rendered interaction evidence — resolved
 
-The service relationship path reads causal parents through the normalized mapper before inheriting presentation/root IDs, so the data-layer fallback reaches actual workflow start. `plugins/workflows/src/service.ts:680-779`. Existing service coverage separately exercises worker-launched causal inheritance. `plugins/workflows/src/service-policy.test.ts:1417-1460`.
+The independently inspected artifacts are:
 
-### `parallel()` contract — resolved
+- `output/playwright/workflow-campaign-inspector.png` — 814x1638 PNG, SHA-256 `1ff79ae1cc840893739b100dbd534468d8222e4b4815ba9ca559da0bdda0fcb9`.
+- `output/playwright/workflow-campaign-inspector-details.png` — 814x1638 PNG, SHA-256 `05eea357ecde5451d6f9ea67557c42adcd62d80623d8f85e2eac170357cb3541`.
+- `output/playwright/workflow-campaign-inspector-interaction.webm` — 12.04-second VP8, 800x600, 25 fps, SHA-256 `ce4beb8f069456b46c90ef853a97e333089ba09f1dd6153ddb6ae2bba5bc203b`.
+- `output/playwright/workflow-campaign-inspector-console.txt` — zero error-level messages, SHA-256 `95917bee9ac11c369e671b1fe85a70ec9ac10b46ba5283dca1477545dc16908a`.
 
-The published contract says: “A thunk that throws ... resolves to `null`” and defines `parallel()` as a barrier. Runtime now catches each thunk independently, maps failures to `null`, and awaits the complete `Promise.all` barrier. The runtime regression proves the aggregate stays pending until the final sibling settles and then returns `[null, "ok", "last"]`. Service integration proves a failed nested workflow plus a successful sibling produces a succeeded `[null,"inline"]` run. `plugins/workflows/src/runtime.ts:575-586`; `plugins/workflows/src/runtime.test.ts:470-509`; `plugins/workflows/src/service-policy.test.ts:618-660`; `plugins/workflows/skills/workflows/SKILL.md:124-128`.
+The screenshots show six related runs, the omission notice, DAG/gate/status presentation, truthful incomplete-graph diagnostics, selected plan, ticket references, implementation disclosures, and verification counts. Independent frame sampling of the WebM shows continuous collapse/expand interaction across plan, work-item, and verification disclosures.
 
-The saved router workflow expects exactly this contract: critic failures become explicit missing workers, the three-architect cohort blocks unless all three values are non-null, and section-wave nulls become failed work items rather than an unhandled workflow rejection. `.bb/workflows/workflow-router-pipeline.js:1165-1209,1220-1334,1375-1424,2325-2377`.
+### Rollback-era campaign projection — resolved
 
-### Shipped migration prefix — resolved
+Runs inserted by an older build after migration 13 can have null campaign/presentation columns. Admission, first-run lookup, count, summary listing, and run projection now use compatible `COALESCE` semantics; cap/list scope also coalesces presentation to origin. `plugins/workflows/src/data.ts:173-190,359-375,480-537`. The production-shaped upgrade test proves self-campaign projection, lookup/list/count, bounded continuation inheritance, and count increment for a rollback-era insert. `plugins/workflows/src/data.test.ts:288-372`.
 
-The upgrade test now freezes SHA-256 values for migration IDs 0..10 and asserts the executable prefix before constructing the production-shaped database. Independent comparison against the sealed `bb-workflows-runtime-context-fit` source found 11 shipped migrations, 13 current migrations, byte-for-byte equality for IDs 0..10, and only checkpoint/presentation additions at IDs 11 and 12. The frozen hashes exactly match both sources. `plugins/workflows/src/data.test.ts:83-139`; `plugins/workflows/src/data.ts:201-324`.
+## Governing requirements and conformance
 
-### Global admission documentation — resolved
-
-README and workflow skill now describe all seven settings, identify `maxActiveRuns` and `maxGlobalConcurrentAgents` as live plugin-global policy, and state that a live decrease does not cancel active calls but blocks admission until usage falls below the new limit. The remaining five values are correctly identified as per-run snapshots. `plugins/workflows/README.md:164-187`; `plugins/workflows/skills/workflows/SKILL.md:532-539`; `plugins/workflows/src/settings.ts:11-90`.
-
-## Ratified requirement conformance
-
-- **Requirement:** “surface the related workflow card on the root workflow I kicked it off in, or the root agent who led to one or more agents further down to kick it off.”
-  **Verdict:** honored. Hidden origins resolve through same-project/same-environment ancestry; nested workflows inherit causal presentation/root identity; rollback-era rows project safe defaults. `plugins/workflows/src/service.ts:615-722`; `plugins/workflows/src/data.ts:160-171`; `plugins/workflows/src/server.ts:110-159`.
 - **Requirement:** “easily view the full plan that was selected,” “exact progress, like a per-ticket breakdown,” and “which tests were selected, what their status is.”
-  **Verdict:** honored when flows publish the generic checkpoint contract. Plan details, work items, and verification commands/counts/statuses are durable and access remains origin-or-presentation scoped. `plugins/workflows/src/workflow-checkpoint.ts:28-120`; `plugins/workflows/src/data.ts:530-647`; `plugins/workflows/src/server.ts:125-159,193-202`.
-- **Requirement:** make the capability reusable by other flows.
-  **Verdict:** honored. Checkpoint/presentation capabilities are generic plugin/runtime surfaces, global admission is service-wide, and the documented `parallel()` contract matches both the saved routers and arbitrary workflow scripts.
+  **Verdict:** honored for the selected run and bounded recent campaign history. Plans carry detail/tickets, work items carry status/files/blockers, verification carries command/count/status, and omitted older ledgers are explicitly disclosed. `plugins/workflows/src/workflow-checkpoint.ts:35-188`; `plugins/workflows/src/app.tsx:1421-1429`.
+- **Requirement:** “one overarching workflow that encompasses all of the smaller sections,” with a “DAG” and “notes on why certain transitions occurred.”
+  **Verdict:** honored through explicit campaign identity, dependency edges, and transition checkpoints without fabricating causal lineage. `plugins/workflows/src/workflow-checkpoint.ts:19-155`; `plugins/workflows/src/app.tsx:1129-1435`; `.architect/inventory/workflow-build-story.md:38-45`.
+- **Requirement:** “surface the related workflow card on the root workflow I kicked it off in, or the root agent who led to one or more agents further down to kick it off.”
+  **Verdict:** honored without exposing private-origin campaign details. Presentation ancestry remains project/environment scoped; aggregation is available only in the shared presentation thread. `plugins/workflows/src/service.ts:631-842`; `plugins/workflows/src/server.ts:117-199`.
+- **Repository requirement:** “Use strict schemas and deterministic validation when crossing process or tool boundaries.”
+  **Verdict:** honored. Campaign IDs, checkpoint unions, dependency topology, transition fields, byte/node limits, run summaries, and RPC results are bounded and validated. `plugins/workflows/src/workflow-campaign.ts:3-16`; `plugins/workflows/src/workflow-checkpoint.ts:3-199`; `plugins/workflows/src/ui-contract.ts:71-111`.
+- **Repository requirement:** “New commands or flags must update both the relevant `bb guide` chapter and `apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md`.”
+  **Verdict:** honored for `--campaign`, campaign-aware `details`, and four-ledger omission semantics. `packages/templates/src/templates/bb-guide-plugins.md:60-89`; `apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md:663-689`.
 
-## Inventory, authorization, and operational boundary
+## Authorization, ordering, mutation, and concurrency audit
 
-- `.architect/inventory/workflow-production-capability-merge.md` records the five shipped context capabilities plus checkpoint/presentation additions. IDs 0..10 remain append-only and IDs 11/12 contain only the proposed additions.
-- The representative upgrade preserves seeded UTF-8 prompt bytes, context requirement/profile, observed usage/window, and estimation telemetry, backfills immediate legacy rows, remains idempotent, and now covers post-migration legacy inserts.
-- Presentation scoping remains same-project/same-environment origin-or-visible-ancestor; the run is loaded before authorization; stop remains origin-only; worker checkpoint mutation remains bound to the active owning child call. `plugins/workflows/src/service.ts:615-722`; `plugins/workflows/src/server.ts:110-159,193-202`.
-- Checkpoint ownership/kind/aggregate admission is one SQLite transaction with `UNIQUE(run_id, checkpoint_id)`. Global agent admission is one service-wide FIFO, releases in `finally`, removes aborted queued calls, and honors live increases/decreases without cancelling active calls. `plugins/workflows/src/data.ts:530-647`; `plugins/workflows/src/service.ts:121-177,1164-1223,2000-2003`.
-- Context-profile parsing rejects unknown properties, sparse/duplicate arrays, controls/invisible characters, and bounded-length violations. Values are JSON-string encoded into a manifest explicitly framed as caller-supplied guidance, not authorization. `plugins/workflows/src/validation.ts:132-293`; `plugins/workflows/src/service.ts:979-1023`.
-
-No new egress, secret flow, raw HTML sink, broad project lookup, or destructive all-project operation was introduced by the remediation.
+- **Scope/order:** The selected run is authorized against the requesting origin/presentation thread before aggregation. Campaign SQL is constrained by campaign, project, environment, and coalesced presentation; a global count mismatch fails closed. `plugins/workflows/src/server.ts:117-139,171-199`; `plugins/workflows/src/data.ts:480-537`; `plugins/workflows/src/service.ts:1000-1032`.
+- **Lineage:** Unknown campaigns are rejected. Causal children/resumed runs inherit campaign identity; conflicts fail. Independent continuation/resume resolves the campaign presentation through origin ancestry. `plugins/workflows/src/service.ts:696-842`.
+- **Ordering:** Summaries are stable by `created_at ASC, rowid ASC`; selected plus newest ledgers are deterministic. `plugins/workflows/src/data.ts:506-537`; `plugins/workflows/src/service.ts:545-558`.
+- **Mutation:** Stop remains origin-only; checkpoint writes remain bound to the active owning child call and stable ID. Campaign grouping adds no cross-run edit operation. `plugins/workflows/src/server.ts:201-212,248-256`.
+- **Concurrency:** Campaign cap check and insert remain one SQLite transaction; the 99-to-100/101 race admits exactly one contender. `plugins/workflows/src/data.ts:351-399`; `plugins/workflows/src/service-policy.test.ts:1692-1727`.
+- **Destructive/egress boundary:** No delete-all, broad-project mutation, credential flow, raw HTML sink, or new network egress is introduced.
 
 ## Independent verification
 
-- `pace-agent-runtime heavy --name workflows-postfix-critic-tests -- pnpm --filter bb-plugin-workflows test` — PASS, 14 files / 288 tests.
-- `pace-agent-runtime heavy --name workflows-postfix-critic-typecheck -- pnpm --filter bb-plugin-workflows typecheck` — PASS.
-- `pnpm exec vitest run --config .architect/validation/vitest.config.ts` — PASS, 1 file / 7 lifecycle tests.
-- Independent sealed-source migration comparison — 13 current / 11 shipped / exact 0..10 prefix / appended IDs 11 and 12.
-- Independent rollback simulation — non-null parent projection and correct causal child inheritance.
-- `git diff --check HEAD^..HEAD` — PASS.
-
-## Lens conclusions
-
-- **code-review / distinguished-engineer-review:** immediate upgrade, rollback-era inserts, re-promotion, causal inheritance, and parallel failure handling now form a compatible rollout boundary.
-- **test-reviewer:** the prior regression gaps are covered at data, QuickJS runtime, service-integration, and saved-workflow lifecycle tiers; full plugin and lifecycle suites pass.
-- **owasp-security:** project/environment scoping, load-before-authorize ordering, origin-only stop, and worker checkpoint ownership remain intact.
-- **code-standards / simplify:** frozen migration hashes establish a mechanical cross-version invariant. The large UI module remains the non-blocking maintainability warning above.
-- **factuality-claim-review:** runtime, tests, saved flows, README, and workflow skill now agree on parallel and settings behavior.
+- `pace-agent-runtime heavy --name critic-final-remediation-tests -- pnpm exec turbo run test --filter=bb-plugin-workflows --force` — PASS, 14 files / 301 tests.
+- `pace-agent-runtime heavy --name critic-final-remediation-typecheck -- pnpm exec turbo run typecheck --filter=bb-plugin-workflows --force` — PASS.
+- `git diff --check HEAD` — PASS.
+- The two screenshots were inspected at original resolution; the WebM metadata and sampled frames were independently inspected; the console record and all artifact hashes were independently checked.
+- Canonical mirror parity and config policy/live validation are recorded in the sibling config report.
 
 ## What this review did not cover
 
-- It did not edit product code, rebuild/restart the desktop application, or perform the same-server visual smoke; those remain the promotion/runtime gate after this source PASS.
-- It did not run a destructive rollback against the live database; rollback behavior was reproduced in-memory with the real migration and row-mapping code.
-- It did not re-evaluate model routing quality, provider availability, cost, or LLM output quality.
-- It did not replay prior screenshots/video pixel by pixel or audit unrelated application subsystems.
+- No mutation test was attempted.
+- The 192 browser-console warnings were not classified because the artifact records only their count.
+- I did not run a destructive downgrade against the live SQLite database, delete runtime state, push, commit, or deploy.
+- I did not evaluate provider/model output quality, cost, or long-duration agent drift.

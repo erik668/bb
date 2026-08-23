@@ -14,16 +14,19 @@ import {
   cancelRun,
   claimQueuedRun,
   countCallsForRun,
+  countRunsForCampaign,
   createRun,
   deleteExpiredTerminalRuns,
   getCall,
   getCallByChildThread,
+  getFirstRunForCampaignScope,
   getLatestRunForThread,
   getRun,
   getRunRequired,
   incrementRepairAttempts,
   listCallsForRun,
   listCallsForRunPage,
+  listRunsForCampaign,
   listWorkflowCheckpointsForRun,
   listActiveRunsForThread,
   listRuns,
@@ -47,6 +50,7 @@ import {
   type WorkflowCallCounts,
   type WorkflowCallRow,
   type WorkflowCheckpointRow,
+  type WorkflowCampaignRunSummaryRow,
   type WorkflowRunRow,
 } from "./data.js";
 import { parseWorkflowSource } from "./parser.js";
@@ -81,6 +85,10 @@ import {
   workflowCheckpointSchema,
   type WorkflowCheckpoint,
 } from "./workflow-checkpoint.js";
+import {
+  MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+  workflowCampaignIdSchema,
+} from "./workflow-campaign.js";
 
 const executionValuesSchema = z.object({
   model: z.string().min(1),
@@ -449,6 +457,7 @@ interface StartWorkflowInput {
   projectId: string;
   originThreadId: string;
   presentationThreadId?: string | null;
+  campaignId?: string | null;
   source: string;
   args: JsonValue;
   resumedFromRunId: string | null;
@@ -466,6 +475,7 @@ export interface WorkflowService {
   inspectLatestForThread(threadId: string): WorkflowRunInspection | null;
   inspectActiveForThread(threadId: string): WorkflowRunInspection[];
   inspectCheckpoints(runId: string): WorkflowCheckpointInspection[];
+  inspectCampaign(runId: string): WorkflowCampaignInspection | null;
   list(projectId: string, limit: number): WorkflowRunRow[];
   stop(runId: string): Promise<boolean>;
   updateSettings(settings: WorkflowSettings): void;
@@ -517,6 +527,34 @@ export interface WorkflowCheckpointInspection extends Omit<
   "checkpointJson"
 > {
   checkpoint: WorkflowCheckpoint;
+}
+
+export interface WorkflowCampaignRunInspection {
+  run: WorkflowCampaignRunSummaryRow;
+  checkpoints: WorkflowCheckpointInspection[];
+  checkpointsOmitted: boolean;
+}
+
+export interface WorkflowCampaignInspection {
+  campaignId: string;
+  detailedRunLimit: number;
+  omittedCheckpointRunCount: number;
+  runs: WorkflowCampaignRunInspection[];
+}
+
+export function campaignDetailedRunIds(
+  runs: readonly WorkflowCampaignRunSummaryRow[],
+  selectedRunId: string,
+): ReadonlySet<string> {
+  const ids = new Set<string>([selectedRunId]);
+  for (
+    let index = runs.length - 1;
+    index >= 0 && ids.size < MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS;
+    index -= 1
+  ) {
+    ids.add(runs[index]!.id);
+  }
+  return ids;
 }
 
 export function createWorkflowService(
@@ -677,6 +715,71 @@ export function createWorkflowService(
     }
   }
 
+  async function resolveCampaignForRun(
+    input: StartWorkflowInput,
+    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+    environmentId: string,
+    parentRun: WorkflowRunRow | null,
+    previousRun: WorkflowRunRow | null,
+  ): Promise<{
+    campaignId: string;
+    existingCampaignRun: WorkflowRunRow | null;
+  }> {
+    const explicitCampaignId =
+      input.campaignId === undefined || input.campaignId === null
+        ? null
+        : workflowCampaignIdSchema.parse(input.campaignId);
+    const inheritedCampaignIds = [
+      parentRun?.campaignId,
+      previousRun?.campaignId,
+    ].filter((value): value is string => value !== undefined);
+    if (new Set(inheritedCampaignIds).size > 1) {
+      throw new Error(
+        "Workflow causal parent and resumed run use different campaigns",
+      );
+    }
+    const inheritedCampaignId = inheritedCampaignIds[0] ?? null;
+    if (
+      explicitCampaignId !== null &&
+      inheritedCampaignId !== null &&
+      explicitCampaignId !== inheritedCampaignId
+    ) {
+      throw new Error(
+        "Workflow campaign must match its causal parent or resumed run",
+      );
+    }
+    const campaignId = inheritedCampaignId ?? explicitCampaignId ?? "";
+    const existingCampaignRun =
+      campaignId === ""
+        ? null
+        : getFirstRunForCampaignScope(db, {
+            campaignId,
+            projectId: input.projectId,
+            environmentId,
+          });
+    if (
+      explicitCampaignId !== null &&
+      inheritedCampaignId === null &&
+      existingCampaignRun === null
+    ) {
+      throw new Error(
+        `Cannot continue unknown workflow campaign ${explicitCampaignId}`,
+      );
+    }
+    if (
+      existingCampaignRun !== null &&
+      parentRun === null &&
+      (input.presentationThreadId === undefined ||
+        input.presentationThreadId === null)
+    ) {
+      await resolveExplicitPresentationThread(
+        origin,
+        existingCampaignRun.presentationThreadId,
+      );
+    }
+    return { campaignId, existingCampaignRun };
+  }
+
   async function resolveRunRelationship(
     input: StartWorkflowInput,
     origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
@@ -684,7 +787,11 @@ export function createWorkflowService(
     presentationThreadId: string;
     parentRunId: string | null;
     rootRunId: string;
+    campaignId: string;
   }> {
+    if (origin.environmentId === null) {
+      throw new Error("Workflow origin thread has no environment");
+    }
     const parentCall = getCallByChildThread(db, input.originThreadId);
     const parentRun = parentCall === null ? null : getRun(db, parentCall.runId);
     if (
@@ -696,6 +803,37 @@ export function createWorkflowService(
         "Workflow causal parent must use the origin project and environment",
       );
     }
+    const previousRun =
+      input.resumedFromRunId === null
+        ? null
+        : getRun(db, input.resumedFromRunId);
+    if (
+      input.resumedFromRunId !== null &&
+      (previousRun === null || previousRun.projectId !== input.projectId)
+    ) {
+      throw new Error(
+        `Cannot resume unknown workflow run ${input.resumedFromRunId}`,
+      );
+    }
+    if (previousRun !== null) {
+      if (previousRun.status === "queued" || previousRun.status === "running") {
+        throw new Error(
+          `Cannot resume workflow run ${input.resumedFromRunId} before it is terminal`,
+        );
+      }
+      if (previousRun.environmentId !== origin.environmentId) {
+        throw new Error(
+          `Cannot resume workflow run ${input.resumedFromRunId} from a different environment or workspace`,
+        );
+      }
+    }
+    const { campaignId, existingCampaignRun } = await resolveCampaignForRun(
+      input,
+      origin,
+      origin.environmentId,
+      parentRun,
+      previousRun,
+    );
     let presentationThreadId: string;
     if (
       input.presentationThreadId === undefined ||
@@ -703,6 +841,8 @@ export function createWorkflowService(
     ) {
       presentationThreadId =
         parentRun?.presentationThreadId ??
+        previousRun?.presentationThreadId ??
+        existingCampaignRun?.presentationThreadId ??
         (await nearestVisiblePresentationThread(origin));
     } else {
       presentationThreadId = await resolveExplicitPresentationThread(
@@ -710,10 +850,17 @@ export function createWorkflowService(
         input.presentationThreadId,
       );
     }
+    if (
+      existingCampaignRun !== null &&
+      existingCampaignRun.presentationThreadId !== presentationThreadId
+    ) {
+      throw new Error("Workflow campaign must use one presentation thread");
+    }
     return {
       presentationThreadId,
       parentRunId: parentRun?.id ?? null,
       rootRunId: parentRun?.rootRunId ?? "",
+      campaignId,
     };
   }
 
@@ -741,30 +888,13 @@ export function createWorkflowService(
     }
     const origin = await resolveOrigin(input);
     const relationship = await resolveRunRelationship(input, origin.thread);
-    if (input.resumedFromRunId !== null) {
-      const previous = getRun(db, input.resumedFromRunId);
-      if (previous === null || previous.projectId !== input.projectId) {
-        throw new Error(
-          `Cannot resume unknown workflow run ${input.resumedFromRunId}`,
-        );
-      }
-      if (previous.status === "queued" || previous.status === "running") {
-        throw new Error(
-          `Cannot resume workflow run ${input.resumedFromRunId} before it is terminal`,
-        );
-      }
-      if (previous.environmentId !== origin.environmentId) {
-        throw new Error(
-          `Cannot resume workflow run ${input.resumedFromRunId} from a different environment or workspace`,
-        );
-      }
-    }
     const created = createRun(db, {
       projectId: input.projectId,
       originThreadId: input.originThreadId,
       presentationThreadId: relationship.presentationThreadId,
       parentRunId: relationship.parentRunId,
       rootRunId: relationship.rootRunId,
+      campaignId: relationship.campaignId,
       environmentId: origin.environmentId,
       originProvider: origin.providerId,
       originModel: origin.model,
@@ -774,7 +904,9 @@ export function createWorkflowService(
       source: input.source,
       sourceHash: createHash("sha256").update(input.source).digest("hex"),
       argsJson: JSON.stringify(input.args),
-      settingsJson: JSON.stringify(workflowRunSettingsSnapshot(currentSettings)),
+      settingsJson: JSON.stringify(
+        workflowRunSettingsSnapshot(currentSettings),
+      ),
       resumedFromRunId: input.resumedFromRunId,
     });
     publishRunChanged(created);
@@ -863,6 +995,40 @@ export function createWorkflowService(
       );
       return { ...row, checkpoint };
     });
+  }
+
+  function inspectCampaign(runId: string): WorkflowCampaignInspection | null {
+    const selected = getRun(db, runId);
+    if (selected === null) return null;
+    const campaignRuns = listRunsForCampaign(db, {
+      campaignId: selected.campaignId,
+      projectId: selected.projectId,
+      environmentId: selected.environmentId,
+      presentationThreadId: selected.presentationThreadId,
+    });
+    if (campaignRuns.length !== countRunsForCampaign(db, selected.campaignId)) {
+      throw new Error("Workflow campaign scope is inconsistent");
+    }
+    const detailedRunIds = campaignDetailedRunIds(campaignRuns, runId);
+    return {
+      campaignId: selected.campaignId,
+      detailedRunLimit: MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+      omittedCheckpointRunCount: campaignRuns.length - detailedRunIds.size,
+      runs: campaignRuns.map((row) => {
+        const checkpointsOmitted = !detailedRunIds.has(row.id);
+        return {
+          run: row,
+          // The selected run's ledger is already returned in the primary
+          // `checkpoints` field by both RPC and CLI callers. Do not parse or
+          // serialize it twice in the campaign aggregate.
+          checkpoints:
+            checkpointsOmitted || row.id === runId
+              ? []
+              : inspectCheckpoints(row.id),
+          checkpointsOmitted,
+        };
+      }),
+    };
   }
 
   function inspectPage(
@@ -1995,6 +2161,7 @@ export function createWorkflowService(
     inspectLatestForThread,
     inspectActiveForThread,
     inspectCheckpoints,
+    inspectCampaign,
     list: (projectId, limit) => listRuns(db, { projectId, limit }),
     stop,
     updateSettings(settings) {

@@ -195,6 +195,12 @@ const assuranceClasses = [
   "post-shakedown-assurance",
 ];
 
+const executionKinds = [
+  "oracle-closure",
+  "production-unit",
+  "supporting-assurance",
+];
+
 const psaComponents = [
   "security",
   "reliability",
@@ -264,6 +270,12 @@ function sectionPlanSchema(maxSections, staged) {
     };
     properties.verificationRequired = { type: "boolean" };
     properties.exitCriterion = { type: "string", minLength: 1, maxLength: 512 };
+    properties.executionKind = { enum: executionKinds };
+    properties.ownedPaths = {
+      type: "array",
+      maxItems: 32,
+      items: { type: "string", minLength: 1, maxLength: 256 },
+    };
     required.push(
       "assuranceClass",
       "psaComponent",
@@ -272,6 +284,8 @@ function sectionPlanSchema(maxSections, staged) {
       "contractItemRefs",
       "verificationRequired",
       "exitCriterion",
+      "executionKind",
+      "ownedPaths",
     );
   }
 
@@ -410,10 +424,10 @@ const contractItemIds = contractItems.map((item) => item.id);
 if (args.psaMode && lifecycleStage === null) {
   phase("Deliver");
   return {
-    contractVersion: "workflow-router.execution-plan.v2",
+    contractVersion: "workflow-router.execution-plan.v3",
     objective: args.objective,
     route: routeDecision,
-    policyVersion: "workflow-router.fanout-policy.v3",
+    policyVersion: "workflow-router.fanout-policy.v4",
     lifecycle: {
       stage: null,
       psaMode: args.psaMode,
@@ -477,6 +491,10 @@ ${
 - Every contract item marked nondeferrable must be covered by at least one section.
 - verificationRequired is true for any risk-triggered or nondeferrable-safety section.
 - exitCriterion must be observable and specific.
+- Set executionKind to oracle-closure for the one shakedown-build unit that inventories and repairs the complete related acceptance-test, fixture, and frozen-oracle closure; production-unit for independently buildable MVP arms; and supporting-assurance for all other work.
+- During shakedown-build, emit exactly one oracle-closure before any production-unit. It must be mutating, verification-required, and standard or thorough coverage. Every production-unit must directly depend on that oracle-closure so its independent reviewer approves the frozen acceptance boundary before production begins.
+- Production units should be independently executable after oracle approval. Do not add dependencies between sibling production units unless there is a real artifact dependency.
+- ownedPaths is an explicit list of repo-relative file or directory prefixes the section may mutate. Mutating sections require at least one path; read-only sections use an empty list. Sibling production units must have non-overlapping declarations so callers may explicitly opt into best-effort concurrency. These declarations guide and validate worker reports; they do not isolate filesystem capabilities.
 - In PSA audit or re-audit mode, cover every PSA component exactly or explicitly enough that deterministic validation can prove complete component coverage.`
       : "Do not add staged-assurance fields because lifecycleStage was not supplied."
   }`,
@@ -546,6 +564,7 @@ const sections = sectionPlan.sections.slice(0, maxSections).map((section, index)
     });
   }
 
+  const executionKind = riskForced ? "supporting-assurance" : section.executionKind;
   return {
     ...base,
     assuranceClass: riskForced ? "nondeferrable-safety" : section.assuranceClass,
@@ -556,6 +575,9 @@ const sections = sectionPlan.sections.slice(0, maxSections).map((section, index)
     verificationRequired:
       riskForced || completePsaCoverage ? true : section.verificationRequired,
     exitCriterion: section.exitCriterion,
+    executionKind,
+    ownedPaths: riskForced ? [] : [...section.ownedPaths],
+    agentCalls: policy.agentCalls + (executionKind === "production-unit" ? 1 : 0),
     dueStage: dueStageForAssuranceClass[riskForced ? "nondeferrable-safety" : section.assuranceClass],
   };
 });
@@ -672,6 +694,53 @@ for (let index = 0; index < sections.length; index += 1) {
       message: "Nondeferrable safety work requires verification.",
     });
   }
+  if (!executionKinds.includes(section.executionKind)) {
+    validationErrors.push({
+      code: "UNKNOWN_EXECUTION_KIND",
+      sectionId: section.id,
+      message: `Execution kind ${String(section.executionKind)} is not supported.`,
+    });
+  }
+  if (
+    !Array.isArray(section.ownedPaths) ||
+    section.ownedPaths.some(
+      (path) =>
+        typeof path !== "string" ||
+        path.length === 0 ||
+        path.startsWith("/") ||
+        path.split("/").includes(".."),
+    )
+  ) {
+    validationErrors.push({
+      code: "INVALID_OWNED_PATHS",
+      sectionId: section.id,
+      message: "ownedPaths must contain safe repo-relative prefixes.",
+    });
+  }
+  if (section.mutationIntent === "mutate" && section.ownedPaths.length === 0) {
+    validationErrors.push({
+      code: "MUTATION_OWNERSHIP_REQUIRED",
+      sectionId: section.id,
+      message: "Mutating sections require at least one ownedPaths prefix.",
+    });
+  }
+  if (section.mutationIntent === "read-only" && section.ownedPaths.length > 0) {
+    validationErrors.push({
+      code: "READ_ONLY_OWNERSHIP_FORBIDDEN",
+      sectionId: section.id,
+      message: "Read-only sections must use an empty ownedPaths list.",
+    });
+  }
+  if (
+    lifecycleStage !== "shakedown-build" &&
+    section.executionKind !== "supporting-assurance"
+  ) {
+    validationErrors.push({
+      code: "EXECUTION_KIND_OUTSIDE_SHAKEDOWN_BUILD",
+      sectionId: section.id,
+      message: `${section.executionKind} is valid only during shakedown-build.`,
+    });
+  }
   if (
     section.psaComponent !== "none" &&
     (lifecycleStage !== "post-shakedown-availability" ||
@@ -694,6 +763,80 @@ for (let index = 0; index < sections.length; index += 1) {
       sectionId: section.id,
       message: "Post-shakedown assurance work must identify its PSA component.",
     });
+  }
+}
+
+if (lifecycleStage === "shakedown-build") {
+  const oracleSections = sections.filter(
+    (section) => section.executionKind === "oracle-closure",
+  );
+  const productionSections = sections.filter(
+    (section) => section.executionKind === "production-unit",
+  );
+  if (oracleSections.length !== 1) {
+    validationErrors.push({
+      code: "ORACLE_CLOSURE_REQUIRED",
+      sectionId: null,
+      message: `shakedown-build requires exactly one oracle-closure section; received ${oracleSections.length}.`,
+    });
+  }
+  if (productionSections.length === 0) {
+    validationErrors.push({
+      code: "PRODUCTION_UNIT_REQUIRED",
+      sectionId: null,
+      message: "shakedown-build requires at least one production-unit section.",
+    });
+  }
+  if (oracleSections.length === 1) {
+    const oracleSection = oracleSections[0];
+    if (
+      oracleSection.mutationIntent !== "mutate" ||
+      oracleSection.verificationRequired !== true ||
+      !["standard", "thorough"].includes(oracleSection.coverage)
+    ) {
+      validationErrors.push({
+        code: "ORACLE_CLOSURE_POLICY_MISMATCH",
+        sectionId: oracleSection.id,
+        message: "oracle-closure must be mutating, verification-required, and use standard or thorough coverage.",
+      });
+    }
+    for (const productionSection of productionSections) {
+      if (!productionSection.dependsOn.includes(oracleSection.id)) {
+        validationErrors.push({
+          code: "PRODUCTION_REQUIRES_ORACLE_CLOSURE",
+          sectionId: productionSection.id,
+          message: `production-unit ${productionSection.id} must directly depend on oracle-closure ${oracleSection.id}.`,
+        });
+      }
+      if (productionSection.mutationIntent !== "mutate") {
+        validationErrors.push({
+          code: "PRODUCTION_UNIT_MUST_MUTATE",
+          sectionId: productionSection.id,
+          message: "production-unit sections must declare mutating intent.",
+        });
+      }
+    }
+    for (let leftIndex = 0; leftIndex < productionSections.length; leftIndex += 1) {
+      const left = productionSections[leftIndex];
+      for (let rightIndex = leftIndex + 1; rightIndex < productionSections.length; rightIndex += 1) {
+        const right = productionSections[rightIndex];
+        const overlap = left.ownedPaths.some((leftPath) =>
+          right.ownedPaths.some(
+            (rightPath) =>
+              leftPath === rightPath ||
+              leftPath.startsWith(`${rightPath.replace(/\/$/, "")}/`) ||
+              rightPath.startsWith(`${leftPath.replace(/\/$/, "")}/`),
+          ),
+        );
+        if (overlap) {
+          validationErrors.push({
+            code: "PRODUCTION_WRITE_SCOPE_OVERLAP",
+            sectionId: right.id,
+            message: `production-unit ${left.id} and ${right.id} have overlapping ownedPaths.`,
+          });
+        }
+      }
+    }
   }
 }
 
@@ -743,10 +886,10 @@ if (args.psaMode === "remediate" && (args.findingRefs || []).length === 0) {
 
 phase("Deliver");
 return {
-  contractVersion: "workflow-router.execution-plan.v2",
+  contractVersion: "workflow-router.execution-plan.v3",
   objective: args.objective,
   route: routeDecision,
-  policyVersion: "workflow-router.fanout-policy.v3",
+  policyVersion: "workflow-router.fanout-policy.v4",
   lifecycle: {
     stage: lifecycleStage,
     psaMode: args.psaMode || null,
