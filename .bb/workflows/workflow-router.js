@@ -66,6 +66,35 @@ export const meta = {
           },
         },
       },
+      walkingSkeletonApproval: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "decisionRef",
+          "evidenceRef",
+          "decidedByHuman",
+          "contractId",
+          "contractRevision",
+          "decision",
+          "rationale",
+          "seamIds",
+        ],
+        properties: {
+          decisionRef: { type: "string", minLength: 1, maxLength: 256 },
+          evidenceRef: { type: "string", minLength: 1, maxLength: 512 },
+          decidedByHuman: { const: true },
+          contractId: { type: "string", minLength: 1, maxLength: 96 },
+          contractRevision: { type: "integer", minimum: 1 },
+          decision: { enum: ["approved", "revise"] },
+          rationale: { type: "string", minLength: 1, maxLength: 2048 },
+          seamIds: {
+            type: "array",
+            minItems: 1,
+            maxItems: 32,
+            items: { type: "string", minLength: 1, maxLength: 128 },
+          },
+        },
+      },
       humanDecisionEvidence: {
         type: "array",
         maxItems: 32,
@@ -196,6 +225,7 @@ const assuranceClasses = [
 ];
 
 const executionKinds = [
+  "walking-skeleton",
   "oracle-closure",
   "production-unit",
   "supporting-assurance",
@@ -276,6 +306,27 @@ function sectionPlanSchema(maxSections, staged) {
       maxItems: 32,
       items: { type: "string", minLength: 1, maxLength: 256 },
     };
+    properties.producesSeams = {
+      type: "array",
+      maxItems: 32,
+      items: { type: "string", minLength: 1, maxLength: 128 },
+    };
+    properties.consumesSeams = {
+      type: "array",
+      maxItems: 32,
+      items: {
+        type: "object",
+        required: ["id", "requiredAt", "testDoublePolicy"],
+        additionalProperties: false,
+        properties: {
+          id: { type: "string", minLength: 1, maxLength: 128 },
+          requiredAt: {
+            enum: ["section-start", "section-exit", "shakedown-promotion"],
+          },
+          testDoublePolicy: { enum: ["forbidden", "allowed"] },
+        },
+      },
+    };
     required.push(
       "assuranceClass",
       "psaComponent",
@@ -286,6 +337,8 @@ function sectionPlanSchema(maxSections, staged) {
       "exitCriterion",
       "executionKind",
       "ownedPaths",
+      "producesSeams",
+      "consumesSeams",
     );
   }
 
@@ -424,10 +477,10 @@ const contractItemIds = contractItems.map((item) => item.id);
 if (args.psaMode && lifecycleStage === null) {
   phase("Deliver");
   return {
-    contractVersion: "workflow-router.execution-plan.v3",
+    contractVersion: "workflow-router.execution-plan.v4",
     objective: args.objective,
     route: routeDecision,
-    policyVersion: "workflow-router.fanout-policy.v4",
+    policyVersion: "workflow-router.fanout-policy.v5",
     lifecycle: {
       stage: null,
       psaMode: args.psaMode,
@@ -464,6 +517,7 @@ Lifecycle stage: ${lifecycleStage || "legacy planning; no staged-assurance field
 PSA mode: ${args.psaMode || "none"}
 Approved shakedown contract: ${JSON.stringify(shakedownContract)}
 Human decision evidence: ${JSON.stringify(args.humanDecisionEvidence || [])}
+Walking-skeleton approval: ${JSON.stringify(args.walkingSkeletonApproval || null)}
 Evidence refs: ${JSON.stringify(args.evidenceRefs || [])}
 Finding refs: ${JSON.stringify(args.findingRefs || [])}
 
@@ -491,10 +545,13 @@ ${
 - Every contract item marked nondeferrable must be covered by at least one section.
 - verificationRequired is true for any risk-triggered or nondeferrable-safety section.
 - exitCriterion must be observable and specific.
-- Set executionKind to oracle-closure for the one shakedown-build unit that inventories and repairs the complete related acceptance-test, fixture, and frozen-oracle closure; production-unit for independently buildable MVP arms; and supporting-assurance for all other work.
+- Set executionKind to walking-skeleton only for a human-approved, production-owned seam that must complete before oracle closure; oracle-closure for the one shakedown-build unit that inventories and repairs the complete related acceptance-test, fixture, and frozen-oracle closure; production-unit for independently buildable MVP arms; and supporting-assurance for all other work.
+- A walking-skeleton is valid only when walkingSkeletonApproval is approved, revision-matched to the shakedown contract, and names exactly the seams it produces. Emit at most one, place it before the oracle, keep it standard or thorough, mutating, verification-required, and make the oracle directly depend on it. Do not absorb the full later unit.
 - During shakedown-build, emit exactly one oracle-closure before any production-unit. It must be mutating, verification-required, and standard or thorough coverage. Every production-unit must directly depend on that oracle-closure so its independent reviewer approves the frozen acceptance boundary before production begins.
 - Production units should be independently executable after oracle approval. Do not add dependencies between sibling production units unless there is a real artifact dependency.
 - ownedPaths is an explicit list of repo-relative file or directory prefixes the section may mutate. Mutating sections require at least one path; read-only sections use an empty list. Sibling production units must have non-overlapping declarations so callers may explicitly opt into best-effort concurrency. These declarations guide and validate worker reports; they do not isolate filesystem capabilities.
+- Inventory semantic production dependencies before construction. producesSeams lists stable IDs for production or test seams created by the section. consumesSeams lists every seam the section or shared promotion gate requires, when it must exist, and whether a test-local substitute is allowed. Use empty arrays only when the section truly owns or requires no cross-section seam.
+- A consumption with testDoublePolicy forbidden must resolve to exactly one walking-skeleton or production-unit owner inside this plan. That owner must complete before a section-start or section-exit consumer and must be in the consumer's dependency closure. Never place an oracle requirement ahead of its production seam owner; surface the topology instead of inventing a fake adapter.
 - In PSA audit or re-audit mode, cover every PSA component exactly or explicitly enough that deterministic validation can prove complete component coverage.`
       : "Do not add staged-assurance fields because lifecycleStage was not supplied."
   }`,
@@ -577,10 +634,152 @@ const sections = sectionPlan.sections.slice(0, maxSections).map((section, index)
     exitCriterion: section.exitCriterion,
     executionKind,
     ownedPaths: riskForced ? [] : [...section.ownedPaths],
-    agentCalls: policy.agentCalls + (executionKind === "production-unit" ? 1 : 0),
+    producesSeams: [...section.producesSeams],
+    consumesSeams: section.consumesSeams.map((consumption) => ({
+      ...consumption,
+    })),
+    agentCalls:
+      policy.agentCalls +
+      (["walking-skeleton", "production-unit"].includes(executionKind)
+        ? 1
+        : 0),
     dueStage: dueStageForAssuranceClass[riskForced ? "nondeferrable-safety" : section.assuranceClass],
   };
 });
+
+function pathIsTestLocal(path) {
+  const normalized = path.toLowerCase().replace(/^\.\//, "");
+  return (
+    normalized.startsWith("test/") ||
+    normalized.startsWith("tests/") ||
+    normalized.startsWith("__tests__/") ||
+    normalized.startsWith("spec/") ||
+    normalized.includes("/__tests__/") ||
+    /(^|\/)[^/]+\.(spec|test)\.[^/]+$/.test(normalized)
+  );
+}
+
+function dependencyClosureContains(sectionById, consumerSection, producerId) {
+  const pending = [...consumerSection.dependsOn];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const dependencyId = pending.pop();
+    if (dependencyId === producerId) return true;
+    if (visited.has(dependencyId)) continue;
+    visited.add(dependencyId);
+    const dependency = sectionById.get(dependencyId);
+    if (dependency) pending.push(...dependency.dependsOn);
+  }
+  return false;
+}
+
+function semanticDependencyFindingsForSections(plannedSections, currentStage) {
+  const findings = [];
+  const sectionById = new Map(plannedSections.map((section) => [section.id, section]));
+  const sectionIndexById = new Map(
+    plannedSections.map((section, index) => [section.id, index]),
+  );
+  const producersBySeam = new Map();
+  const consumedSeamIds = new Set();
+  for (const section of plannedSections) {
+    for (const seamId of section.producesSeams || []) {
+      const owners = producersBySeam.get(seamId) || [];
+      owners.push(section);
+      producersBySeam.set(seamId, owners);
+    }
+  }
+  for (const section of plannedSections) {
+    for (const consumption of section.consumesSeams || []) {
+      consumedSeamIds.add(consumption.id);
+      const owners = producersBySeam.get(consumption.id) || [];
+      if (owners.length !== 1) {
+        findings.push({
+          code:
+            owners.length === 0
+              ? "SEMANTIC_SEAM_OWNER_MISSING"
+              : "SEMANTIC_SEAM_OWNER_DUPLICATED",
+          seamId: consumption.id,
+          sectionId: section.id,
+          producerSectionId: owners.length === 1 ? owners[0].id : null,
+          deadlock: false,
+          message:
+            owners.length === 0
+              ? `Consumed seam ${consumption.id} has no owner inside the plan.`
+              : `Consumed seam ${consumption.id} has ${owners.length} owners; exactly one is required.`,
+        });
+        continue;
+      }
+      const producer = owners[0];
+      const productionProofRequired = consumption.testDoublePolicy === "forbidden";
+      if (
+        productionProofRequired &&
+        (!["walking-skeleton", "production-unit"].includes(
+          producer.executionKind,
+        ) ||
+          producer.mutationIntent !== "mutate" ||
+          producer.ownedPaths.length === 0 ||
+          producer.ownedPaths.every(pathIsTestLocal))
+      ) {
+        findings.push({
+          code: "SEMANTIC_PRODUCTION_PROOF_REQUIRED",
+          seamId: consumption.id,
+          sectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: false,
+          message: `Seam ${consumption.id} forbids test doubles but its owner ${producer.id} is not a production-mutating unit with a production-owned path.`,
+        });
+      }
+      if (producer.dueStage !== currentStage) {
+        findings.push({
+          code: "SEMANTIC_SEAM_OWNER_DEFERRED",
+          seamId: consumption.id,
+          sectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: true,
+          message: `Seam ${consumption.id} is required during ${currentStage}, but owner ${producer.id} is deferred to ${producer.dueStage}.`,
+        });
+      }
+      if (consumption.requiredAt === "shakedown-promotion") continue;
+      if (producer.id === section.id && consumption.requiredAt === "section-exit") {
+        continue;
+      }
+      const producerIndex = sectionIndexById.get(producer.id);
+      const consumerIndex = sectionIndexById.get(section.id);
+      if (producerIndex >= consumerIndex) {
+        findings.push({
+          code: "SEMANTIC_DEPENDENCY_DEADLOCK",
+          seamId: consumption.id,
+          sectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: true,
+          message: `Section ${section.id} requires seam ${consumption.id} at ${consumption.requiredAt}, but owner ${producer.id} does not complete in its dependency closure first.`,
+        });
+      } else if (!dependencyClosureContains(sectionById, section, producer.id)) {
+        findings.push({
+          code: "SEMANTIC_DEPENDENCY_EDGE_MISSING",
+          seamId: consumption.id,
+          sectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: false,
+          message: `Section ${section.id} requires seam ${consumption.id} after owner ${producer.id}, but its dependency closure omits that owner.`,
+        });
+      }
+    }
+  }
+  for (const [seamId, owners] of producersBySeam) {
+    if (!consumedSeamIds.has(seamId)) {
+      findings.push({
+        code: "SEMANTIC_SEAM_UNCONSUMED",
+        seamId,
+        sectionId: owners[0]?.id || null,
+        producerSectionId: owners[0]?.id || null,
+        deadlock: false,
+        message: `Produced seam ${seamId} has no in-plan consumer or promotion requirement.`,
+      });
+    }
+  }
+  return findings;
+}
 
 if (!staged) {
   phase("Deliver");
@@ -732,6 +931,30 @@ for (let index = 0; index < sections.length; index += 1) {
     });
   }
   if (
+    section.producesSeams.some(
+      (seamId, seamIndex, seamIds) => seamIds.indexOf(seamId) !== seamIndex,
+    )
+  ) {
+    validationErrors.push({
+      code: "DUPLICATE_PRODUCED_SEAM",
+      sectionId: section.id,
+      message: "producesSeams must not contain duplicate seam IDs.",
+    });
+  }
+  if (
+    section.consumesSeams.some(
+      (consumption, seamIndex, consumptions) =>
+        consumptions.findIndex((candidate) => candidate.id === consumption.id) !==
+        seamIndex,
+    )
+  ) {
+    validationErrors.push({
+      code: "DUPLICATE_CONSUMED_SEAM",
+      sectionId: section.id,
+      message: "consumesSeams must not contain duplicate seam IDs.",
+    });
+  }
+  if (
     lifecycleStage !== "shakedown-build" &&
     section.executionKind !== "supporting-assurance"
   ) {
@@ -766,7 +989,21 @@ for (let index = 0; index < sections.length; index += 1) {
   }
 }
 
+for (const finding of semanticDependencyFindingsForSections(
+  sections,
+  lifecycleStage,
+)) {
+  validationErrors.push({
+    code: finding.code,
+    sectionId: finding.sectionId,
+    message: finding.message,
+  });
+}
+
 if (lifecycleStage === "shakedown-build") {
+  const walkingSkeletonSections = sections.filter(
+    (section) => section.executionKind === "walking-skeleton",
+  );
   const oracleSections = sections.filter(
     (section) => section.executionKind === "oracle-closure",
   );
@@ -786,6 +1023,66 @@ if (lifecycleStage === "shakedown-build") {
       sectionId: null,
       message: "shakedown-build requires at least one production-unit section.",
     });
+  }
+  if (walkingSkeletonSections.length > 1) {
+    validationErrors.push({
+      code: "WALKING_SKELETON_NOT_MINIMAL",
+      sectionId: null,
+      message: "shakedown-build permits at most one walking-skeleton section.",
+    });
+  }
+  if (walkingSkeletonSections.length === 1) {
+    const skeletonSection = walkingSkeletonSections[0];
+    const skeletonApproval = args.walkingSkeletonApproval || null;
+    const expectedContractVersion = skeletonApproval
+      ? `${skeletonApproval.contractId}:revision-${skeletonApproval.contractRevision}`
+      : null;
+    const approvedSeamIds = skeletonApproval?.seamIds || [];
+    const producedSeamIds = skeletonSection.producesSeams || [];
+    const approvalMatches =
+      skeletonApproval?.decidedByHuman === true &&
+      skeletonApproval?.decision === "approved" &&
+      expectedContractVersion === shakedownContract?.contractVersion &&
+      approvedSeamIds.length === producedSeamIds.length &&
+      new Set(approvedSeamIds).size === approvedSeamIds.length &&
+      approvedSeamIds.every((seamId) => producedSeamIds.includes(seamId)) &&
+      producedSeamIds.every((seamId) => approvedSeamIds.includes(seamId));
+    if (!approvalMatches) {
+      validationErrors.push({
+        code: "WALKING_SKELETON_APPROVAL_REQUIRED",
+        sectionId: skeletonSection.id,
+        message:
+          "walking-skeleton approval must be human, approved, contract-revision matched, and name exactly the produced seams.",
+      });
+    }
+    if (
+      skeletonSection.mutationIntent !== "mutate" ||
+      skeletonSection.verificationRequired !== true ||
+      !["standard", "thorough"].includes(skeletonSection.coverage) ||
+      producedSeamIds.length === 0 ||
+      skeletonSection.ownedPaths.length === 0 ||
+      skeletonSection.ownedPaths.every(pathIsTestLocal)
+    ) {
+      validationErrors.push({
+        code: "WALKING_SKELETON_POLICY_MISMATCH",
+        sectionId: skeletonSection.id,
+        message:
+          "walking-skeleton must be mutating, verification-required, standard or thorough, production-owned, and produce at least one approved seam.",
+      });
+    }
+    if (
+      skeletonSection.dependsOn.length > 0 ||
+      (oracleSections.length === 1 &&
+        (!oracleSections[0].dependsOn.includes(skeletonSection.id) ||
+          sections.indexOf(skeletonSection) >= sections.indexOf(oracleSections[0])))
+    ) {
+      validationErrors.push({
+        code: "WALKING_SKELETON_TOPOLOGY_INVALID",
+        sectionId: skeletonSection.id,
+        message:
+          "walking-skeleton must be the root production seam unit and the oracle must directly depend on it.",
+      });
+    }
   }
   if (oracleSections.length === 1) {
     const oracleSection = oracleSections[0];
@@ -886,14 +1183,15 @@ if (args.psaMode === "remediate" && (args.findingRefs || []).length === 0) {
 
 phase("Deliver");
 return {
-  contractVersion: "workflow-router.execution-plan.v3",
+  contractVersion: "workflow-router.execution-plan.v4",
   objective: args.objective,
   route: routeDecision,
-  policyVersion: "workflow-router.fanout-policy.v4",
+  policyVersion: "workflow-router.fanout-policy.v5",
   lifecycle: {
     stage: lifecycleStage,
     psaMode: args.psaMode || null,
     approvedShakedownContract: shakedownContract,
+    walkingSkeletonApproval: args.walkingSkeletonApproval || null,
     humanDecisionEvidence: decisions,
     evidenceRefs: args.evidenceRefs || [],
     findingRefs: args.findingRefs || [],

@@ -177,6 +177,35 @@ export const meta = {
           rationale: { type: "string", minLength: 1, maxLength: 2048 },
         },
       },
+      walkingSkeletonApproval: {
+        type: "object",
+        required: [
+          "decisionRef",
+          "evidenceRef",
+          "decidedByHuman",
+          "contractId",
+          "contractRevision",
+          "decision",
+          "rationale",
+          "seamIds",
+        ],
+        additionalProperties: false,
+        properties: {
+          decisionRef: { type: "string", minLength: 1, maxLength: 256 },
+          evidenceRef: { type: "string", minLength: 1, maxLength: 512 },
+          decidedByHuman: { const: true },
+          contractId: { type: "string", minLength: 1, maxLength: 96 },
+          contractRevision: { type: "integer", minimum: 1 },
+          decision: { enum: ["approved", "revise"] },
+          rationale: { type: "string", minLength: 1, maxLength: 2048 },
+          seamIds: {
+            type: "array",
+            minItems: 1,
+            maxItems: 32,
+            items: { type: "string", minLength: 1, maxLength: 128 },
+          },
+        },
+      },
       shakedownLaunchApproval: {
         type: "object",
         required: [
@@ -638,10 +667,10 @@ const stabilityAssessmentSchema = {
 };
 
 const currentPlanContractVersion = "workflow-router.execution-plan.v1";
-const stagedPlanContractVersion = "workflow-router.execution-plan.v3";
+const stagedPlanContractVersion = "workflow-router.execution-plan.v4";
 const currentRouteContractVersion = "workflow-router.route-decision.v1";
 const currentPolicyVersion = "workflow-router.fanout-policy.v2";
-const stagedPolicyVersion = "workflow-router.fanout-policy.v4";
+const stagedPolicyVersion = "workflow-router.fanout-policy.v5";
 const knownAssuranceClasses = [
   "mvp-definition",
   "mvp-functionality",
@@ -663,6 +692,7 @@ const knownPsaComponents = [
   "compliance",
 ];
 const knownExecutionKinds = [
+  "walking-skeleton",
   "oracle-closure",
   "production-unit",
   "supporting-assurance",
@@ -1025,6 +1055,157 @@ function expectedModelProfile(route, section, matchedTriggers) {
   return "frontier-judgment";
 }
 
+function pathIsTestLocal(path) {
+  const normalized = path.toLowerCase().replace(/^\.\//, "");
+  return (
+    normalized.startsWith("test/") ||
+    normalized.startsWith("tests/") ||
+    normalized.startsWith("__tests__/") ||
+    normalized.startsWith("spec/") ||
+    normalized.includes("/__tests__/") ||
+    /(^|\/)[^/]+\.(spec|test)\.[^/]+$/.test(normalized)
+  );
+}
+
+function dependencyClosureContains(sectionById, consumerSection, producerId) {
+  const pending = Array.isArray(consumerSection.dependsOn)
+    ? [...consumerSection.dependsOn]
+    : [];
+  const visited = new Set();
+  while (pending.length > 0) {
+    const dependencyId = pending.pop();
+    if (dependencyId === producerId) return true;
+    if (visited.has(dependencyId)) continue;
+    visited.add(dependencyId);
+    const dependency = sectionById.get(dependencyId);
+    if (dependency && Array.isArray(dependency.dependsOn)) {
+      pending.push(...dependency.dependsOn);
+    }
+  }
+  return false;
+}
+
+function semanticDependencyFindings(plan, currentStage) {
+  if (!isObject(plan) || !Array.isArray(plan.sections)) return [];
+  const sections = plan.sections.filter(isObject);
+  const findings = [];
+  const sectionById = new Map(sections.map((section) => [section.id, section]));
+  const sectionIndexById = new Map(
+    sections.map((section, index) => [section.id, index]),
+  );
+  const producersBySeam = new Map();
+  const consumedSeamIds = new Set();
+  for (const section of sections) {
+    if (!Array.isArray(section.producesSeams)) continue;
+    for (const seamId of section.producesSeams) {
+      if (typeof seamId !== "string" || seamId.length === 0) continue;
+      const owners = producersBySeam.get(seamId) || [];
+      owners.push(section);
+      producersBySeam.set(seamId, owners);
+    }
+  }
+  for (const section of sections) {
+    if (!Array.isArray(section.consumesSeams)) continue;
+    for (const consumption of section.consumesSeams) {
+      if (!isObject(consumption) || typeof consumption.id !== "string") {
+        continue;
+      }
+      consumedSeamIds.add(consumption.id);
+      const owners = producersBySeam.get(consumption.id) || [];
+      if (owners.length !== 1) {
+        findings.push({
+          code:
+            owners.length === 0
+              ? "SEMANTIC_SEAM_OWNER_MISSING"
+              : "SEMANTIC_SEAM_OWNER_DUPLICATED",
+          seamId: consumption.id,
+          consumerSectionId: section.id,
+          producerSectionId: owners.length === 1 ? owners[0].id : null,
+          deadlock: false,
+          message:
+            owners.length === 0
+              ? `Consumed seam ${consumption.id} has no owner inside the plan.`
+              : `Consumed seam ${consumption.id} has ${owners.length} owners; exactly one is required.`,
+        });
+        continue;
+      }
+      const producer = owners[0];
+      const ownedPaths = Array.isArray(producer.ownedPaths)
+        ? producer.ownedPaths
+        : [];
+      if (
+        consumption.testDoublePolicy === "forbidden" &&
+        (!["walking-skeleton", "production-unit"].includes(
+          producer.executionKind,
+        ) ||
+          producer.mutationIntent !== "mutate" ||
+          ownedPaths.length === 0 ||
+          ownedPaths.every(pathIsTestLocal))
+      ) {
+        findings.push({
+          code: "SEMANTIC_PRODUCTION_PROOF_REQUIRED",
+          seamId: consumption.id,
+          consumerSectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: false,
+          message: `Seam ${consumption.id} forbids test doubles but its owner ${producer.id} is not a production-mutating unit with a production-owned path.`,
+        });
+      }
+      if (producer.dueStage !== currentStage) {
+        findings.push({
+          code: "SEMANTIC_SEAM_OWNER_DEFERRED",
+          seamId: consumption.id,
+          consumerSectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: true,
+          message: `Seam ${consumption.id} is required during ${currentStage}, but owner ${producer.id} is deferred to ${producer.dueStage}.`,
+        });
+      }
+      if (consumption.requiredAt === "shakedown-promotion") continue;
+      if (
+        producer.id === section.id &&
+        consumption.requiredAt === "section-exit"
+      ) {
+        continue;
+      }
+      const producerIndex = sectionIndexById.get(producer.id);
+      const consumerIndex = sectionIndexById.get(section.id);
+      if (producerIndex >= consumerIndex) {
+        findings.push({
+          code: "SEMANTIC_DEPENDENCY_DEADLOCK",
+          seamId: consumption.id,
+          consumerSectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: true,
+          message: `Section ${section.id} requires seam ${consumption.id} at ${consumption.requiredAt}, but owner ${producer.id} does not complete in its dependency closure first.`,
+        });
+      } else if (!dependencyClosureContains(sectionById, section, producer.id)) {
+        findings.push({
+          code: "SEMANTIC_DEPENDENCY_EDGE_MISSING",
+          seamId: consumption.id,
+          consumerSectionId: section.id,
+          producerSectionId: producer.id,
+          deadlock: false,
+          message: `Section ${section.id} requires seam ${consumption.id} after owner ${producer.id}, but its dependency closure omits that owner.`,
+        });
+      }
+    }
+  }
+  for (const [seamId, owners] of producersBySeam) {
+    if (!consumedSeamIds.has(seamId)) {
+      findings.push({
+        code: "SEMANTIC_SEAM_UNCONSUMED",
+        seamId,
+        consumerSectionId: null,
+        producerSectionId: owners[0]?.id || null,
+        deadlock: false,
+        message: `Produced seam ${seamId} has no in-plan consumer or promotion requirement.`,
+      });
+    }
+  }
+  return findings;
+}
+
 function validatePlan(plan, expected) {
   const errors = [];
   const staged = expected.lifecycleStage !== null;
@@ -1118,7 +1299,12 @@ function validatePlan(plan, expected) {
     }
     const expectedSectionAgentCalls =
       policy.agentCalls +
-      (staged && section.executionKind === "production-unit" ? 1 : 0);
+      (staged &&
+      ["walking-skeleton", "production-unit"].includes(
+        section.executionKind,
+      )
+        ? 1
+        : 0);
     if (section.agentCalls !== expectedSectionAgentCalls) {
       errors.push(`${label} agentCalls do not match coverage policy`);
     }
@@ -1175,6 +1361,42 @@ function validatePlan(plan, expected) {
         ) {
           errors.push(`${label} read-only work must not declare ownedPaths`);
         }
+      }
+      if (
+        !Array.isArray(section.producesSeams) ||
+        section.producesSeams.some(
+          (seamId) => typeof seamId !== "string" || seamId.length === 0,
+        )
+      ) {
+        errors.push(`${label} producesSeams are malformed`);
+      } else if (
+        new Set(section.producesSeams).size !== section.producesSeams.length
+      ) {
+        errors.push(`${label} producesSeams must be unique`);
+      }
+      if (
+        !Array.isArray(section.consumesSeams) ||
+        section.consumesSeams.some(
+          (consumption) =>
+            !isObject(consumption) ||
+            typeof consumption.id !== "string" ||
+            consumption.id.length === 0 ||
+            ![
+              "section-start",
+              "section-exit",
+              "shakedown-promotion",
+            ].includes(consumption.requiredAt) ||
+            !["forbidden", "allowed"].includes(
+              consumption.testDoublePolicy,
+            ),
+        )
+      ) {
+        errors.push(`${label} consumesSeams are malformed`);
+      } else if (
+        new Set(section.consumesSeams.map((consumption) => consumption.id))
+          .size !== section.consumesSeams.length
+      ) {
+        errors.push(`${label} consumesSeams must be unique`);
       }
       if (
         !Array.isArray(section.dependsOn) ||
@@ -1254,7 +1476,23 @@ function validatePlan(plan, expected) {
   if (new Set(ids).size !== ids.length)
     errors.push("section ids must be unique");
 
+  for (const finding of semanticDependencyFindings(
+    plan,
+    expected.lifecycleStage,
+  ).filter(
+    (finding) =>
+      !(
+        expected.ignoreSemanticDependencyDeadlocks === true &&
+        finding.deadlock === true
+      ),
+  )) {
+    errors.push(finding.message);
+  }
+
   if (staged && expected.lifecycleStage === "shakedown-build") {
+    const walkingSkeletonSections = plan.sections.filter(
+      (section) => section.executionKind === "walking-skeleton",
+    );
     const oracleSections = plan.sections.filter(
       (section) => section.executionKind === "oracle-closure",
     );
@@ -1270,6 +1508,57 @@ function validatePlan(plan, expected) {
       errors.push(
         "shakedown-build requires at least one production-unit section",
       );
+    }
+    if (walkingSkeletonSections.length > 1) {
+      errors.push(
+        "shakedown-build permits at most one walking-skeleton section",
+      );
+    }
+    if (walkingSkeletonSections.length === 1) {
+      const skeletonSection = walkingSkeletonSections[0];
+      const skeletonApproval = expected.walkingSkeletonApproval || null;
+      const expectedContractVersion = skeletonApproval
+        ? `${skeletonApproval.contractId}:revision-${skeletonApproval.contractRevision}`
+        : null;
+      const producedSeamIds = skeletonSection.producesSeams || [];
+      const approvedSeamIds = skeletonApproval?.seamIds || [];
+      const approvalMatches =
+        skeletonApproval?.decidedByHuman === true &&
+        skeletonApproval?.decision === "approved" &&
+        expectedContractVersion === expected.approvedContractVersion &&
+        approvedSeamIds.length === producedSeamIds.length &&
+        new Set(approvedSeamIds).size === approvedSeamIds.length &&
+        approvedSeamIds.every((seamId) => producedSeamIds.includes(seamId)) &&
+        producedSeamIds.every((seamId) => approvedSeamIds.includes(seamId));
+      if (!approvalMatches) {
+        errors.push(
+          "walking-skeleton approval must be human, approved, contract-revision matched, and name exactly the produced seams",
+        );
+      }
+      if (
+        skeletonSection.mutationIntent !== "mutate" ||
+        skeletonSection.verificationRequired !== true ||
+        !["standard", "thorough"].includes(skeletonSection.coverage) ||
+        producedSeamIds.length === 0 ||
+        !Array.isArray(skeletonSection.ownedPaths) ||
+        skeletonSection.ownedPaths.length === 0 ||
+        skeletonSection.ownedPaths.every(pathIsTestLocal)
+      ) {
+        errors.push(
+          "walking-skeleton must be mutating, verification-required, standard or thorough, production-owned, and produce at least one approved seam",
+        );
+      }
+      if (
+        (skeletonSection.dependsOn || []).length > 0 ||
+        (oracleSections.length === 1 &&
+          (!(oracleSections[0].dependsOn || []).includes(skeletonSection.id) ||
+            plan.sections.indexOf(skeletonSection) >=
+              plan.sections.indexOf(oracleSections[0])))
+      ) {
+        errors.push(
+          "walking-skeleton must be the root production seam unit and the oracle must directly depend on it",
+        );
+      }
     }
     if (oracleSections.length === 1) {
       const oracleSection = oracleSections[0];
@@ -1388,13 +1677,30 @@ function validatePlan(plan, expected) {
     if (!isObject(plan.validation) || plan.validation.valid !== true) {
       const childErrors =
         isObject(plan.validation) && Array.isArray(plan.validation.errors)
-          ? plan.validation.errors.map((entry) => entry.message).filter(Boolean)
+          ? plan.validation.errors
+              .filter(
+                (entry) =>
+                  !(
+                    expected.ignoreSemanticDependencyDeadlocks === true &&
+                    [
+                      "SEMANTIC_DEPENDENCY_DEADLOCK",
+                      "SEMANTIC_SEAM_OWNER_DEFERRED",
+                    ].includes(entry.code)
+                  ),
+              )
+              .map((entry) => entry.message)
+              .filter(Boolean)
           : [];
-      errors.push(
-        childErrors.length > 0
-          ? `nested staged plan is invalid: ${childErrors.join("; ")}`
-          : "nested staged plan is invalid",
-      );
+      if (
+        childErrors.length > 0 ||
+        expected.ignoreSemanticDependencyDeadlocks !== true
+      ) {
+        errors.push(
+          childErrors.length > 0
+            ? `nested staged plan is invalid: ${childErrors.join("; ")}`
+            : "nested staged plan is invalid",
+        );
+      }
     }
   }
   if (plan.truncation !== null) {
@@ -1579,6 +1885,9 @@ function reportedScopeViolationsFor(section, result) {
 }
 
 function ownerExecutionInstruction(section) {
+  if (section.executionKind === "walking-skeleton") {
+    return `Implement only the human-approved production seams ${JSON.stringify(section.producesSeams || [])} needed before oracle closure. Keep the surface dormant or default-off where the approved contract requires it. Do not absorb the full later production unit, add test-local substitutes, or expand beyond ownedPaths.`;
+  }
   if (section.executionKind === "oracle-closure") {
     return `Before production begins, inventory the complete related acceptance closure: frozen tests, fixtures, helpers, public seams, legacy compatibility expectations, and contradictory oracles. Repair every contradiction within this section's scope, including expectations that preserve behavior the approved MVP intentionally eliminates. Return acceptanceInventory, contradictionsResolved, and closureEvidence; do not claim completeness without repository-grounded search evidence.`;
   }
@@ -1658,7 +1967,9 @@ ${skillsInstruction(section)}
 Review the owner result against the section objective. ${
             section.executionKind === "oracle-closure"
               ? "Independently test whether the claimed acceptance inventory is complete and whether any frozen test, fixture, helper, or legacy expectation still contradicts the approved behavior. Production must not start unless this closure is clean."
-              : "Check the implementation against the approved oracle closure and do not recommend weakening acceptance behavior."
+              : section.executionKind === "walking-skeleton"
+                ? "Check that the implementation produces exactly the human-approved production seams before oracle closure, remains bounded and default-off where required, and does not absorb later production-unit scope."
+                : "Check the implementation against the approved oracle closure and do not recommend weakening acceptance behavior."
           } Do not edit files or external state. Do not spawn other agents. Construct concrete failure scenarios and distinguish patch-level, approach-level, dependency-deadlock, and human-gate findings. Classify a dependency-deadlock when the current gate requires a production-owned component that the same gate defers or prohibits its owning unit from building; do not recommend a fake adapter or repeated bounded repair for that condition.`,
           `${section.id}:${role}`,
           reviewResultSchema,
@@ -1798,7 +2109,7 @@ Independent patch-level findings: ${JSON.stringify(findings)}
 Verification blocked: ${initialResult.verificationBlocked === true ? "yes" : "no"}
 ${skillsInstruction(section)}
 
-Repair only the concrete patch-level findings and failed or missing verification in this production unit. Do not redesign the approach, weaken the approved acceptance closure, or absorb sibling work. If the evidence reveals an approach-level or human decision instead, make no speculative patch and return that unresolved risk explicitly. Return exact changed files and fresh verification results.`,
+Repair only the concrete patch-level findings and failed or missing verification in this ${section.executionKind === "walking-skeleton" ? "walking skeleton" : "production unit"}. Do not redesign the approach, weaken the approved acceptance closure, or absorb sibling work. If the evidence reveals an approach-level or human decision instead, make no speculative patch and return that unresolved risk explicitly. Return exact changed files and fresh verification results.`,
     `${section.id}:repair-owner`,
     taskResultSchema,
   );
@@ -1973,7 +2284,7 @@ if (args.psaMode && lifecycleStage !== "post-shakedown-availability") {
     contractVersion:
       lifecycleStage === null
         ? "workflow-router.pipeline-result.v1"
-        : "workflow-router.pipeline-result.v3",
+        : "workflow-router.pipeline-result.v4",
     status: "blocked",
     plan: null,
     budget: budget(),
@@ -2045,7 +2356,7 @@ Define what a shakedown-ready MVP should be for a controlled, reduced-risk custo
     );
     phase("Deliver");
     return {
-      contractVersion: "workflow-router.pipeline-result.v3",
+      contractVersion: "workflow-router.pipeline-result.v4",
       status: "blocked",
       plan: null,
       budget: budget(),
@@ -2116,7 +2427,7 @@ Synthesize a single draft contract for human review. Reconcile disagreements exp
   );
   phase("Deliver");
   return {
-    contractVersion: "workflow-router.pipeline-result.v3",
+    contractVersion: "workflow-router.pipeline-result.v4",
     status: "awaiting-human-mvp-approval",
     plan: { contractDraft, architecturePerspectives: successfulArchitects },
     budget: budget(),
@@ -2146,7 +2457,7 @@ const routerDecisionEvidence = humanDecisionEvidenceForRouter();
 const stagedResultVersion =
   lifecycleStage === null
     ? "workflow-router.pipeline-result.v1"
-    : "workflow-router.pipeline-result.v3";
+    : "workflow-router.pipeline-result.v4";
 const contractRef = lifecycleContractRef(args.mvpContract);
 
 if (approvedRouterContract !== null) {
@@ -2559,6 +2870,9 @@ const routerInput = {
 if (lifecycleStage !== null) {
   routerInput.lifecycleStage = lifecycleStage;
   routerInput.approvedShakedownContract = approvedRouterContract;
+  if (args.walkingSkeletonApproval) {
+    routerInput.walkingSkeletonApproval = args.walkingSkeletonApproval;
+  }
   routerInput.humanDecisionEvidence = routerDecisionEvidence;
   routerInput.evidenceRefs = args.shakedownEvidenceRefs || [];
   routerInput.findingRefs = args.findingRefs || [];
@@ -2566,15 +2880,159 @@ if (lifecycleStage !== null) {
 }
 const plan = await workflow("workflow-router", routerInput);
 
-const planErrors = validatePlan(plan, {
+const dependencyPreflightFindings = semanticDependencyFindings(
+  plan,
+  lifecycleStage,
+);
+const dependencyPreflightDeadlocks = dependencyPreflightFindings.filter(
+  (finding) => finding.deadlock === true,
+);
+const planValidationExpected = {
   objective: args.objective,
   maxSections: routerInput.maxSections,
   lifecycleStage,
   psaMode: args.psaMode || null,
   approvedContractVersion: approvedRouterContract?.contractVersion || null,
+  walkingSkeletonApproval: args.walkingSkeletonApproval || null,
   evidenceRefs: args.shakedownEvidenceRefs || [],
   findingRefs: args.findingRefs || [],
+};
+const planErrors = validatePlan(plan, planValidationExpected);
+const preflightAdmissionErrors = validatePlan(plan, {
+  ...planValidationExpected,
+  ignoreSemanticDependencyDeadlocks: true,
 });
+if (
+  lifecycleStage === "shakedown-build" &&
+  dependencyPreflightDeadlocks.length > 0 &&
+  preflightAdmissionErrors.length === 0
+) {
+  const affectedSectionIds = [
+    ...new Set(
+      dependencyPreflightDeadlocks.flatMap((finding) => [
+        finding.consumerSectionId,
+        finding.producerSectionId,
+      ]),
+    ),
+  ].filter(Boolean);
+  const seamIds = [
+    ...new Set(
+      dependencyPreflightDeadlocks.map((finding) => finding.seamId),
+    ),
+  ];
+  const recommendation = {
+    verdict: "recommend-redesign",
+    rationale:
+      "The semantic dependency preflight found a production seam required before its owning unit can run, so construction is blocked before oracle work begins.",
+    findings: dependencyPreflightDeadlocks.map(
+      (finding) => finding.message,
+    ),
+    affectedSectionIds,
+    designFeedback: seamIds.map(
+      (seamId) =>
+        `Move only production seam ${seamId} into a bounded, human-approved walking skeleton that completes before its first consumer.`,
+    ),
+  };
+  let challenge;
+  try {
+    challenge = await agent(
+      `Role: independent semantic dependency challenger
+Approved shakedown contract: ${JSON.stringify(args.mvpContract)}
+Planned sections: ${JSON.stringify(plan.sections)}
+Deterministic semantic dependency findings: ${JSON.stringify(dependencyPreflightDeadlocks)}
+Proposed minimum walking-skeleton seam set: ${JSON.stringify(seamIds)}
+
+Pressure-test whether each reported cycle is real and whether the named seam set is the minimum production-owned scope that must move ahead of the oracle or other gate. Do not edit files, authorize scope, invent test-local substitutes, or broaden into the full later unit. Return patch-sufficient only if the declared DAG can satisfy the seam timing without moving production scope earlier.`,
+      {
+        label: "Challenge semantic dependency preflight",
+        phase: "Plan",
+        provider: "codex",
+        model: "gpt-5.6-sol",
+        reasoningLevel: "high",
+        schema: designChallengeResultSchema,
+      },
+    );
+  } catch {
+    challenge = {
+      verdict: "insufficient-evidence",
+      rationale:
+        "The independent semantic dependency challenge did not return a valid result.",
+      counterarguments: [],
+      evidenceGaps: ["Independent preflight challenge missing."],
+    };
+  }
+  const designEscalation = {
+    kind: "dependency-deadlock",
+    phase: "pre-construction",
+    recommendation,
+    challenge,
+    semanticDependencyFindings: dependencyPreflightDeadlocks,
+    proposedWalkingSkeleton: {
+      seamIds,
+      constraint:
+        "Produce only the named production seams before their first consumer; leave the remainder in the original production units.",
+    },
+    recommendedAction: "human-approve-bounded-walking-skeleton-or-replan",
+  };
+  writeGateCheckpoint(
+    "gate:semantic-dependency-preflight",
+    "Semantic dependency preflight",
+    "blocked",
+    recommendation.rationale,
+    "awaiting-human-walking-skeleton-decision",
+    affectedSectionIds,
+  );
+  writeTransitionCheckpoint({
+    id: "transition:semantic-dependency-preflight",
+    title: "Semantic dependency redesign decision required",
+    status: "blocked",
+    actor: "orchestrator",
+    fromState: "planned",
+    toState: "awaiting-human-walking-skeleton-decision",
+    workItemIds: affectedSectionIds,
+    rationale: recommendation.rationale,
+    evidenceRefs: [
+      ...recommendation.findings,
+      ...(challenge.counterarguments || []),
+      ...(challenge.evidenceGaps || []),
+    ],
+  });
+  phase("Deliver");
+  return {
+    contractVersion: stagedResultVersion,
+    status: "awaiting-human-walking-skeleton-decision",
+    plan,
+    budget: budget(),
+    execution: {
+      semanticDependencyPreflight: {
+        status: "blocked",
+        findings: dependencyPreflightFindings,
+      },
+      admittedSections: [],
+      skippedSections: plan.sections.map((section) => section.id),
+      results: [],
+      promotionGate: null,
+      designEscalation,
+    },
+    lifecycle: {
+      stage: lifecycleStage,
+      gateState: "awaiting-human-walking-skeleton-decision",
+      contractRef,
+      psaMode: args.psaMode || null,
+      nextGate: {
+        owner: "human",
+        decision: "human-approve-bounded-walking-skeleton-or-replan",
+        requiredEvidenceRefs: [
+          ...seamIds.map((seamId) => `semantic-seam:${seamId}`),
+        ],
+      },
+    },
+    limitations: [
+      "No oracle, production, repair, or promotion worker was admitted after the semantic dependency preflight failed.",
+      "The workflow proposes the minimum seam set but cannot authorize walking-skeleton scope or authenticate human approval evidence.",
+    ],
+  };
+}
 if (planErrors.length > 0) {
   phase("Deliver");
   return {
@@ -2618,6 +3076,8 @@ checkpoint({
       humanDecisionRefs: routerDecisionEvidence
         .map((decision) => decision.evidenceRefs)
         .flat(),
+      walkingSkeletonApprovalRef:
+        args.walkingSkeletonApproval?.decisionRef || null,
       truncation: plan.truncation,
       totals: plan.totals,
       warnings: plan.warnings,
@@ -2650,6 +3110,8 @@ checkpoint({
         exitCriterion: section.exitCriterion || null,
         executionKind: section.executionKind || null,
         ownedPaths: section.ownedPaths || [],
+        producesSeams: section.producesSeams || [],
+        consumesSeams: section.consumesSeams || [],
       },
       null,
       2,
@@ -3025,7 +3487,9 @@ async function executeTrackedSection(section) {
     result =
       section.coverage === "red-team"
         ? await executeRedTeamSection(section)
-        : section.executionKind === "production-unit"
+        : ["walking-skeleton", "production-unit"].includes(
+              section.executionKind,
+            )
           ? await executeProductionUnitSection(section)
           : await executeNormalSection(section);
     return result;
