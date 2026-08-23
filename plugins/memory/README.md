@@ -1,11 +1,9 @@
 # bb-plugin-memory
 
-BB's official plugin for durable, progressively disclosed agent memory. It
-provides:
-
-Because this memory store works across providers, we recommend turning off
-provider-native memory under Settings → Providers while using it. That avoids
-duplicated or conflicting memories split between Codex, Claude Code, and bb.
+BB's official plugin for curated, progressively disclosed agent memory. Its
+active catalog remains provider-neutral and workspace-owner controlled. An
+opt-in compatibility bridge can also treat Claude Code auto-memory as an
+untrusted source of shadow observations without copying it into active memory.
 
 - plugin-private SQLite storage with append-only migrations;
 - global and current-project memory scopes;
@@ -13,6 +11,10 @@ duplicated or conflicting memories split between Codex, Claude Code, and bb.
   `bb.agents.contributeInstructions`;
 - CLI-only agent access through `bb memory` (no native agent tools);
 - FTS5 search followed by full-record reads;
+- opt-in, read-only Claude Code memory observation through the plugin's host
+  worker, with project scope, source hashes, deduplication, and removal tracking;
+- metadata-only shadow persistence and hash-checked live source reads, with no
+  provider-store writes and no automatic candidate creation or promotion;
 - explicit provenance, tags, kinds, importance, pinning, and version history;
 - evidence-backed candidate memories and adversarial challenges;
 - workspace-owner-only promotion and rejection through Settings, with durable
@@ -53,6 +55,30 @@ bb memory search "Turbo typecheck" --scope all --json
 bb memory get <id> --scope all --json
 ```
 
+### Observe Claude Code auto-memory
+
+Enable the bridge under Extensions → Plugins → Memory, or through the CLI:
+
+```bash
+bb plugin config memory set nativeMemoryObservations true
+bb memory native scan --environment "$BB_ENVIRONMENT_ID" --json
+bb memory native observations --status available --json
+bb memory native read <observation-id>
+```
+
+When enabled, a Claude thread becoming idle also triggers a bounded scan of
+that environment's canonical repository memory. Worktrees for the same Git
+repository converge on the same provider source. The shadow index stores only
+source identity, hash, size, timestamps, state, and provenance; `native read`
+fetches the current provider-owned Markdown through the host worker and refuses
+it when the hash changed after scanning.
+
+Provider content is evidence, not instruction or accepted memory. Agents must
+cluster and inspect observations through the normal `memory-dreaming` process,
+propose at most five grounded lessons, attach counterevidence, and stop for the
+same workspace-owner approval used by every other candidate. There is no
+one-observation-to-one-candidate import path.
+
 Project proposals take the invoking CLI's BB project context. Global proposals
 must explicitly pass `--scope global`. Proposals and challenges never enter the
 injected catalog. The workspace owner reviews them under Settings → Memory; an
@@ -72,6 +98,11 @@ memory through the CLI.
 - Retrieval is FTS5 keyword search in this version; embeddings and automatic
   background PR ingestion remain deferred. The bundled `memory-dreaming` skill
   provides the evidence-first synthesis/challenge phase when explicitly loaded.
+- Native observation currently supports Claude Code's documented Markdown
+  auto-memory layout. Codex native memory remains unobserved until it has a
+  stable, testable source adapter.
+- The bridge is polling-based (manual or Claude thread-idle), not a filesystem
+  watcher. Provider files remain the source of truth and are never modified.
 - The safety scanner is a guardrail, not a substitute for avoiding sensitive
   memory content.
 

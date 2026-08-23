@@ -22,17 +22,29 @@ only the human-facing Settings → Memory surface may approve or reject.
 - `MEM-RQ-007` The PR-learning skill must treat reviewer comments as evidence,
   distinguish adopted preferences from correctness claims, challenge candidate
   lessons, and stop before promotion.
+- `MEM-RQ-008` Provider-native memory observation must be explicitly enabled,
+  read-only, project-scoped, metadata-only at rest, and unable to create an
+  active memory or candidate by itself.
+- `MEM-RQ-009` A provider source read must be confined to the resolved memory
+  root and bound to the content hash recorded by the latest scan. Traversal,
+  symlinks, oversize input, stale content, and unavailable sources fail closed.
+- `MEM-RQ-010` Dreaming over native observations must retain the five-candidate
+  cap, cluster overlapping sources, discount echoes, generalize only as far as
+  the evidence proves, challenge survivors, and retain owner-only promotion.
 
 ## Acceptance tests
 
-| ID           | Initial state        | Action                                                  | Observable result                                                    | Forbidden result                        | Environment                          | Evidence                               |
-| ------------ | -------------------- | ------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------- | ------------------------------------ | -------------------------------------- |
-| `MEM-AT-001` | Empty active catalog | Propose a valid candidate                               | Candidate is readable only through candidate commands                | Candidate appears in catalog/search/get | Source harness + packaged runtime    | Focused test output and packaged probe |
-| `MEM-AT-002` | Pending candidate v1 | Append a grounded challenge, then approve v1            | Challenge returns v2; v1 approval fails                              | Stale approval activates memory         | Source harness                       | Focused test output                    |
-| `MEM-AT-003` | Pending candidate    | Approve current version in Settings                     | Active memory, approved candidate, and owner receipt appear together | Any partial state persists              | Source harness + packaged runtime    | RPC test and packaged probe            |
-| `MEM-AT-004` | Pending candidate    | Reject in Settings, then try approval                   | No active memory; second decision fails                              | Rejected claim becomes retrievable      | Source harness                       | Focused test output                    |
-| `MEM-AT-005` | Active memory        | Invoke agent CLI update/forget and inspect command list | Both fail closed; no approve/reject command exists                   | Agent mutates or promotes active memory | Source harness + packaged runtime    | CLI test and live help/probe           |
-| `MEM-AT-006` | Candidate review UI  | Leave reason empty, then enter reason and approve       | Action disabled until reason; current version is submitted           | Unreasoned or stale UI promotion        | jsdom UI test + rendered Settings QA | UI test and screenshot                 |
+| ID           | Initial state        | Action                                                   | Observable result                                                    | Forbidden result                        | Environment                          | Evidence                               |
+| ------------ | -------------------- | -------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------- | ------------------------------------ | -------------------------------------- |
+| `MEM-AT-001` | Empty active catalog | Propose a valid candidate                                | Candidate is readable only through candidate commands                | Candidate appears in catalog/search/get | Source harness + packaged runtime    | Focused test output and packaged probe |
+| `MEM-AT-002` | Pending candidate v1 | Append a grounded challenge, then approve v1             | Challenge returns v2; v1 approval fails                              | Stale approval activates memory         | Source harness                       | Focused test output                    |
+| `MEM-AT-003` | Pending candidate    | Approve current version in Settings                      | Active memory, approved candidate, and owner receipt appear together | Any partial state persists              | Source harness + packaged runtime    | RPC test and packaged probe            |
+| `MEM-AT-004` | Pending candidate    | Reject in Settings, then try approval                    | No active memory; second decision fails                              | Rejected claim becomes retrievable      | Source harness                       | Focused test output                    |
+| `MEM-AT-005` | Active memory        | Invoke agent CLI update/forget and inspect command list  | Both fail closed; no approve/reject command exists                   | Agent mutates or promotes active memory | Source harness + packaged runtime    | CLI test and live help/probe           |
+| `MEM-AT-006` | Candidate review UI  | Leave reason empty, then enter reason and approve        | Action disabled until reason; current version is submitted           | Unreasoned or stale UI promotion        | jsdom UI test + rendered Settings QA | UI test and screenshot                 |
+| `MEM-AT-007` | Native bridge off    | Finish a Claude thread or request a manual scan          | No host read; manual scan explains how to opt in                     | Provider storage is accessed            | Source harness                       | Focused test output                    |
+| `MEM-AT-008` | Native bridge on     | Scan, rescan changed/removed sources, then list projects | Project A sees deduped versions/removals; project B sees none        | Observation enters catalog/candidates   | Source harness                       | Focused test output                    |
+| `MEM-AT-009` | Indexed source hash  | Read source, mutate it, then read with the old hash      | First read is labeled untrusted; second refuses as stale             | Stale or escaping content is returned   | Host + source harness                | Focused test output                    |
 
 ## Failure and recovery tests
 
@@ -47,6 +59,7 @@ only the human-facing Settings → Memory surface may approve or reject.
 
 This slice provides durable candidate state and an owner-only BB Settings
 boundary. The receipt actor label is `memory-settings-owner`; it does not claim
-cryptographically distinct human identity. Automatic PR collection, embedding
-retrieval, eval-based auto-promotion, and multi-user approval policy are not
-implemented.
+cryptographically distinct human identity. Automatic candidate generation,
+Codex native-memory observation, embedding retrieval, eval-based
+auto-promotion, and multi-user approval policy are not implemented. Claude Code
+native memory is an optional evidence source only.
