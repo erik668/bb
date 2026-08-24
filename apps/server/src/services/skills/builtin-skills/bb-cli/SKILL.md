@@ -685,15 +685,45 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
 - Author and check sources with `bb workflows validate (--script <javascript>|
 --source <javascript>|--file <path>|--name <name>)`; start a background run
   with the same selector via `bb workflows run ... [--args <json>] [--resume
-<run-id>]`.
+<run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]`. Use the
+  `campaignId` returned by a prior run to continue that existing build story;
+  unknown campaign IDs are rejected, and each campaign is capped at 100 runs.
+  The origin thread keeps execution,
+  environment, permission, and completion-notification ownership; the optional
+  presentation thread receives the active card, realtime updates, and inspector
+  access. Hidden workflow workers otherwise inherit their parent run's
+  presentation/root relationship or use the nearest visible ancestor. An
+  explicit presentation target must be a visible thread in the same project
+  and environment and must be the origin or one of its ancestors.
+  Presentation-thread inspection is read-only; stop control remains with the
+  origin. The target must be available from the same BB server.
 - Poll compact progress with `bb workflows status <run-id>` and list compact
-  run summaries with `bb workflows list [--limit <1-50>]`. For details,
-  redirect one bounded
+  run summaries with `bb workflows list [--limit <1-50>]`. Inspect durable
+  structured plan, work-item/ticket, and verification state with
+  `bb workflows details <run-id>`; it also lists every run in the selected
+  campaign as one build story. To bound the response, checkpoint ledgers are
+  hydrated for the selected run plus the newest runs, up to four total; older
+  entries are explicitly marked `checkpointsOmitted`. For chronological
+  details, redirect one bounded
   `bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]`
   JSONL page into `$BB_THREAD_STORAGE`, inspect it with file tools, and continue
   from the final page record's `nextCursor`. This shell redirection writes on
   the thread's execution host, including remote hosts; do not print the raw
-  history into the agent transcript. Cancel with `bb workflows stop <run-id>`.
+  history into the agent transcript. Status, list, and history run records expose
+  `originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
+  `campaignId`.
+  Cancel with `bb workflows stop <run-id>`.
+- `details` also reports the campaign's `acceptanceCoverage`. A workflow that
+  changes its own acceptance contract must publish an amending acceptance
+  checkpoint; that change stays inert until a person approves it from the
+  workflow panel or with `bb workflows approve-amendment <run-id> --acceptance
+<acceptance-checkpoint-id>`. Until then, coverage is measured against the
+  approved contract and the amendment is listed under `pendingAmendments`. The
+  approval records the approving thread and surface and is bound to the exact
+  criteria body it was issued against, so republishing different criteria under
+  the same checkpoint ID needs a new approval. The command is refused from a
+  workflow worker thread and from another project: the point of the record is
+  that a person outside the run issued it.
 - Before choosing an explicit provider/model/reasoning tuple, run `bb provider
 list --environment "$BB_ENVIRONMENT_ID" --json`, then query only the chosen
   provider with `bb provider models <provider-id> --environment

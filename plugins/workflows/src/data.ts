@@ -2,6 +2,22 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import type { ResolvedWorkflowExecutionSelection } from "./cache.js";
 import type { JsonValue, WorkflowAgentOptions } from "./types.js";
+import {
+  MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
+  MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+  type WorkflowCheckpoint,
+  readStoredAcceptance,
+  readStoredCheckpoint,
+} from "./workflow-checkpoint.js";
+import {
+  type AcceptanceApproval,
+  MAX_WORKFLOW_COVERAGE_CHECKPOINTS,
+  deriveOpenGates,
+  type WorkflowApprovalSurface,
+  acceptanceApprovalSchema,
+  deriveAcceptanceCoverage,
+} from "./workflow-coverage.js";
+import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 
 export type Db = Database.Database;
 type WorkflowRunStatus =
@@ -21,6 +37,10 @@ export interface WorkflowRunRow {
   id: string;
   projectId: string;
   originThreadId: string;
+  presentationThreadId: string;
+  parentRunId: string | null;
+  rootRunId: string;
+  campaignId: string;
   environmentId: string;
   originProvider: string;
   originModel: string;
@@ -49,6 +69,16 @@ export interface WorkflowRunRow {
   finishedAt: number | null;
 }
 
+export interface WorkflowCampaignRunSummaryRow {
+  id: string;
+  campaignId: string;
+  name: string;
+  status: WorkflowRunRow["status"];
+  createdAt: number;
+  startedAt: number | null;
+  finishedAt: number | null;
+}
+
 export interface WorkflowCallRow {
   id: string;
   runId: string;
@@ -62,6 +92,12 @@ export interface WorkflowCallRow {
   resolvedPermissionMode: string;
   status: WorkflowCallStatus;
   childThreadId: string | null;
+  promptBytes: number;
+  contextMinimumTokens: number | null;
+  contextProfileJson: string | null;
+  observedContextUsedTokens: number | null;
+  observedModelContextWindow: number | null;
+  contextUsageEstimated: boolean | null;
   repairAttempts: number;
   providerRetryAttempts: number;
   resultJson: string | null;
@@ -83,6 +119,39 @@ export interface WorkflowCallCounts {
   cancelled: number;
 }
 
+export interface WorkflowCheckpointRow {
+  id: string;
+  runId: string;
+  checkpointId: string;
+  checkpointJson: string;
+  phase: string | null;
+  sourceCallId: string | null;
+  childThreadId: string | null;
+  ordinal: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * Every refusal is a bare tag except the gate one, which carries the criterion
+ * IDs that blocked it. The reader is an agent deciding what to do next, and
+ * "some criterion you require is open" costs it another round trip to find out
+ * which — the opposite of the cheap steering this ledger exists to provide.
+ */
+export type UpsertWorkflowCheckpointOutcome =
+  | "accepted"
+  | "inactive"
+  | "limit_exceeded"
+  | "ownership_conflict"
+  | "kind_conflict"
+  | "acceptance_conflict"
+  | { kind: "gate_conflict"; openCriterionIds: string[] }
+  | {
+      kind: "gate_weakened";
+      gateId: string;
+      droppedCriterionIds: string[];
+    };
+
 type StoreStructuredResultOutcome =
   | "accepted"
   | "idempotent"
@@ -91,6 +160,10 @@ type StoreStructuredResultOutcome =
 
 interface RawRunRow extends Omit<WorkflowRunRow, "notificationSent"> {
   notificationSent: 0 | 1;
+}
+
+interface RawCallRow extends Omit<WorkflowCallRow, "contextUsageEstimated"> {
+  contextUsageEstimated: 0 | 1 | null;
 }
 
 function runRow(value: unknown): WorkflowRunRow {
@@ -103,15 +176,29 @@ function optionalRun(value: unknown): WorkflowRunRow | null {
 }
 
 function callRow(value: unknown): WorkflowCallRow {
-  return value as WorkflowCallRow;
+  const row = value as RawCallRow;
+  return {
+    ...row,
+    contextUsageEstimated:
+      row.contextUsageEstimated === null
+        ? null
+        : row.contextUsageEstimated === 1,
+  };
 }
 
 function optionalCall(value: unknown): WorkflowCallRow | null {
   return value === undefined ? null : callRow(value);
 }
 
+function checkpointRow(value: unknown): WorkflowCheckpointRow {
+  return value as WorkflowCheckpointRow;
+}
+
 const RUN_SELECT = `
   SELECT id, project_id AS projectId, origin_thread_id AS originThreadId,
+    COALESCE(presentation_thread_id, origin_thread_id) AS presentationThreadId,
+    parent_run_id AS parentRunId, COALESCE(root_run_id, id) AS rootRunId,
+    COALESCE(campaign_id, id) AS campaignId,
     environment_id AS environmentId, origin_provider AS originProvider,
     origin_model AS originModel, origin_reasoning_level AS originReasoningLevel,
     origin_permission_mode AS originPermissionMode,
@@ -134,7 +221,13 @@ const CALL_SELECT = `
     resolved_provider AS resolvedProvider, resolved_model AS resolvedModel,
     resolved_reasoning_level AS resolvedReasoningLevel,
     resolved_permission_mode AS resolvedPermissionMode, status,
-    child_thread_id AS childThreadId, repair_attempts AS repairAttempts,
+    child_thread_id AS childThreadId, prompt_bytes AS promptBytes,
+    context_minimum_tokens AS contextMinimumTokens,
+    context_profile_json AS contextProfileJson,
+    observed_context_used_tokens AS observedContextUsedTokens,
+    observed_model_context_window AS observedModelContextWindow,
+    context_usage_estimated AS contextUsageEstimated,
+    repair_attempts AS repairAttempts,
     provider_retry_attempts AS providerRetryAttempts,
     result_json AS resultJson, error,
     replayed_from_call_id AS replayedFromCallId, replay_source AS replaySource,
@@ -221,45 +314,127 @@ export const migrations = [
   `UPDATE workflow_runs SET replay_barrier_index = NULL
      WHERE replay_safety_version = 1;`,
   `ALTER TABLE workflow_calls ADD COLUMN provider_retry_attempts INTEGER NOT NULL DEFAULT 0;`,
+  `ALTER TABLE workflow_calls ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0;
+   UPDATE workflow_calls SET prompt_bytes = length(CAST(prompt AS BLOB));
+   ALTER TABLE workflow_calls ADD COLUMN observed_context_used_tokens INTEGER;
+   ALTER TABLE workflow_calls ADD COLUMN observed_model_context_window INTEGER;
+   ALTER TABLE workflow_calls ADD COLUMN context_usage_estimated INTEGER;`,
+  `ALTER TABLE workflow_calls ADD COLUMN context_minimum_tokens INTEGER;`,
+  `ALTER TABLE workflow_calls ADD COLUMN context_profile_json TEXT;`,
+  `CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+     id TEXT PRIMARY KEY,
+     run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+     checkpoint_id TEXT NOT NULL,
+     checkpoint_json TEXT NOT NULL,
+     phase TEXT,
+     source_call_id TEXT REFERENCES workflow_calls(id) ON DELETE SET NULL,
+     ordinal INTEGER NOT NULL,
+     created_at INTEGER NOT NULL,
+     updated_at INTEGER NOT NULL,
+     UNIQUE(run_id, checkpoint_id)
+   );
+   CREATE INDEX IF NOT EXISTS workflow_checkpoints_run_created_idx
+     ON workflow_checkpoints(run_id, ordinal);`,
+  `ALTER TABLE workflow_runs ADD COLUMN presentation_thread_id TEXT;
+   ALTER TABLE workflow_runs ADD COLUMN parent_run_id TEXT REFERENCES workflow_runs(id) ON DELETE SET NULL;
+   ALTER TABLE workflow_runs ADD COLUMN root_run_id TEXT;
+   UPDATE workflow_runs
+     SET presentation_thread_id = origin_thread_id
+     WHERE presentation_thread_id IS NULL;
+   UPDATE workflow_runs SET root_run_id = id WHERE root_run_id IS NULL;
+   CREATE INDEX IF NOT EXISTS workflow_runs_presentation_created_idx
+     ON workflow_runs(presentation_thread_id, created_at DESC);
+   CREATE INDEX IF NOT EXISTS workflow_runs_root_created_idx
+     ON workflow_runs(root_run_id, created_at ASC);`,
+  `ALTER TABLE workflow_runs ADD COLUMN campaign_id TEXT;
+   UPDATE workflow_runs SET campaign_id = id WHERE campaign_id IS NULL;
+   CREATE INDEX IF NOT EXISTS workflow_runs_campaign_created_idx
+     ON workflow_runs(campaign_id, created_at ASC);`,
+  // Approvals live outside the checkpoint ledger on purpose: the ledger is
+  // what a workflow writes about itself, and an approval is the one fact about
+  // a campaign that its own tool path must not be able to produce. The
+  // canonical body is stored rather than a hash so this module stays free of
+  // `node:crypto`, which the browser bundle would have to carry.
+  `CREATE TABLE IF NOT EXISTS workflow_acceptance_approvals (
+     id TEXT PRIMARY KEY,
+     campaign_id TEXT NOT NULL,
+     acceptance_checkpoint_id TEXT NOT NULL,
+     contract_canonical TEXT NOT NULL,
+     approved_by_thread_id TEXT NOT NULL,
+     surface TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
+   );`,
 ];
+
+type CreateWorkflowRunInput = Omit<
+  WorkflowRunRow,
+  | "id"
+  | "campaignId"
+  | "status"
+  | "resultJson"
+  | "error"
+  | "phase"
+  | "replaySafetyVersion"
+  | "replayBarrierIndex"
+  | "notificationSent"
+  | "notificationOutcome"
+  | "notificationAttemptCount"
+  | "notificationNextAttemptAt"
+  | "notificationError"
+  | "createdAt"
+  | "startedAt"
+  | "finishedAt"
+> & { campaignId?: string };
 
 export function createRun(
   db: Db,
-  input: Omit<
-    WorkflowRunRow,
-    | "id"
-    | "status"
-    | "resultJson"
-    | "error"
-    | "phase"
-    | "replaySafetyVersion"
-    | "replayBarrierIndex"
-    | "notificationSent"
-    | "notificationOutcome"
-    | "notificationAttemptCount"
-    | "notificationNextAttemptAt"
-    | "notificationError"
-    | "createdAt"
-    | "startedAt"
-    | "finishedAt"
-  >,
+  input: CreateWorkflowRunInput,
 ): WorkflowRunRow {
   const id = `wfr_${randomUUID()}`;
   const now = Date.now();
-  db.prepare(
-    `INSERT INTO workflow_runs (
-       id, project_id, origin_thread_id, environment_id, origin_provider,
+  const rootRunId = input.rootRunId || id;
+  const campaignId = input.campaignId || id;
+  db.transaction(() => {
+    if (input.campaignId) {
+      const { count } = db
+        .prepare(
+          `SELECT COUNT(*) AS count
+             FROM workflow_runs
+            WHERE COALESCE(campaign_id, id) = ?
+              AND project_id = ?
+              AND environment_id = ?
+              AND COALESCE(presentation_thread_id, origin_thread_id) = ?`,
+        )
+        .get(
+          campaignId,
+          input.projectId,
+          input.environmentId,
+          input.presentationThreadId,
+        ) as { count: number };
+      if (count >= MAX_WORKFLOW_RUNS_PER_CAMPAIGN) {
+        throw new Error(
+          `Workflow campaign cannot exceed ${MAX_WORKFLOW_RUNS_PER_CAMPAIGN} runs`,
+        );
+      }
+    }
+    db.prepare(
+      `INSERT INTO workflow_runs (
+       id, project_id, origin_thread_id, presentation_thread_id,
+       parent_run_id, root_run_id, campaign_id, environment_id, origin_provider,
        origin_model, origin_reasoning_level, origin_permission_mode,
        name, source, source_hash,
        args_json, settings_json, status, resumed_from_run_id,
        replay_safety_version, created_at
      ) VALUES (
-       @id, @projectId, @originThreadId, @environmentId, @originProvider,
+       @id, @projectId, @originThreadId, @presentationThreadId,
+       @parentRunId, @rootRunId, @campaignId, @environmentId, @originProvider,
        @originModel, @originReasoningLevel, @originPermissionMode,
        @name, @source, @sourceHash,
        @argsJson, @settingsJson, 'queued', @resumedFromRunId, 1, @now
      )`,
-  ).run({ id, now, ...input });
+    ).run({ id, now, ...input, rootRunId, campaignId });
+  })();
   return getRunRequired(db, id);
 }
 
@@ -286,6 +461,21 @@ export function getLatestRunForOriginThread(
   );
 }
 
+export function getLatestRunForThread(
+  db: Db,
+  threadId: string,
+): WorkflowRunRow | null {
+  return optionalRun(
+    db
+      .prepare(
+        `${RUN_SELECT}
+         WHERE origin_thread_id = ? OR presentation_thread_id = ?
+         ORDER BY created_at DESC, workflow_runs.rowid DESC LIMIT 1`,
+      )
+      .get(threadId, threadId),
+  );
+}
+
 export function listActiveRunsForOriginThread(
   db: Db,
   originThreadId: string,
@@ -299,6 +489,21 @@ export function listActiveRunsForOriginThread(
     .map(runRow);
 }
 
+export function listActiveRunsForThread(
+  db: Db,
+  threadId: string,
+): WorkflowRunRow[] {
+  return db
+    .prepare(
+      `${RUN_SELECT}
+       WHERE (origin_thread_id = ? OR presentation_thread_id = ?)
+         AND status IN ('queued', 'running')
+       ORDER BY created_at DESC, workflow_runs.rowid DESC`,
+    )
+    .all(threadId, threadId)
+    .map(runRow);
+}
+
 export function listRuns(
   db: Db,
   args: { projectId: string; limit: number },
@@ -309,6 +514,113 @@ export function listRuns(
     )
     .all(args.projectId, args.limit)
     .map(runRow);
+}
+
+export function getFirstRunForCampaignScope(
+  db: Db,
+  args: { campaignId: string; projectId: string; environmentId: string },
+): WorkflowRunRow | null {
+  return optionalRun(
+    db
+      .prepare(
+        `${RUN_SELECT}
+           WHERE COALESCE(campaign_id, id) = ?
+             AND project_id = ? AND environment_id = ?
+           ORDER BY created_at ASC, workflow_runs.rowid ASC LIMIT 1`,
+      )
+      .get(args.campaignId, args.projectId, args.environmentId),
+  );
+}
+
+export function countRunsForCampaign(db: Db, campaignId: string): number {
+  const row = db
+    .prepare(
+      `SELECT COUNT(*) AS count FROM workflow_runs
+       WHERE COALESCE(campaign_id, id) = ?`,
+    )
+    .get(campaignId) as { count: number };
+  return row.count;
+}
+
+/**
+ * Coverage spans a campaign's whole history, so it deliberately does NOT reuse
+ * the campaign inspection path: that one hydrates only
+ * MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS ledgers, which would drop the acceptance
+ * contract itself as soon as a campaign outgrew four runs. Only the four kinds
+ * coverage reads are selected, and the row cap is reported to the caller rather
+ * than silently truncating a partial ledger into a confident answer.
+ *
+ * The kind filter is guarded by `json_valid` because this read spans every run
+ * in the campaign, including ones bounded hydration never touches. A single
+ * corrupt row there must not take the campaign view down with it, and bare
+ * `json_extract` raises on malformed JSON rather than returning NULL.
+ */
+export function listCampaignCoverageCheckpoints(
+  db: Db,
+  args: {
+    campaignId: string;
+    projectId: string;
+    environmentId: string;
+    presentationThreadId: string;
+    limit: number;
+  },
+): { checkpointJson: string }[] {
+  return db
+    .prepare(
+      `SELECT checkpoint.checkpoint_json AS checkpointJson
+         FROM workflow_checkpoints AS checkpoint
+         JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+         WHERE COALESCE(run.campaign_id, run.id) = ?
+           AND run.project_id = ?
+           AND run.environment_id = ?
+           AND COALESCE(run.presentation_thread_id, run.origin_thread_id) = ?
+           AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                    THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+               END IN ('acceptance', 'plan', 'work-item', 'verification')
+         ORDER BY run.created_at ASC, run.rowid ASC, checkpoint.ordinal ASC
+         LIMIT ?`,
+    )
+    .all(
+      args.campaignId,
+      args.projectId,
+      args.environmentId,
+      args.presentationThreadId,
+      args.limit,
+    ) as { checkpointJson: string }[];
+}
+
+export function listRunsForCampaign(
+  db: Db,
+  args: {
+    campaignId: string;
+    projectId: string;
+    environmentId: string;
+    presentationThreadId: string;
+  },
+): WorkflowCampaignRunSummaryRow[] {
+  return db
+    .prepare(
+      `SELECT
+          id,
+          COALESCE(campaign_id, id) AS campaignId,
+          name,
+          status,
+          created_at AS createdAt,
+          started_at AS startedAt,
+          finished_at AS finishedAt
+         FROM workflow_runs
+         WHERE COALESCE(campaign_id, id) = ?
+           AND project_id = ?
+           AND environment_id = ?
+           AND COALESCE(presentation_thread_id, origin_thread_id) = ?
+         ORDER BY created_at ASC, workflow_runs.rowid ASC`,
+    )
+    .all(
+      args.campaignId,
+      args.projectId,
+      args.environmentId,
+      args.presentationThreadId,
+    ) as WorkflowCampaignRunSummaryRow[];
 }
 
 export function claimQueuedRun(
@@ -338,6 +650,24 @@ export function claimQueuedRun(
       .run(Date.now(), row.id).changes;
     return changed === 1 ? getRunRequired(db, row.id) : null;
   })();
+}
+
+function interruptWorkflowCheckpoints(
+  db: Db,
+  args: { runId?: string; sourceCallId?: string; now: number },
+): void {
+  const selector =
+    args.runId === undefined
+      ? "source_call_id = @sourceCallId"
+      : "run_id = @runId";
+  db.prepare(
+    `UPDATE workflow_checkpoints
+     SET checkpoint_json = json_set(
+       checkpoint_json, '$.status', 'interrupted'
+     ), updated_at = @now
+     WHERE ${selector}
+       AND json_extract(checkpoint_json, '$.status') IN ('pending', 'running')`,
+  ).run(args);
 }
 
 export function settleRun(
@@ -377,6 +707,7 @@ export function settleRun(
        error = 'Parent workflow finished before this call', finished_at = ?
        WHERE run_id = ? AND status IN ('queued', 'running')`,
     ).run(now, args.id);
+    interruptWorkflowCheckpoints(db, { runId: args.id, now });
     return outstanding;
   })();
 }
@@ -385,6 +716,547 @@ export function updateRunPhase(db: Db, id: string, phase: string): void {
   db.prepare(
     `UPDATE workflow_runs SET phase = ? WHERE id = ? AND status = 'running'`,
   ).run(phase, id);
+}
+
+/**
+ * Decides whether a write would change the campaign's acceptance contract.
+ *
+ * Acceptance is the one checkpoint kind the campaign is measured against, so an
+ * orchestrator that can rewrite it can always agree with itself. Two vectors
+ * have to be closed and only one of them is loud:
+ *
+ * - Republishing under the same ID UPDATEs the row in place and destroys the
+ *   original, leaving the derivation nothing to compare and nothing to report.
+ *   That is refused unconditionally — an amendment cannot overwrite the thing it
+ *   supersedes.
+ * - Publishing a different contract under a new ID keeps the original readable,
+ *   so it is accepted only when it names what it supersedes.
+ *
+ * Campaign-scoped rather than run-scoped, because acceptance belongs to the
+ * campaign: a child run publishing its own contract is the same rewrite one
+ * level out. Only acceptance writes pay for this query, and both legs of the
+ * join are indexed (`workflow_runs(campaign_id, ...)`,
+ * `workflow_checkpoints(run_id, ordinal)`).
+ *
+ * This makes a rewritten contract evident, not impossible. Nothing here can
+ * stop a writer that edits the database directly, which is why the derivation
+ * re-checks the amendment chain on read instead of trusting the newest row.
+ */
+function conflictsWithCampaignAcceptance(
+  db: Db,
+  args: {
+    runId: string;
+    checkpointId: string;
+    incoming: { canonical: string; supersedes: string | null };
+  },
+): boolean {
+  const rows = db
+    .prepare(
+      `SELECT checkpoint.checkpoint_id AS checkpointId,
+         checkpoint.checkpoint_json AS checkpointJson
+       FROM workflow_checkpoints AS checkpoint
+       JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+       WHERE COALESCE(run.campaign_id, run.id) = (
+           SELECT COALESCE(campaign_id, id) FROM workflow_runs WHERE id = ?
+         )
+         AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                  THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+             END = 'acceptance'`,
+    )
+    .all(args.runId) as {
+    checkpointId: string;
+    checkpointJson: string;
+  }[];
+
+  // A row whose body cannot be read cannot be compared, so it is excluded from
+  // the equality check while still counting as a valid supersede target.
+  const existing = rows.map((row) => ({
+    checkpointId: row.checkpointId,
+    acceptance: readStoredAcceptance(row.checkpointJson),
+  }));
+  if (existing.length === 0) {
+    // An amendment naming a predecessor this campaign never published is a
+    // fabricated chain, not an amendment.
+    return args.incoming.supersedes !== null;
+  }
+
+  // Campaign-wide, not run-scoped. `workflow_checkpoints` is unique per
+  // (run_id, checkpoint_id), so a sibling run can hold its own row under the
+  // same acceptance ID. Letting those bodies differ would mean one ID names two
+  // contracts, and an approval issued against the body a reader saw would
+  // silently authorize the other one.
+  const sameIdWithDifferentBody = existing.some(
+    (row) =>
+      row.checkpointId === args.checkpointId &&
+      row.acceptance !== null &&
+      row.acceptance.canonical !== args.incoming.canonical,
+  );
+  if (sameIdWithDifferentBody) return true;
+
+  const comparable = existing.filter((row) => row.acceptance !== null);
+  const unchanged = comparable.every(
+    (row) => row.acceptance?.canonical === args.incoming.canonical,
+  );
+  if (unchanged) return false;
+
+  return !existing.some((row) => row.checkpointId === args.incoming.supersedes);
+}
+
+function campaignIdForRun(db: Db, runId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(campaign_id, id) AS campaignId
+       FROM workflow_runs WHERE id = ?`,
+    )
+    .get(runId) as { campaignId: string } | undefined;
+  return row?.campaignId ?? null;
+}
+
+/**
+ * Reads a campaign's amendment approvals for the coverage derivation.
+ *
+ * Rows are parsed rather than cast: a row this schema rejects — an unknown
+ * surface, say — is dropped, which leaves the amendment it referred to pending.
+ * That is the safe direction. An approval invented by writing to the database
+ * directly either parses and is attributable, or does not count.
+ */
+export function listAcceptanceApprovals(
+  db: Db,
+  args: { campaignId: string },
+): AcceptanceApproval[] {
+  const rows = db
+    .prepare(
+      `SELECT acceptance_checkpoint_id AS acceptanceId,
+         contract_canonical AS contractCanonical,
+         approved_by_thread_id AS approvedByThreadId,
+         surface, created_at AS approvedAt
+       FROM workflow_acceptance_approvals
+       WHERE campaign_id = ?
+       ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(args.campaignId) as unknown[];
+  return rows.flatMap((row) => {
+    const parsed = acceptanceApprovalSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+export type RecordAcceptanceApprovalOutcome =
+  | {
+      kind: "approved";
+      newlyApproved: boolean;
+      supersedes: string;
+      contractCanonical: string;
+    }
+  | { kind: "unknown_acceptance" }
+  | { kind: "not_an_amendment" }
+  | { kind: "ambiguous_body" };
+
+/**
+ * Records a human approval for one amending acceptance checkpoint.
+ *
+ * The approval binds to the canonical criteria body, not just the checkpoint
+ * ID, so it authorizes exactly the contract that was on screen when it was
+ * issued. Approving the original contract is refused: there is nothing to
+ * authorize, and accepting it would put a meaningless row in the table that a
+ * later reader could mistake for consent to a change.
+ *
+ * The write path refuses to let one acceptance ID carry two different bodies in
+ * a campaign, so there is normally exactly one body to bind to. If a row
+ * predating that guard makes the ID ambiguous, this refuses rather than picking
+ * one: choosing the newest would authorize a body the approver never saw, which
+ * is the whole failure this record exists to prevent.
+ */
+export function recordAcceptanceApproval(
+  db: Db,
+  input: {
+    runId: string;
+    acceptanceCheckpointId: string;
+    approvedByThreadId: string;
+    surface: WorkflowApprovalSurface;
+  },
+): RecordAcceptanceApprovalOutcome {
+  return db.transaction((): RecordAcceptanceApprovalOutcome => {
+    const campaignId = campaignIdForRun(db, input.runId);
+    if (campaignId === null) return { kind: "unknown_acceptance" };
+    const rows = db
+      .prepare(
+        `SELECT checkpoint.checkpoint_json AS checkpointJson
+         FROM workflow_checkpoints AS checkpoint
+         JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+         WHERE COALESCE(run.campaign_id, run.id) = ?
+           AND checkpoint.checkpoint_id = ?
+           AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                    THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+               END = 'acceptance'`,
+      )
+      .all(campaignId, input.acceptanceCheckpointId) as {
+      checkpointJson: string;
+    }[];
+    const candidates = rows.flatMap((row) => {
+      const parsed = readStoredAcceptance(row.checkpointJson);
+      return parsed === null ? [] : [parsed];
+    });
+    const acceptance = candidates[0];
+    if (acceptance === undefined) return { kind: "unknown_acceptance" };
+    if (
+      candidates.some(
+        (candidate) => candidate.canonical !== acceptance.canonical,
+      )
+    ) {
+      return { kind: "ambiguous_body" };
+    }
+    if (acceptance.supersedes === null) return { kind: "not_an_amendment" };
+    const result = db
+      .prepare(
+        `INSERT INTO workflow_acceptance_approvals (
+           id, campaign_id, acceptance_checkpoint_id, contract_canonical,
+           approved_by_thread_id, surface, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(campaign_id, acceptance_checkpoint_id, contract_canonical)
+           DO NOTHING`,
+      )
+      .run(
+        `wfa_${randomUUID()}`,
+        campaignId,
+        input.acceptanceCheckpointId,
+        acceptance.canonical,
+        input.approvedByThreadId,
+        input.surface,
+        Date.now(),
+      );
+    return {
+      kind: "approved",
+      newlyApproved: result.changes > 0,
+      supersedes: acceptance.supersedes,
+      contractCanonical: acceptance.canonical,
+    };
+  })();
+}
+
+/**
+ * Returns the acceptance criteria a gate still requires but has not closed, so
+ * a gate cannot be recorded as succeeded while the outcomes it guards are open.
+ *
+ * The edge and the claim live in different checkpoints by design: the plan
+ * declares `requiresClosed` on a `nodeType: "gate"` item, and success is
+ * reported later on a work-item checkpoint. Joining them is therefore a
+ * campaign-wide read — a child run's gate may require a criterion the parent's
+ * plan declared — ordered exactly like the coverage read, since the derivation
+ * depends on chronological order.
+ *
+ * Closure is resolved by running that derivation rather than a second query, so
+ * "closed" has one definition. A criterion no contract declares can never
+ * close, so it counts as open: a typo in `requiresClosed` blocks the gate
+ * loudly rather than quietly disabling it.
+ */
+/**
+ * Reads the campaign checkpoints the coverage derivation needs, ordered exactly
+ * like the panel's read so both resolve the same contract head.
+ */
+function campaignCoverageInputs(
+  db: Db,
+  runId: string,
+): readonly WorkflowCheckpoint[] {
+  const rows = db
+    .prepare(
+      `SELECT checkpoint.checkpoint_id AS checkpointId,
+              checkpoint.checkpoint_json AS checkpointJson
+       FROM workflow_checkpoints AS checkpoint
+       JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+       WHERE COALESCE(run.campaign_id, run.id) = (
+           SELECT COALESCE(campaign_id, id) FROM workflow_runs WHERE id = ?
+         )
+         AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                  THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+             END IN ('acceptance', 'plan', 'work-item', 'verification')
+       ORDER BY run.created_at ASC, run.rowid ASC, checkpoint.ordinal ASC
+       LIMIT ?`,
+    )
+    .all(runId, MAX_WORKFLOW_COVERAGE_CHECKPOINTS) as {
+    checkpointId: string;
+    checkpointJson: string;
+  }[];
+  // The row's `checkpoint_id` is authoritative here, not the `id` inside the
+  // body. Uniqueness, the gate this guard is keyed on, and the ID an amendment
+  // supersedes are all that column; taking identity from the body would let a
+  // checkpoint filed under one ID be read as another.
+  return rows.flatMap((row) => {
+    const parsed = readStoredCheckpoint(row.checkpointJson);
+    return parsed === null ? [] : [{ ...parsed, id: row.checkpointId }];
+  });
+}
+
+/** The campaign's open gates, as the reader's coverage reports them. */
+function openGatesForCampaign(
+  db: Db,
+  runId: string,
+): readonly { gateId: string; openCriterionIds: readonly string[] }[] {
+  const campaignId = campaignIdForRun(db, runId);
+  return deriveOpenGates(
+    campaignCoverageInputs(db, runId),
+    campaignId === null ? [] : listAcceptanceApprovals(db, { campaignId }),
+  );
+}
+
+function gateRequirementsLeftOpen(
+  db: Db,
+  args: { runId: string; checkpointId: string },
+): string[] {
+  // One definition of what a gate requires and of what "closed" means: the
+  // refusal below and the `openGates` a reader sees are the same computation.
+  // Resolving the requirement separately here is exactly how the two drifted —
+  // a sticky per-item walk refused gates that coverage reported as clear, so an
+  // agent was blocked with no readable explanation anywhere.
+  //
+  // Approvals are read for the same reason coverage reads them: an unapproved
+  // amendment must not be able to redefine the criteria a gate requires, which
+  // would let a workflow open its own gate by rewriting what done means.
+  return (
+    openGatesForCampaign(db, args.runId)
+      .find((gate) => gate.gateId === args.checkpointId)
+      ?.openCriterionIds.slice() ?? []
+  );
+}
+
+/**
+ * Returns the gate requirements an incoming plan would drop while the criteria
+ * they name are still open AND still declared by the approved contract.
+ *
+ * Without this the gate is the weakest link in the chain it belongs to: the
+ * contract needs a human approval to narrow, but a plan that gates on the
+ * contract could be republished with the gate demoted to a work node, by the
+ * same agent, through the same tool. That is the agent-writable anchor this
+ * ledger exists to remove, one level out.
+ *
+ * A criterion the approved contract no longer declares may be dropped freely.
+ * The approval is what authorized that, and requiring the plan to keep waiting
+ * on a criterion nobody declares any more would deadlock the legitimate
+ * two-step change instead of recording it.
+ */
+function gateWeakeningsInPlan(
+  db: Db,
+  args: {
+    runId: string;
+    incoming: readonly {
+      id: string;
+      nodeType?: "work" | "gate";
+      requiresClosed?: string[];
+    }[];
+  },
+): { gateId: string; droppedCriterionIds: string[] }[] {
+  const checkpoints = campaignCoverageInputs(db, args.runId);
+  const campaignId = campaignIdForRun(db, args.runId);
+  const approvals =
+    campaignId === null ? [] : listAcceptanceApprovals(db, { campaignId });
+  const coverage = deriveAcceptanceCoverage(checkpoints, approvals);
+  // No contract, nothing to protect: there is no approval that could authorize
+  // dropping a requirement, so requiring one here would be unsatisfiable. The
+  // gate itself still fails closed while it exists.
+  if (coverage === null) return [];
+  const declaredIds = new Set(
+    coverage.criteria.map((criterion) => criterion.id),
+  );
+  return deriveOpenGates(checkpoints, approvals).flatMap((gate) => {
+    const item = args.incoming.find((entry) => entry.id === gate.gateId);
+    const requiredNow =
+      item?.nodeType === "gate" ? (item.requiresClosed ?? []) : [];
+    const dropped = gate.openCriterionIds.filter(
+      (criterionId) =>
+        declaredIds.has(criterionId) && !requiredNow.includes(criterionId),
+    );
+    return dropped.length === 0
+      ? []
+      : [{ gateId: gate.gateId, droppedCriterionIds: dropped }];
+  });
+}
+
+export function upsertWorkflowCheckpoint(
+  db: Db,
+  input: {
+    runId: string;
+    checkpointId: string;
+    checkpointJson: string;
+    phase: string | null;
+    sourceCallId: string | null;
+  },
+): UpsertWorkflowCheckpointOutcome {
+  return db.transaction(() => {
+    const run = db
+      .prepare(`SELECT status FROM workflow_runs WHERE id = ?`)
+      .get(input.runId) as { status: WorkflowRunStatus } | undefined;
+    if (run?.status !== "running") return "inactive";
+
+    const existing = db
+      .prepare(
+        `SELECT length(CAST(checkpoint_json AS BLOB)) AS bytes,
+           source_call_id AS sourceCallId,
+           json_extract(checkpoint_json, '$.kind') AS kind,
+           CASE WHEN json_extract(checkpoint_json, '$.status') IN ('pending', 'running')
+             THEN 4 ELSE 0 END AS interruptionReserveBytes
+         FROM workflow_checkpoints
+         WHERE run_id = ? AND checkpoint_id = ?`,
+      )
+      .get(input.runId, input.checkpointId) as
+      | {
+          bytes: number;
+          sourceCallId: string | null;
+          kind: string;
+          interruptionReserveBytes: number;
+        }
+      | undefined;
+    const incoming = JSON.parse(input.checkpointJson) as {
+      kind: string;
+      status: string;
+    };
+    if (
+      existing !== undefined &&
+      input.sourceCallId !== null &&
+      existing.sourceCallId !== input.sourceCallId
+    ) {
+      return "ownership_conflict";
+    }
+    if (
+      existing !== undefined &&
+      typeof existing.kind === "string" &&
+      typeof incoming.kind === "string" &&
+      existing.kind !== incoming.kind
+    ) {
+      return "kind_conflict";
+    }
+    const incomingAcceptance =
+      incoming.kind === "acceptance"
+        ? readStoredAcceptance(input.checkpointJson)
+        : null;
+    if (
+      incomingAcceptance !== null &&
+      conflictsWithCampaignAcceptance(db, {
+        runId: input.runId,
+        checkpointId: input.checkpointId,
+        incoming: incomingAcceptance,
+      })
+    ) {
+      return "acceptance_conflict";
+    }
+    // A plan may not retire a gate the campaign is still stuck behind. Without
+    // this, the human approval that guards the contract guards nothing: the
+    // same agent could demote the gate to a work node through the same tool.
+    if (incoming.kind === "plan") {
+      const parsed = readStoredCheckpoint(input.checkpointJson);
+      const weakened =
+        parsed?.kind === "plan"
+          ? gateWeakeningsInPlan(db, {
+              runId: input.runId,
+              incoming: parsed.items,
+            })[0]
+          : undefined;
+      if (weakened !== undefined) {
+        return {
+          kind: "gate_weakened" as const,
+          gateId: weakened.gateId,
+          droppedCriterionIds: weakened.droppedCriterionIds,
+        };
+      }
+    }
+    // Only a claim of success is gated. A gate reported as failed, blocked, or
+    // still running is exactly the honest reporting this is meant to encourage.
+    if (incoming.kind === "work-item" && incoming.status === "succeeded") {
+      const openCriterionIds = gateRequirementsLeftOpen(db, {
+        runId: input.runId,
+        checkpointId: input.checkpointId,
+      });
+      if (openCriterionIds.length > 0) {
+        return { kind: "gate_conflict" as const, openCriterionIds };
+      }
+    }
+    const totals = db
+      .prepare(
+        `SELECT COUNT(*) AS count,
+           COALESCE(SUM(length(CAST(checkpoint_json AS BLOB))), 0) AS bytes,
+           COALESCE(SUM(CASE
+             WHEN json_extract(checkpoint_json, '$.status') IN ('pending', 'running')
+             THEN 4 ELSE 0 END), 0) AS interruptionReserveBytes,
+           COALESCE(MAX(ordinal), -1) AS maximumOrdinal
+         FROM workflow_checkpoints WHERE run_id = ?`,
+      )
+      .get(input.runId) as {
+      count: number;
+      bytes: number;
+      interruptionReserveBytes: number;
+      maximumOrdinal: number;
+    };
+    const checkpointBytes = Buffer.byteLength(input.checkpointJson, "utf8");
+    const incomingInterruptionReserveBytes = ["pending", "running"].includes(
+      incoming.status,
+    )
+      ? 4
+      : 0;
+    const nextReservedTotalBytes =
+      totals.bytes +
+      totals.interruptionReserveBytes -
+      (existing?.bytes ?? 0) -
+      (existing?.interruptionReserveBytes ?? 0) +
+      checkpointBytes +
+      incomingInterruptionReserveBytes;
+    if (
+      nextReservedTotalBytes > MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN ||
+      (existing === undefined &&
+        totals.count >= MAX_WORKFLOW_CHECKPOINTS_PER_RUN)
+    ) {
+      return "limit_exceeded";
+    }
+
+    const now = Date.now();
+    if (existing !== undefined) {
+      db.prepare(
+        `UPDATE workflow_checkpoints
+         SET checkpoint_json = @checkpointJson, phase = @phase,
+           source_call_id = COALESCE(@sourceCallId, source_call_id),
+           updated_at = @now
+         WHERE run_id = @runId AND checkpoint_id = @checkpointId`,
+      ).run({ ...input, now });
+      return "accepted";
+    }
+    db.prepare(
+      `INSERT INTO workflow_checkpoints (
+         id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+         ordinal, created_at, updated_at
+       ) VALUES (
+         @id, @runId, @checkpointId, @checkpointJson, @phase, @sourceCallId,
+         @ordinal, @now, @now
+       )`,
+    ).run({
+      id: `wcp_${randomUUID()}`,
+      ...input,
+      ordinal: totals.maximumOrdinal + 1,
+      now,
+    });
+    return "accepted";
+  })();
+}
+
+export function listWorkflowCheckpointsForRun(
+  db: Db,
+  runId: string,
+): WorkflowCheckpointRow[] {
+  return db
+    .prepare(
+      `SELECT checkpoint.id, checkpoint.run_id AS runId,
+         checkpoint.checkpoint_id AS checkpointId,
+         checkpoint.checkpoint_json AS checkpointJson, checkpoint.phase,
+         checkpoint.source_call_id AS sourceCallId,
+         call.child_thread_id AS childThreadId,
+         checkpoint.ordinal,
+         checkpoint.created_at AS createdAt,
+         checkpoint.updated_at AS updatedAt
+       FROM workflow_checkpoints AS checkpoint
+       LEFT JOIN workflow_calls AS call ON call.id = checkpoint.source_call_id
+       WHERE checkpoint.run_id = ?
+       ORDER BY checkpoint.ordinal
+       LIMIT ?`,
+    )
+    .all(runId, MAX_WORKFLOW_CHECKPOINTS_PER_RUN + 1)
+    .map(checkpointRow);
 }
 
 export function markNotificationSent(db: Db, id: string): void {
@@ -436,6 +1308,9 @@ export function beginNotificationAttempt(db: Db, id: string): boolean {
 
 export function recoverInterruptedRuns(db: Db): string[] {
   return db.transaction(() => {
+    const runRows = db
+      .prepare(`SELECT id FROM workflow_runs WHERE status = 'running'`)
+      .all() as Array<{ id: string }>;
     const childRows = db
       .prepare(
         `SELECT calls.child_thread_id AS childThreadId
@@ -446,6 +1321,9 @@ export function recoverInterruptedRuns(db: Db): string[] {
       )
       .all() as Array<{ childThreadId: string }>;
     const now = Date.now();
+    for (const run of runRows) {
+      interruptWorkflowCheckpoints(db, { runId: run.id, now });
+    }
     db.prepare(
       `UPDATE workflow_calls SET status = 'succeeded', error = NULL, finished_at = ?
        WHERE status = 'running' AND result_json IS NOT NULL AND run_id IN (
@@ -556,7 +1434,13 @@ export function startCall(
     prompt: string;
     options: WorkflowAgentOptions;
     selection: ResolvedWorkflowExecutionSelection;
-    replay: { callId: string; result: Exclude<JsonValue, null> } | null;
+    replay: {
+      callId: string;
+      result: Exclude<JsonValue, null>;
+      observedContextUsedTokens: number | null;
+      observedModelContextWindow: number | null;
+      contextUsageEstimated: boolean | null;
+    } | null;
   },
 ): WorkflowCallRow {
   return db.transaction(() => {
@@ -567,16 +1451,27 @@ export function startCall(
     const existing = getCall(db, args.runId, args.callIndex);
     const now = Date.now();
     const id = existing?.id ?? `wfc_${randomUUID()}`;
+    const {
+      contextRequirement: _contextRequirement,
+      contextProfile: _contextProfile,
+      ...storedOptions
+    } = args.options;
     db.prepare(
       `INSERT INTO workflow_calls (
        id, run_id, call_index, cache_key, prompt, options_json,
        resolved_provider, resolved_model, resolved_reasoning_level,
-       resolved_permission_mode, status, result_json, replayed_from_call_id,
+       resolved_permission_mode, status, prompt_bytes, context_minimum_tokens,
+       context_profile_json,
+       observed_context_used_tokens, observed_model_context_window,
+       context_usage_estimated, result_json, replayed_from_call_id,
        replay_source, created_at, started_at, finished_at
      ) VALUES (
        @id, @runId, @callIndex, @cacheKey, @prompt, @optionsJson,
        @resolvedProvider, @resolvedModel, @resolvedReasoningLevel,
-       @resolvedPermissionMode, @status, @resultJson, @replayedFromCallId,
+       @resolvedPermissionMode, @status, @promptBytes, @contextMinimumTokens,
+       @contextProfileJson,
+       @observedContextUsedTokens, @observedModelContextWindow,
+       @contextUsageEstimated, @resultJson, @replayedFromCallId,
        @replaySource, @now, @now, @finishedAt
      ) ON CONFLICT(run_id, call_index) DO UPDATE SET
        cache_key = excluded.cache_key, prompt = excluded.prompt,
@@ -587,6 +1482,12 @@ export function startCall(
        resolved_permission_mode = excluded.resolved_permission_mode,
        status = excluded.status,
        child_thread_id = NULL, repair_attempts = 0,
+       prompt_bytes = excluded.prompt_bytes,
+       context_minimum_tokens = excluded.context_minimum_tokens,
+       context_profile_json = excluded.context_profile_json,
+       observed_context_used_tokens = excluded.observed_context_used_tokens,
+       observed_model_context_window = excluded.observed_model_context_window,
+       context_usage_estimated = excluded.context_usage_estimated,
        result_json = excluded.result_json, error = NULL,
        replayed_from_call_id = excluded.replayed_from_call_id,
        replay_source = excluded.replay_source,
@@ -597,12 +1498,30 @@ export function startCall(
       callIndex: args.callIndex,
       cacheKey: args.cacheKey,
       prompt: args.prompt,
-      optionsJson: JSON.stringify(args.options),
+      optionsJson: JSON.stringify(storedOptions),
       resolvedProvider: args.selection.providerId,
       resolvedModel: args.selection.model,
       resolvedReasoningLevel: args.selection.reasoningLevel,
       resolvedPermissionMode: args.selection.permissionMode,
       status: args.replay === null ? "queued" : "succeeded",
+      promptBytes: Buffer.byteLength(args.prompt, "utf8"),
+      contextMinimumTokens:
+        args.options.contextRequirement?.minimumTokens ?? null,
+      contextProfileJson:
+        args.options.contextProfile === null ||
+        args.options.contextProfile === undefined
+          ? null
+          : JSON.stringify(args.options.contextProfile),
+      observedContextUsedTokens: args.replay?.observedContextUsedTokens ?? null,
+      observedModelContextWindow:
+        args.replay?.observedModelContextWindow ?? null,
+      contextUsageEstimated:
+        args.replay?.contextUsageEstimated === undefined ||
+        args.replay.contextUsageEstimated === null
+          ? null
+          : args.replay.contextUsageEstimated
+            ? 1
+            : 0,
       resultJson:
         args.replay === null ? null : JSON.stringify(args.replay.result),
       replayedFromCallId: args.replay?.callId ?? null,
@@ -611,6 +1530,54 @@ export function startCall(
       finishedAt: args.replay === null ? null : now,
     });
     return getCall(db, args.runId, args.callIndex)!;
+  })();
+}
+
+export function recordCallContextUsage(
+  db: Db,
+  callId: string,
+  usage: {
+    usedTokens: number | null;
+    modelContextWindow: number | null;
+    estimated: boolean;
+  },
+): void {
+  if (usage.usedTokens === null && usage.modelContextWindow === null) return;
+  db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT observed_context_used_tokens AS usedTokens,
+                context_usage_estimated AS estimated
+         FROM workflow_calls WHERE id = ?`,
+      )
+      .get(callId) as
+      | { usedTokens: number | null; estimated: 0 | 1 | null }
+      | undefined;
+    if (current === undefined) return;
+    const currentTokens = current.usedTokens ?? -1;
+    const nextTokens = usage.usedTokens ?? -1;
+    if (nextTokens < currentTokens) return;
+    if (
+      nextTokens === currentTokens &&
+      current.estimated === 0 &&
+      usage.estimated
+    ) {
+      return;
+    }
+    db.prepare(
+      `UPDATE workflow_calls SET
+         observed_context_used_tokens = @usedTokens,
+         observed_model_context_window = @modelContextWindow,
+         context_usage_estimated = @estimated,
+         last_activity_at = @now
+       WHERE id = @callId`,
+    ).run({
+      callId,
+      usedTokens: usage.usedTokens,
+      modelContextWindow: usage.modelContextWindow,
+      estimated: usage.estimated ? 1 : 0,
+      now: Date.now(),
+    });
   })();
 }
 
@@ -713,19 +1680,32 @@ export function settleCall(
     result: JsonValue | null;
     error: string | null;
   },
-): void {
-  db.prepare(
-    `UPDATE workflow_calls SET status = @status,
-       result_json = COALESCE(result_json, @resultJson), error = @error,
-       finished_at = @now WHERE id = @id AND status IN ('queued', 'running')`,
-  ).run({
-    id: args.id,
-    status: args.status,
-    resultJson:
-      args.status === "succeeded" ? JSON.stringify(args.result) : null,
-    error: args.error,
-    now: Date.now(),
-  });
+): string | null {
+  return db.transaction(() => {
+    const call = db
+      .prepare(`SELECT run_id AS runId FROM workflow_calls WHERE id = ?`)
+      .get(args.id) as { runId: string } | undefined;
+    if (call === undefined) return null;
+    const now = Date.now();
+    const changed = db
+      .prepare(
+        `UPDATE workflow_calls SET status = @status,
+         result_json = COALESCE(result_json, @resultJson), error = @error,
+         finished_at = @now
+         WHERE id = @id AND status IN ('queued', 'running')`,
+      )
+      .run({
+        id: args.id,
+        status: args.status,
+        resultJson:
+          args.status === "succeeded" ? JSON.stringify(args.result) : null,
+        error: args.error,
+        now,
+      }).changes;
+    if (changed === 0) return null;
+    interruptWorkflowCheckpoints(db, { sourceCallId: args.id, now });
+    return call.runId;
+  })();
 }
 
 function equalJsonValues(left: JsonValue, right: JsonValue): boolean {
@@ -766,6 +1746,7 @@ export function cancelRun(db: Db, id: string): boolean {
       `UPDATE workflow_calls SET status = 'cancelled', error = 'Cancelled', finished_at = ?
        WHERE run_id = ? AND status IN ('queued', 'running')`,
     ).run(now, id);
+    if (changed === 1) interruptWorkflowCheckpoints(db, { runId: id, now });
     return changed === 1;
   })();
 }

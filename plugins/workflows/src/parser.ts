@@ -9,6 +9,8 @@ import type { JsonObject, JsonValue, ParsedWorkflow } from "./types.js";
 import {
   assertValidJsonSchema,
   assertValidWorkflowSourceText,
+  parseContextProfile,
+  parseContextRequirement,
 } from "./validation.js";
 import { canonicalizeJson } from "./cache.js";
 
@@ -130,6 +132,8 @@ function inspectAgentOptions(
     "reasoningLevel",
     "outputSchema",
     "schema",
+    "contextRequirement",
+    "contextProfile",
     "title",
     "label",
     "phase",
@@ -215,6 +219,29 @@ function inspectAgentOptions(
     throw new Error(
       "agent options.outputSchema and agent options.schema must be structurally identical when both are provided",
     );
+  }
+  const contextRequirement = properties.get("contextRequirement");
+  if (contextRequirement !== undefined) {
+    let literal: JsonValue | undefined;
+    try {
+      literal = literalValue(
+        contextRequirement,
+        "agent options.contextRequirement",
+      );
+    } catch {
+      literal = undefined;
+    }
+    if (literal !== undefined) parseContextRequirement(literal);
+  }
+  const contextProfile = properties.get("contextProfile");
+  if (contextProfile !== undefined) {
+    let literal: JsonValue | undefined;
+    try {
+      literal = literalValue(contextProfile, "agent options.contextProfile");
+    } catch {
+      literal = undefined;
+    }
+    if (literal !== undefined) parseContextProfile(literal);
   }
   for (const key of ["title", "label", "phase"] as const) {
     const expression = properties.get(key);

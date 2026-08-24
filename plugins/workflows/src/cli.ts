@@ -11,7 +11,10 @@ import type {
 } from "./service.js";
 import type { WorkflowRunRow } from "./data.js";
 import type { WorkflowSourceInput } from "./source-resolution.js";
-import { parseStoredWorkflowSettings } from "./settings.js";
+import {
+  parseStoredWorkflowSettings,
+  workflowRunSettingsSnapshot,
+} from "./settings.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
 
 const STATUS_INLINE_RESULT_MAX_BYTES = 8 * 1024;
@@ -229,6 +232,10 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     id: run.id,
     projectId: run.projectId,
     originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     environmentId: run.environmentId,
     originProvider: originProvider.value,
     originProviderTruncated: originProvider.truncated,
@@ -242,8 +249,10 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     nameTruncated: name.truncated,
     sourceHash: run.sourceHash,
     sourceBytes: new TextEncoder().encode(run.source).byteLength,
-    settings: parseStoredWorkflowSettings(
-      parseStoredJson(run.settingsJson, "workflow settings"),
+    settings: workflowRunSettingsSnapshot(
+      parseStoredWorkflowSettings(
+        parseStoredJson(run.settingsJson, "workflow settings"),
+      ),
     ),
     status: run.status,
     phase: phase.value,
@@ -280,6 +289,10 @@ function listRunSummary(run: WorkflowRunRow) {
   return {
     id: run.id,
     originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     environmentId: run.environmentId,
     name: name.value,
     nameTruncated: name.truncated,
@@ -305,8 +318,10 @@ function runLogRecord(run: WorkflowRunRow, exportedAt: number) {
     exportedAt,
     ...fields,
     args: parseStoredJson(argsJson, "workflow args"),
-    settings: parseStoredWorkflowSettings(
-      parseStoredJson(settingsJson, "workflow settings"),
+    settings: workflowRunSettingsSnapshot(
+      parseStoredWorkflowSettings(
+        parseStoredJson(settingsJson, "workflow settings"),
+      ),
     ),
     resultAvailable: resultJson !== null,
     result:
@@ -322,6 +337,11 @@ function runReferenceLogRecord(run: WorkflowRunRow, exportedAt: number) {
     logVersion: 1,
     exportedAt,
     id: run.id,
+    originThreadId: run.originThreadId,
+    presentationThreadId: run.presentationThreadId,
+    parentRunId: run.parentRunId,
+    rootRunId: run.rootRunId,
+    campaignId: run.campaignId,
     name: run.name,
     status: run.status,
     phase: run.phase,
@@ -358,7 +378,7 @@ export function registerWorkflowCli(
         name: "run",
         summary: "Start a workflow and return immediately",
         usage:
-          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>]",
+          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]",
       },
       {
         name: "validate",
@@ -370,6 +390,11 @@ export function registerWorkflowCli(
         name: "status",
         summary: "Show a compact workflow run summary",
         usage: "bb workflows status <run-id>",
+      },
+      {
+        name: "details",
+        summary: "Show structured plan, implementation, and verification state",
+        usage: "bb workflows details <run-id>",
       },
       {
         name: "history",
@@ -387,6 +412,12 @@ export function registerWorkflowCli(
         summary: "Cancel a workflow run",
         usage: "bb workflows stop <run-id>",
       },
+      {
+        name: "approve-amendment",
+        summary: "Approve a declared change to a campaign acceptance contract",
+        usage:
+          "bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>",
+      },
     ],
     async run(argv, ctx) {
       try {
@@ -399,6 +430,8 @@ export function registerWorkflowCli(
             "--name",
             "--args",
             "--resume",
+            "--present-in",
+            "--campaign",
           ]);
           const context = requireContext(ctx);
           const prepared = await prepareWorkflowSource(
@@ -409,11 +442,18 @@ export function registerWorkflowCli(
           const run = await service.start({
             projectId: context.projectId,
             originThreadId: context.threadId,
+            presentationThreadId: options.get("--present-in") ?? null,
+            campaignId: options.get("--campaign") ?? null,
             source: prepared.source,
             args: parseJsonOption(options.get("--args")),
             resumedFromRunId: options.get("--resume") ?? null,
           });
-          return success({ runId: run.id, name: run.name, status: run.status });
+          return success({
+            runId: run.id,
+            campaignId: run.campaignId,
+            name: run.name,
+            status: run.status,
+          });
         }
         if (command === "validate") {
           const { options } = parseArguments(argv.slice(1), [
@@ -442,6 +482,48 @@ export function registerWorkflowCli(
             throw new Error(`Unknown workflow run ${runId}`);
           }
           return success(statusSummary(page));
+        }
+        if (command === "details") {
+          const { positionals } = parseArguments(argv.slice(1), [], "details");
+          const context = requireContext(ctx);
+          const runId = positionals[0]!;
+          const run = service.get(runId);
+          if (run === null || run.projectId !== context.projectId) {
+            throw new Error(`Unknown workflow run ${runId}`);
+          }
+          const campaign = service.inspectCampaign(runId);
+          return success({
+            runId,
+            campaignId: run.campaignId,
+            // The campaign's own outcome ledger, so an orchestrator resuming
+            // work can read what it has actually closed instead of restating
+            // its plan back to itself.
+            acceptanceCoverage: campaign?.coverage ?? null,
+            acceptanceCoverageTruncated: campaign?.coverageTruncated ?? false,
+            checkpoints: service.inspectCheckpoints(runId).map((entry) => ({
+              id: entry.id,
+              checkpoint: entry.checkpoint,
+              phase: entry.phase,
+              childThreadId: entry.childThreadId,
+              createdAt: entry.createdAt,
+              updatedAt: entry.updatedAt,
+            })),
+            campaignRuns:
+              campaign?.runs.map((entry) => ({
+                runId: entry.run.id,
+                name: entry.run.name,
+                status: entry.run.status,
+                checkpointsOmitted: entry.checkpointsOmitted,
+                checkpoints: entry.checkpoints.map((checkpoint) => ({
+                  id: checkpoint.id,
+                  checkpoint: checkpoint.checkpoint,
+                  phase: checkpoint.phase,
+                  childThreadId: checkpoint.childThreadId,
+                  createdAt: checkpoint.createdAt,
+                  updatedAt: checkpoint.updatedAt,
+                })),
+              })) ?? [],
+          });
         }
         if (command === "history") {
           const { options, positionals } = parseArguments(
@@ -516,8 +598,35 @@ export function registerWorkflowCli(
           }
           return success({ runId, stopped: await service.stop(runId) });
         }
+        if (command === "approve-amendment") {
+          const { options, positionals } = parseArguments(
+            argv.slice(1),
+            ["--acceptance"],
+            "approve-amendment",
+          );
+          const acceptanceId = options.get("--acceptance");
+          if (acceptanceId === undefined) {
+            throw new Error("approve-amendment requires --acceptance");
+          }
+          const context = requireContext(ctx);
+          const runId = positionals[0]!;
+          const run = service.get(runId);
+          if (run === null || run.projectId !== context.projectId) {
+            throw new Error(`Unknown workflow run ${runId}`);
+          }
+          // The approving thread is recorded, not asserted by the caller: this
+          // is the provenance that replaces a self-attested amendment reason.
+          return success(
+            service.approveAmendment({
+              runId,
+              acceptanceId,
+              approvedByThreadId: context.threadId,
+              surface: "cli",
+            }),
+          );
+        }
         return failure(
-          "Usage: bb workflows <run|validate|status|history|list|stop> [options]",
+          "Usage: bb workflows <run|validate|status|details|history|list|stop|approve-amendment> [options]",
         );
       } catch (error) {
         return failure(error instanceof Error ? error.message : String(error));

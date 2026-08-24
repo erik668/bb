@@ -1,0 +1,1 @@
+- [workflow-acceptance-coverage](CHECKPOINT-workflow-acceptance-coverage.md) — campaign acceptance contract + derived coverage in the bb workflows plugin; branch `feature/workflow-acceptance-coverage`, verified, uncommitted.

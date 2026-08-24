@@ -28,8 +28,8 @@ describe("workflow QuickJS runtime", () => {
     });
 
     expect(calls).toEqual([
-      'first:{"selection":null,"outputSchema":null,"title":"A","phase":null}',
-      'second:{"selection":null,"outputSchema":null,"title":"B","phase":null}',
+      'first:{"selection":null,"outputSchema":null,"contextRequirement":null,"contextProfile":null,"title":"A","phase":null}',
+      'second:{"selection":null,"outputSchema":null,"contextRequirement":null,"contextProfile":null,"title":"B","phase":null}',
     ]);
     expect(result).toEqual({
       values: [{ prompt: "first" }, { prompt: "second" }],
@@ -61,6 +61,77 @@ describe("workflow QuickJS runtime", () => {
     });
     expect(log).toHaveBeenCalledWith("started");
     expect(phase).toHaveBeenCalledWith("Inspect");
+  });
+
+  it("emits structured checkpoints with the current phase", async () => {
+    const checkpoint = vi.fn();
+    const result = await executeWorkflowScript({
+      args: null,
+      body: `
+        phase("Plan");
+        checkpoint({
+          kind: "plan",
+          id: "selected-plan",
+          title: "Selected plan",
+          status: "succeeded",
+          summary: "Three work items",
+          detail: null,
+          items: [],
+        });
+        return "done";
+      `,
+      capabilities: {
+        agent: async () => null,
+        checkpoint,
+        log: vi.fn(),
+        phase: vi.fn(),
+      } as WorkflowCapabilities & {
+        checkpoint(value: unknown, phase: string | null): void;
+      },
+    });
+
+    expect(result).toBe("done");
+    expect(checkpoint).toHaveBeenCalledWith(
+      {
+        kind: "plan",
+        id: "selected-plan",
+        title: "Selected plan",
+        status: "succeeded",
+        summary: "Three work items",
+        detail: null,
+        items: [],
+      },
+      "Plan",
+    );
+  });
+
+  it("rejects a checkpoint without a value", async () => {
+    await expect(
+      executeWorkflowScript({
+        args: null,
+        body: "checkpoint(); return null;",
+        capabilities: {
+          agent: async () => null,
+          checkpoint: vi.fn(),
+          log: vi.fn(),
+          phase: vi.fn(),
+        },
+      }),
+    ).rejects.toThrow("checkpoint value is required");
+  });
+
+  it("rejects checkpoint calls when the host has no checkpoint capability", async () => {
+    await expect(
+      executeWorkflowScript({
+        args: null,
+        body: "checkpoint({ id: 'selected-plan' }); return null;",
+        capabilities: {
+          agent: async () => null,
+          log: vi.fn(),
+          phase: vi.fn(),
+        },
+      }),
+    ).rejects.toThrow("checkpoint capability is unavailable");
   });
 
   it("canonicalizes labels and deterministically inherits the current phase", async () => {
@@ -396,25 +467,45 @@ describe("workflow QuickJS runtime", () => {
     expect(calls).toEqual(["first", "second"]);
   });
 
-  it("settles every parallel thunk and maps throws and rejections to null", async () => {
-    const result = await executeWorkflowScript({
+  it("settles every parallel thunk and returns null for a failed task", async () => {
+    const calls: string[] = [];
+    let releaseLast = (): void => undefined;
+    const last = new Promise<string>((resolve) => {
+      releaseLast = () => resolve("last");
+    });
+    const execution = executeWorkflowScript({
       args: null,
-      body: `
-        const events = [];
-        const values = await parallel([
-          () => { events.push("throw"); throw new Error("boom"); },
-          async () => { events.push("reject"); await Promise.resolve(); throw new Error("nope"); },
-          async () => { await Promise.resolve(); events.push("finish"); return 3; },
-        ]);
-        return { events, values };
-      `,
-      capabilities: { agent: async () => null, log: vi.fn(), phase: vi.fn() },
+      body: `return await parallel([
+        () => agent("fails"),
+        () => agent("succeeds"),
+        () => agent("last"),
+      ]);`,
+      capabilities: {
+        agent(prompt) {
+          calls.push(prompt);
+          if (prompt === "fails") return Promise.reject(new Error("boom"));
+          if (prompt === "last") return last;
+          return Promise.resolve("ok");
+        },
+        log: vi.fn(),
+        phase: vi.fn(),
+      },
     });
 
-    expect(result).toEqual({
-      events: ["throw", "reject", "finish"],
-      values: [null, null, 3],
-    });
+    await vi.waitFor(() =>
+      expect(calls).toEqual(["fails", "succeeds", "last"]),
+    );
+    let settled = false;
+    void execution
+      .finally(() => {
+        settled = true;
+      })
+      .catch(() => undefined);
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseLast();
+    await expect(execution).resolves.toEqual([null, "ok", "last"]);
   });
 
   it("starts parallel agent calls in array order through the FIFO semaphore", async () => {

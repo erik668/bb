@@ -10,8 +10,13 @@ import {
 } from "./settings.js";
 import type { JsonValue } from "./types.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
+import { checkpointToolInputSchema } from "./workflow-checkpoint.js";
+import { workflowCampaignIdSchema } from "./workflow-campaign.js";
 import { workflowUiRpcContract } from "./ui-contract.js";
-import { buildWorkflowRunView } from "./ui-view.js";
+import {
+  buildWorkflowCheckpointView,
+  buildWorkflowRunView,
+} from "./ui-view.js";
 
 const sourceInputFields = {
   script: z
@@ -63,6 +68,12 @@ const runInputSchema = z
         "Run ID of a prior BB workflow to resume from. Calls in the causally safe, longest unchanged prefix return cached results; the first edited, new, or concurrent call and everything after it run live. The prior run must be terminal and from the same project and environment.",
       )
       .default(null),
+    campaignId: workflowCampaignIdSchema
+      .nullable()
+      .describe(
+        "Stable build-campaign ID. Reuse it when a later top-level run continues the same human-visible build story. Child and resumed runs inherit it and reject conflicts.",
+      )
+      .default(null),
   })
   .strict();
 const resultInputSchema = z
@@ -109,31 +120,123 @@ export default async function plugin(bb: BbPluginApi) {
         ? service.inspectLatestForThread(threadId)
         : service.inspect(runId);
     if (run === null) return null;
-    if (run.originThreadId !== threadId) {
+    if (
+      run.originThreadId !== threadId &&
+      run.presentationThreadId !== threadId
+    ) {
       throw new Error("This workflow run is not available in this thread");
     }
     return run;
   }
 
+  function campaignRepresentative(
+    run: ReturnType<typeof workflowForThread>,
+    threadId: string,
+  ) {
+    if (run === null) return null;
+    if (run.presentationThreadId !== threadId) return run;
+    const campaign = service.inspectCampaign(run.id);
+    if (campaign === null) return run;
+    const active = campaign.runs.filter(
+      (entry) =>
+        entry.run.status === "queued" || entry.run.status === "running",
+    );
+    const representative = (active.at(-1) ?? campaign.runs.at(-1))?.run;
+    return representative === undefined
+      ? run
+      : (service.inspect(representative.id) ?? run);
+  }
+
   bb.rpc.register(workflowUiRpcContract, {
     workflowActiveRuns({ threadId }) {
+      const seenCampaigns = new Set<string>();
       return {
         runs: service
           .inspectActiveForThread(threadId)
+          .filter((run) => {
+            if (seenCampaigns.has(run.campaignId)) return false;
+            seenCampaigns.add(run.campaignId);
+            return true;
+          })
           .map(buildWorkflowRunView),
       };
     },
     workflowRunView({ threadId, runId }) {
-      const run = workflowForThread(threadId, runId);
+      const run = campaignRepresentative(
+        workflowForThread(threadId, runId),
+        threadId,
+      );
       return { run: run === null ? null : buildWorkflowRunView(run) };
+    },
+    workflowRunDetails({ threadId, runId }) {
+      const run = workflowForThread(threadId, runId);
+      const campaign =
+        run !== null && run.presentationThreadId === threadId
+          ? service.inspectCampaign(run.id)
+          : null;
+      return {
+        checkpoints:
+          run === null
+            ? []
+            : service
+                .inspectCheckpoints(run.id)
+                .map(buildWorkflowCheckpointView),
+        campaign:
+          campaign === null
+            ? null
+            : {
+                id: campaign.campaignId,
+                detailedRunLimit: campaign.detailedRunLimit,
+                omittedCheckpointRunCount: campaign.omittedCheckpointRunCount,
+                coverage: campaign.coverage,
+                coverageTruncated: campaign.coverageTruncated,
+                runs: campaign.runs.map((entry) => ({
+                  run: entry.run,
+                  checkpoints: entry.checkpoints.map(
+                    buildWorkflowCheckpointView,
+                  ),
+                  checkpointsOmitted: entry.checkpointsOmitted,
+                })),
+              },
+      };
     },
     async workflowStopRun({ threadId, runId }) {
       const run = workflowForThread(threadId, runId);
       if (run === null) throw new Error(`Unknown workflow run ${runId}`);
+      if (run.originThreadId !== threadId) {
+        throw new Error(
+          "Only the workflow origin thread can stop this workflow run",
+        );
+      }
       const stopped = await service.stop(run.id);
       const latest = workflowForThread(threadId, run.id);
       if (latest === null) throw new Error(`Unknown workflow run ${runId}`);
       return { stopped, run: buildWorkflowRunView(latest) };
+    },
+    workflowApproveAmendment({ threadId, runId, acceptanceId }) {
+      const run = workflowForThread(threadId, runId);
+      if (run === null) throw new Error(`Unknown workflow run ${runId}`);
+      // Same boundary as stopping: the run's own thread is the human side of
+      // this campaign, and the panel only offers the control there.
+      if (run.originThreadId !== threadId) {
+        throw new Error(
+          "Only the workflow origin thread can approve this amendment",
+        );
+      }
+      // Projected, not spread: the service also returns the canonical body it
+      // bound to, and this contract's output is strict. The panel reads the
+      // body from the coverage it refetches.
+      const approval = service.approveAmendment({
+        runId: run.id,
+        acceptanceId,
+        approvedByThreadId: threadId,
+        surface: "panel",
+      });
+      return {
+        acceptanceId: approval.acceptanceId,
+        supersedes: approval.supersedes,
+        newlyApproved: approval.newlyApproved,
+      };
     },
   });
 
@@ -155,12 +258,14 @@ export default async function plugin(bb: BbPluginApi) {
           source: prepared.source,
           args: toJsonValue(input.args, "args"),
           resumedFromRunId: input.resumeRunId,
+          campaignId: input.campaignId,
         });
         const previewDirective = `::workflow-preview{run="${run.id}"}`;
         return jsonResult({
           runId: run.id,
           status: run.status,
           name: run.name,
+          campaignId: run.campaignId,
           previewDirective,
         });
       } catch (error) {
@@ -168,6 +273,18 @@ export default async function plugin(bb: BbPluginApi) {
           error instanceof Error ? error.message : String(error),
         );
       }
+    },
+  });
+
+  bb.agents.registerTool({
+    name: "bb_workflow_checkpoint",
+    description:
+      "Report durable structured progress for the active workflow call. Use stable checkpoint IDs so later calls update the same plan, work item, verification, or transition row. Report only state the worker actually knows; do not infer test results or changed files.",
+    parameters: checkpointToolInputSchema,
+    execute({ checkpoint }, ctx) {
+      const result = service.submitCheckpoint(ctx.threadId, checkpoint);
+      if (result.ok) return jsonResult({ accepted: true });
+      return errorResult(result.error);
     },
   });
 
@@ -205,15 +322,19 @@ export default async function plugin(bb: BbPluginApi) {
     const worker = service.agentConfiguration(context.thread.id);
     if (worker !== null) {
       return {
-        tools:
-          worker.terminal || worker.resultParameters === null
-            ? []
-            : [
-                {
-                  name: "bb_workflow_result",
-                  parameters: worker.resultParameters,
-                },
-              ],
+        tools: worker.terminal
+          ? []
+          : [
+              "bb_workflow_checkpoint",
+              ...(worker.resultParameters === null
+                ? []
+                : [
+                    {
+                      name: "bb_workflow_result",
+                      parameters: worker.resultParameters,
+                    },
+                  ]),
+            ],
         skills: [],
         ...(worker.instructions === null
           ? {}
@@ -222,10 +343,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (context.origin.pluginId === bb.pluginId) {
       return {
-        tools: ["bb_workflow_result"],
+        tools: ["bb_workflow_checkpoint", "bb_workflow_result"],
         skills: [],
         instructions:
-          "You are starting as a BB workflow worker. Follow the workflow prompt. Your final text IS the return value, not a human-facing message. If the prompt requests structured output, call bb_workflow_result exactly once at the end of your response.",
+          "You are starting as a BB workflow worker. Follow the workflow prompt. When the prompt assigns stable plan, work-item, verification, or transition IDs, report truthful progress with bb_workflow_checkpoint. Your final text IS the return value, not a human-facing message. If the prompt requests structured output, call bb_workflow_result exactly once at the end of your response.",
       };
     }
     return {

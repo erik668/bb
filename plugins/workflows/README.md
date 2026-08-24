@@ -7,9 +7,10 @@ inside QuickJS while delegating actual reasoning to ordinary BB threads.
 The author-facing native surface is intentionally one tool:
 `bb_workflow_run`. Validation, inspection, listing, and cancellation use the
 `bb workflows` CLI documented below. Provider and model discovery uses BB's
-built-in `bb provider` commands. Structured workers separately
-receive only `bb_workflow_result`; ordinary authoring agents never receive that
-worker tool.
+built-in `bb provider` commands. Workflow workers separately receive
+`bb_workflow_checkpoint` for durable plan, work-item, verification, and transition
+progress; acceptance contracts are published by the orchestrator. Structured workers additionally receive `bb_workflow_result`;
+ordinary authoring agents never receive either worker tool.
 
 ## Progress UI
 
@@ -26,23 +27,65 @@ shows run state, declared phases, the active phase's workers, elapsed time, and
 an action that opens the full workflow inspector in the thread's right panel.
 While a thread has queued or running workflows, the plugin also contributes a
 status card above that thread's composer. It lists every active run with its
-current phase and agent-call progress and lets the user stop a run in place;
-the card disappears when the thread has no active runs.
+current phase and agent-call progress and opens the full inspector; the card
+disappears when the thread has no active runs.
 The panel shows every phase and worker, links attached workers to their BB
-threads, reports cache and result state, and can stop an active run. It may also
-be opened directly from the thread panel action, in which case it shows that
-thread's latest run.
+threads, and progressively discloses the selected plan, per-ticket or per-work
+item implementation state, changed files, blockers, exact verification
+commands, and pass/fail/skip counts when the workflow publishes them. It also
+renders dependency-aware work and gate nodes as a build DAG and keeps a
+structured transition log explaining repair, redesign, human-review, and
+promotion decisions. Top-level runs sharing a campaign ID appear as one
+chronological build story without losing their individual run IDs. It also
+reports cache and result state. In the origin thread it can stop an active run;
+in a presentation thread it is read-only and links to the origin for control.
+It may be opened directly from the thread panel action, in which case it shows
+that thread's latest run.
+
+Execution ownership and human presentation are tracked separately. The origin
+thread still owns the environment, permissions, and completion notification;
+the presentation thread receives the active card, realtime updates, and
+inspector access. A visible top-level launch presents in its origin thread. A
+workflow launched from a hidden worker inherits its parent run's presentation
+thread and root run, or otherwise falls back to its nearest visible ancestor.
+CLI launches can override the presentation target with `--present-in
+<thread-id>`. Independent continuation runs join a build story with `--campaign
+<campaign-id>` or the `campaignId` field on `bb_workflow_run`; causal children
+and resumed runs inherit it and reject conflicts. A campaign is restricted to
+one project, environment, and presentation thread and at most 100 runs.
+`status`, `list`, and
+`history` expose `originThreadId`,
+`presentationThreadId`, `parentRunId`, `rootRunId`, and `campaignId` for
+provenance. A
+presentation target must be a visible thread in the same project and
+environment and must be the origin or one of its ancestors. It must also be
+available from the same BB server; this does not federate workflow state across
+servers. The inspector and `details` command always list all campaign runs, but
+hydrate checkpoint ledgers for only the selected run plus the newest runs, up
+to four ledgers total. The selected ledger stays in the primary checkpoint
+field instead of being duplicated in the campaign aggregate. Older runs are
+marked `checkpointsOmitted`; this caps the combined details response at 16 MiB
+while keeping its full chronology visible. Both surfaces additionally report
+`acceptanceCoverage`, derived over the campaign's whole checkpoint ledger rather
+than the hydrated subset: per-criterion `closed`/`in-flight`/`uncovered` state,
+succeeded work items that advance no stated outcome, the approved amendment
+chain with each reason and who approved it, amendments still awaiting approval,
+acceptance checkpoints whose body diverges without
+declaring an amendment, links naming no declared criterion, and whether work is
+landing while nothing has closed. It is `null` when the campaign declared no acceptance contract, and
+`acceptanceCoverageTruncated` reports a ledger too large to read in full.
 
 Both surfaces are implemented by the plugin app with `@bb/shared-ui` controls
 and BB theme tokens. Directive attributes and restored panel parameters are
 treated as untrusted input. The backend additionally binds every requested run
-to the directive message or panel thread, so a run ID from another thread
-cannot be inspected or stopped through these UI RPCs. The service publishes a
-`workflow-runs` realtime signal for the origin thread when a run starts, is
-claimed, settles, or is cancelled, so the composer status surface learns about
-new runs without a standing poll; it and the active message cards poll once
-per second only while a run is active and the page is visible, refresh once
-when the page or the realtime connection comes back, and stop when terminal.
+to the directive message or panel thread, so a run ID from an unrelated thread
+cannot be inspected through these UI RPCs. Only the origin thread may stop a
+run or approve an amendment from the panel. The service publishes a deduplicated `workflow-runs` realtime signal for
+the origin and presentation threads when a run starts, is claimed, settles, or
+is cancelled, so the composer status surface learns about new runs without a
+standing poll; it and the active message cards poll once per second only while
+a run is active and the page is visible, refresh once when the page or the
+realtime connection comes back, and stop when terminal.
 
 The security boundary is the QuickJS context: workflow code has JSON data and
 explicit orchestration capabilities, but no Node, filesystem, shell, network,
@@ -67,6 +110,65 @@ fields and malformed entries are rejected. Declaration order is preserved.
 `phase(title)` changes the current phase, and later agent calls inherit it.
 An agent-level `phase` applies only to that call and does not change the current
 phase.
+
+`checkpoint(value)` durably upserts structured progress by `value.id` and
+inherits the current phase. Supported checkpoint kinds are `acceptance`, `plan`,
+`work-item`, `verification`, and `transition`. An `acceptance` checkpoint states
+the campaign's outcomes — stable criterion IDs with a statement, a `provenBy` of
+`command`, `artifact`, or `human`, and optional detail — so plans can be
+measured against something they did not author. Plan items link to it through
+`satisfies` and verifications through `acceptanceId`. Acceptance is the one kind
+that cannot be rewritten in place: once a campaign has published a contract, a
+write that changes its criteria body is refused campaign-wide unless it arrives
+as a new checkpoint ID carrying `amends: { supersedes, reason }`. Restating the
+same body is always accepted, criterion order is not part of the contract, and
+`detail` is. Declaring an amendment is not authorizing one: coverage keeps
+measuring the approved contract and lists the change under `pendingAmendments`
+until a person approves it through the workflow panel or `bb workflows
+approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>`. The plugin
+registers no approval tool, but selecting a plugin's tools does not take the
+host's shell away from a worker, so the CLI is reachable from inside a running
+workflow; the service refuses an approval issued from a workflow worker thread,
+which is what keeps a run from authorizing its own scope change. Each approval
+records the
+approving thread and the surface it came from and binds to the canonical
+criteria body it was issued against, so republishing different criteria under an
+already-approved checkpoint ID needs a new approval. Coverage measures the head
+of the approved amendment chain and re-derives that chain on read, so a contract
+changed by writing to the database directly is reported rather than adopted.
+An approved narrowing does not by itself open a gate whose `requiresClosed`
+still names the dropped criterion; the plan has to be restated too, so both
+changes are on the record. A plan that drops a gate's open requirements while
+the approved contract still declares them is refused, so the gate is no easier
+to retire than the contract behind it; `requiresClosed: []` is refused as
+well, since a gate that gates nothing still reads as one. Plan and work-item checkpoints may publish
+bounded `dependsOn` edges; plan-local dependencies must reference known items
+and remain acyclic. Work items may be typed as work or gate nodes. A gate item
+may declare `requiresClosed`, the criteria it refuses to pass while any of them
+is still open: publishing that gate as `succeeded` is refused campaign-wide
+until each one is closed by a succeeded verification, and a required criterion
+no contract declares can never close, so it holds the gate shut. Reporting the
+gate as `failed`, `blocked`, or still running is always accepted. Coverage
+reports the same thing as `openGates` so a campaign can see what it is waiting
+on without tripping the guard. Transitions
+record the actor, source and target states, affected work items, rationale, and
+evidence references. Reuse stable IDs to update state instead of appending prose;
+the latest value stays inspectable after the run finishes. Workers can publish
+the same contract through `bb_workflow_checkpoint`, and their rows retain a
+link to the worker thread. Checkpoints are accepted only while the run and, for
+worker updates, the source call are active. A worker may update only rows it
+originally created; sibling workers cannot take over its stable IDs. The
+orchestrator may reconcile or terminalize any row, but no update may change a
+row's checkpoint kind. Plans carry bounded multiline
+`detail` on the plan and each item so the inspector can retain the complete
+human-reviewable route rather than only titles. Status is one of `pending`,
+`running`, `succeeded`, `failed`, `blocked`, `skipped`, or `interrupted`;
+unfinished rows become `interrupted` when their producer or run terminates.
+Each checkpoint is limited to 64 KiB/8,192 JSON nodes, and a run is limited to
+512 rows/4 MiB. Updating an existing stable ID remains allowed at the row cap
+when the aggregate byte cap is still satisfied. Admission reserves the small
+amount of byte headroom needed to terminalize `pending` and `running` rows as
+`interrupted`, so a valid ledger remains readable after termination.
 
 Workflow input follows the native Claude source modes: provide exactly one of
 an inline `script`, a workspace `scriptPath`, or a workflow `name`. The older
@@ -101,8 +203,9 @@ schema, and other deterministic failures are not retried. Retry attempts are
 persisted on the call so a plugin restart cannot reset the retry budget.
 
 Worker output is either the final assistant text or an Ajv-validated value
-submitted through `bb_workflow_result`. Structured workers receive two
-corrective retries after their initial invalid attempt.
+submitted through `bb_workflow_result`. All active workers can submit durable
+progress through `bb_workflow_checkpoint`; structured workers receive two
+corrective retries after their initial invalid result attempt.
 
 Workflow workers use BB's generic hidden-thread visibility. They remain
 out of sidebar organization without contributing unread/pending favicon
@@ -122,9 +225,11 @@ and phase/progress record. A child cannot invoke a grandchild.
 
 ## Settings
 
-Workflows declares six plugin settings:
+Workflows declares seven plugin settings:
 
 - `maxActiveRuns` limits runs dispatched at once across the plugin.
+- `maxGlobalConcurrentAgents` limits live agent calls across all workflow runs
+  in this BB host.
 - `maxConcurrentAgents` limits live agent calls within one run, including its
   child workflow.
 - `maxAgentCalls` bounds the shared parent/child call count.
@@ -133,10 +238,13 @@ Workflows declares six plugin settings:
   and retained resume ancestors.
 - `maxNotificationBytes` bounds completion messages by UTF-8 byte length.
 
-`maxActiveRuns` is live plugin-global dispatch policy: changing it immediately
-changes how many queued runs the worker may claim. The other five values are
-snapshotted into each new run and remain fixed for that run, including a resumed
-run. Saving settings does not require a plugin reload.
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global policy.
+Changing `maxActiveRuns` immediately changes how many queued runs the worker may
+claim. Increasing global agent admission releases queued calls; decreasing it
+does not cancel calls already active and blocks new admission until usage falls
+below the new limit. The other five values are snapshotted into each new run and
+remain fixed for that run, including a resumed run. Saving settings does not
+require a plugin reload.
 Terminal runs send an agent-only completion input back to the origin thread. It
 steers an active origin immediately or starts a turn when the origin is idle,
 while remaining absent from the user-facing timeline and search. Polling the
@@ -165,11 +273,14 @@ bb workflows validate --file .bb/workflows/review.js
 bb workflows validate --name review
 bb workflows run --script '<javascript>' --args '<json>'
 bb workflows run --file .bb/workflows/review.js --resume <run-id>
-bb workflows run --name review
+bb workflows run --name review --present-in <thread-id>
+bb workflows run --name review --campaign <campaign-id>
 bb workflows status <run-id>
+bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>
+bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json
 ```

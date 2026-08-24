@@ -99,8 +99,38 @@ describe("workflow parser", () => {
         model: "gpt-5.6-sol",
         reasoningLevel: "medium",
         outputSchema: { type: "object" },
+        contextRequirement: { minimumTokens: 1_000_000 },
+        contextProfile: {
+          requiredSkills: ["code-navigation"],
+          stopCondition: "definition found",
+        },
       });`),
     ).not.toThrow();
+  });
+
+  it.each([
+    ["{}", "contain only minimumTokens"],
+    ["{ minimumTokens: 1000, extra: true }", "contain only minimumTokens"],
+    ["{ minimumTokens: 0 }", "integer from 1 through 10000000"],
+    ["{ minimumTokens: 1.5 }", "integer from 1 through 10000000"],
+    ["{ minimumTokens: 10000001 }", "integer from 1 through 10000000"],
+  ])(
+    "rejects invalid literal context requirement %s",
+    (contextRequirement, message) => {
+      expect(() =>
+        parseWorkflowSource(`${META}\nreturn agent("x", {
+          contextRequirement: ${contextRequirement}
+        });`),
+      ).toThrow(message);
+    },
+  );
+
+  it("rejects an invalid literal phase context profile during inspection", () => {
+    expect(() =>
+      parseWorkflowSource(`${META}\nreturn agent("x", {
+        contextProfile: { requiredSkills: ["testing", "testing"] }
+      });`),
+    ).toThrow("requiredSkills must not contain duplicate values");
   });
 
   it("parses strict literal phase metadata in declaration order", () => {

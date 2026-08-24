@@ -130,6 +130,66 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
 - `phase(title: string)`: start a new phase; subsequent `agent()` calls are
   grouped under this title. An agent-level `phase` overrides only that call and
   does not change the current phase.
+- `checkpoint(value)`: durably upsert one structured `acceptance`, `plan`,
+  `work-item`, `verification`, or `transition` row by its stable `id`. The row inherits the current phase and
+  remains available after the run finishes. Use this for the selected plan,
+  exact implementation state, and actual verification commands/results; never
+  infer results or parse progress back out of labels and prose. A `plan` must
+  include nullable multiline `detail` on the plan and each item; use it to
+  preserve the complete bounded route, roles, dependencies, gates, and
+  verification strategy that a human needs to review. Status may be `pending`,
+  `running`, `succeeded`, `failed`, `blocked`, `skipped`, or `interrupted`.
+  Unfinished rows are terminalized as `interrupted` if their worker or run ends.
+  A worker may update only rows it originally created; sibling workers cannot
+  reuse those stable IDs. The orchestrator may reconcile or terminalize any
+  row, but no update may change a row's checkpoint kind. Byte-limit admission
+  reserves enough headroom for terminalizing unfinished rows.
+  Plan items and work items may declare bounded `dependsOn` edges; plan-local
+  edges must reference known items and be acyclic. Work items may use
+  `nodeType: "gate"` for visible promotion or human-decision gates. Use a
+  `transition` checkpoint for a small number of meaningful state changes, with
+  explicit actor, source/target state, affected work items, rationale, and
+  evidence references. Do not turn transitions into a noisy log.
+  Publish one `acceptance` checkpoint at the start of a campaign: the outcomes
+  that define done, each with a stable criterion `id`, a `statement`, a
+  `provenBy` of `command`, `artifact`, or `human`, and nullable `detail`. A plan
+  is re-authored every run; acceptance is the fixed reference those plans are
+  measured against, so keep it stable and let the plan move. Link work to it
+  with `satisfies` on plan items and `acceptanceId` on verifications. Only a
+  succeeded verification naming a criterion closes it, and a criterion the
+  newest plan no longer declares reverts to uncovered. Do not restate a
+  precondition as an outcome — a containment or bring-up gate is a
+  `nodeType: "gate"` work item that satisfies nothing.
+  A gate says what it is holding open by declaring `requiresClosed`: the
+  criterion IDs it refuses to pass while any of them is still open. Reporting
+  that gate as `succeeded` is then refused until each one is closed by a
+  succeeded verification — so declare gate requirements when a phase must not be
+  called done early, and report the gate as `blocked` rather than looking for a
+  way around it. A required criterion that no contract declares can never close
+  and holds the gate shut, so spell the IDs exactly.
+  The contract cannot be rewritten. Republishing the same acceptance ID with a
+  different criteria body is refused, and so is a different body under a new ID
+  that does not say what it replaces; restating the same body, in any criterion
+  order, is always accepted. When the campaign's stated outcomes genuinely
+  change, publish a **new** acceptance ID carrying
+  `amends: { supersedes, reason }` that names the acceptance checkpoint it
+  replaces. Publishing that amendment does not put it into effect: it is stored
+  and shown to the human with its reason, but coverage keeps measuring the
+  approved contract until a person approves the change from the workflow panel
+  or with `bb workflows approve-amendment`. That command is refused when it is
+  issued from a workflow worker thread, so running it yourself does not approve
+  anything and leaves a refusal on the record. Treat a scope change as a
+  request: say plainly in `reason` what you want to change and why, and keep
+  working against the approved contract meanwhile. Amending is not a way to make
+  a shortfall disappear: if the outcome is simply not met, leave the contract
+  alone and report a blocked work item. An approved narrowing also does not open
+  a gate whose `requiresClosed` still names the dropped criterion; restate the
+  plan without that requirement. Republishing the plan with a gate's
+  requirements dropped while they are still open is refused for the same
+  reason — report the gate as blocked instead. Enforcement is campaign-wide, so
+  a child run cannot publish its own contract either.
+  Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
+  run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass
   arrays/objects as actual JSON values, NOT as a JSON-encoded string. Use this to
   parameterize named workflows — for example, pass a research question, target
@@ -220,11 +280,14 @@ alias for BB's existing `outputSchema`. Either spelling remains supported.
 The canonical structured-result field is `outputSchema`. `phase`, `label`, and
 `title` are display-only.
 
-That worker receives only the `bb_workflow_result` plugin tool. It MUST call the
-tool exactly once at the end of its response with `{ value: ... }` to provide
-the structured output. BB validates the value with Ajv. The initial invalid
-attempt gets at most two corrective retries; a third invalid submission fails
-the call. There is no hidden normalization-agent pass.
+That worker receives `bb_workflow_checkpoint` and `bb_workflow_result`. When the
+prompt assigns stable plan, work-item, verification, or transition IDs, it can use the
+checkpoint tool to report truthful live state. Acceptance belongs to the
+campaign, not to a worker: publish it from the orchestrator. It MUST call the result tool
+exactly once at the end of its response with `{ value: ... }` to provide the
+structured output. BB validates the value with Ajv. The initial invalid attempt
+gets at most two corrective retries; a third invalid submission fails the call.
+There is no hidden normalization-agent pass.
 
 ## Pipeline by default
 
@@ -411,7 +474,20 @@ paths, missing workspace roots, non-UTF-8 files, and sources over 512 KiB are
 rejected. QuickJS receives source text only; it never gets filesystem access.
 Plugin-bundled workflow discovery is not supported.
 
-`bb_workflow_run` also accepts optional JSON `args` and optional `resumeRunId`.
+`bb_workflow_run` also accepts optional JSON `args`, optional `resumeRunId`,
+and optional `campaignId`. Reuse a campaign ID when an independent top-level
+run continues the same human-visible build story. Causal child and resumed
+runs inherit the campaign and reject conflicts. Campaign aggregation remains
+restricted to one project, environment, and presentation thread, with at most
+100 runs per campaign. Campaign details also report derived acceptance
+coverage over the campaign's full ledger — how many criteria are closed, in
+flight, and uncovered, which succeeded work items advance no stated outcome,
+whether work is landing while no outcome has closed, the declared amendment
+chain with each reason, and any acceptance checkpoint whose body diverges
+without declaring an amendment. Campaign details list every
+run but hydrate checkpoint
+ledgers for only the selected run plus the newest runs, up to four total;
+older entries are explicitly marked `checkpointsOmitted`.
 It returns a durable run ID immediately. Use the compact `bb workflows status`
 summary, paged `bb workflows history`, `bb workflows list`, and
 `bb workflows stop` afterward. Completion is sent back as an agent-only input:
@@ -419,6 +495,21 @@ it steers an active origin immediately or starts a turn when the origin is idle,
 without rendering a user-facing message. Delivery is duplicate-tolerant
 at-least-once because `threads.send` has no idempotency key. CLI status polling
 remains authoritative.
+
+Runs distinguish execution ownership from human presentation. The origin
+thread continues to own the environment, permissions, and completion
+notification. The presentation thread receives the active progress card,
+realtime updates, and inspector access. A workflow launched from a hidden
+worker inherits its parent run's presentation thread and root run, or otherwise
+uses its nearest visible ancestor. For a CLI launch, `--present-in <thread-id>`
+explicitly selects the presentation thread without moving execution. The
+bounded `status` and `list` output and both `history` run-record forms include
+`originThreadId`, `presentationThreadId`, `parentRunId`, and `rootRunId`. The
+presentation target must be a visible thread in the same project and
+environment, must be the origin or one of its ancestors, and must be available
+from the same BB server; workflows do not federate state across servers.
+Presentation-thread inspection is read-only; stop control remains with the
+origin thread.
 
 `list` also returns compact summaries; it is safe for discovery but is not a
 substitute for the redirected detailed history.
@@ -472,11 +563,14 @@ bb workflows validate --file .bb/workflows/review-change.js
 bb workflows validate --name review-change
 bb workflows run --script '<javascript>' --args '<json>'
 bb workflows run --file .bb/workflows/review-change.js --resume <run-id>
-bb workflows run --name review-change
+bb workflows run --name review-change --present-in <thread-id>
+bb workflows run --name review-change --campaign <campaign-id>
 bb workflows status <run-id>
+bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>
+bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json
 ```
@@ -495,8 +589,11 @@ so no parent notification applies; a hidden thread that does have a parent
 still reports its turns and blockers to it. Workflows does not create a
 temporary Workflow folder.
 
-`maxActiveRuns` is live plugin-global dispatch policy. Shared parent/child agent
-concurrency and call count, total run timeout, retention, and UTF-8
-completion-message size are snapshotted per run. `status` is bounded
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global policy.
+Increasing global agent admission releases queued calls; decreasing it does not
+cancel active calls and blocks new admission until usage falls below the new
+limit. Shared parent/child per-run agent concurrency and call count, total run
+timeout, retention, and UTF-8 completion-message size are snapshotted per run.
+`status` is bounded
 to compact progress and call counts. Paged JSONL `history` carries ordered
 call-level execution, cache, child-thread, repair, result, and error details.
