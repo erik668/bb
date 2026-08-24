@@ -1437,6 +1437,8 @@ function AcceptanceCoverageNotes({
   truncated: boolean;
 }) {
   const amendment = coverage.amendments.at(-1);
+  const onlyOpenGate =
+    coverage.openGates.length === 1 ? coverage.openGates[0] : undefined;
   const notes: { text: string; alert: boolean }[] = [
     // Loudest first. The write path refuses an undeclared contract change, so
     // seeing one means the ledger was written some other way and every count
@@ -1453,6 +1455,17 @@ function AcceptanceCoverageNotes({
           text: `${coverage.orphanWorkItemIds.length} work ${coverage.orphanWorkItemIds.length === 1 ? "item has" : "items have"} succeeded and no stated outcome has closed yet.`,
         }
       : null,
+    // Not an alarm: a gate held open is the guard working. It is placed above
+    // the amendment note because it is the thing a reader can act on now.
+    coverage.openGates.length === 0
+      ? null
+      : {
+          alert: false,
+          text:
+            onlyOpenGate === undefined
+              ? `${coverage.openGates.length} gates cannot pass until the criteria they require close: ${coverage.openGates.map((gate) => `${gate.gateId} (${gate.openCriterionIds.join(", ")})`).join("; ")}.`
+              : `Gate ${onlyOpenGate.gateId} cannot pass until ${onlyOpenGate.openCriterionIds.join(", ")} ${onlyOpenGate.openCriterionIds.length === 1 ? "closes" : "close"}.`,
+        },
     amendment === undefined
       ? null
       : {

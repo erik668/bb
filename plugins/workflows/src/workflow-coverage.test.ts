@@ -29,7 +29,11 @@ function acceptance(
 }
 
 function plan(
-  items: readonly { id: string; satisfies?: string[] }[],
+  items: readonly {
+    id: string;
+    satisfies?: string[];
+    requiresClosed?: string[];
+  }[],
   id = "plan",
 ): WorkflowCheckpoint {
   return {
@@ -46,6 +50,11 @@ function plan(
       detail: null,
       ticketRef: null,
       ...(item.satisfies === undefined ? {} : { satisfies: item.satisfies }),
+      // The schema only allows requirements on a gate, so a fixture that names
+      // them is a gate by construction.
+      ...(item.requiresClosed === undefined
+        ? {}
+        : { nodeType: "gate" as const, requiresClosed: item.requiresClosed }),
     })),
   };
 }
@@ -285,5 +294,55 @@ describe("acceptance coverage", () => {
       "another-typo",
     ]);
     expect(coverage?.criteria[0]?.state).toBe("uncovered");
+  });
+
+  it("reports a gate as open until every criterion it requires is closed", () => {
+    const checkpoints = [
+      acceptance(["cli", "grader"]),
+      plan([
+        { id: "cli-unit", satisfies: ["cli"] },
+        { id: "grader-unit", satisfies: ["grader"] },
+        { id: "phase-gate", requiresClosed: ["cli", "grader"] },
+      ]),
+      verification({ id: "verify-cli", acceptanceId: "cli" }),
+    ];
+
+    expect(deriveAcceptanceCoverage(checkpoints)?.openGates).toEqual([
+      { gateId: "phase-gate", openCriterionIds: ["grader"] },
+    ]);
+    expect(
+      deriveAcceptanceCoverage([
+        ...checkpoints,
+        verification({ id: "verify-grader", acceptanceId: "grader" }),
+      ])?.openGates,
+    ).toEqual([]);
+  });
+
+  it("keeps a gate open on a requirement no contract declares", () => {
+    // A criterion nobody declared can never close, so the gate stays shut and
+    // the typo is reported. Reading it as satisfied would let a misspelling
+    // silently disable the gate.
+    const coverage = deriveAcceptanceCoverage([
+      acceptance(["cli"]),
+      plan([{ id: "phase-gate", requiresClosed: ["cli", "clii"] }]),
+      verification({ id: "verify-cli", acceptanceId: "cli" }),
+    ]);
+
+    expect(coverage?.openGates).toEqual([
+      { gateId: "phase-gate", openCriterionIds: ["clii"] },
+    ]);
+    expect(coverage?.unknownReferences).toEqual(["clii"]);
+  });
+
+  it("forgets a gate the current plan dropped", () => {
+    // Coverage reports what is being built now. A gate only an older plan
+    // declared is not something this campaign is still stuck behind.
+    const coverage = deriveAcceptanceCoverage([
+      acceptance(["cli"]),
+      plan([{ id: "phase-gate", requiresClosed: ["cli"] }], "plan-1"),
+      plan([{ id: "cli-unit", satisfies: ["cli"] }], "plan-2"),
+    ]);
+
+    expect(coverage?.openGates).toEqual([]);
   });
 });

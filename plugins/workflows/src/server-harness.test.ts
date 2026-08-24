@@ -1149,6 +1149,101 @@ describe("workflows plugin", () => {
         ),
       ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
 
+      // A gate is only worth declaring if the tool path refuses to walk
+      // through it. The worker has exactly two tools, so this is the same
+      // surface a drifting orchestrator would have to use.
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "plan",
+              id: "gated-plan",
+              title: "Gated plan",
+              status: "succeeded",
+              summary: null,
+              detail: null,
+              items: [
+                {
+                  id: "phase-gate",
+                  title: "Phase gate",
+                  objective: "Hold the phase until the outcome closes.",
+                  detail: null,
+                  ticketRef: null,
+                  nodeType: "gate",
+                  requiresClosed: ["sealed-result"],
+                },
+              ],
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "work-item",
+              id: "phase-gate",
+              title: "Phase gate",
+              status: "succeeded",
+              summary: "Calling the phase done.",
+              ticketRef: null,
+              changedFiles: [],
+              blocker: null,
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toMatchObject({
+        isError: true,
+        content: [
+          {
+            text: expect.stringContaining("still open: sealed-result"),
+          },
+        ],
+      });
+      // Closing the outcome the gate names opens it, so the refusal is a
+      // sequencing constraint rather than a dead end.
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "verification",
+              id: "phase-gate:sealed-result",
+              title: "Sealed result check",
+              status: "succeeded",
+              summary: "The artifact is sealed.",
+              workItemId: null,
+              acceptanceId: "sealed-result",
+              command: "pnpm test sealed",
+              counts: { passed: 1, failed: 0, skipped: 0 },
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "work-item",
+              id: "phase-gate",
+              title: "Phase gate",
+              status: "succeeded",
+              summary: "Calling the phase done.",
+              ticketRef: null,
+              changedFiles: [],
+              blocker: null,
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+
       await harness.emitThreadEvent("thread.idle", {
         thread: { id: "child-6" } as never,
         lastAssistantText: "ordinary text",

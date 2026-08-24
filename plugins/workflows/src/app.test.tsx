@@ -1084,6 +1084,12 @@ describe("workflow thread panel", () => {
                   },
                 ],
                 unauthorizedAcceptanceIds: ["phase-0-acceptance-v3"],
+                openGates: [
+                  {
+                    gateId: "containment",
+                    openCriterionIds: ["cli-runs-two-cases"],
+                  },
+                ],
                 unknownReferences: [],
                 orphanWorkItemIds: ["containment"],
                 unanchoredProgress: true,
@@ -1122,6 +1128,13 @@ describe("workflow thread panel", () => {
     expect(
       slot.getByText(
         "Contract amended once, most recently by phase-0-acceptance-v2 replacing phase-0-acceptance: The CLI outcome moved to phase 1",
+      ),
+    ).toBeTruthy();
+    // The readable side of the write path's refusal: what the campaign is stuck
+    // behind, without having to trip the guard to find out.
+    expect(
+      slot.getByText(
+        "Gate containment cannot pass until cli-runs-two-cases closes.",
       ),
     ).toBeTruthy();
   });

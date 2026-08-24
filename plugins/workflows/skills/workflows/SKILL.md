@@ -160,6 +160,13 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   newest plan no longer declares reverts to uncovered. Do not restate a
   precondition as an outcome — a containment or bring-up gate is a
   `nodeType: "gate"` work item that satisfies nothing.
+  A gate says what it is holding open by declaring `requiresClosed`: the
+  criterion IDs it refuses to pass while any of them is still open. Reporting
+  that gate as `succeeded` is then refused until each one is closed by a
+  succeeded verification — so declare gate requirements when a phase must not be
+  called done early, and report the gate as `blocked` rather than looking for a
+  way around it. A required criterion that no contract declares can never close
+  and holds the gate shut, so spell the IDs exactly.
   The contract cannot be rewritten. Republishing the same acceptance ID with a
   different criteria body is refused, and so is a different body under a new ID
   that does not say what it replaces; restating the same body, in any criterion

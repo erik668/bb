@@ -739,6 +739,174 @@ describe("workflow durable data", () => {
     ).toBe("accepted");
   });
 
+  // A gate exists to hold a phase open. These guard the write path that keeps
+  // an orchestrator from walking through its own gate while the outcomes the
+  // gate names are still open.
+  function planJson(
+    items: readonly {
+      id: string;
+      satisfies?: string[];
+      requiresClosed?: string[];
+    }[],
+  ): string {
+    return JSON.stringify({
+      kind: "plan",
+      id: "ignored-by-the-data-layer",
+      title: "Selected plan",
+      status: "succeeded",
+      summary: null,
+      detail: null,
+      items: items.map((item) => ({
+        id: item.id,
+        title: item.id,
+        objective: `Advance ${item.id}`,
+        detail: null,
+        ticketRef: null,
+        ...(item.satisfies === undefined ? {} : { satisfies: item.satisfies }),
+        ...(item.requiresClosed === undefined
+          ? {}
+          : { nodeType: "gate", requiresClosed: item.requiresClosed }),
+      })),
+    });
+  }
+
+  function workItemJson(status: "succeeded" | "failed" | "running"): string {
+    return JSON.stringify({
+      kind: "work-item",
+      id: "ignored-by-the-data-layer",
+      title: "Work",
+      status,
+      summary: null,
+      ticketRef: null,
+      changedFiles: [],
+      blocker: null,
+    });
+  }
+
+  function verificationJson(acceptanceId: string): string {
+    return JSON.stringify({
+      kind: "verification",
+      id: `verify-${acceptanceId}`,
+      title: `Verify ${acceptanceId}`,
+      status: "succeeded",
+      summary: null,
+      workItemId: null,
+      acceptanceId,
+      command: "pnpm test",
+      counts: null,
+    });
+  }
+
+  it("refuses a gate reported as succeeded while a criterion it requires is open", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const write = (checkpointId: string, checkpointJson: string) =>
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId,
+        checkpointJson,
+        phase: "Execute",
+        sourceCallId: null,
+      });
+
+    expect(
+      write("campaign-acceptance", acceptanceJson(["cli", "grader"])),
+    ).toBe("accepted");
+    expect(
+      write(
+        "campaign-plan",
+        planJson([
+          { id: "cli-unit", satisfies: ["cli"] },
+          { id: "phase-gate", requiresClosed: ["cli", "grader"] },
+        ]),
+      ),
+    ).toBe("accepted");
+
+    // Ordinary work is untouched; only a gate carries requirements.
+    expect(write("cli-unit", workItemJson("succeeded"))).toBe("accepted");
+
+    expect(write("phase-gate", workItemJson("succeeded"))).toEqual({
+      kind: "gate_conflict",
+      openCriterionIds: ["cli", "grader"],
+    });
+
+    // Reporting the gate honestly is always allowed — that is the behaviour
+    // this refusal is steering toward, so it must not be blocked too.
+    expect(write("phase-gate", workItemJson("failed"))).toBe("accepted");
+    expect(write("phase-gate", workItemJson("running"))).toBe("accepted");
+
+    expect(write("verify-cli", verificationJson("cli"))).toBe("accepted");
+    expect(write("phase-gate", workItemJson("succeeded"))).toEqual({
+      kind: "gate_conflict",
+      openCriterionIds: ["grader"],
+    });
+
+    expect(write("verify-grader", verificationJson("grader"))).toBe("accepted");
+    expect(write("phase-gate", workItemJson("succeeded"))).toBe("accepted");
+  });
+
+  it("holds a gate whose requirement no contract declares, across the campaign", () => {
+    const first = newRun();
+    markRunning(first.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: first.id,
+        checkpointId: "campaign-plan",
+        checkpointJson: planJson([
+          { id: "phase-gate", requiresClosed: ["cli"] },
+        ]),
+        phase: "Plan",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    // No acceptance contract has been published, so "cli" cannot be closed by
+    // anything. Failing closed means a gate declared against a criterion that
+    // does not exist stays shut instead of quietly passing.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: first.id,
+        checkpointId: "phase-gate",
+        checkpointJson: workItemJson("succeeded"),
+        phase: "Execute",
+        sourceCallId: null,
+      }),
+    ).toEqual({ kind: "gate_conflict", openCriterionIds: ["cli"] });
+
+    // The gate belongs to the campaign, not the run that declared it, so a
+    // later run cannot pass it by starting fresh.
+    const later = createRun(db, {
+      projectId: "project-1",
+      originThreadId: "thread-1",
+      presentationThreadId: "thread-1",
+      parentRunId: first.id,
+      rootRunId: first.id,
+      campaignId: first.campaignId,
+      environmentId: "environment-1",
+      originProvider: "codex",
+      originModel: "gpt-test",
+      originReasoningLevel: "medium",
+      originPermissionMode: "full",
+      name: "test-workflow",
+      source: "return null",
+      sourceHash: "hash",
+      argsJson: "null",
+      settingsJson:
+        '{"maxActiveRuns":4,"maxConcurrentAgents":8,"maxAgentCalls":100,"totalRunTimeoutMs":86400000,"retentionDays":30,"maxNotificationBytes":16384}',
+      resumedFromRunId: null,
+    });
+    markRunning(later.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: later.id,
+        checkpointId: "phase-gate",
+        checkpointJson: workItemJson("succeeded"),
+        phase: "Execute",
+        sourceCallId: null,
+      }),
+    ).toEqual({ kind: "gate_conflict", openCriterionIds: ["cli"] });
+  });
+
   it("rejects checkpoint writes after the run becomes terminal", () => {
     const run = newRun();
     markRunning(run.id);

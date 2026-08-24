@@ -151,6 +151,17 @@ const planCheckpointSchema = z
             dependsOn: checkpointDependencyIdsSchema.optional(),
             nodeType: checkpointNodeTypeSchema.optional(),
             satisfies: checkpointAcceptanceIdsSchema.optional(),
+            /**
+             * Acceptance criteria this gate refuses to pass while any of them is
+             * still open. `satisfies` is the opposite relation — work that
+             * advances a criterion — so the two cannot be collapsed.
+             *
+             * Named `requiresClosed` rather than `gates` because "this node
+             * gates X" reads just as easily as "guards X", which is the reverse
+             * edge; an ambiguous name on an enforced field is how the wrong
+             * direction gets wired.
+             */
+            requiresClosed: checkpointAcceptanceIdsSchema.optional(),
           })
           .strict(),
       )
@@ -167,6 +178,16 @@ const planCheckpointSchema = z
     const itemsById = new Map(checkpoint.items.map((item) => [item.id, item]));
     for (let index = 0; index < checkpoint.items.length; index += 1) {
       const item = checkpoint.items[index]!;
+      // A work node carrying gate requirements would be a field the write path
+      // reads and the plan does not mean, so it is refused rather than ignored.
+      if (item.requiresClosed !== undefined && item.nodeType !== "gate") {
+        context.addIssue({
+          code: "custom",
+          message:
+            'Only a gate node can require acceptance criteria to be closed; set nodeType to "gate" or drop requiresClosed',
+          path: ["items", index, "requiresClosed"],
+        });
+      }
       const dependencies = item.dependsOn ?? [];
       for (
         let dependencyIndex = 0;
@@ -347,6 +368,27 @@ const storedAcceptanceSchema = z
  * outside the tool path cannot be compared, and the guard treats an
  * uncomparable row as absent rather than as a match.
  */
+/**
+ * Parses a whole stored checkpoint row, for guards that need more than the
+ * acceptance body — the gate guard has to read plan items and verification
+ * results back out of the ledger.
+ *
+ * Returns null for a row this schema cannot read, so one corrupt or
+ * externally-written row cannot fail a write that has nothing to do with it.
+ * Callers that must not be fooled by an unreadable row treat null as absent,
+ * which for a gate means its requirement stays unmet.
+ */
+export function readStoredCheckpoint(json: string): WorkflowCheckpoint | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const parsed = workflowCheckpointSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
 export function readStoredAcceptance(
   json: string,
 ): { canonical: string; supersedes: string | null } | null {

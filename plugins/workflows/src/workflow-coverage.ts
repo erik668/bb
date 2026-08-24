@@ -51,6 +51,14 @@ const acceptanceAmendmentRecordSchema = z
   })
   .strict();
 
+const openGateSchema = z
+  .object({
+    gateId: z.string(),
+    /** Criteria the gate requires that are not closed, including undeclared ones. */
+    openCriterionIds: z.array(z.string()),
+  })
+  .strict();
+
 /**
  * Shared by the derivation and the UI contract so the summary the composer
  * renders cannot drift from the one this module computes.
@@ -75,6 +83,13 @@ export const workflowAcceptanceCoverageSchema = z
      * reason this is re-derived on read rather than trusting the newest row.
      */
     unauthorizedAcceptanceIds: z.array(z.string()),
+    /**
+     * Gates in the current plan whose required criteria are not all closed.
+     * The write path refuses to record one of these as succeeded, so this is
+     * the readable side of that refusal: a campaign can see what it is stuck
+     * behind without having to trip the guard first.
+     */
+    openGates: z.array(openGateSchema),
     /** `satisfies` / `acceptanceId` values matching no declared criterion. */
     unknownReferences: z.array(z.string()),
     /**
@@ -104,6 +119,7 @@ export type WorkflowAcceptanceCoverage = z.infer<
 export type AcceptanceAmendmentRecord = z.infer<
   typeof acceptanceAmendmentRecordSchema
 >;
+export type AcceptanceOpenGate = z.infer<typeof openGateSchema>;
 
 /**
  * Derives coverage from one campaign's checkpoints in chronological order.
@@ -231,6 +247,30 @@ export function deriveAcceptanceCoverage(
     };
   });
 
+  // Gates are read from the current plan only, for the same reason criterion
+  // state is: a gate an older plan declared and the newest one dropped is not
+  // something this campaign is still stuck behind. A required criterion that no
+  // contract declares can never close, so it counts as open here and is also
+  // reported as an unknown reference — that is what explains the stuck gate.
+  const closedCriterionIds = new Set(
+    criteria
+      .filter((criterion) => criterion.state === "closed")
+      .map((criterion) => criterion.id),
+  );
+  const openGates = (currentPlan?.items ?? []).flatMap((item) => {
+    if (item.nodeType !== "gate") return [];
+    const required = item.requiresClosed ?? [];
+    for (const criterionId of required) {
+      if (!declaredIds.has(criterionId)) unknownReferences.add(criterionId);
+    }
+    const openCriterionIds = required.filter(
+      (criterionId) => !closedCriterionIds.has(criterionId),
+    );
+    return openCriterionIds.length === 0
+      ? []
+      : [{ gateId: item.id, openCriterionIds }];
+  });
+
   const orphanWorkItemIds: string[] = [];
   const seenOrphans = new Set<string>();
   for (const checkpoint of checkpoints) {
@@ -260,6 +300,7 @@ export function deriveAcceptanceCoverage(
     ).length,
     amendments,
     unauthorizedAcceptanceIds,
+    openGates,
     unknownReferences: [...unknownReferences],
     orphanWorkItemIds,
     unanchoredProgress: closedCount === 0 && orphanWorkItemIds.length > 0,

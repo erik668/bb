@@ -222,6 +222,41 @@ describe("workflow checkpoint contract", () => {
     });
   });
 
+  it("keeps gate requirements on gate nodes only", () => {
+    const gate = {
+      id: "containment-gate",
+      title: "Containment proof",
+      objective: "Hold the phase open until the stated outcomes close.",
+      detail: null,
+      ticketRef: null,
+      nodeType: "gate" as const,
+      requiresClosed: ["cli-runs-two-cases"],
+    };
+    const plan = {
+      kind: "plan" as const,
+      id: "run-7-plan",
+      title: "Selected plan",
+      status: "running" as const,
+      summary: null,
+      detail: null,
+      items: [gate],
+    };
+    expect(workflowCheckpointSchema.parse(plan)).toMatchObject({
+      items: [
+        { id: "containment-gate", requiresClosed: ["cli-runs-two-cases"] },
+      ],
+    });
+
+    // On a work node the field would read as enforced and never be, so it is
+    // refused instead of accepted and ignored.
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        ...plan,
+        items: [{ ...gate, nodeType: "work" as const }],
+      }),
+    ).toThrow(/Only a gate node can require acceptance criteria/);
+  });
+
   it.each([
     {
       name: "no criteria at all",

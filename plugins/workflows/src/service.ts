@@ -364,6 +364,18 @@ function assertBoundedJson(
 const ACCEPTANCE_CONFLICT_GUIDANCE =
   "The campaign's acceptance contract cannot be rewritten. Publish a new acceptance checkpoint under a different ID with an `amends` field naming the checkpoint it supersedes and why, or leave the contract unchanged and report the shortfall as a blocked work item.";
 
+/**
+ * Names the criteria that blocked the gate. Which ones they are determines the
+ * agent's next move, so withholding them would cost a round trip through the
+ * coverage read to recover what the guard already knew.
+ *
+ * Both legal moves are stated, because the wrong lesson to draw from a refused
+ * gate is that the gate should be deleted.
+ */
+function gateConflictGuidance(openCriterionIds: readonly string[]): string {
+  return `This gate requires acceptance criteria that are still open: ${openCriterionIds.join(", ")}. Close each one with a succeeded verification checkpoint naming it in \`acceptanceId\`, or report this gate as blocked rather than succeeded.`;
+}
+
 function serializeWorkflowCheckpoint(value: unknown): {
   checkpoint: WorkflowCheckpoint;
   json: string;
@@ -1756,15 +1768,17 @@ export function createWorkflowService(
     });
     if (outcome !== "accepted") {
       const error =
-        outcome === "inactive"
-          ? "This workflow call is no longer active"
-          : outcome === "ownership_conflict"
-            ? "This checkpoint ID is owned by the workflow or another worker"
-            : outcome === "kind_conflict"
-              ? "A checkpoint ID cannot change checkpoint kind"
-              : outcome === "acceptance_conflict"
-                ? ACCEPTANCE_CONFLICT_GUIDANCE
-                : "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail";
+        typeof outcome !== "string"
+          ? gateConflictGuidance(outcome.openCriterionIds)
+          : outcome === "inactive"
+            ? "This workflow call is no longer active"
+            : outcome === "ownership_conflict"
+              ? "This checkpoint ID is owned by the workflow or another worker"
+              : outcome === "kind_conflict"
+                ? "A checkpoint ID cannot change checkpoint kind"
+                : outcome === "acceptance_conflict"
+                  ? ACCEPTANCE_CONFLICT_GUIDANCE
+                  : "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail";
       return {
         ok: false,
         terminal: outcome === "inactive",
@@ -2002,6 +2016,9 @@ export function createWorkflowService(
           phase,
           sourceCallId: null,
         });
+        if (typeof outcome !== "string") {
+          throw new Error(gateConflictGuidance(outcome.openCriterionIds));
+        }
         if (outcome === "inactive")
           throw new Error("Workflow is no longer active");
         if (outcome === "limit_exceeded") {

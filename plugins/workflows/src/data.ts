@@ -6,7 +6,9 @@ import {
   MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
   MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
   readStoredAcceptance,
+  readStoredCheckpoint,
 } from "./workflow-checkpoint.js";
+import { deriveAcceptanceCoverage } from "./workflow-coverage.js";
 import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 
 export type Db = Database.Database;
@@ -122,13 +124,20 @@ export interface WorkflowCheckpointRow {
   updatedAt: number;
 }
 
+/**
+ * Every refusal is a bare tag except the gate one, which carries the criterion
+ * IDs that blocked it. The reader is an agent deciding what to do next, and
+ * "some criterion you require is open" costs it another round trip to find out
+ * which — the opposite of the cheap steering this ledger exists to provide.
+ */
 export type UpsertWorkflowCheckpointOutcome =
   | "accepted"
   | "inactive"
   | "limit_exceeded"
   | "ownership_conflict"
   | "kind_conflict"
-  | "acceptance_conflict";
+  | "acceptance_conflict"
+  | { kind: "gate_conflict"; openCriterionIds: string[] };
 
 type StoreStructuredResultOutcome =
   | "accepted"
@@ -766,6 +775,69 @@ function conflictsWithCampaignAcceptance(
   return !existing.some((row) => row.checkpointId === args.incoming.supersedes);
 }
 
+/**
+ * Returns the acceptance criteria a gate still requires but has not closed, so
+ * a gate cannot be recorded as succeeded while the outcomes it guards are open.
+ *
+ * The edge and the claim live in different checkpoints by design: the plan
+ * declares `requiresClosed` on a `nodeType: "gate"` item, and success is
+ * reported later on a work-item checkpoint. Joining them is therefore a
+ * campaign-wide read — a child run's gate may require a criterion the parent's
+ * plan declared — ordered exactly like the coverage read, since the derivation
+ * depends on chronological order.
+ *
+ * Closure is resolved by running that derivation rather than a second query, so
+ * "closed" has one definition. A criterion no contract declares can never
+ * close, so it counts as open: a typo in `requiresClosed` blocks the gate
+ * loudly rather than quietly disabling it.
+ */
+function gateRequirementsLeftOpen(
+  db: Db,
+  args: { runId: string; checkpointId: string },
+): string[] {
+  const rows = db
+    .prepare(
+      `SELECT checkpoint.checkpoint_json AS checkpointJson
+       FROM workflow_checkpoints AS checkpoint
+       JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+       WHERE COALESCE(run.campaign_id, run.id) = (
+           SELECT COALESCE(campaign_id, id) FROM workflow_runs WHERE id = ?
+         )
+         AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                  THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+             END IN ('acceptance', 'plan', 'work-item', 'verification')
+       ORDER BY run.created_at ASC, run.rowid ASC, checkpoint.ordinal ASC`,
+    )
+    .all(args.runId) as { checkpointJson: string }[];
+  const checkpoints = rows.flatMap((row) => {
+    const parsed = readStoredCheckpoint(row.checkpointJson);
+    return parsed === null ? [] : [parsed];
+  });
+
+  // Last plan wins for a given item ID, matching how coverage resolves a work
+  // item back to its declaration when an older plan was superseded.
+  let gateRequirements: readonly string[] | undefined;
+  for (const checkpoint of checkpoints) {
+    if (checkpoint.kind !== "plan") continue;
+    const item = checkpoint.items.find(
+      (entry) => entry.id === args.checkpointId,
+    );
+    if (item === undefined) continue;
+    gateRequirements =
+      item.nodeType === "gate" ? (item.requiresClosed ?? []) : undefined;
+  }
+  if (gateRequirements === undefined || gateRequirements.length === 0)
+    return [];
+
+  const coverage = deriveAcceptanceCoverage(checkpoints);
+  const closed = new Set(
+    (coverage?.criteria ?? [])
+      .filter((criterion) => criterion.state === "closed")
+      .map((criterion) => criterion.id),
+  );
+  return gateRequirements.filter((id) => !closed.has(id));
+}
+
 export function upsertWorkflowCheckpoint(
   db: Db,
   input: {
@@ -832,6 +904,17 @@ export function upsertWorkflowCheckpoint(
       })
     ) {
       return "acceptance_conflict";
+    }
+    // Only a claim of success is gated. A gate reported as failed, blocked, or
+    // still running is exactly the honest reporting this is meant to encourage.
+    if (incoming.kind === "work-item" && incoming.status === "succeeded") {
+      const openCriterionIds = gateRequirementsLeftOpen(db, {
+        runId: input.runId,
+        checkpointId: input.checkpointId,
+      });
+      if (openCriterionIds.length > 0) {
+        return { kind: "gate_conflict" as const, openCriterionIds };
+      }
     }
     const totals = db
       .prepare(

@@ -125,7 +125,14 @@ same body is always accepted, criterion order is not part of the contract, and
 re-derives that chain on read, so a contract changed by writing to the database
 directly is reported rather than adopted. Plan and work-item checkpoints may publish
 bounded `dependsOn` edges; plan-local dependencies must reference known items
-and remain acyclic. Work items may be typed as work or gate nodes. Transitions
+and remain acyclic. Work items may be typed as work or gate nodes. A gate item
+may declare `requiresClosed`, the criteria it refuses to pass while any of them
+is still open: publishing that gate as `succeeded` is refused campaign-wide
+until each one is closed by a succeeded verification, and a required criterion
+no contract declares can never close, so it holds the gate shut. Reporting the
+gate as `failed`, `blocked`, or still running is always accepted. Coverage
+reports the same thing as `openGates` so a campaign can see what it is waiting
+on without tripping the guard. Transitions
 record the actor, source and target states, affected work items, rationale, and
 evidence references. Reuse stable IDs to update state instead of appending prose;
 the latest value stays inspectable after the run finishes. Workers can publish
