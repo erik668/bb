@@ -59,6 +59,11 @@ type RunLoadState =
     }
   | { status: "error"; message: string };
 
+// Derived from the RPC contract rather than re-declared, so the panel cannot
+// drift from the coverage the service actually computes.
+type AcceptanceCoverageView = NonNullable<WorkflowCampaignView["coverage"]>;
+type AcceptanceCriterionView = AcceptanceCoverageView["criteria"][number];
+
 type ActiveRunsLoadState =
   | { status: "loading" }
   | { status: "ready"; runs: WorkflowRunView[] }
@@ -72,6 +77,8 @@ type RunDetailsLoadState =
       checkpoints: WorkflowCheckpointView[];
       campaignRuns: WorkflowCampaignView["runs"];
       omittedCheckpointRunCount: number;
+      coverage: AcceptanceCoverageView | null;
+      coverageTruncated: boolean;
       refreshError: string | null;
     }
   | { status: "error"; runId: string | null; message: string };
@@ -463,6 +470,8 @@ function useWorkflowRunDetails(
           campaignRuns: result.campaign?.runs ?? [],
           omittedCheckpointRunCount:
             result.campaign?.omittedCheckpointRunCount ?? 0,
+          coverage: result.campaign?.coverage ?? null,
+          coverageTruncated: result.campaign?.coverageTruncated ?? false,
           refreshError: null,
         });
       }
@@ -1380,6 +1389,112 @@ function TransitionNotes({
   );
 }
 
+const ACCEPTANCE_STATE_LABEL: Record<AcceptanceCriterionView["state"], string> =
+  {
+    closed: "Closed",
+    "in-flight": "In flight",
+    uncovered: "Uncovered",
+  };
+
+function AcceptanceStateChip({
+  state,
+}: {
+  state: AcceptanceCriterionView["state"];
+}) {
+  return (
+    <span
+      className={cn(
+        "inline-flex shrink-0 items-center gap-1 text-2xs font-medium",
+        state === "closed" && "text-success",
+        state === "in-flight" && "text-foreground",
+        state === "uncovered" && "text-subtle-foreground",
+      )}
+    >
+      <Icon
+        name={
+          state === "closed" ? "Check" : state === "in-flight" ? "Circle" : "Clock"
+        }
+        className="size-3"
+        aria-hidden
+      />
+      {ACCEPTANCE_STATE_LABEL[state]}
+    </span>
+  );
+}
+
+// Coverage is the one number on this panel the workflow did not author about
+// itself: it is derived from the campaign ledger, so a run of green work items
+// that closed no stated outcome cannot read as progress here.
+function AcceptanceCoverageNotes({
+  coverage,
+  truncated,
+}: {
+  coverage: AcceptanceCoverageView;
+  truncated: boolean;
+}) {
+  const notes = [
+    coverage.unanchoredProgress
+      ? `${coverage.orphanWorkItemIds.length} work ${coverage.orphanWorkItemIds.length === 1 ? "item has" : "items have"} succeeded and no stated outcome has closed yet.`
+      : null,
+    coverage.amendmentCount === 0
+      ? null
+      : `The acceptance contract was rewritten ${coverage.amendmentCount === 1 ? "once" : `${coverage.amendmentCount} times`}; the original still applies here.`,
+    coverage.unknownReferences.length === 0
+      ? null
+      : `${coverage.unknownReferences.length} link${coverage.unknownReferences.length === 1 ? "" : "s"} name no declared criterion: ${coverage.unknownReferences.join(", ")}.`,
+    truncated
+      ? "This campaign outgrew the coverage read, so these counts cover only its earlier checkpoints."
+      : null,
+  ].filter((note): note is string => note !== null);
+  if (notes.length === 0) return null;
+  return (
+    <div
+      role="status"
+      className="mt-2 space-y-1 rounded border border-border-seam bg-muted/30 px-2 py-1.5 text-2xs text-subtle-foreground"
+    >
+      {notes.map((note) => (
+        <p key={note}>{note}</p>
+      ))}
+    </div>
+  );
+}
+
+function AcceptanceCoverage({
+  coverage,
+  truncated,
+}: {
+  coverage: AcceptanceCoverageView;
+  truncated: boolean;
+}) {
+  return (
+    <div>
+      <div className="mb-1.5 flex items-baseline justify-between gap-2">
+        <p className="text-2xs font-medium text-subtle-foreground">Acceptance</p>
+        <p className="text-2xs text-subtle-foreground">
+          {coverage.closedCount} of {coverage.criteria.length} closed
+          {coverage.inFlightCount === 0
+            ? null
+            : ` · ${coverage.inFlightCount} in flight`}
+        </p>
+      </div>
+      <ol className="space-y-1">
+        {coverage.criteria.map((criterion) => (
+          <li
+            key={criterion.id}
+            className="flex items-start gap-2 rounded border border-border-seam px-2 py-1.5"
+          >
+            <span className="min-w-0 flex-1 text-xs leading-relaxed text-muted-foreground">
+              {criterion.statement}
+            </span>
+            <AcceptanceStateChip state={criterion.state} />
+          </li>
+        ))}
+      </ol>
+      <AcceptanceCoverageNotes coverage={coverage} truncated={truncated} />
+    </div>
+  );
+}
+
 function WorkflowBuildStory({
   state,
 }: {
@@ -1395,6 +1510,7 @@ function WorkflowBuildStory({
   if (
     graph.layers.length === 0 &&
     !hasTransitions &&
+    state.coverage === null &&
     state.campaignRuns.length <= 1
   ) {
     return null;
@@ -1417,6 +1533,12 @@ function WorkflowBuildStory({
           </p>
         ) : null}
       </div>
+      {state.coverage === null ? null : (
+        <AcceptanceCoverage
+          coverage={state.coverage}
+          truncated={state.coverageTruncated}
+        />
+      )}
       <CampaignRunList runs={state.campaignRuns} />
       {state.omittedCheckpointRunCount === 0 ? null : (
         <div
@@ -1447,7 +1569,13 @@ function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
   if (state.status === "error") {
     return <RefreshWarning message={state.message} />;
   }
-  if (state.checkpoints.length === 0 && state.campaignRuns.length <= 1) {
+  // Coverage alone is enough to show: a campaign can declare its acceptance
+  // contract in a run whose checkpoints bounded hydration has already dropped.
+  if (
+    state.checkpoints.length === 0 &&
+    state.campaignRuns.length <= 1 &&
+    state.coverage === null
+  ) {
     return (
       <div className="space-y-2">
         {state.refreshError === null ? null : (

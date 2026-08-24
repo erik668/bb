@@ -1038,6 +1038,71 @@ describe("workflow thread panel", () => {
     expect(slot.queryByText("Invalid build graph")).toBeNull();
   });
 
+  it("renders derived acceptance coverage and its unanchored-progress warning", async () => {
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [],
+            campaign: {
+              id: run.campaignId,
+              detailedRunLimit: 4,
+              omittedCheckpointRunCount: 0,
+              coverage: {
+                acceptanceId: "phase-0",
+                criteria: [
+                  {
+                    id: "cli-runs-two-cases",
+                    statement:
+                      "An engineer runs two synthetic cases from one command.",
+                    provenBy: "command",
+                    state: "uncovered",
+                    satisfiedBy: [],
+                    closedBy: [],
+                  },
+                  {
+                    id: "sealed-result",
+                    statement:
+                      "A cancelled job still yields a sealed result.",
+                    provenBy: "artifact",
+                    state: "in-flight",
+                    satisfiedBy: ["sealing"],
+                    closedBy: [],
+                  },
+                ],
+                closedCount: 0,
+                inFlightCount: 1,
+                uncoveredCount: 1,
+                amendmentCount: 0,
+                unknownReferences: [],
+                orphanWorkItemIds: ["containment"],
+                unanchoredProgress: true,
+              },
+              coverageTruncated: false,
+              runs: [{ run, checkpoints: [], checkpointsOmitted: false }],
+            },
+          }),
+        },
+      },
+    );
+
+    expect(await slot.findByText("Acceptance")).toBeTruthy();
+    expect(slot.getByText("0 of 2 closed · 1 in flight")).toBeTruthy();
+    expect(
+      slot.getByText("An engineer runs two synthetic cases from one command."),
+    ).toBeTruthy();
+    expect(slot.getByText("Uncovered")).toBeTruthy();
+    expect(slot.getByText("In flight")).toBeTruthy();
+    expect(
+      slot.getByText(
+        "1 work item has succeeded and no stated outcome has closed yet.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("hides prior details while a newer latest run resolves its own ledger", async () => {
     vi.useFakeTimers();
     let currentRun = run;

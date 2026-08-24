@@ -503,6 +503,53 @@ export function countRunsForCampaign(db: Db, campaignId: string): number {
   return row.count;
 }
 
+/**
+ * Coverage spans a campaign's whole history, so it deliberately does NOT reuse
+ * the campaign inspection path: that one hydrates only
+ * MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS ledgers, which would drop the acceptance
+ * contract itself as soon as a campaign outgrew four runs. Only the four kinds
+ * coverage reads are selected, and the row cap is reported to the caller rather
+ * than silently truncating a partial ledger into a confident answer.
+ *
+ * The kind filter is guarded by `json_valid` because this read spans every run
+ * in the campaign, including ones bounded hydration never touches. A single
+ * corrupt row there must not take the campaign view down with it, and bare
+ * `json_extract` raises on malformed JSON rather than returning NULL.
+ */
+export function listCampaignCoverageCheckpoints(
+  db: Db,
+  args: {
+    campaignId: string;
+    projectId: string;
+    environmentId: string;
+    presentationThreadId: string;
+    limit: number;
+  },
+): { checkpointJson: string }[] {
+  return db
+    .prepare(
+      `SELECT checkpoint.checkpoint_json AS checkpointJson
+         FROM workflow_checkpoints AS checkpoint
+         JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+         WHERE COALESCE(run.campaign_id, run.id) = ?
+           AND run.project_id = ?
+           AND run.environment_id = ?
+           AND COALESCE(run.presentation_thread_id, run.origin_thread_id) = ?
+           AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                    THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+               END IN ('acceptance', 'plan', 'work-item', 'verification')
+         ORDER BY run.created_at ASC, run.rowid ASC, checkpoint.ordinal ASC
+         LIMIT ?`,
+    )
+    .all(
+      args.campaignId,
+      args.projectId,
+      args.environmentId,
+      args.presentationThreadId,
+      args.limit,
+    ) as { checkpointJson: string }[];
+}
+
 export function listRunsForCampaign(
   db: Db,
   args: {

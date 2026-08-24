@@ -155,6 +155,127 @@ describe("workflow checkpoint contract", () => {
     ).toMatchObject({ kind: "transition", actor: "synthesizer" });
   });
 
+  it("accepts a campaign acceptance contract linked from a plan", () => {
+    expect(
+      workflowCheckpointSchema.parse({
+        kind: "acceptance",
+        id: "phase-0-acceptance",
+        title: "Phase 0 acceptance",
+        status: "succeeded",
+        summary: "Two outcomes define done",
+        criteria: [
+          {
+            id: "cli-runs-two-cases",
+            statement:
+              "An engineer runs two synthetic cases from `pnpm fae` and observes status.",
+            provenBy: "command",
+            detail: "Evidence: the recorded command output",
+          },
+          {
+            id: "sealed-result",
+            statement: "A cancelled job still yields a sealed result artifact.",
+            provenBy: "artifact",
+            detail: null,
+          },
+        ],
+      }),
+    ).toMatchObject({
+      kind: "acceptance",
+      criteria: [
+        { id: "cli-runs-two-cases", provenBy: "command" },
+        { id: "sealed-result", provenBy: "artifact" },
+      ],
+    });
+
+    expect(
+      workflowCheckpointSchema.parse({
+        kind: "plan",
+        id: "run-7-plan",
+        title: "Selected plan",
+        status: "running",
+        summary: null,
+        detail: null,
+        items: [
+          {
+            id: "fae-remote-command",
+            title: "Add `fae remote`",
+            objective: "Expose the two synthetic cases behind one command.",
+            detail: null,
+            ticketRef: null,
+            satisfies: ["cli-runs-two-cases"],
+          },
+          {
+            id: "containment-gate",
+            title: "Containment proof",
+            objective: "Precondition only; closes no stated outcome.",
+            detail: null,
+            ticketRef: null,
+            nodeType: "gate",
+          },
+        ],
+      }),
+    ).toMatchObject({
+      items: [
+        { id: "fae-remote-command", satisfies: ["cli-runs-two-cases"] },
+        { id: "containment-gate", nodeType: "gate" },
+      ],
+    });
+  });
+
+  it.each([
+    {
+      name: "no criteria at all",
+      criteria: [],
+    },
+    {
+      name: "duplicate criterion IDs",
+      criteria: [
+        { id: "same", statement: "First", provenBy: "human", detail: null },
+        { id: "same", statement: "Second", provenBy: "human", detail: null },
+      ],
+    },
+    {
+      name: "an unknown provenance",
+      criteria: [
+        { id: "graded", statement: "A grader agrees", provenBy: "vibes", detail: null },
+      ],
+    },
+  ])("rejects an acceptance contract with $name", ({ criteria }) => {
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        kind: "acceptance",
+        id: "phase-0-acceptance",
+        title: "Phase 0 acceptance",
+        status: "running",
+        summary: null,
+        criteria,
+      }),
+    ).toThrow();
+  });
+
+  it("rejects duplicate satisfies and acceptance references on a plan item", () => {
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        kind: "plan",
+        id: "run-7-plan",
+        title: "Selected plan",
+        status: "running",
+        summary: null,
+        detail: null,
+        items: [
+          {
+            id: "fae-remote-command",
+            title: "Add `fae remote`",
+            objective: "Expose the two synthetic cases behind one command.",
+            detail: null,
+            ticketRef: null,
+            satisfies: ["cli-runs-two-cases", "cli-runs-two-cases"],
+          },
+        ],
+      }),
+    ).toThrow(/Acceptance criterion IDs must be unique/);
+  });
+
   it("rejects succeeded verification with failed results", () => {
     expect(() =>
       workflowCheckpointSchema.parse({

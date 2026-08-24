@@ -2,6 +2,7 @@ import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 import { workflowCheckpointSchema } from "./workflow-checkpoint.js";
+import { workflowAcceptanceCoverageSchema } from "./workflow-coverage.js";
 
 const workflowRunStatusSchema = z.enum([
   "queued",
@@ -96,6 +97,10 @@ const workflowCampaignViewSchema = z
     id: z.string(),
     detailedRunLimit: z.number().int().positive(),
     omittedCheckpointRunCount: z.number().int().nonnegative(),
+    /** Null when the campaign declared no acceptance contract to measure. */
+    coverage: workflowAcceptanceCoverageSchema.nullable(),
+    /** True when the campaign ledger outgrew the coverage read's row cap. */
+    coverageTruncated: z.boolean(),
     runs: z
       .array(
         z

@@ -188,6 +188,8 @@ export default async function plugin(bb: BbPluginApi) {
                 id: campaign.campaignId,
                 detailedRunLimit: campaign.detailedRunLimit,
                 omittedCheckpointRunCount: campaign.omittedCheckpointRunCount,
+                coverage: campaign.coverage,
+                coverageTruncated: campaign.coverageTruncated,
                 runs: campaign.runs.map((entry) => ({
                   run: entry.run,
                   checkpoints: entry.checkpoints.map(

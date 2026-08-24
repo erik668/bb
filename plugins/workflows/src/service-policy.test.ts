@@ -28,6 +28,7 @@ import {
   MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
   MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
 } from "./workflow-campaign.js";
+import type { WorkflowCheckpoint } from "./workflow-checkpoint.js";
 
 async function eventually(
   assertion: () => void | Promise<void>,
@@ -1541,6 +1542,148 @@ describe("workflow service policy integration", () => {
     expect(test.service.inspectCampaign(runs[1]!.id)?.runs).toHaveLength(
       runs.length,
     );
+  });
+
+  it("derives acceptance coverage from the full ledger past hydration bounds", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const runs = [await test.start(source("return null", "coverage-root"))];
+    for (let index = 1; index < 6; index += 1) {
+      runs.push(
+        await test.start(source("return null", `coverage-run-${index}`), {
+          campaignId: runs[0]!.campaignId,
+        }),
+      );
+    }
+    let ordinal = 0;
+    const publish = (runId: string, checkpoint: WorkflowCheckpoint) => {
+      ordinal += 1;
+      test.db
+        .prepare(
+          `INSERT INTO workflow_checkpoints (
+             id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+             ordinal, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, NULL, NULL, ?, 1, 1)`,
+        )
+        .run(
+          `wcp_${ordinal}`,
+          runId,
+          checkpoint.id,
+          JSON.stringify(checkpoint),
+          ordinal,
+        );
+    };
+
+    // The contract and the opening plan live on a run old enough that bounded
+    // hydration drops its checkpoints. Coverage must still see them, which is
+    // why it reads the ledger directly instead of the hydrated campaign view.
+    publish(runs[1]!.id, {
+      kind: "acceptance",
+      id: "phase-0",
+      title: "Phase 0 acceptance",
+      status: "succeeded",
+      summary: null,
+      criteria: [
+        {
+          id: "cli-runs-two-cases",
+          statement: "An engineer runs two synthetic cases from one command.",
+          provenBy: "command",
+          detail: null,
+        },
+        {
+          id: "sealed-result",
+          statement: "A cancelled job still yields a sealed result.",
+          provenBy: "artifact",
+          detail: null,
+        },
+      ],
+    });
+    publish(runs[1]!.id, {
+      kind: "plan",
+      id: "plan-run-1",
+      title: "Selected plan",
+      status: "succeeded",
+      summary: null,
+      detail: null,
+      items: [
+        {
+          id: "containment",
+          title: "Containment proof",
+          objective: "Precondition for running anything remotely.",
+          detail: null,
+          ticketRef: null,
+          nodeType: "gate",
+        },
+      ],
+    });
+    publish(runs[1]!.id, {
+      kind: "work-item",
+      id: "containment",
+      title: "Containment proof",
+      status: "succeeded",
+      summary: null,
+      ticketRef: null,
+      changedFiles: [],
+      blocker: null,
+    });
+    publish(runs[5]!.id, {
+      kind: "plan",
+      id: "plan-run-6",
+      title: "Selected plan",
+      status: "running",
+      summary: null,
+      detail: null,
+      items: [
+        {
+          id: "fae-remote",
+          title: "Add the remote command",
+          objective: "Expose the two synthetic cases.",
+          detail: null,
+          ticketRef: null,
+          satisfies: ["cli-runs-two-cases"],
+        },
+        {
+          id: "sealing",
+          title: "Seal results",
+          objective: "Seal a result even on cancellation.",
+          detail: null,
+          ticketRef: null,
+          satisfies: ["sealed-result"],
+        },
+      ],
+    });
+    publish(runs[5]!.id, {
+      kind: "verification",
+      id: "verify-remote",
+      title: "Two synthetic cases",
+      status: "succeeded",
+      summary: null,
+      workItemId: "fae-remote",
+      acceptanceId: "cli-runs-two-cases",
+      command: "pnpm fae remote",
+      counts: { passed: 2, failed: 0, skipped: 0 },
+    });
+
+    const campaign = test.service.inspectCampaign(runs[0]!.id);
+    expect(
+      campaign?.runs.find((entry) => entry.run.id === runs[1]!.id)
+        ?.checkpointsOmitted,
+    ).toBe(true);
+    expect(campaign?.coverageTruncated).toBe(false);
+    expect(campaign?.coverage?.acceptanceId).toBe("phase-0");
+    expect(
+      campaign?.coverage?.criteria.map((criterion) => [
+        criterion.id,
+        criterion.state,
+      ]),
+    ).toEqual([
+      ["cli-runs-two-cases", "closed"],
+      ["sealed-result", "in-flight"],
+    ]);
+    // The containment gate succeeded and satisfies nothing: legitimate
+    // precondition work, and not evidence that an outcome moved.
+    expect(campaign?.coverage?.orphanWorkItemIds).toEqual(["containment"]);
+    expect(campaign?.coverage?.unanchoredProgress).toBe(false);
   });
 
   it("fails campaign inspection closed on project scope corruption", async () => {

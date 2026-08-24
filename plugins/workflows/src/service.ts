@@ -26,6 +26,7 @@ import {
   incrementRepairAttempts,
   listCallsForRun,
   listCallsForRunPage,
+  listCampaignCoverageCheckpoints,
   listRunsForCampaign,
   listWorkflowCheckpointsForRun,
   listActiveRunsForThread,
@@ -89,6 +90,11 @@ import {
   MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
   workflowCampaignIdSchema,
 } from "./workflow-campaign.js";
+import {
+  MAX_WORKFLOW_COVERAGE_CHECKPOINTS,
+  deriveAcceptanceCoverage,
+  type WorkflowAcceptanceCoverage,
+} from "./workflow-coverage.js";
 
 const executionValuesSchema = z.object({
   model: z.string().min(1),
@@ -540,6 +546,10 @@ export interface WorkflowCampaignInspection {
   detailedRunLimit: number;
   omittedCheckpointRunCount: number;
   runs: WorkflowCampaignRunInspection[];
+  /** Null when the campaign declared no acceptance contract. */
+  coverage: WorkflowAcceptanceCoverage | null;
+  /** True when the coverage read hit its row cap, so coverage is partial. */
+  coverageTruncated: boolean;
 }
 
 export function campaignDetailedRunIds(
@@ -1010,10 +1020,29 @@ export function createWorkflowService(
       throw new Error("Workflow campaign scope is inconsistent");
     }
     const detailedRunIds = campaignDetailedRunIds(campaignRuns, runId);
+    const coverageRows = listCampaignCoverageCheckpoints(db, {
+      campaignId: selected.campaignId,
+      projectId: selected.projectId,
+      environmentId: selected.environmentId,
+      presentationThreadId: selected.presentationThreadId,
+      limit: MAX_WORKFLOW_COVERAGE_CHECKPOINTS + 1,
+    });
+    const coverageTruncated =
+      coverageRows.length > MAX_WORKFLOW_COVERAGE_CHECKPOINTS;
+    const coverageCheckpoints = coverageRows
+      .slice(0, MAX_WORKFLOW_COVERAGE_CHECKPOINTS)
+      .map(
+        (row) =>
+          serializeWorkflowCheckpoint(
+            parseJson(row.checkpointJson, "workflow checkpoint"),
+          ).checkpoint,
+      );
     return {
       campaignId: selected.campaignId,
       detailedRunLimit: MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
       omittedCheckpointRunCount: campaignRuns.length - detailedRunIds.size,
+      coverage: deriveAcceptanceCoverage(coverageCheckpoints),
+      coverageTruncated,
       runs: campaignRuns.map((row) => {
         const checkpointsOmitted = !detailedRunIds.has(row.id);
         return {

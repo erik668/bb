@@ -485,9 +485,15 @@ export function registerWorkflowCli(
           if (run === null || run.projectId !== context.projectId) {
             throw new Error(`Unknown workflow run ${runId}`);
           }
+          const campaign = service.inspectCampaign(runId);
           return success({
             runId,
             campaignId: run.campaignId,
+            // The campaign's own outcome ledger, so an orchestrator resuming
+            // work can read what it has actually closed instead of restating
+            // its plan back to itself.
+            acceptanceCoverage: campaign?.coverage ?? null,
+            acceptanceCoverageTruncated: campaign?.coverageTruncated ?? false,
             checkpoints: service.inspectCheckpoints(runId).map((entry) => ({
               id: entry.id,
               checkpoint: entry.checkpoint,
@@ -497,7 +503,7 @@ export function registerWorkflowCli(
               updatedAt: entry.updatedAt,
             })),
             campaignRuns:
-              service.inspectCampaign(runId)?.runs.map((entry) => ({
+              campaign?.runs.map((entry) => ({
                 runId: entry.run.id,
                 name: entry.run.name,
                 status: entry.run.status,

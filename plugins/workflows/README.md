@@ -9,7 +9,7 @@ The author-facing native surface is intentionally one tool:
 `bb workflows` CLI documented below. Provider and model discovery uses BB's
 built-in `bb provider` commands. Workflow workers separately receive
 `bb_workflow_checkpoint` for durable plan, work-item, verification, and transition
-progress. Structured workers additionally receive `bb_workflow_result`;
+progress; acceptance contracts are published by the orchestrator. Structured workers additionally receive `bb_workflow_result`;
 ordinary authoring agents never receive either worker tool.
 
 ## Progress UI
@@ -65,7 +65,13 @@ hydrate checkpoint ledgers for only the selected run plus the newest runs, up
 to four ledgers total. The selected ledger stays in the primary checkpoint
 field instead of being duplicated in the campaign aggregate. Older runs are
 marked `checkpointsOmitted`; this caps the combined details response at 16 MiB
-while keeping its full chronology visible.
+while keeping its full chronology visible. Both surfaces additionally report
+`acceptanceCoverage`, derived over the campaign's whole checkpoint ledger rather
+than the hydrated subset: per-criterion `closed`/`in-flight`/`uncovered` state,
+succeeded work items that advance no stated outcome, contract amendments,
+links naming no declared criterion, and whether work is landing while nothing
+has closed. It is `null` when the campaign declared no acceptance contract, and
+`acceptanceCoverageTruncated` reports a ledger too large to read in full.
 
 Both surfaces are implemented by the plugin app with `@bb/shared-ui` controls
 and BB theme tokens. Directive attributes and restored panel parameters are
@@ -104,8 +110,12 @@ An agent-level `phase` applies only to that call and does not change the current
 phase.
 
 `checkpoint(value)` durably upserts structured progress by `value.id` and
-inherits the current phase. Supported checkpoint kinds are `plan`, `work-item`,
-`verification`, and `transition`. Plan and work-item checkpoints may publish
+inherits the current phase. Supported checkpoint kinds are `acceptance`, `plan`,
+`work-item`, `verification`, and `transition`. An `acceptance` checkpoint states
+the campaign's outcomes — stable criterion IDs with a statement, a `provenBy` of
+`command`, `artifact`, or `human`, and optional detail — so plans can be
+measured against something they did not author. Plan items link to it through
+`satisfies` and verifications through `acceptanceId`. Plan and work-item checkpoints may publish
 bounded `dependsOn` edges; plan-local dependencies must reference known items
 and remain acyclic. Work items may be typed as work or gate nodes. Transitions
 record the actor, source and target states, affected work items, rationale, and

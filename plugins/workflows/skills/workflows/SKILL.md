@@ -130,8 +130,8 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
 - `phase(title: string)`: start a new phase; subsequent `agent()` calls are
   grouped under this title. An agent-level `phase` overrides only that call and
   does not change the current phase.
-- `checkpoint(value)`: durably upsert one structured `plan`, `work-item`,
-  `verification`, or `transition` row by its stable `id`. The row inherits the current phase and
+- `checkpoint(value)`: durably upsert one structured `acceptance`, `plan`,
+  `work-item`, `verification`, or `transition` row by its stable `id`. The row inherits the current phase and
   remains available after the run finishes. Use this for the selected plan,
   exact implementation state, and actual verification commands/results; never
   infer results or parse progress back out of labels and prose. A `plan` must
@@ -150,6 +150,17 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   `transition` checkpoint for a small number of meaningful state changes, with
   explicit actor, source/target state, affected work items, rationale, and
   evidence references. Do not turn transitions into a noisy log.
+  Publish one `acceptance` checkpoint at the start of a campaign: the outcomes
+  that define done, each with a stable criterion `id`, a `statement`, a
+  `provenBy` of `command`, `artifact`, or `human`, and nullable `detail`. A plan
+  is re-authored every run; acceptance is the fixed reference those plans are
+  measured against, so keep it stable and let the plan move. Link work to it
+  with `satisfies` on plan items and `acceptanceId` on verifications. Only a
+  succeeded verification naming a criterion closes it; a criterion the newest
+  plan no longer declares reverts to uncovered, and republishing a different
+  criteria body is reported as an amendment rather than silently adopted. Do
+  not restate a precondition as an outcome — a containment or bring-up gate is
+  a `nodeType: "gate"` work item that satisfies nothing.
   Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
   run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass
@@ -244,7 +255,8 @@ The canonical structured-result field is `outputSchema`. `phase`, `label`, and
 
 That worker receives `bb_workflow_checkpoint` and `bb_workflow_result`. When the
 prompt assigns stable plan, work-item, verification, or transition IDs, it can use the
-checkpoint tool to report truthful live state. It MUST call the result tool
+checkpoint tool to report truthful live state. Acceptance belongs to the
+campaign, not to a worker: publish it from the orchestrator. It MUST call the result tool
 exactly once at the end of its response with `{ value: ... }` to provide the
 structured output. BB validates the value with Ajv. The initial invalid attempt
 gets at most two corrective retries; a third invalid submission fails the call.
@@ -440,7 +452,11 @@ and optional `campaignId`. Reuse a campaign ID when an independent top-level
 run continues the same human-visible build story. Causal child and resumed
 runs inherit the campaign and reject conflicts. Campaign aggregation remains
 restricted to one project, environment, and presentation thread, with at most
-100 runs per campaign. Campaign details list every run but hydrate checkpoint
+100 runs per campaign. Campaign details also report derived acceptance
+coverage over the campaign's full ledger — how many criteria are closed, in
+flight, and uncovered, which succeeded work items advance no stated outcome, and
+whether work is landing while no outcome has closed. Campaign details list every
+run but hydrate checkpoint
 ledgers for only the selected run plus the newest runs, up to four total;
 older entries are explicitly marked `checkpointsOmitted`.
 It returns a durable run ID immediately. Use the compact `bb workflows status`
