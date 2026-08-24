@@ -8,6 +8,7 @@ shape).
 - Worktree: `/Users/erik/.bb/personal-workspaces/env_ycdb7z3gdg/bb-workflow-acceptance`
 - Branch: `feature/workflow-acceptance-coverage` off `e2b88b053` (repo `env_88g5eb749t/bb-workflow-details`)
 - Detail: [detail-acceptance-coverage.md](detail-acceptance-coverage.md)
+- PR: https://github.com/erik668/bb/pull/1 (3 commits, 19 files, +2057/-30)
 
 ## Done
 
@@ -55,7 +56,22 @@ the short version:
 
 ## Now
 
-Nothing in flight.
+Nothing in flight. Shipped and loaded:
+
+- PR open in the **fork** (`erik668/bb`), base `feature/workflow-detail-ledger`.
+  Upstream `get-bb/bb` is READ-only for this token, so nothing can be pushed
+  there; the stacked base keeps the diff to this work's 3 commits instead of the
+  11 that targeting `main` would show. Retarget to `main` when the base lands.
+- `fork` remote added (`https://github.com/erik668/bb.git`). Both branches
+  pushed there.
+- Dev server running from this worktree: http://localhost:12089
+  (`scripts/bb-dev-app current`; `pnpm dev:stop` to stop).
+
+**Conflict coming.** `feature/workflow-detail-ledger` is dirty in
+`env_88g5eb749t/bb-workflow-details` with uncommitted edits to the same files
+this branch changed — `app.tsx`, `service.ts`, `ui-contract.ts`, `README.md`,
+`SKILL.md`, `server-harness.test.ts`. Whichever lands second reconciles the
+notes rendering in `app.tsx` and `ui-contract.ts`.
 
 ## Next
 
