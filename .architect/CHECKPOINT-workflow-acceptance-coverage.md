@@ -28,7 +28,8 @@ Two cuts, both **verified**: 326/326 plugin tests pass, typecheck clean
   `coverage` + `coverageTruncated` to the panel and to `bb workflows details`.
 - Docs: `plugins/workflows/README.md`, `skills/workflows/SKILL.md`.
 
-**Cut 2 — immutability enforcement** (10 files). The contract is now
+**Cut 2 — immutability enforcement** (`7d5d28a04`, 14 files, +878/-106).
+Everything is committed; the tree is clean. The contract is now
 write-once in practice, not just by intent. Design and the honest limits are in
 [detail-acceptance-coverage.md](detail-acceptance-coverage.md#immutability-what-is-actually-enforced);
 the short version:
