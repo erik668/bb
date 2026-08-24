@@ -112,6 +112,29 @@ function coverageOf(
 
 // An approval is bound to the criteria body it was issued against, so the
 // fixture derives that string from the same checkpoint the test publishes.
+/**
+ * The proposed body an amendment record must carry, taken from the same fixture
+ * the amendment was built from. An approver reads this, so a record that
+ * carried the *current* contract's criteria instead would fail here.
+ */
+function proposedBody(checkpoint: WorkflowCheckpoint): {
+  criteria: { id: string; statement: string; provenBy: string; detail: string | null }[];
+  contractCanonical: string;
+} {
+  if (checkpoint.kind !== "acceptance") {
+    throw new Error("Only an acceptance checkpoint proposes a contract");
+  }
+  return {
+    criteria: checkpoint.criteria.map((criterion) => ({
+      id: criterion.id,
+      statement: criterion.statement,
+      provenBy: criterion.provenBy,
+      detail: criterion.detail,
+    })),
+    contractCanonical: canonicalizeAcceptanceCriteria(checkpoint.criteria),
+  };
+}
+
 function approvalFor(
   checkpoint: WorkflowCheckpoint,
   options: { surface?: "panel" | "cli" } = {},
@@ -262,6 +285,7 @@ describe("acceptance coverage", () => {
         acceptanceId: "acceptance-v2",
         supersedes: "acceptance",
         reason: "Grader moved to phase 2",
+        ...proposedBody(amended),
       },
     ]);
     expect(pending?.amendments).toEqual([]);
@@ -279,6 +303,7 @@ describe("acceptance coverage", () => {
         acceptanceId: "acceptance-v2",
         supersedes: "acceptance",
         reason: "Grader moved to phase 2",
+        ...proposedBody(amended),
         approval: {
           approvedByThreadId: "thread-human",
           surface: "panel",
@@ -304,11 +329,14 @@ describe("acceptance coverage", () => {
     );
 
     expect(coverage?.acceptanceId).toBe("acceptance");
+    // The body the ledger actually holds is the swapped one, not the body the
+    // approval was issued against — which is why the approval does not match.
     expect(coverage?.pendingAmendments).toEqual([
       {
         acceptanceId: "acceptance-v2",
         supersedes: "acceptance",
         reason: "Narrow to containment",
+        ...proposedBody(swapped),
       },
     ]);
     expect(coverage?.amendments).toEqual([]);
@@ -375,6 +403,7 @@ describe("acceptance coverage", () => {
         acceptanceId: "acceptance-v2",
         supersedes: "acceptance",
         reason: "First attempt",
+        ...proposedBody(first),
       },
     ]);
     expect(

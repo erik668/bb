@@ -223,12 +223,20 @@ export default async function plugin(bb: BbPluginApi) {
           "Only the workflow origin thread can approve this amendment",
         );
       }
-      return service.approveAmendment({
+      // Projected, not spread: the service also returns the canonical body it
+      // bound to, and this contract's output is strict. The panel reads the
+      // body from the coverage it refetches.
+      const approval = service.approveAmendment({
         runId: run.id,
         acceptanceId,
         approvedByThreadId: threadId,
         surface: "panel",
       });
+      return {
+        acceptanceId: approval.acceptanceId,
+        supersedes: approval.supersedes,
+        newlyApproved: approval.newlyApproved,
+      };
     },
   });
 

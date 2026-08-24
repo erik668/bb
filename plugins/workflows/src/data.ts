@@ -5,11 +5,14 @@ import type { JsonValue, WorkflowAgentOptions } from "./types.js";
 import {
   MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
   MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+  type WorkflowCheckpoint,
   readStoredAcceptance,
   readStoredCheckpoint,
 } from "./workflow-checkpoint.js";
 import {
   type AcceptanceApproval,
+  MAX_WORKFLOW_COVERAGE_CHECKPOINTS,
+  deriveOpenGates,
   type WorkflowApprovalSurface,
   acceptanceApprovalSchema,
   deriveAcceptanceCoverage,
@@ -142,7 +145,12 @@ export type UpsertWorkflowCheckpointOutcome =
   | "ownership_conflict"
   | "kind_conflict"
   | "acceptance_conflict"
-  | { kind: "gate_conflict"; openCriterionIds: string[] };
+  | { kind: "gate_conflict"; openCriterionIds: string[] }
+  | {
+      kind: "gate_weakened";
+      gateId: string;
+      droppedCriterionIds: string[];
+    };
 
 type StoreStructuredResultOutcome =
   | "accepted"
@@ -356,9 +364,7 @@ export const migrations = [
      surface TEXT NOT NULL,
      created_at INTEGER NOT NULL,
      UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
-   );
-   CREATE INDEX IF NOT EXISTS workflow_acceptance_approvals_campaign_idx
-     ON workflow_acceptance_approvals(campaign_id);`,
+   );`,
 ];
 
 type CreateWorkflowRunInput = Omit<
@@ -747,7 +753,6 @@ function conflictsWithCampaignAcceptance(
   const rows = db
     .prepare(
       `SELECT checkpoint.checkpoint_id AS checkpointId,
-         checkpoint.run_id AS runId,
          checkpoint.checkpoint_json AS checkpointJson
        FROM workflow_checkpoints AS checkpoint
        JOIN workflow_runs AS run ON run.id = checkpoint.run_id
@@ -760,7 +765,6 @@ function conflictsWithCampaignAcceptance(
     )
     .all(args.runId) as {
     checkpointId: string;
-    runId: string;
     checkpointJson: string;
   }[];
 
@@ -768,7 +772,6 @@ function conflictsWithCampaignAcceptance(
   // the equality check while still counting as a valid supersede target.
   const existing = rows.map((row) => ({
     checkpointId: row.checkpointId,
-    runId: row.runId,
     acceptance: readStoredAcceptance(row.checkpointJson),
   }));
   if (existing.length === 0) {
@@ -777,16 +780,18 @@ function conflictsWithCampaignAcceptance(
     return args.incoming.supersedes !== null;
   }
 
-  const inPlaceTarget = existing.find(
-    (row) => row.runId === args.runId && row.checkpointId === args.checkpointId,
+  // Campaign-wide, not run-scoped. `workflow_checkpoints` is unique per
+  // (run_id, checkpoint_id), so a sibling run can hold its own row under the
+  // same acceptance ID. Letting those bodies differ would mean one ID names two
+  // contracts, and an approval issued against the body a reader saw would
+  // silently authorize the other one.
+  const sameIdWithDifferentBody = existing.some(
+    (row) =>
+      row.checkpointId === args.checkpointId &&
+      row.acceptance !== null &&
+      row.acceptance.canonical !== args.incoming.canonical,
   );
-  if (
-    inPlaceTarget?.acceptance !== undefined &&
-    inPlaceTarget.acceptance !== null &&
-    inPlaceTarget.acceptance.canonical !== args.incoming.canonical
-  ) {
-    return true;
-  }
+  if (sameIdWithDifferentBody) return true;
 
   const comparable = existing.filter((row) => row.acceptance !== null);
   const unchanged = comparable.every(
@@ -837,9 +842,15 @@ export function listAcceptanceApprovals(
 }
 
 export type RecordAcceptanceApprovalOutcome =
-  | { kind: "approved"; newlyApproved: boolean; supersedes: string }
+  | {
+      kind: "approved";
+      newlyApproved: boolean;
+      supersedes: string;
+      contractCanonical: string;
+    }
   | { kind: "unknown_acceptance" }
-  | { kind: "not_an_amendment" };
+  | { kind: "not_an_amendment" }
+  | { kind: "ambiguous_body" };
 
 /**
  * Records a human approval for one amending acceptance checkpoint.
@@ -849,6 +860,12 @@ export type RecordAcceptanceApprovalOutcome =
  * issued. Approving the original contract is refused: there is nothing to
  * authorize, and accepting it would put a meaningless row in the table that a
  * later reader could mistake for consent to a change.
+ *
+ * The write path refuses to let one acceptance ID carry two different bodies in
+ * a campaign, so there is normally exactly one body to bind to. If a row
+ * predating that guard makes the ID ambiguous, this refuses rather than picking
+ * one: choosing the newest would authorize a body the approver never saw, which
+ * is the whole failure this record exists to prevent.
  */
 export function recordAcceptanceApproval(
   db: Db,
@@ -862,7 +879,7 @@ export function recordAcceptanceApproval(
   return db.transaction((): RecordAcceptanceApprovalOutcome => {
     const campaignId = campaignIdForRun(db, input.runId);
     if (campaignId === null) return { kind: "unknown_acceptance" };
-    const row = db
+    const rows = db
       .prepare(
         `SELECT checkpoint.checkpoint_json AS checkpointJson
          FROM workflow_checkpoints AS checkpoint
@@ -871,16 +888,24 @@ export function recordAcceptanceApproval(
            AND checkpoint.checkpoint_id = ?
            AND CASE WHEN json_valid(checkpoint.checkpoint_json)
                     THEN json_extract(checkpoint.checkpoint_json, '$.kind')
-               END = 'acceptance'
-         ORDER BY run.created_at DESC, run.rowid DESC, checkpoint.ordinal DESC
-         LIMIT 1`,
+               END = 'acceptance'`,
       )
-      .get(campaignId, input.acceptanceCheckpointId) as
-      | { checkpointJson: string }
-      | undefined;
-    if (row === undefined) return { kind: "unknown_acceptance" };
-    const acceptance = readStoredAcceptance(row.checkpointJson);
-    if (acceptance === null) return { kind: "unknown_acceptance" };
+      .all(campaignId, input.acceptanceCheckpointId) as {
+      checkpointJson: string;
+    }[];
+    const candidates = rows.flatMap((row) => {
+      const parsed = readStoredAcceptance(row.checkpointJson);
+      return parsed === null ? [] : [parsed];
+    });
+    const acceptance = candidates[0];
+    if (acceptance === undefined) return { kind: "unknown_acceptance" };
+    if (
+      candidates.some(
+        (candidate) => candidate.canonical !== acceptance.canonical,
+      )
+    ) {
+      return { kind: "ambiguous_body" };
+    }
     if (acceptance.supersedes === null) return { kind: "not_an_amendment" };
     const result = db
       .prepare(
@@ -904,6 +929,7 @@ export function recordAcceptanceApproval(
       kind: "approved",
       newlyApproved: result.changes > 0,
       supersedes: acceptance.supersedes,
+      contractCanonical: acceptance.canonical,
     };
   })();
 }
@@ -924,13 +950,18 @@ export function recordAcceptanceApproval(
  * close, so it counts as open: a typo in `requiresClosed` blocks the gate
  * loudly rather than quietly disabling it.
  */
-function gateRequirementsLeftOpen(
+/**
+ * Reads the campaign checkpoints the coverage derivation needs, ordered exactly
+ * like the panel's read so both resolve the same contract head.
+ */
+function campaignCoverageInputs(
   db: Db,
-  args: { runId: string; checkpointId: string },
-): string[] {
+  runId: string,
+): readonly WorkflowCheckpoint[] {
   const rows = db
     .prepare(
-      `SELECT checkpoint.checkpoint_json AS checkpointJson
+      `SELECT checkpoint.checkpoint_id AS checkpointId,
+              checkpoint.checkpoint_json AS checkpointJson
        FROM workflow_checkpoints AS checkpoint
        JOIN workflow_runs AS run ON run.id = checkpoint.run_id
        WHERE COALESCE(run.campaign_id, run.id) = (
@@ -939,44 +970,105 @@ function gateRequirementsLeftOpen(
          AND CASE WHEN json_valid(checkpoint.checkpoint_json)
                   THEN json_extract(checkpoint.checkpoint_json, '$.kind')
              END IN ('acceptance', 'plan', 'work-item', 'verification')
-       ORDER BY run.created_at ASC, run.rowid ASC, checkpoint.ordinal ASC`,
+       ORDER BY run.created_at ASC, run.rowid ASC, checkpoint.ordinal ASC
+       LIMIT ?`,
     )
-    .all(args.runId) as { checkpointJson: string }[];
-  const checkpoints = rows.flatMap((row) => {
+    .all(runId, MAX_WORKFLOW_COVERAGE_CHECKPOINTS) as {
+    checkpointId: string;
+    checkpointJson: string;
+  }[];
+  // The row's `checkpoint_id` is authoritative here, not the `id` inside the
+  // body. Uniqueness, the gate this guard is keyed on, and the ID an amendment
+  // supersedes are all that column; taking identity from the body would let a
+  // checkpoint filed under one ID be read as another.
+  return rows.flatMap((row) => {
     const parsed = readStoredCheckpoint(row.checkpointJson);
-    return parsed === null ? [] : [parsed];
+    return parsed === null ? [] : [{ ...parsed, id: row.checkpointId }];
   });
+}
 
-  // Last plan wins for a given item ID, matching how coverage resolves a work
-  // item back to its declaration when an older plan was superseded.
-  let gateRequirements: readonly string[] | undefined;
-  for (const checkpoint of checkpoints) {
-    if (checkpoint.kind !== "plan") continue;
-    const item = checkpoint.items.find(
-      (entry) => entry.id === args.checkpointId,
-    );
-    if (item === undefined) continue;
-    gateRequirements =
-      item.nodeType === "gate" ? (item.requiresClosed ?? []) : undefined;
-  }
-  if (gateRequirements === undefined || gateRequirements.length === 0)
-    return [];
-
-  // Approvals are read here for the same reason coverage reads them: an
-  // unapproved amendment must not be able to redefine the criteria a gate
-  // requires, which would let a workflow open its own gate by rewriting what
-  // done means.
-  const campaignId = campaignIdForRun(db, args.runId);
-  const coverage = deriveAcceptanceCoverage(
-    checkpoints,
+/** The campaign's open gates, as the reader's coverage reports them. */
+function openGatesForCampaign(
+  db: Db,
+  runId: string,
+): readonly { gateId: string; openCriterionIds: readonly string[] }[] {
+  const campaignId = campaignIdForRun(db, runId);
+  return deriveOpenGates(
+    campaignCoverageInputs(db, runId),
     campaignId === null ? [] : listAcceptanceApprovals(db, { campaignId }),
   );
-  const closed = new Set(
-    (coverage?.criteria ?? [])
-      .filter((criterion) => criterion.state === "closed")
-      .map((criterion) => criterion.id),
+}
+
+function gateRequirementsLeftOpen(
+  db: Db,
+  args: { runId: string; checkpointId: string },
+): string[] {
+  // One definition of what a gate requires and of what "closed" means: the
+  // refusal below and the `openGates` a reader sees are the same computation.
+  // Resolving the requirement separately here is exactly how the two drifted —
+  // a sticky per-item walk refused gates that coverage reported as clear, so an
+  // agent was blocked with no readable explanation anywhere.
+  //
+  // Approvals are read for the same reason coverage reads them: an unapproved
+  // amendment must not be able to redefine the criteria a gate requires, which
+  // would let a workflow open its own gate by rewriting what done means.
+  return (
+    openGatesForCampaign(db, args.runId)
+      .find((gate) => gate.gateId === args.checkpointId)
+      ?.openCriterionIds.slice() ?? []
   );
-  return gateRequirements.filter((id) => !closed.has(id));
+}
+
+/**
+ * Returns the gate requirements an incoming plan would drop while the criteria
+ * they name are still open AND still declared by the approved contract.
+ *
+ * Without this the gate is the weakest link in the chain it belongs to: the
+ * contract needs a human approval to narrow, but a plan that gates on the
+ * contract could be republished with the gate demoted to a work node, by the
+ * same agent, through the same tool. That is the agent-writable anchor this
+ * ledger exists to remove, one level out.
+ *
+ * A criterion the approved contract no longer declares may be dropped freely.
+ * The approval is what authorized that, and requiring the plan to keep waiting
+ * on a criterion nobody declares any more would deadlock the legitimate
+ * two-step change instead of recording it.
+ */
+function gateWeakeningsInPlan(
+  db: Db,
+  args: {
+    runId: string;
+    incoming: readonly {
+      id: string;
+      nodeType?: "work" | "gate";
+      requiresClosed?: string[];
+    }[];
+  },
+): { gateId: string; droppedCriterionIds: string[] }[] {
+  const checkpoints = campaignCoverageInputs(db, args.runId);
+  const campaignId = campaignIdForRun(db, args.runId);
+  const approvals =
+    campaignId === null ? [] : listAcceptanceApprovals(db, { campaignId });
+  const coverage = deriveAcceptanceCoverage(checkpoints, approvals);
+  // No contract, nothing to protect: there is no approval that could authorize
+  // dropping a requirement, so requiring one here would be unsatisfiable. The
+  // gate itself still fails closed while it exists.
+  if (coverage === null) return [];
+  const declaredIds = new Set(
+    coverage.criteria.map((criterion) => criterion.id),
+  );
+  return deriveOpenGates(checkpoints, approvals).flatMap((gate) => {
+    const item = args.incoming.find((entry) => entry.id === gate.gateId);
+    const requiredNow =
+      item?.nodeType === "gate" ? (item.requiresClosed ?? []) : [];
+    const dropped = gate.openCriterionIds.filter(
+      (criterionId) =>
+        declaredIds.has(criterionId) && !requiredNow.includes(criterionId),
+    );
+    return dropped.length === 0
+      ? []
+      : [{ gateId: gate.gateId, droppedCriterionIds: dropped }];
+  });
 }
 
 export function upsertWorkflowCheckpoint(
@@ -1045,6 +1137,26 @@ export function upsertWorkflowCheckpoint(
       })
     ) {
       return "acceptance_conflict";
+    }
+    // A plan may not retire a gate the campaign is still stuck behind. Without
+    // this, the human approval that guards the contract guards nothing: the
+    // same agent could demote the gate to a work node through the same tool.
+    if (incoming.kind === "plan") {
+      const parsed = readStoredCheckpoint(input.checkpointJson);
+      const weakened =
+        parsed?.kind === "plan"
+          ? gateWeakeningsInPlan(db, {
+              runId: input.runId,
+              incoming: parsed.items,
+            })[0]
+          : undefined;
+      if (weakened !== undefined) {
+        return {
+          kind: "gate_weakened" as const,
+          gateId: weakened.gateId,
+          droppedCriterionIds: weakened.droppedCriterionIds,
+        };
+      }
     }
     // Only a claim of success is gated. A gate reported as failed, blocked, or
     // still running is exactly the honest reporting this is meant to encourage.

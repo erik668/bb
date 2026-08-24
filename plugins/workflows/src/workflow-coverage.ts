@@ -42,11 +42,18 @@ const acceptanceCriterionCoverageSchema = z
   .strict();
 
 /**
- * Where an approval was issued from. This is the whole security property: a
- * workflow worker's tool list is exactly `bb_workflow_checkpoint` and
- * `bb_workflow_result`, so neither surface below is reachable from the path
- * that publishes the amendment. Recorded rather than inferred, because "who
- * could have done this" is the question a reviewer actually asks.
+ * Where an approval was issued from.
+ *
+ * Neither surface is an agent tool: the workflow plugin registers only
+ * `bb_workflow_checkpoint` and `bb_workflow_result`, so an amending workflow
+ * cannot approve itself through the path that published the amendment. That is
+ * a narrower claim than it looks. `PluginAgentConfiguration.tools` selects
+ * among *this plugin's* tools and cannot take away the host's shell, so a
+ * worker with a terminal can still reach the CLI — which is why the service
+ * refuses an approval issued from a workflow worker thread, and why the surface
+ * and the approving thread are recorded rather than inferred. This is
+ * tamper-evidence: an agent determined to route around it can, and the record
+ * is what makes that visible to the reviewer asking "who did this".
  */
 export const WORKFLOW_APPROVAL_SURFACES = ["panel", "cli"] as const;
 
@@ -84,6 +91,26 @@ const acceptanceAmendmentRecordSchema = z
     /** The acceptance checkpoint it replaced, still readable in the ledger. */
     supersedes: z.string(),
     reason: z.string(),
+    /**
+     * The contract this amendment proposes. Carried because an approver has to
+     * see what they are agreeing to: the ID and the amending agent's own reason
+     * do not say which outcomes the change adds or drops. `detail` is included
+     * because `canonicalizeAcceptanceCriteria` counts it as part of the
+     * contract, and a deleted qualifier narrows done without changing a
+     * statement.
+     */
+    criteria: z.array(
+      z
+        .object({
+          id: z.string(),
+          statement: z.string(),
+          provenBy: workflowAcceptanceProvenBySchema,
+          detail: z.string().nullable(),
+        })
+        .strict(),
+    ),
+    /** Canonical form of `criteria`; an approval binds to this exact string. */
+    contractCanonical: z.string(),
   })
   .strict();
 
@@ -184,6 +211,65 @@ export type WorkflowApprovalSurface = z.infer<
 export type AcceptanceOpenGate = z.infer<typeof openGateSchema>;
 
 /**
+ * The one definition of "which gates is this campaign still stuck behind",
+ * shared by the `openGates` a reader sees and the write guard that refuses a
+ * gate's success. Two definitions is how those drifted before: a separate walk
+ * on the write path refused gates that coverage reported as clear, so an agent
+ * was blocked with nothing readable anywhere that explained why.
+ *
+ * A required criterion that no contract declares can never close, so it counts
+ * as open and is also reported as an unknown reference — that is what explains
+ * the stuck gate.
+ */
+function gatesLeftOpen(args: {
+  planItems: readonly {
+    id: string;
+    nodeType?: "work" | "gate";
+    requiresClosed?: string[];
+  }[];
+  closedCriterionIds: ReadonlySet<string>;
+  declaredCriterionIds: ReadonlySet<string>;
+  unknownReferences?: Set<string>;
+}): AcceptanceOpenGate[] {
+  return args.planItems.flatMap((item) => {
+    if (item.nodeType !== "gate") return [];
+    const required = item.requiresClosed ?? [];
+    for (const criterionId of required) {
+      if (!args.declaredCriterionIds.has(criterionId)) {
+        args.unknownReferences?.add(criterionId);
+      }
+    }
+    const openCriterionIds = required.filter(
+      (criterionId) => !args.closedCriterionIds.has(criterionId),
+    );
+    return openCriterionIds.length === 0
+      ? []
+      : [{ gateId: item.id, openCriterionIds }];
+  });
+}
+
+/**
+ * The campaign's open gates, including the case coverage cannot report: a
+ * campaign with no acceptance contract at all. Nothing can close a criterion
+ * that no contract declares, so every requirement such a gate names stays open
+ * — a gate declared against a criterion that does not exist fails closed
+ * instead of quietly passing.
+ */
+export function deriveOpenGates(
+  checkpoints: readonly WorkflowCheckpoint[],
+  approvals: readonly AcceptanceApproval[],
+): readonly AcceptanceOpenGate[] {
+  const coverage = deriveAcceptanceCoverage(checkpoints, approvals);
+  if (coverage !== null) return coverage.openGates;
+  const plans = checkpoints.filter((checkpoint) => checkpoint.kind === "plan");
+  return gatesLeftOpen({
+    planItems: plans.at(-1)?.items ?? [],
+    closedCriterionIds: new Set(),
+    declaredCriterionIds: new Set(),
+  });
+}
+
+/**
  * Derives coverage from one campaign's checkpoints in chronological order.
  *
  * Returns `null` when the campaign declared no acceptance contract. Absence is
@@ -238,6 +324,13 @@ export function deriveAcceptanceCoverage(
         acceptanceId: later.id,
         supersedes: amends.supersedes,
         reason: amends.reason,
+        criteria: later.criteria.map((criterion) => ({
+          id: criterion.id,
+          statement: criterion.statement,
+          provenBy: criterion.provenBy,
+          detail: criterion.detail,
+        })),
+        contractCanonical: canonical,
       };
       // Matched on the body as well as the ID: approving one set of criteria
       // must not bless a different set republished later.
@@ -352,18 +445,11 @@ export function deriveAcceptanceCoverage(
       .filter((criterion) => criterion.state === "closed")
       .map((criterion) => criterion.id),
   );
-  const openGates = (currentPlan?.items ?? []).flatMap((item) => {
-    if (item.nodeType !== "gate") return [];
-    const required = item.requiresClosed ?? [];
-    for (const criterionId of required) {
-      if (!declaredIds.has(criterionId)) unknownReferences.add(criterionId);
-    }
-    const openCriterionIds = required.filter(
-      (criterionId) => !closedCriterionIds.has(criterionId),
-    );
-    return openCriterionIds.length === 0
-      ? []
-      : [{ gateId: item.id, openCriterionIds }];
+  const openGates = gatesLeftOpen({
+    planItems: currentPlan?.items ?? [],
+    closedCriterionIds,
+    declaredCriterionIds: declaredIds,
+    unknownReferences,
   });
 
   const orphanWorkItemIds: string[] = [];

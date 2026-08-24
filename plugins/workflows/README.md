@@ -125,9 +125,12 @@ same body is always accepted, criterion order is not part of the contract, and
 `detail` is. Declaring an amendment is not authorizing one: coverage keeps
 measuring the approved contract and lists the change under `pendingAmendments`
 until a person approves it through the workflow panel or `bb workflows
-approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>`. A worker's
-tool list is exactly the checkpoint and result tools, so that approval is
-outside the path a drifting workflow can reach. Each approval records the
+approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>`. The plugin
+registers no approval tool, but selecting a plugin's tools does not take the
+host's shell away from a worker, so the CLI is reachable from inside a running
+workflow; the service refuses an approval issued from a workflow worker thread,
+which is what keeps a run from authorizing its own scope change. Each approval
+records the
 approving thread and the surface it came from and binds to the canonical
 criteria body it was issued against, so republishing different criteria under an
 already-approved checkpoint ID needs a new approval. Coverage measures the head
@@ -135,7 +138,10 @@ of the approved amendment chain and re-derives that chain on read, so a contract
 changed by writing to the database directly is reported rather than adopted.
 An approved narrowing does not by itself open a gate whose `requiresClosed`
 still names the dropped criterion; the plan has to be restated too, so both
-changes are on the record. Plan and work-item checkpoints may publish
+changes are on the record. A plan that drops a gate's open requirements while
+the approved contract still declares them is refused, so the gate is no easier
+to retire than the contract behind it; `requiresClosed: []` is refused as
+well, since a gate that gates nothing still reads as one. Plan and work-item checkpoints may publish
 bounded `dependsOn` edges; plan-local dependencies must reference known items
 and remain acyclic. Work items may be typed as work or gate nodes. A gate item
 may declare `requiresClosed`, the criteria it refuses to pass while any of them

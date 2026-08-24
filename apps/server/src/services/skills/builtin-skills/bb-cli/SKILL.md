@@ -699,7 +699,9 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
   approved contract and the amendment is listed under `pendingAmendments`. The
   approval records the approving thread and surface and is bound to the exact
   criteria body it was issued against, so republishing different criteria under
-  the same checkpoint ID needs a new approval.
+  the same checkpoint ID needs a new approval. The command is refused from a
+  workflow worker thread and from another project: the point of the record is
+  that a person outside the run issued it.
 - Before choosing an explicit provider/model/reasoning tuple, run `bb provider
 list --environment "$BB_ENVIRONMENT_ID" --json`, then query only the chosen
   provider with `bb provider models <provider-id> --environment

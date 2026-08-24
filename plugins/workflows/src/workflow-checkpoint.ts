@@ -188,6 +188,17 @@ const planCheckpointSchema = z
           path: ["items", index, "requiresClosed"],
         });
       }
+      // `requiresClosed: []` is a gate that gates nothing — a field the write
+      // path reads and the plan does not mean, which AGENTS.md forbids
+      // accepting and ignoring.
+      if (item.nodeType === "gate" && item.requiresClosed?.length === 0) {
+        context.addIssue({
+          code: "custom",
+          message:
+            "requiresClosed must name at least one acceptance criterion; omit it for a gate that only orders plan dependencies",
+          path: ["items", index, "requiresClosed"],
+        });
+      }
       const dependencies = item.dependsOn ?? [];
       for (
         let dependencyIndex = 0;
@@ -360,15 +371,6 @@ const storedAcceptanceSchema = z
   .passthrough();
 
 /**
- * Reads an acceptance body out of a stored checkpoint row for the write guard.
- *
- * The data layer holds raw JSON rather than a parsed checkpoint, so the parse
- * happens here, at that boundary, instead of casting there. Returns null when
- * the row carries no readable acceptance body: malformed JSON and rows written
- * outside the tool path cannot be compared, and the guard treats an
- * uncomparable row as absent rather than as a match.
- */
-/**
  * Parses a whole stored checkpoint row, for guards that need more than the
  * acceptance body — the gate guard has to read plan items and verification
  * results back out of the ledger.
@@ -389,6 +391,16 @@ export function readStoredCheckpoint(json: string): WorkflowCheckpoint | null {
   return parsed.success ? parsed.data : null;
 }
 
+/**
+ * Reads just the acceptance body out of a stored checkpoint row, for the
+ * immutability guard.
+ *
+ * The data layer holds raw JSON rather than a parsed checkpoint, so the parse
+ * happens here, at that boundary, instead of casting there. Returns null when
+ * the row carries no readable acceptance body: malformed JSON and rows written
+ * outside the tool path cannot be compared, and the guard treats an
+ * uncomparable row as absent rather than as a match.
+ */
 export function readStoredAcceptance(
   json: string,
 ): { canonical: string; supersedes: string | null } | null {

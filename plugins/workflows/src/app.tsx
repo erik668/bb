@@ -1614,6 +1614,21 @@ function PendingAmendments({
             </span>{" "}
             would replace {amendment.supersedes}: {amendment.reason}
           </p>
+          {/* The proposed criteria, not just the amending agent's summary of
+              them. Approving binds the contract to this body, so the approver
+              has to be able to read the body. */}
+          <ul className="mt-1 space-y-0.5">
+            {amendment.criteria.map((criterion) => (
+              <li
+                key={criterion.id}
+                className="text-2xs leading-relaxed text-muted-foreground"
+              >
+                <span className="text-foreground">{criterion.id}</span>{" "}
+                &middot; {criterion.provenBy} &mdash; {criterion.statement}
+                {criterion.detail === null ? null : ` (${criterion.detail})`}
+              </li>
+            ))}
+          </ul>
           <Button
             type="button"
             variant="outline"

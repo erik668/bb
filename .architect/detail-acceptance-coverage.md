@@ -159,14 +159,18 @@ Declaring a change is not authorizing one. A declared amendment is now
 **accepted but inert**: stored, readable, listed as `pendingAmendments`, and not
 what coverage measures. It becomes the contract only when an approval exists.
 
-Why this is a real gate rather than another self-attestation: the workflow
-worker's tool list is exactly `["bb_workflow_checkpoint", "bb_workflow_result"]`
-(`server.ts`), so an approval reachable only through the UI RPC and the CLI is
-structurally outside the path a drifting workflow can use. This is still
-tamper-**evidence** — an agent with shell access can reach the CLI — but the
-approval names the thread it came from and the surface (`panel` | `cli`), both
-set by the entry point and never by the caller's payload. A self-reported actor
-string is exactly what this replaces.
+Why this is a real gate rather than another self-attestation — stated honestly,
+because the first version of this note overclaimed. `PluginAgentConfiguration.tools`
+is a per-plugin *selection*; it does not take the host's shell away from a worker,
+so a worker can in principle run `bb workflows approve-amendment` itself. The
+property that actually holds is refusal by **provenance**: both entry points
+resolve the calling thread and refuse it if `getCallByChildThread` says it is a
+worker on this run, and the CLI additionally refuses a run outside the caller's
+project. The approval names the thread it came from and the surface
+(`panel` | `cli`), both set by the entry point and never by the caller's payload.
+So this is tamper-**evidence**, not a sandbox: a worker that shells out gets a
+refusal on the record rather than an approval. A self-reported actor string is
+exactly what this replaces.
 
 - **Bound to the body, not just the ID.** The approval stores
   `canonicalizeAcceptanceCriteria` of what was approved, so approving one set of
@@ -197,6 +201,41 @@ to be restated without that requirement, so both the contract change and the
 gate change are on the record. Tested on both sides
 (`workflow-coverage.test.ts`, `data.test.ts`).
 
+Three further refusals close the ways that gate could have been walked around:
+
+- **`gate_weakened`** — a gate is as hard to weaken as the contract it guards, so
+  a plan that retires a gate the campaign is currently stuck behind is refused,
+  whether it demotes the gate to a work node, drops a `requiresClosed` entry, or
+  deletes the item outright. The carve-out is the legitimate two-step change: a
+  requirement the *approved* contract no longer declares may be dropped freely,
+  or "approve the narrowing, then restate the plan" would deadlock.
+- **`ambiguous_body`** — `workflow_checkpoints` is `UNIQUE(run_id, checkpoint_id)`,
+  so a sibling run in the same campaign can file its own row under an acceptance
+  ID that a *declared* amendment then supersedes. When one ID names two bodies the
+  approval is refused rather than resolved to the newest row: one ID must name one
+  body, and ambiguity fails closed.
+- **`requiresClosed: []`** is refused by the schema. An empty list is a gate that
+  gates nothing, which reads as a gate on the plan and is not one.
+
+The write guard and the readable `openGates` are now the same gate-walk
+(`gatesLeftOpen`), so the thing the panel shows and the thing the refusal
+enforces cannot drift apart. `deriveOpenGates` wraps it for the no-contract case,
+where every requirement is open.
+
 ## Still deferred, with reasons
 
 - Composer status line and precondition budgets: unbuilt by design.
+- **Splitting `approveAmendment` into two entry points** so `surface` is
+  structurally underivable rather than a parameter the two callers each pass
+  correctly. Deferred: the parameter is set at the server boundary and never
+  read from a caller payload, and the two call sites are asserted end to end
+  (`server-harness.test.ts`). Worth doing if a third surface appears.
+- **The `JSON.parse(...) as { kind; status }` cast in `upsertWorkflowCheckpoint`.**
+  Deferred deliberately: it re-reads a body this same function has already
+  validated against `workflowCheckpointSchema` on the way in, so it is not an
+  external boundary. Parsing twice would be the honest fix; the cast is
+  contained to one function and does not widen.
+- **`HOST_DAEMON_PROTOCOL_VERSION` stays at 146.** Nothing on the server/daemon
+  wire changed: this plugin's RPC contract travels inside an unchanged daemon
+  envelope, and after projecting the service's extra `contractCanonical` away in
+  `server.ts` the RPC's output shape is unchanged as well.

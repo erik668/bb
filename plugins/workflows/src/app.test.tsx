@@ -3,6 +3,10 @@ import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
 import type { WorkflowAcceptanceCoverage } from "./workflow-coverage.js";
+import {
+  canonicalizeAcceptanceCriteria,
+  type WorkflowAcceptanceCriterion,
+} from "./workflow-checkpoint.js";
 import type { WorkflowCheckpointView, WorkflowRunView } from "./ui-contract.js";
 
 const app = await loadPluginApp(() => import("./app"));
@@ -18,6 +22,28 @@ const message = {
   turnId: "turn_1",
   projectId: "proj_1",
 };
+
+// The body a `Drop the sealed-result outcome` amendment proposes, plus its
+// canonical form from the production canonicalizer — re-typing the canonical
+// string here would let the fixture and the contract disagree silently.
+const droppedSealedResult: WorkflowAcceptanceCriterion[] = [
+  {
+    id: "cli-runs-two-cases",
+    statement: "An engineer runs two synthetic cases from one command.",
+    provenBy: "command",
+    detail: null,
+  },
+];
+const droppedSealedResultCanonical =
+  canonicalizeAcceptanceCriteria(droppedSealedResult);
+const movedCliOutcome: WorkflowAcceptanceCriterion[] = [
+  {
+    id: "sealed-result",
+    statement: "A cancelled job still yields a sealed result.",
+    provenBy: "artifact",
+    detail: null,
+  },
+];
 
 const run: WorkflowRunView = {
   id: "wfr_11111111-1111-4111-8111-111111111111",
@@ -1081,6 +1107,9 @@ describe("workflow thread panel", () => {
                     acceptanceId: "phase-0-acceptance-v2",
                     supersedes: "phase-0-acceptance",
                     reason: "The CLI outcome moved to phase 1",
+                    criteria: movedCliOutcome,
+                    contractCanonical:
+                      canonicalizeAcceptanceCriteria(movedCliOutcome),
                     approval: {
                       approvedByThreadId: "thread-1",
                       surface: "panel",
@@ -1093,6 +1122,8 @@ describe("workflow thread panel", () => {
                     acceptanceId: "phase-0-acceptance-v4",
                     supersedes: "phase-0-acceptance-v2",
                     reason: "Drop the sealed-result outcome",
+                    criteria: droppedSealedResult,
+                    contractCanonical: droppedSealedResultCanonical,
                   },
                 ],
                 unauthorizedAcceptanceIds: ["phase-0-acceptance-v3"],
@@ -1185,6 +1216,8 @@ describe("workflow thread panel", () => {
           acceptanceId: "phase-0-acceptance-v2",
           supersedes: "phase-0-acceptance",
           reason: "Drop the sealed-result outcome",
+          criteria: droppedSealedResult,
+          contractCanonical: droppedSealedResultCanonical,
         },
       ],
       unauthorizedAcceptanceIds: [],
@@ -1226,6 +1259,8 @@ describe("workflow thread panel", () => {
                         acceptanceId: "phase-0-acceptance-v2",
                         supersedes: "phase-0-acceptance",
                         reason: "Drop the sealed-result outcome",
+                        criteria: droppedSealedResult,
+                        contractCanonical: droppedSealedResultCanonical,
                         approval: {
                           approvedByThreadId: "thr_origin",
                           surface: "panel",
@@ -1253,6 +1288,17 @@ describe("workflow thread panel", () => {
         },
       },
     );
+
+    // What the approver is agreeing to has to be on screen: the ID and the
+    // amending agent's own reason do not say which outcomes the change keeps.
+    expect(
+      await slot.findByText(
+        (_, element) =>
+          element?.tagName === "LI" &&
+          element.textContent ===
+            "cli-runs-two-cases · command — An engineer runs two synthetic cases from one command.",
+      ),
+    ).toBeTruthy();
 
     fireEvent.click(
       await slot.findByRole("button", { name: "Approve amendment" }),

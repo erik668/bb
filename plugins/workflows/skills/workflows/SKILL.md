@@ -176,15 +176,18 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   replaces. Publishing that amendment does not put it into effect: it is stored
   and shown to the human with its reason, but coverage keeps measuring the
   approved contract until a person approves the change from the workflow panel
-  or with `bb workflows approve-amendment`. You cannot issue that approval —
-  your tools are the checkpoint and result tools — so treat a scope change as a
-  request, say plainly in `reason` what you want to change and why, and keep
+  or with `bb workflows approve-amendment`. That command is refused when it is
+  issued from a workflow worker thread, so running it yourself does not approve
+  anything and leaves a refusal on the record. Treat a scope change as a
+  request: say plainly in `reason` what you want to change and why, and keep
   working against the approved contract meanwhile. Amending is not a way to make
   a shortfall disappear: if the outcome is simply not met, leave the contract
   alone and report a blocked work item. An approved narrowing also does not open
   a gate whose `requiresClosed` still names the dropped criterion; restate the
-  plan without that requirement. Enforcement is campaign-wide, so a child run
-  cannot publish its own contract either.
+  plan without that requirement. Republishing the plan with a gate's
+  requirements dropped while they are still open is refused for the same
+  reason — report the gate as blocked instead. Enforcement is campaign-wide, so
+  a child run cannot publish its own contract either.
   Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
   run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass

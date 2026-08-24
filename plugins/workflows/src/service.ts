@@ -15,6 +15,7 @@ import {
   claimQueuedRun,
   countCallsForRun,
   countRunsForCampaign,
+  type UpsertWorkflowCheckpointOutcome,
   createRun,
   deleteExpiredTerminalRuns,
   getCall,
@@ -375,8 +376,20 @@ const ACCEPTANCE_CONFLICT_GUIDANCE =
  * Both legal moves are stated, because the wrong lesson to draw from a refused
  * gate is that the gate should be deleted.
  */
-function gateConflictGuidance(openCriterionIds: readonly string[]): string {
-  return `This gate requires acceptance criteria that are still open: ${openCriterionIds.join(", ")}. Close each one with a succeeded verification checkpoint naming it in \`acceptanceId\`, or report this gate as blocked rather than succeeded.`;
+/**
+ * One place that phrases a structured checkpoint refusal, so the two publish
+ * paths cannot tell an agent two different things about the same guard. Each
+ * message names the legal move rather than diagnosing the attempt.
+ */
+function checkpointRefusalGuidance(
+  outcome: Exclude<UpsertWorkflowCheckpointOutcome, string>,
+): string {
+  switch (outcome.kind) {
+    case "gate_conflict":
+      return `This gate requires acceptance criteria that are still open: ${outcome.openCriterionIds.join(", ")}. Close each one with a succeeded verification checkpoint naming it in \`acceptanceId\`, or report this gate as blocked rather than succeeded.`;
+    case "gate_weakened":
+      return `This plan drops what gate ${outcome.gateId} waits on while ${outcome.droppedCriterionIds.join(", ")} ${outcome.droppedCriterionIds.length === 1 ? "is" : "are"} still open. Keep the requirement and report the gate as blocked, or ask a person to approve an amendment that drops the criteria from the contract first.`;
+  }
 }
 
 function serializeWorkflowCheckpoint(value: unknown): {
@@ -1786,7 +1799,7 @@ export function createWorkflowService(
     if (outcome !== "accepted") {
       const error =
         typeof outcome !== "string"
-          ? gateConflictGuidance(outcome.openCriterionIds)
+          ? checkpointRefusalGuidance(outcome)
           : outcome === "inactive"
             ? "This workflow call is no longer active"
             : outcome === "ownership_conflict"
@@ -2034,7 +2047,7 @@ export function createWorkflowService(
           sourceCallId: null,
         });
         if (typeof outcome !== "string") {
-          throw new Error(gateConflictGuidance(outcome.openCriterionIds));
+          throw new Error(checkpointRefusalGuidance(outcome));
         }
         if (outcome === "inactive")
           throw new Error("Workflow is no longer active");
@@ -2223,7 +2236,23 @@ export function createWorkflowService(
     acceptanceId: string;
     approvedByThreadId: string;
     surface: WorkflowApprovalSurface;
-  }): { acceptanceId: string; supersedes: string; newlyApproved: boolean } {
+  }): {
+    acceptanceId: string;
+    supersedes: string;
+    newlyApproved: boolean;
+    contractCanonical: string;
+  } {
+    // The one refusal that makes this an approval rather than a second
+    // self-attestation. Selecting this plugin's tools does not take the host's
+    // shell away from a worker, so `bb workflows approve-amendment` is reachable
+    // from inside a running workflow; a worker approving its own scope change is
+    // the drift this ledger exists to expose, so it is refused by provenance.
+    const workerCall = getCallByChildThread(db, input.approvedByThreadId);
+    if (workerCall !== null) {
+      throw new Error(
+        "A workflow worker thread cannot approve an acceptance amendment; approve it from the run's panel or from your own thread",
+      );
+    }
     const outcome = recordAcceptanceApproval(db, {
       runId: input.runId,
       acceptanceCheckpointId: input.acceptanceId,
@@ -2240,6 +2269,11 @@ export function createWorkflowService(
         `Acceptance checkpoint ${input.acceptanceId} declares no amendment, so there is nothing to approve`,
       );
     }
+    if (outcome.kind === "ambiguous_body") {
+      throw new Error(
+        `Acceptance checkpoint ${input.acceptanceId} carries more than one set of criteria in this campaign, so approving it would authorize a contract nobody read`,
+      );
+    }
     const run = getRun(db, input.runId);
     // The panel measures coverage against the approved contract, so a run that
     // is still going needs to see the change without waiting for its next write.
@@ -2248,6 +2282,7 @@ export function createWorkflowService(
       acceptanceId: input.acceptanceId,
       supersedes: outcome.supersedes,
       newlyApproved: outcome.newlyApproved,
+      contractCanonical: outcome.contractCanonical,
     };
   }
 

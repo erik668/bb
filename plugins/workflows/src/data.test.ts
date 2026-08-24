@@ -34,6 +34,8 @@ import {
 import {
   MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
   MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+  canonicalizeAcceptanceCriteria,
+  type WorkflowAcceptanceCriterion,
 } from "./workflow-checkpoint.js";
 
 describe("workflow durable data", () => {
@@ -544,6 +546,17 @@ describe("workflow durable data", () => {
   // The acceptance contract is the only checkpoint the campaign is measured
   // against, so these guard the write path that keeps an orchestrator from
   // quietly agreeing with itself.
+  function acceptanceCriteria(
+    ids: readonly string[],
+  ): WorkflowAcceptanceCriterion[] {
+    return ids.map((id) => ({
+      id,
+      statement: `Criterion ${id} holds`,
+      provenBy: "command",
+      detail: null,
+    }));
+  }
+
   function acceptanceJson(
     criteria: readonly string[],
     amends?: { supersedes: string; reason: string },
@@ -554,12 +567,7 @@ describe("workflow durable data", () => {
       title: "Acceptance",
       status: "succeeded",
       summary: null,
-      criteria: criteria.map((id) => ({
-        id,
-        statement: `Criterion ${id} holds`,
-        provenBy: "command",
-        detail: null,
-      })),
+      criteria: acceptanceCriteria(criteria),
       ...(amends === undefined ? {} : { amends }),
     });
   }
@@ -722,6 +730,38 @@ describe("workflow durable data", () => {
         runId: later.id,
         checkpointId: "campaign-acceptance-run-2",
         checkpointJson: acceptanceJson(["containment"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("acceptance_conflict");
+
+    // The sibling-run vector a run-scoped guard lets through. This amendment
+    // names a predecessor the campaign really published, so the chain check
+    // passes; what it also does is reuse an acceptance ID that already holds a
+    // different body in another run. Rows are unique per (run_id,
+    // checkpoint_id), so nothing is overwritten — the ID simply comes to name
+    // two contracts, and an approval issued against the body a reader saw
+    // would silently authorize the other.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: first.id,
+        checkpointId: "campaign-acceptance-v2",
+        checkpointJson: acceptanceJson(["containment"], {
+          supersedes: "campaign-acceptance",
+          reason: "Narrowed to containment",
+        }),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: later.id,
+        checkpointId: "campaign-acceptance-v2",
+        checkpointJson: acceptanceJson(["anything-goes"], {
+          supersedes: "campaign-acceptance",
+          reason: "Narrowed to containment",
+        }),
         phase: "Acceptance",
         sourceCallId: null,
       }),
@@ -950,16 +990,23 @@ describe("workflow durable data", () => {
     expect(approve("campaign-acceptance")).toEqual({
       kind: "not_an_amendment",
     });
+    // The canonical body comes back with the approval, so a caller can show
+    // which contract it just bound to instead of only its ID.
+    const approvedBody = canonicalizeAcceptanceCriteria(
+      acceptanceCriteria(["cli"]),
+    );
     expect(approve("campaign-acceptance-v2")).toEqual({
       kind: "approved",
       newlyApproved: true,
       supersedes: "campaign-acceptance",
+      contractCanonical: approvedBody,
     });
     // Clicking twice is not two approvals.
     expect(approve("campaign-acceptance-v2")).toEqual({
       kind: "approved",
       newlyApproved: false,
       supersedes: "campaign-acceptance",
+      contractCanonical: approvedBody,
     });
 
     expect(
@@ -1002,6 +1049,130 @@ describe("workflow durable data", () => {
     expect(listAcceptanceApprovals(db, { campaignId: run.campaignId })).toEqual(
       [],
     );
+  });
+
+  it("refuses to approve an acceptance ID that names two bodies", () => {
+    const run = newRun();
+    markRunning(run.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["cli"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance-v2",
+        checkpointJson: acceptanceJson(["containment"], {
+          supersedes: "campaign-acceptance",
+          reason: "Narrowed to containment",
+        }),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    // The write path refuses this, so reaching it means the ledger was written
+    // another way. Written directly, the same ID now carries two contracts.
+    const sibling = newRun();
+    db.prepare(
+      `UPDATE workflow_runs SET campaign_id = ? WHERE id = ?`,
+    ).run(run.campaignId, sibling.id);
+    db.prepare(
+      `INSERT INTO workflow_checkpoints
+         (id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+          ordinal, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, NULL, 1, ?, ?)`,
+    ).run(
+      "wfc_smuggled",
+      sibling.id,
+      "campaign-acceptance-v2",
+      acceptanceJson(["anything-goes"], {
+        supersedes: "campaign-acceptance",
+        reason: "Narrowed to containment",
+      }),
+      "Acceptance",
+      Date.now(),
+      Date.now(),
+    );
+
+    // Fail closed rather than pick one. Approving the newest row would bind the
+    // campaign to a contract the approver may never have read, and that is the
+    // whole value of the approval.
+    expect(
+      recordAcceptanceApproval(db, {
+        runId: run.id,
+        acceptanceCheckpointId: "campaign-acceptance-v2",
+        approvedByThreadId: "thread-human",
+        surface: "panel",
+      }),
+    ).toEqual({ kind: "ambiguous_body" });
+    expect(listAcceptanceApprovals(db, { campaignId: run.campaignId })).toEqual(
+      [],
+    );
+  });
+
+  it("refuses a plan that retires a gate the campaign is stuck behind", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const write = (checkpointId: string, checkpointJson: string) =>
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId,
+        checkpointJson,
+        phase: "Execute",
+        sourceCallId: null,
+      });
+    expect(write("campaign-acceptance", acceptanceJson(["cli", "grader"]))).toBe(
+      "accepted",
+    );
+    expect(
+      write(
+        "campaign-plan",
+        planJson([{ id: "phase-gate", requiresClosed: ["cli", "grader"] }]),
+      ),
+    ).toBe("accepted");
+    expect(write("verify-cli", verificationJson("cli"))).toBe("accepted");
+
+    // Demoting the gate to a work node is the same move as walking through it,
+    // one level out: the human approval that guards the contract would guard
+    // nothing if the plan that gates on it could be rewritten by the same agent
+    // through the same tool.
+    expect(
+      write("campaign-plan", planJson([{ id: "phase-gate" }])),
+    ).toEqual({
+      kind: "gate_weakened",
+      gateId: "phase-gate",
+      droppedCriterionIds: ["grader"],
+    });
+    // Dropping one requirement and keeping the rest is the same weakening.
+    expect(
+      write(
+        "campaign-plan",
+        planJson([{ id: "phase-gate", requiresClosed: ["cli"] }]),
+      ),
+    ).toEqual({
+      kind: "gate_weakened",
+      gateId: "phase-gate",
+      droppedCriterionIds: ["grader"],
+    });
+    // Removing the gate item from the plan entirely is too.
+    expect(write("campaign-plan", planJson([{ id: "other-work" }]))).toEqual({
+      kind: "gate_weakened",
+      gateId: "phase-gate",
+      droppedCriterionIds: ["grader"],
+    });
+    // Restating the same gate is not a weakening.
+    expect(
+      write(
+        "campaign-plan",
+        planJson([{ id: "phase-gate", requiresClosed: ["cli", "grader"] }]),
+      ),
+    ).toBe("accepted");
   });
 
   it("does not let an approved narrowing open a gate the plan still holds", () => {

@@ -255,6 +255,22 @@ describe("workflow checkpoint contract", () => {
         items: [{ ...gate, nodeType: "work" as const }],
       }),
     ).toThrow(/Only a gate node can require acceptance criteria/);
+
+    // An empty requirement is a gate that gates nothing while still reading as
+    // one in the plan. Omitting the field is how a gate orders dependencies
+    // without claiming to hold an outcome open.
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        ...plan,
+        items: [{ ...gate, requiresClosed: [] }],
+      }),
+    ).toThrow(/must name at least one acceptance criterion/);
+    expect(
+      workflowCheckpointSchema.parse({
+        ...plan,
+        items: [{ ...gate, requiresClosed: undefined }],
+      }),
+    ).toMatchObject({ items: [{ id: "containment-gate", nodeType: "gate" }] });
   });
 
   it.each([

@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { getCall, getRunRequired, migrations } from "./data.js";
 import plugin from "./server.js";
 import { createWorkflowService } from "./service.js";
-import { WORKFLOW_CHECKPOINT_LIMITS } from "./workflow-checkpoint.js";
+import {
+  WORKFLOW_CHECKPOINT_LIMITS,
+  canonicalizeAcceptanceCriteria,
+  type WorkflowAcceptanceCriterion,
+} from "./workflow-checkpoint.js";
 
 async function eventually(
   assertion: () => void | Promise<void>,
@@ -1075,7 +1079,7 @@ describe("workflows plugin", () => {
       // The acceptance contract has to be unrewritable through the tool path
       // itself, not only in the data layer: this is the anchor every other
       // checkpoint is measured against.
-      const acceptanceCriteria = [
+      const acceptanceCriteria: WorkflowAcceptanceCriterion[] = [
         {
           id: "sealed-result",
           statement: "A cancelled job still yields a sealed result artifact.",
@@ -1244,12 +1248,23 @@ describe("workflows plugin", () => {
         ),
       ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
 
-      // Item 2's structural claim: the worker's tool list has no way to
-      // authorize a contract change, so a declared amendment is inert until it
-      // arrives through the panel or the CLI.
+      // Item 2, stated honestly: selecting this plugin's tools does not take
+      // the host's shell away from a worker, so `bb workflows
+      // approve-amendment` is reachable from inside a running workflow. The
+      // tool list only shows there is no one-call path to it; the refusal that
+      // carries the property is by provenance, asserted below.
       expect(unstructuredConfig.tools.map((tool) => tool.name)).not.toContain(
         "bb_workflow_approve_amendment",
       );
+      const amendedCriteria: WorkflowAcceptanceCriterion[] = [
+        ...acceptanceCriteria,
+        {
+          id: "cost-bound",
+          statement: "The run stays under the agreed token budget.",
+          provenBy: "command",
+          detail: null,
+        },
+      ];
       await expect(
         harness.callAgentTool(
           "bb_workflow_checkpoint",
@@ -1260,15 +1275,7 @@ describe("workflows plugin", () => {
               title: "Campaign acceptance v2",
               status: "succeeded",
               summary: null,
-              criteria: [
-                ...acceptanceCriteria,
-                {
-                  id: "cost-bound",
-                  statement: "The run stays under the agreed token budget.",
-                  provenBy: "command",
-                  detail: null,
-                },
-              ],
+              criteria: amendedCriteria,
               amends: {
                 supersedes: "campaign-acceptance",
                 reason: "Adding the cost bound the reviewer asked for",
@@ -1304,6 +1311,49 @@ describe("workflows plugin", () => {
         pendingAmendments: [{ acceptanceId: "campaign-acceptance-v2" }],
       });
 
+      // Project scoping is what makes the recorded approver meaningful: a
+      // thread in another project must not be able to approve this campaign's
+      // contract by knowing the run ID.
+      await expect(
+        harness.runCli(
+          [
+            "approve-amendment",
+            unstructured.runId,
+            "--acceptance",
+            "campaign-acceptance-v2",
+          ],
+          { threadId: "thread-test", projectId: "other-project" },
+        ),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr: `Unknown workflow run ${unstructured.runId}\n`,
+      });
+
+      // The drift this ledger exists to expose: the run approving its own scope
+      // change. Same command, same project, from the worker's own thread — the
+      // path the tool list cannot close.
+      await expect(
+        harness.runCli(
+          [
+            "approve-amendment",
+            unstructured.runId,
+            "--acceptance",
+            "campaign-acceptance-v2",
+          ],
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr:
+          "A workflow worker thread cannot approve an acceptance amendment; approve it from the run's panel or from your own thread\n",
+      });
+      // Refused, not recorded: the amendment is still waiting on a human.
+      expect(await coverageAfter()).toMatchObject({
+        acceptanceId: "campaign-acceptance",
+        amendments: [],
+        pendingAmendments: [{ acceptanceId: "campaign-acceptance-v2" }],
+      });
+
       // The original contract is not a change, so there is nothing to approve.
       await expect(
         harness.runCli(
@@ -1335,12 +1385,34 @@ describe("workflows plugin", () => {
         acceptanceId: "campaign-acceptance-v2",
         supersedes: "campaign-acceptance",
         newlyApproved: true,
+        // The body the approval bound to, so the operator sees what they
+        // approved rather than only its ID.
+        contractCanonical: canonicalizeAcceptanceCriteria(amendedCriteria),
       });
       expect(await coverageAfter()).toMatchObject({
         acceptanceId: "campaign-acceptance-v2",
         criteria: [{ id: "sealed-result" }, { id: "cost-bound" }],
         amendments: [{ approval: { surface: "cli" } }],
         pendingAmendments: [],
+      });
+
+      // The panel path over the registered handler, whose output the host
+      // validates against the strict contract. Approving again from the other
+      // surface is not a second approval, and the recorded surface stays the
+      // one that issued it.
+      await expect(
+        harness.callRpc("workflowApproveAmendment", {
+          threadId: "thread-test",
+          runId: unstructured.runId,
+          acceptanceId: "campaign-acceptance-v2",
+        }),
+      ).resolves.toEqual({
+        acceptanceId: "campaign-acceptance-v2",
+        supersedes: "campaign-acceptance",
+        newlyApproved: false,
+      });
+      expect(await coverageAfter()).toMatchObject({
+        amendments: [{ approval: { surface: "cli" } }],
       });
 
       // Approving twice is one approval, so a repeated command cannot look like
@@ -1569,6 +1641,16 @@ describe("workflows plugin", () => {
         runId,
       }),
     ).resolves.toMatchObject({ run: { id: runId } });
+    // Seeing a run is not owning it. The presentation thread reads this
+    // campaign, so the approval control has to refuse it explicitly rather
+    // than rely on the run being invisible.
+    await expect(
+      harness.callRpc("workflowApproveAmendment", {
+        threadId: "root-thread",
+        runId,
+        acceptanceId: "any-acceptance",
+      }),
+    ).rejects.toThrow("Only the workflow origin thread can approve this amendment");
     await expect(
       harness.callRpc("workflowRunDetails", {
         threadId: "origin-child",

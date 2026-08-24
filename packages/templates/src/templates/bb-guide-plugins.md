@@ -90,9 +90,10 @@ with the origin. `details` also reports `acceptanceCoverage` for the campaign.
 A workflow that changes its own acceptance contract must publish an amending
 acceptance checkpoint, and that change stays inert — readable, but not the
 contract coverage is measured against — until a person approves it from the
-workflow panel or with `approve-amendment`. The recorded approval names the
-approving thread and the surface it came from, and it is bound to the exact
-criteria body it was issued against. The target must be available from the same BB server;
+workflow panel or with `approve-amendment`, which is refused when it comes from
+a workflow worker thread. The recorded approval names the approving thread and
+the surface it came from, and it is bound to the exact criteria body it was
+issued against. The target must be available from the same BB server;
 workflows do not federate state across servers. Status, list, and history run
 records include
 `originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
