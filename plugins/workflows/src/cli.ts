@@ -412,6 +412,12 @@ export function registerWorkflowCli(
         summary: "Cancel a workflow run",
         usage: "bb workflows stop <run-id>",
       },
+      {
+        name: "approve-amendment",
+        summary: "Approve a declared change to a campaign acceptance contract",
+        usage:
+          "bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>",
+      },
     ],
     async run(argv, ctx) {
       try {
@@ -592,8 +598,35 @@ export function registerWorkflowCli(
           }
           return success({ runId, stopped: await service.stop(runId) });
         }
+        if (command === "approve-amendment") {
+          const { options, positionals } = parseArguments(
+            argv.slice(1),
+            ["--acceptance"],
+            "approve-amendment",
+          );
+          const acceptanceId = options.get("--acceptance");
+          if (acceptanceId === undefined) {
+            throw new Error("approve-amendment requires --acceptance");
+          }
+          const context = requireContext(ctx);
+          const runId = positionals[0]!;
+          const run = service.get(runId);
+          if (run === null || run.projectId !== context.projectId) {
+            throw new Error(`Unknown workflow run ${runId}`);
+          }
+          // The approving thread is recorded, not asserted by the caller: this
+          // is the provenance that replaces a self-attested amendment reason.
+          return success(
+            service.approveAmendment({
+              runId,
+              acceptanceId,
+              approvedByThreadId: context.threadId,
+              surface: "cli",
+            }),
+          );
+        }
         return failure(
-          "Usage: bb workflows <run|validate|status|details|history|list|stop> [options]",
+          "Usage: bb workflows <run|validate|status|details|history|list|stop|approve-amendment> [options]",
         );
       } catch (error) {
         return failure(error instanceof Error ? error.message : String(error));

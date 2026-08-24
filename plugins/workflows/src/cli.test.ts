@@ -147,6 +147,14 @@ describe("workflows CLI argument validation", () => {
       argv: ["details"],
       error: "details requires a run ID",
     },
+    {
+      argv: ["approve-amendment"],
+      error: "approve-amendment requires a run ID",
+    },
+    {
+      argv: ["approve-amendment", "run-1"],
+      error: "approve-amendment requires --acceptance",
+    },
   ])("rejects malformed invocation $argv", async ({ argv, error }) => {
     await expect(harness.runCli(argv)).resolves.toMatchObject({
       exitCode: 1,
@@ -170,6 +178,7 @@ describe("workflows CLI argument validation", () => {
       "history",
       "list",
       "stop",
+      "approve-amendment",
     ]);
     expect(
       harness.registrations.cli?.commands.find(

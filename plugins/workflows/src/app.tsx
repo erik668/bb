@@ -83,6 +83,14 @@ type RunDetailsLoadState =
     }
   | { status: "error"; runId: string | null; message: string };
 
+// Who may approve, and where the approval goes. Null when this thread only
+// observes the run, so the control is absent rather than present-and-failing.
+interface AmendmentApprovalTarget {
+  threadId: string;
+  runId: string;
+  onApproved: () => Promise<void>;
+}
+
 interface SharedWorkflowView {
   callsById: ReadonlyMap<string, WorkflowCallView>;
   currentPhaseIndex?: number;
@@ -446,7 +454,7 @@ function useWorkflowRunDetails(
   runId: string | null,
   active: boolean,
   enabled = true,
-): RunDetailsLoadState {
+): { state: RunDetailsLoadState; refresh: () => Promise<void> } {
   const rpc = useRpc<typeof workflowUiRpcContract>();
   const [state, setState] = useState<RunDetailsLoadState>({
     status: "loading",
@@ -500,7 +508,7 @@ function useWorkflowRunDetails(
       void refresh();
   });
   useVisibleActivePolling(refresh, active);
-  return state;
+  return { state, refresh };
 }
 
 function subscribeDocumentVisibility(onChange: () => void): () => void {
@@ -1437,6 +1445,7 @@ function AcceptanceCoverageNotes({
   truncated: boolean;
 }) {
   const amendment = coverage.amendments.at(-1);
+  const pending = coverage.pendingAmendments.at(-1);
   const onlyOpenGate =
     coverage.openGates.length === 1 ? coverage.openGates[0] : undefined;
   const notes: { text: string; alert: boolean }[] = [
@@ -1448,6 +1457,14 @@ function AcceptanceCoverageNotes({
       : {
           alert: true,
           text: `${coverage.unauthorizedAcceptanceIds.length === 1 ? "An acceptance checkpoint" : `${coverage.unauthorizedAcceptanceIds.length} acceptance checkpoints`} changed this contract without declaring an amendment (${coverage.unauthorizedAcceptanceIds.join(", ")}). Coverage still measures the declared contract; treat the change as unreviewed.`,
+        },
+    // Above the open-gate note: a pending amendment is the one thing here that
+    // is waiting on a person rather than on work.
+    pending === undefined
+      ? null
+      : {
+          alert: false,
+          text: `${coverage.pendingAmendments.length === 1 ? "An amendment is" : `${coverage.pendingAmendments.length} amendments are`} waiting for approval, most recently ${pending.acceptanceId} replacing ${pending.supersedes} (${pending.reason}). Coverage is measured against the approved contract until then.`,
         },
     coverage.unanchoredProgress
       ? {
@@ -1512,9 +1529,11 @@ function AcceptanceCoverageNotes({
 function AcceptanceCoverage({
   coverage,
   truncated,
+  approval,
 }: {
   coverage: AcceptanceCoverageView;
   truncated: boolean;
+  approval: AmendmentApprovalTarget | null;
 }) {
   return (
     <div>
@@ -1543,14 +1562,87 @@ function AcceptanceCoverage({
         ))}
       </ol>
       <AcceptanceCoverageNotes coverage={coverage} truncated={truncated} />
+      {approval === null ? null : (
+        <PendingAmendments
+          amendments={coverage.pendingAmendments}
+          approval={approval}
+        />
+      )}
+    </div>
+  );
+}
+
+// The approval a workflow cannot issue for itself. It is rendered next to the
+// criteria it would change so the reader can see what they are agreeing to.
+function PendingAmendments({
+  amendments,
+  approval,
+}: {
+  amendments: AcceptanceCoverageView["pendingAmendments"];
+  approval: AmendmentApprovalTarget;
+}) {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [approving, setApproving] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  if (amendments.length === 0) return null;
+  const approve = async (acceptanceId: string) => {
+    setApproving(acceptanceId);
+    setError(null);
+    try {
+      await rpc.call("workflowApproveAmendment", {
+        threadId: approval.threadId,
+        runId: approval.runId,
+        acceptanceId,
+      });
+      await approval.onApproved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setApproving(null);
+    }
+  };
+  return (
+    <div className="mt-2 space-y-2">
+      {amendments.map((amendment) => (
+        <div
+          key={amendment.acceptanceId}
+          className="rounded border border-border-seam px-2 py-1.5"
+        >
+          <p className="text-2xs leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">
+              {amendment.acceptanceId}
+            </span>{" "}
+            would replace {amendment.supersedes}: {amendment.reason}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-1.5"
+            disabled={approving !== null}
+            onClick={() => void approve(amendment.acceptanceId)}
+          >
+            {approving === amendment.acceptanceId
+              ? "Approving…"
+              : "Approve amendment"}
+          </Button>
+        </div>
+      ))}
+      {error === null ? null : (
+        <p role="alert" className="text-2xs text-destructive-text">
+          {error}
+        </p>
+      )}
     </div>
   );
 }
 
 function WorkflowBuildStory({
   state,
+  approval,
 }: {
   state: Extract<RunDetailsLoadState, { status: "ready" }>;
+  approval: AmendmentApprovalTarget | null;
 }) {
   const graph = buildDagLayers(
     state.checkpoints,
@@ -1589,6 +1681,7 @@ function WorkflowBuildStory({
         <AcceptanceCoverage
           coverage={state.coverage}
           truncated={state.coverageTruncated}
+          approval={approval}
         />
       )}
       <CampaignRunList runs={state.campaignRuns} />
@@ -1609,7 +1702,13 @@ function WorkflowBuildStory({
   );
 }
 
-function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
+function WorkflowCheckpointDetails({
+  state,
+  approval,
+}: {
+  state: RunDetailsLoadState;
+  approval: AmendmentApprovalTarget | null;
+}) {
   if (state.status === "loading") {
     return (
       <div aria-label="Loading workflow details" className="space-y-2">
@@ -1672,7 +1771,7 @@ function WorkflowCheckpointDetails({ state }: { state: RunDetailsLoadState }) {
       {state.refreshError === null ? null : (
         <RefreshWarning message={state.refreshError} />
       )}
-      <WorkflowBuildStory state={state} />
+      <WorkflowBuildStory state={state} approval={approval} />
       {plans.length === 0 ? null : (
         <section aria-labelledby="workflow-plan-heading">
           <h3
@@ -1867,12 +1966,13 @@ function WorkflowRunPanelLoaded({
   const [stopError, setStopError] = useState<string | null>(null);
   const run = state.status === "ready" ? state.run : null;
   const detailsRunId = runId ?? run?.id ?? null;
-  const detailsState = useWorkflowRunDetails(
-    threadId,
-    detailsRunId,
-    run !== null && isRunActive(run),
-    runId !== null || run !== null,
-  );
+  const { state: detailsState, refresh: refreshDetails } =
+    useWorkflowRunDetails(
+      threadId,
+      detailsRunId,
+      run !== null && isRunActive(run),
+      runId !== null || run !== null,
+    );
   const pinnedDetailsState: RunDetailsLoadState =
     (detailsState.status === "ready" || detailsState.status === "error") &&
     detailsState.runId !== detailsRunId
@@ -1997,7 +2097,16 @@ function WorkflowRunPanelLoaded({
           />
         </div>
         <div className="my-4 h-px bg-border-seam" />
-        <WorkflowCheckpointDetails state={pinnedDetailsState} />
+        <WorkflowCheckpointDetails
+          state={pinnedDetailsState}
+          approval={
+            // Approving is scoped the same way stopping is, so a thread that
+            // only observes the run is not offered the control it cannot use.
+            run.originThreadId === threadId
+              ? { threadId, runId: run.id, onApproved: refreshDetails }
+              : null
+          }
+        />
         <div className="my-4 h-px bg-border-seam" />
         <h3 className="mb-2 text-xs font-medium text-muted-foreground">
           Run details

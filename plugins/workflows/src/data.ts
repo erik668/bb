@@ -8,7 +8,12 @@ import {
   readStoredAcceptance,
   readStoredCheckpoint,
 } from "./workflow-checkpoint.js";
-import { deriveAcceptanceCoverage } from "./workflow-coverage.js";
+import {
+  type AcceptanceApproval,
+  type WorkflowApprovalSurface,
+  acceptanceApprovalSchema,
+  deriveAcceptanceCoverage,
+} from "./workflow-coverage.js";
 import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 
 export type Db = Database.Database;
@@ -337,6 +342,23 @@ export const migrations = [
    UPDATE workflow_runs SET campaign_id = id WHERE campaign_id IS NULL;
    CREATE INDEX IF NOT EXISTS workflow_runs_campaign_created_idx
      ON workflow_runs(campaign_id, created_at ASC);`,
+  // Approvals live outside the checkpoint ledger on purpose: the ledger is
+  // what a workflow writes about itself, and an approval is the one fact about
+  // a campaign that its own tool path must not be able to produce. The
+  // canonical body is stored rather than a hash so this module stays free of
+  // `node:crypto`, which the browser bundle would have to carry.
+  `CREATE TABLE IF NOT EXISTS workflow_acceptance_approvals (
+     id TEXT PRIMARY KEY,
+     campaign_id TEXT NOT NULL,
+     acceptance_checkpoint_id TEXT NOT NULL,
+     contract_canonical TEXT NOT NULL,
+     approved_by_thread_id TEXT NOT NULL,
+     surface TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
+   );
+   CREATE INDEX IF NOT EXISTS workflow_acceptance_approvals_campaign_idx
+     ON workflow_acceptance_approvals(campaign_id);`,
 ];
 
 type CreateWorkflowRunInput = Omit<
@@ -775,6 +797,117 @@ function conflictsWithCampaignAcceptance(
   return !existing.some((row) => row.checkpointId === args.incoming.supersedes);
 }
 
+function campaignIdForRun(db: Db, runId: string): string | null {
+  const row = db
+    .prepare(
+      `SELECT COALESCE(campaign_id, id) AS campaignId
+       FROM workflow_runs WHERE id = ?`,
+    )
+    .get(runId) as { campaignId: string } | undefined;
+  return row?.campaignId ?? null;
+}
+
+/**
+ * Reads a campaign's amendment approvals for the coverage derivation.
+ *
+ * Rows are parsed rather than cast: a row this schema rejects — an unknown
+ * surface, say — is dropped, which leaves the amendment it referred to pending.
+ * That is the safe direction. An approval invented by writing to the database
+ * directly either parses and is attributable, or does not count.
+ */
+export function listAcceptanceApprovals(
+  db: Db,
+  args: { campaignId: string },
+): AcceptanceApproval[] {
+  const rows = db
+    .prepare(
+      `SELECT acceptance_checkpoint_id AS acceptanceId,
+         contract_canonical AS contractCanonical,
+         approved_by_thread_id AS approvedByThreadId,
+         surface, created_at AS approvedAt
+       FROM workflow_acceptance_approvals
+       WHERE campaign_id = ?
+       ORDER BY created_at ASC, rowid ASC`,
+    )
+    .all(args.campaignId) as unknown[];
+  return rows.flatMap((row) => {
+    const parsed = acceptanceApprovalSchema.safeParse(row);
+    return parsed.success ? [parsed.data] : [];
+  });
+}
+
+export type RecordAcceptanceApprovalOutcome =
+  | { kind: "approved"; newlyApproved: boolean; supersedes: string }
+  | { kind: "unknown_acceptance" }
+  | { kind: "not_an_amendment" };
+
+/**
+ * Records a human approval for one amending acceptance checkpoint.
+ *
+ * The approval binds to the canonical criteria body, not just the checkpoint
+ * ID, so it authorizes exactly the contract that was on screen when it was
+ * issued. Approving the original contract is refused: there is nothing to
+ * authorize, and accepting it would put a meaningless row in the table that a
+ * later reader could mistake for consent to a change.
+ */
+export function recordAcceptanceApproval(
+  db: Db,
+  input: {
+    runId: string;
+    acceptanceCheckpointId: string;
+    approvedByThreadId: string;
+    surface: WorkflowApprovalSurface;
+  },
+): RecordAcceptanceApprovalOutcome {
+  return db.transaction((): RecordAcceptanceApprovalOutcome => {
+    const campaignId = campaignIdForRun(db, input.runId);
+    if (campaignId === null) return { kind: "unknown_acceptance" };
+    const row = db
+      .prepare(
+        `SELECT checkpoint.checkpoint_json AS checkpointJson
+         FROM workflow_checkpoints AS checkpoint
+         JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+         WHERE COALESCE(run.campaign_id, run.id) = ?
+           AND checkpoint.checkpoint_id = ?
+           AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                    THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+               END = 'acceptance'
+         ORDER BY run.created_at DESC, run.rowid DESC, checkpoint.ordinal DESC
+         LIMIT 1`,
+      )
+      .get(campaignId, input.acceptanceCheckpointId) as
+      | { checkpointJson: string }
+      | undefined;
+    if (row === undefined) return { kind: "unknown_acceptance" };
+    const acceptance = readStoredAcceptance(row.checkpointJson);
+    if (acceptance === null) return { kind: "unknown_acceptance" };
+    if (acceptance.supersedes === null) return { kind: "not_an_amendment" };
+    const result = db
+      .prepare(
+        `INSERT INTO workflow_acceptance_approvals (
+           id, campaign_id, acceptance_checkpoint_id, contract_canonical,
+           approved_by_thread_id, surface, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(campaign_id, acceptance_checkpoint_id, contract_canonical)
+           DO NOTHING`,
+      )
+      .run(
+        `wfa_${randomUUID()}`,
+        campaignId,
+        input.acceptanceCheckpointId,
+        acceptance.canonical,
+        input.approvedByThreadId,
+        input.surface,
+        Date.now(),
+      );
+    return {
+      kind: "approved",
+      newlyApproved: result.changes > 0,
+      supersedes: acceptance.supersedes,
+    };
+  })();
+}
+
 /**
  * Returns the acceptance criteria a gate still requires but has not closed, so
  * a gate cannot be recorded as succeeded while the outcomes it guards are open.
@@ -829,7 +962,15 @@ function gateRequirementsLeftOpen(
   if (gateRequirements === undefined || gateRequirements.length === 0)
     return [];
 
-  const coverage = deriveAcceptanceCoverage(checkpoints);
+  // Approvals are read here for the same reason coverage reads them: an
+  // unapproved amendment must not be able to redefine the criteria a gate
+  // requires, which would let a workflow open its own gate by rewriting what
+  // done means.
+  const campaignId = campaignIdForRun(db, args.runId);
+  const coverage = deriveAcceptanceCoverage(
+    checkpoints,
+    campaignId === null ? [] : listAcceptanceApprovals(db, { campaignId }),
+  );
   const closed = new Set(
     (coverage?.criteria ?? [])
       .filter((criterion) => criterion.state === "closed")

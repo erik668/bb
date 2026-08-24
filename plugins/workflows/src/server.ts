@@ -213,6 +213,23 @@ export default async function plugin(bb: BbPluginApi) {
       if (latest === null) throw new Error(`Unknown workflow run ${runId}`);
       return { stopped, run: buildWorkflowRunView(latest) };
     },
+    workflowApproveAmendment({ threadId, runId, acceptanceId }) {
+      const run = workflowForThread(threadId, runId);
+      if (run === null) throw new Error(`Unknown workflow run ${runId}`);
+      // Same boundary as stopping: the run's own thread is the human side of
+      // this campaign, and the panel only offers the control there.
+      if (run.originThreadId !== threadId) {
+        throw new Error(
+          "Only the workflow origin thread can approve this amendment",
+        );
+      }
+      return service.approveAmendment({
+        runId: run.id,
+        acceptanceId,
+        approvedByThreadId: threadId,
+        surface: "panel",
+      });
+    },
   });
 
   bb.agents.registerTool({

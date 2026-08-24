@@ -691,6 +691,15 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
   `originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
   `campaignId`.
   Cancel with `bb workflows stop <run-id>`.
+- `details` also reports the campaign's `acceptanceCoverage`. A workflow that
+  changes its own acceptance contract must publish an amending acceptance
+  checkpoint; that change stays inert until a person approves it from the
+  workflow panel or with `bb workflows approve-amendment <run-id> --acceptance
+<acceptance-checkpoint-id>`. Until then, coverage is measured against the
+  approved contract and the amendment is listed under `pendingAmendments`. The
+  approval records the approving thread and surface and is bound to the exact
+  criteria body it was issued against, so republishing different criteria under
+  the same checkpoint ID needs a new approval.
 - Before choosing an explicit provider/model/reasoning tuple, run `bb provider
 list --environment "$BB_ENVIRONMENT_ID" --json`, then query only the chosen
   provider with `bb provider models <provider-id> --environment

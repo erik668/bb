@@ -41,6 +41,42 @@ const acceptanceCriterionCoverageSchema = z
   })
   .strict();
 
+/**
+ * Where an approval was issued from. This is the whole security property: a
+ * workflow worker's tool list is exactly `bb_workflow_checkpoint` and
+ * `bb_workflow_result`, so neither surface below is reachable from the path
+ * that publishes the amendment. Recorded rather than inferred, because "who
+ * could have done this" is the question a reviewer actually asks.
+ */
+export const WORKFLOW_APPROVAL_SURFACES = ["panel", "cli"] as const;
+
+export const workflowApprovalSurfaceSchema = z.enum(WORKFLOW_APPROVAL_SURFACES);
+
+/**
+ * An approval as stored: bound to one acceptance checkpoint AND to the exact
+ * contract body that was approved, so an approval cannot carry over to a
+ * different set of criteria published later under the same ID.
+ */
+export const acceptanceApprovalSchema = z
+  .object({
+    acceptanceId: z.string(),
+    /** `canonicalizeAcceptanceCriteria` of the body that was approved. */
+    contractCanonical: z.string(),
+    /** The thread the approval was issued from, not a self-reported actor. */
+    approvedByThreadId: z.string(),
+    surface: workflowApprovalSurfaceSchema,
+    approvedAt: z.number().int(),
+  })
+  .strict();
+
+const acceptanceApprovalRecordSchema = z
+  .object({
+    approvedByThreadId: z.string(),
+    surface: workflowApprovalSurfaceSchema,
+    approvedAt: z.number().int(),
+  })
+  .strict();
+
 const acceptanceAmendmentRecordSchema = z
   .object({
     /** The amending checkpoint, which becomes authoritative from here on. */
@@ -49,6 +85,15 @@ const acceptanceAmendmentRecordSchema = z
     supersedes: z.string(),
     reason: z.string(),
   })
+  .strict();
+
+/**
+ * An amendment that took effect. It carries the approval that let it, because
+ * `reason` is the amending agent's own account of itself and cannot be the
+ * thing that authorizes the change.
+ */
+const approvedAmendmentRecordSchema = acceptanceAmendmentRecordSchema
+  .extend({ approval: acceptanceApprovalRecordSchema })
   .strict();
 
 const openGateSchema = z
@@ -71,11 +116,21 @@ export const workflowAcceptanceCoverageSchema = z
     inFlightCount: z.number().int().nonnegative(),
     uncoveredCount: z.number().int().nonnegative(),
     /**
-     * Declared amendments in ledger order. The write path refuses a changed
+     * Amendments in effect, in ledger order. The write path refuses a changed
      * contract that does not declare itself, so a campaign whose scope really
      * did change ends up with a readable chain instead of a rewritten anchor.
+     * Every entry here was approved out of band; a declared amendment alone
+     * cannot move the contract.
      */
-    amendments: z.array(acceptanceAmendmentRecordSchema),
+    amendments: z.array(approvedAmendmentRecordSchema),
+    /**
+     * Declared amendments nobody approved. These are accepted into the ledger
+     * and readable, but inert: coverage still measures the contract they tried
+     * to replace, so an agent cannot narrow what done means by writing another
+     * checkpoint. Approving one is a human act on a surface the workflow's own
+     * tool path cannot reach.
+     */
+    pendingAmendments: z.array(acceptanceAmendmentRecordSchema),
     /**
      * Acceptance checkpoints whose body differs from the authoritative contract
      * without declaring an amendment. The write path refuses these, so a
@@ -119,6 +174,13 @@ export type WorkflowAcceptanceCoverage = z.infer<
 export type AcceptanceAmendmentRecord = z.infer<
   typeof acceptanceAmendmentRecordSchema
 >;
+export type ApprovedAmendmentRecord = z.infer<
+  typeof approvedAmendmentRecordSchema
+>;
+export type AcceptanceApproval = z.infer<typeof acceptanceApprovalSchema>;
+export type WorkflowApprovalSurface = z.infer<
+  typeof workflowApprovalSurfaceSchema
+>;
 export type AcceptanceOpenGate = z.infer<typeof openGateSchema>;
 
 /**
@@ -127,9 +189,14 @@ export type AcceptanceOpenGate = z.infer<typeof openGateSchema>;
  * Returns `null` when the campaign declared no acceptance contract. Absence is
  * reported as absence: inferring criteria from the plan would measure the plan
  * against itself and always agree.
+ *
+ * `approvals` is required rather than defaulted. A default would make every
+ * caller that forgot it report each amendment as pending — a wrong answer that
+ * looks like a working one — so the omission is a compile error instead.
  */
 export function deriveAcceptanceCoverage(
   checkpoints: readonly WorkflowCheckpoint[],
+  approvals: readonly AcceptanceApproval[],
 ): WorkflowAcceptanceCoverage | null {
   const acceptances = checkpoints.filter(
     (checkpoint) => checkpoint.kind === "acceptance",
@@ -143,33 +210,61 @@ export function deriveAcceptanceCoverage(
   // without saying so is reported and does NOT take over, so editing the ledger
   // directly cannot make coverage agree with a rewrite.
   //
-  // An amendment is accepted here when it names any earlier acceptance
+  // An amendment is declared here when it names any earlier acceptance
   // checkpoint. The write path already refuses one that names a predecessor the
   // campaign never published, so the read side only has to separate a declared
   // amendment from an undeclared rewrite.
+  //
+  // Declaring is not authorizing. `amends.reason` is the amending agent's
+  // account of itself, so it attributes the change and cannot license it; only
+  // an approval issued from the panel or the CLI moves the contract. An
+  // unapproved amendment stays in the ledger and stays inert.
   let contract = original;
-  const amendments: AcceptanceAmendmentRecord[] = [];
+  const amendments: ApprovedAmendmentRecord[] = [];
+  const pendingAmendments: AcceptanceAmendmentRecord[] = [];
   const unauthorizedAcceptanceIds: string[] = [];
   const seenAcceptanceIds = new Set([original.id]);
   for (const later of acceptances.slice(1)) {
+    const canonical = canonicalizeAcceptanceCriteria(later.criteria);
     const changed =
-      canonicalizeAcceptanceCriteria(later.criteria) !==
-      canonicalizeAcceptanceCriteria(contract.criteria);
+      canonical !== canonicalizeAcceptanceCriteria(contract.criteria);
     if (!changed) {
       seenAcceptanceIds.add(later.id);
       continue;
     }
     const amends = later.amends;
     if (amends !== undefined && seenAcceptanceIds.has(amends.supersedes)) {
-      amendments.push({
+      const declared = {
         acceptanceId: later.id,
         supersedes: amends.supersedes,
         reason: amends.reason,
-      });
-      contract = later;
+      };
+      // Matched on the body as well as the ID: approving one set of criteria
+      // must not bless a different set republished later.
+      const approval = approvals.find(
+        (candidate) =>
+          candidate.acceptanceId === later.id &&
+          candidate.contractCanonical === canonical,
+      );
+      if (approval === undefined) {
+        pendingAmendments.push(declared);
+      } else {
+        amendments.push({
+          ...declared,
+          approval: {
+            approvedByThreadId: approval.approvedByThreadId,
+            surface: approval.surface,
+            approvedAt: approval.approvedAt,
+          },
+        });
+        contract = later;
+      }
     } else {
       unauthorizedAcceptanceIds.push(later.id);
     }
+    // Seen regardless of approval: a pending amendment is a real, readable
+    // checkpoint, so a later amendment may legitimately name it as the thing it
+    // supersedes. Approving that later one approves the body it carries.
     seenAcceptanceIds.add(later.id);
   }
 
@@ -299,6 +394,7 @@ export function deriveAcceptanceCoverage(
       (criterion) => criterion.state === "uncovered",
     ).length,
     amendments,
+    pendingAmendments,
     unauthorizedAcceptanceIds,
     openGates,
     unknownReferences: [...unknownReferences],

@@ -1244,6 +1244,120 @@ describe("workflows plugin", () => {
         ),
       ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
 
+      // Item 2's structural claim: the worker's tool list has no way to
+      // authorize a contract change, so a declared amendment is inert until it
+      // arrives through the panel or the CLI.
+      expect(unstructuredConfig.tools.map((tool) => tool.name)).not.toContain(
+        "bb_workflow_approve_amendment",
+      );
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "acceptance",
+              id: "campaign-acceptance-v2",
+              title: "Campaign acceptance v2",
+              status: "succeeded",
+              summary: null,
+              criteria: [
+                ...acceptanceCriteria,
+                {
+                  id: "cost-bound",
+                  statement: "The run stays under the agreed token budget.",
+                  provenBy: "command",
+                  detail: null,
+                },
+              ],
+              amends: {
+                supersedes: "campaign-acceptance",
+                reason: "Adding the cost bound the reviewer asked for",
+              },
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+
+      const cliContext = { threadId: "thread-test", projectId: "project-test" };
+      const coverageAfter = async () => {
+        const result = await harness.runCli(
+          ["details", unstructured.runId],
+          cliContext,
+        );
+        expect(result.exitCode).toBe(0);
+        return (
+          JSON.parse(result.stdout ?? "{}") as {
+            acceptanceCoverage: {
+              acceptanceId: string;
+              criteria: { id: string }[];
+              amendments: { approval: { surface: string } }[];
+              pendingAmendments: { acceptanceId: string }[];
+            };
+          }
+        ).acceptanceCoverage;
+      };
+      expect(await coverageAfter()).toMatchObject({
+        acceptanceId: "campaign-acceptance",
+        criteria: [{ id: "sealed-result" }],
+        amendments: [],
+        pendingAmendments: [{ acceptanceId: "campaign-acceptance-v2" }],
+      });
+
+      // The original contract is not a change, so there is nothing to approve.
+      await expect(
+        harness.runCli(
+          [
+            "approve-amendment",
+            unstructured.runId,
+            "--acceptance",
+            "campaign-acceptance",
+          ],
+          cliContext,
+        ),
+      ).resolves.toMatchObject({
+        exitCode: 1,
+        stderr:
+          "Acceptance checkpoint campaign-acceptance declares no amendment, so there is nothing to approve\n",
+      });
+
+      const approved = await harness.runCli(
+        [
+          "approve-amendment",
+          unstructured.runId,
+          "--acceptance",
+          "campaign-acceptance-v2",
+        ],
+        cliContext,
+      );
+      expect(approved.exitCode).toBe(0);
+      expect(JSON.parse(approved.stdout ?? "{}")).toEqual({
+        acceptanceId: "campaign-acceptance-v2",
+        supersedes: "campaign-acceptance",
+        newlyApproved: true,
+      });
+      expect(await coverageAfter()).toMatchObject({
+        acceptanceId: "campaign-acceptance-v2",
+        criteria: [{ id: "sealed-result" }, { id: "cost-bound" }],
+        amendments: [{ approval: { surface: "cli" } }],
+        pendingAmendments: [],
+      });
+
+      // Approving twice is one approval, so a repeated command cannot look like
+      // two people signing off.
+      const again = await harness.runCli(
+        [
+          "approve-amendment",
+          unstructured.runId,
+          "--acceptance",
+          "campaign-acceptance-v2",
+        ],
+        cliContext,
+      );
+      expect(JSON.parse(again.stdout ?? "{}")).toMatchObject({
+        newlyApproved: false,
+      });
+
       await harness.emitThreadEvent("thread.idle", {
         thread: { id: "child-6" } as never,
         lastAssistantText: "ordinary text",

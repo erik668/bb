@@ -27,6 +27,7 @@ import {
   listCallsForRun,
   listCallsForRunPage,
   listCampaignCoverageCheckpoints,
+  listAcceptanceApprovals,
   listRunsForCampaign,
   listWorkflowCheckpointsForRun,
   listActiveRunsForThread,
@@ -37,6 +38,7 @@ import {
   markCallReplayedSameRun,
   markNotificationSent,
   queueCallProviderRetry,
+  recordAcceptanceApproval,
   recordCallContextUsage,
   recordNotificationFailure,
   recoverInterruptedRuns,
@@ -94,6 +96,7 @@ import {
   MAX_WORKFLOW_COVERAGE_CHECKPOINTS,
   deriveAcceptanceCoverage,
   type WorkflowAcceptanceCoverage,
+  type WorkflowApprovalSurface,
 } from "./workflow-coverage.js";
 
 const executionValuesSchema = z.object({
@@ -505,6 +508,17 @@ export interface WorkflowService {
   inspectCampaign(runId: string): WorkflowCampaignInspection | null;
   list(projectId: string, limit: number): WorkflowRunRow[];
   stop(runId: string): Promise<boolean>;
+  /**
+   * Records a human approval that lets one declared amendment take effect.
+   * `surface` is supplied by the entry point, never by the caller's payload,
+   * so it says where the approval really came from.
+   */
+  approveAmendment(input: {
+    runId: string;
+    acceptanceId: string;
+    approvedByThreadId: string;
+    surface: WorkflowApprovalSurface;
+  }): { acceptanceId: string; supersedes: string; newlyApproved: boolean };
   updateSettings(settings: WorkflowSettings): void;
   runWorker(signal: AbortSignal): Promise<void>;
   onThreadIdle(threadId: string, output: string | null): void;
@@ -1062,7 +1076,10 @@ export function createWorkflowService(
       campaignId: selected.campaignId,
       detailedRunLimit: MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
       omittedCheckpointRunCount: campaignRuns.length - detailedRunIds.size,
-      coverage: deriveAcceptanceCoverage(coverageCheckpoints),
+      coverage: deriveAcceptanceCoverage(
+        coverageCheckpoints,
+        listAcceptanceApprovals(db, { campaignId: selected.campaignId }),
+      ),
       coverageTruncated,
       runs: campaignRuns.map((row) => {
         const checkpointsOmitted = !detailedRunIds.has(row.id);
@@ -2201,6 +2218,39 @@ export function createWorkflowService(
     await Promise.allSettled(childStops.values());
   }
 
+  function approveAmendment(input: {
+    runId: string;
+    acceptanceId: string;
+    approvedByThreadId: string;
+    surface: WorkflowApprovalSurface;
+  }): { acceptanceId: string; supersedes: string; newlyApproved: boolean } {
+    const outcome = recordAcceptanceApproval(db, {
+      runId: input.runId,
+      acceptanceCheckpointId: input.acceptanceId,
+      approvedByThreadId: input.approvedByThreadId,
+      surface: input.surface,
+    });
+    if (outcome.kind === "unknown_acceptance") {
+      throw new Error(
+        `No acceptance checkpoint ${input.acceptanceId} in this campaign`,
+      );
+    }
+    if (outcome.kind === "not_an_amendment") {
+      throw new Error(
+        `Acceptance checkpoint ${input.acceptanceId} declares no amendment, so there is nothing to approve`,
+      );
+    }
+    const run = getRun(db, input.runId);
+    // The panel measures coverage against the approved contract, so a run that
+    // is still going needs to see the change without waiting for its next write.
+    if (run !== null) publishRunChanged(run);
+    return {
+      acceptanceId: input.acceptanceId,
+      supersedes: outcome.supersedes,
+      newlyApproved: outcome.newlyApproved,
+    };
+  }
+
   async function stop(runId: string): Promise<boolean> {
     const childThreadIds = activeChildThreadsForRun(db, runId);
     const stopped = cancelRun(db, runId);
@@ -2224,6 +2274,7 @@ export function createWorkflowService(
     inspectCampaign,
     list: (projectId, limit) => listRuns(db, { projectId, limit }),
     stop,
+    approveAmendment,
     updateSettings(settings) {
       currentSettings = settings;
       globalAgentAdmission.refresh();

@@ -155,6 +155,25 @@ export const workflowUiRpcContract = defineRpcContract({
       .object({ stopped: z.boolean(), run: workflowRunViewSchema })
       .strict(),
   },
+  // The approval a workflow cannot mint: the worker's tool list is exactly the
+  // checkpoint and result tools, so an amendment only takes effect once it
+  // arrives through this route or the CLI.
+  workflowApproveAmendment: {
+    input: z
+      .object({
+        threadId: z.string().trim().min(1),
+        runId: z.string().trim().min(1),
+        acceptanceId: z.string().trim().min(1),
+      })
+      .strict(),
+    output: z
+      .object({
+        acceptanceId: z.string(),
+        supersedes: z.string(),
+        newlyApproved: z.boolean(),
+      })
+      .strict(),
+  },
 });
 
 export type WorkflowCallView = z.infer<typeof workflowCallViewSchema>;

@@ -1081,6 +1081,18 @@ describe("workflow thread panel", () => {
                     acceptanceId: "phase-0-acceptance-v2",
                     supersedes: "phase-0-acceptance",
                     reason: "The CLI outcome moved to phase 1",
+                    approval: {
+                      approvedByThreadId: "thread-1",
+                      surface: "panel",
+                      approvedAt: 1_700_000_000_000,
+                    },
+                  },
+                ],
+                pendingAmendments: [
+                  {
+                    acceptanceId: "phase-0-acceptance-v4",
+                    supersedes: "phase-0-acceptance-v2",
+                    reason: "Drop the sealed-result outcome",
                   },
                 ],
                 unauthorizedAcceptanceIds: ["phase-0-acceptance-v3"],
@@ -1137,6 +1149,160 @@ describe("workflow thread panel", () => {
         "Gate containment cannot pass until cli-runs-two-cases closes.",
       ),
     ).toBeTruthy();
+    // A declared amendment is inert until a person acts, so the panel says what
+    // is waiting and offers the one control that can move it.
+    expect(
+      slot.getByText(
+        "An amendment is waiting for approval, most recently phase-0-acceptance-v4 replacing phase-0-acceptance-v2 (Drop the sealed-result outcome). Coverage is measured against the approved contract until then.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.getByRole("button", { name: "Approve amendment" }),
+    ).toBeTruthy();
+  });
+
+  // The panel is one of the two surfaces that can issue an approval, so these
+  // cover the call it makes and who is offered it.
+  function pendingAmendmentCoverage(): WorkflowAcceptanceCoverage {
+    return {
+      acceptanceId: "phase-0-acceptance",
+      criteria: [
+        {
+          id: "sealed-result",
+          statement: "A cancelled job still yields a sealed result.",
+          provenBy: "artifact",
+          state: "uncovered",
+          satisfiedBy: [],
+          closedBy: [],
+        },
+      ],
+      closedCount: 0,
+      inFlightCount: 0,
+      uncoveredCount: 1,
+      amendments: [],
+      pendingAmendments: [
+        {
+          acceptanceId: "phase-0-acceptance-v2",
+          supersedes: "phase-0-acceptance",
+          reason: "Drop the sealed-result outcome",
+        },
+      ],
+      unauthorizedAcceptanceIds: [],
+      openGates: [],
+      unknownReferences: [],
+      orphanWorkItemIds: [],
+      unanchoredProgress: false,
+    };
+  }
+
+  function campaignWith(coverage: WorkflowAcceptanceCoverage, runView = run) {
+    return {
+      id: runView.campaignId,
+      detailedRunLimit: 4,
+      omittedCheckpointRunCount: 0,
+      coverage,
+      coverageTruncated: false,
+      runs: [{ run: runView, checkpoints: [], checkpointsOmitted: false }],
+    };
+  }
+
+  it("approves a pending amendment through the run it is scoped to", async () => {
+    let approved = false;
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [],
+            campaign: campaignWith(
+              approved
+                ? {
+                    ...pendingAmendmentCoverage(),
+                    pendingAmendments: [],
+                    amendments: [
+                      {
+                        acceptanceId: "phase-0-acceptance-v2",
+                        supersedes: "phase-0-acceptance",
+                        reason: "Drop the sealed-result outcome",
+                        approval: {
+                          approvedByThreadId: "thr_origin",
+                          surface: "panel",
+                          approvedAt: 1_700_000_000_000,
+                        },
+                      },
+                    ],
+                  }
+                : pendingAmendmentCoverage(),
+            ),
+          }),
+          workflowApproveAmendment: (input) => {
+            expect(input).toEqual({
+              threadId: "thr_origin",
+              runId: run.id,
+              acceptanceId: "phase-0-acceptance-v2",
+            });
+            approved = true;
+            return {
+              acceptanceId: "phase-0-acceptance-v2",
+              supersedes: "phase-0-acceptance",
+              newlyApproved: true,
+            };
+          },
+        },
+      },
+    );
+
+    fireEvent.click(
+      await slot.findByRole("button", { name: "Approve amendment" }),
+    );
+    await waitFor(() => {
+      expect(
+        slot.rpcCalls.some(
+          (call) => call.method === "workflowApproveAmendment",
+        ),
+      ).toBe(true);
+      // Refetched after approval, so the note flips from waiting to amended
+      // without the reader reloading the panel.
+      expect(
+        slot.getByText(
+          "Contract amended once, most recently by phase-0-acceptance-v2 replacing phase-0-acceptance: Drop the sealed-result outcome",
+        ),
+      ).toBeTruthy();
+    });
+    expect(
+      slot.queryByRole("button", { name: "Approve amendment" }),
+    ).toBeNull();
+  });
+
+  it("withholds the approval control from a thread that only observes the run", async () => {
+    const relatedRun: WorkflowRunView = {
+      ...run,
+      originThreadId: "thr_worker",
+    };
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_root", params: { runId: relatedRun.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run: relatedRun }),
+          workflowRunDetails: () => ({
+            checkpoints: [],
+            campaign: campaignWith(pendingAmendmentCoverage(), relatedRun),
+          }),
+        },
+      },
+    );
+
+    // The note still reports what is waiting; only the control is absent, so
+    // this thread cannot issue an approval the server would refuse anyway.
+    expect(
+      await slot.findByText(/An amendment is waiting for approval/),
+    ).toBeTruthy();
+    expect(
+      slot.queryByRole("button", { name: "Approve amendment" }),
+    ).toBeNull();
   });
 
   it("hides prior details while a newer latest run resolves its own ledger", async () => {

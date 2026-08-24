@@ -18,8 +18,10 @@ import {
   listWorkflowCheckpointsForRun,
   listActiveRunsForThread,
   listCallsForRunPage,
+  listAcceptanceApprovals,
   listRunsForCampaign,
   migrations,
+  recordAcceptanceApproval,
   queueCallProviderRetry,
   recordCallContextUsage,
   recoverInterruptedRuns,
@@ -220,7 +222,7 @@ describe("workflow durable data", () => {
           .pluck()
           .all(),
       ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
-      expect(migrations).toHaveLength(14);
+      expect(migrations).toHaveLength(15);
       expect(getRunRequired(productionDb, "wfr_legacy")).toMatchObject({
         originThreadId: "thread-legacy",
         presentationThreadId: "thread-legacy",
@@ -905,6 +907,166 @@ describe("workflow durable data", () => {
         sourceCallId: null,
       }),
     ).toEqual({ kind: "gate_conflict", openCriterionIds: ["cli"] });
+  });
+
+  // An amendment the workflow declared about itself is a claim; only an
+  // approval issued from outside the worker's tool path authorizes it.
+  it("records an approval only for an amendment the campaign declared", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const write = (checkpointId: string, checkpointJson: string) =>
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId,
+        checkpointJson,
+        phase: "Acceptance",
+        sourceCallId: null,
+      });
+    expect(
+      write("campaign-acceptance", acceptanceJson(["cli", "grader"])),
+    ).toBe("accepted");
+    expect(
+      write(
+        "campaign-acceptance-v2",
+        acceptanceJson(["cli"], {
+          supersedes: "campaign-acceptance",
+          reason: "Grader moved to phase 2",
+        }),
+      ),
+    ).toBe("accepted");
+
+    const approve = (acceptanceCheckpointId: string) =>
+      recordAcceptanceApproval(db, {
+        runId: run.id,
+        acceptanceCheckpointId,
+        approvedByThreadId: "thread-human",
+        surface: "panel" as const,
+      });
+
+    expect(approve("campaign-acceptance-that-never-existed")).toEqual({
+      kind: "unknown_acceptance",
+    });
+    // The original contract is not a change, so there is nothing to authorize.
+    expect(approve("campaign-acceptance")).toEqual({
+      kind: "not_an_amendment",
+    });
+    expect(approve("campaign-acceptance-v2")).toEqual({
+      kind: "approved",
+      newlyApproved: true,
+      supersedes: "campaign-acceptance",
+    });
+    // Clicking twice is not two approvals.
+    expect(approve("campaign-acceptance-v2")).toEqual({
+      kind: "approved",
+      newlyApproved: false,
+      supersedes: "campaign-acceptance",
+    });
+
+    expect(
+      listAcceptanceApprovals(db, { campaignId: run.campaignId }).map(
+        (approval) => ({
+          acceptanceId: approval.acceptanceId,
+          approvedByThreadId: approval.approvedByThreadId,
+          surface: approval.surface,
+        }),
+      ),
+    ).toEqual([
+      {
+        acceptanceId: "campaign-acceptance-v2",
+        approvedByThreadId: "thread-human",
+        surface: "panel",
+      },
+    ]);
+  });
+
+  it("drops an approval row whose surface is not one this build issues", () => {
+    const run = newRun();
+    markRunning(run.id);
+    db.prepare(
+      `INSERT INTO workflow_acceptance_approvals (
+         id, campaign_id, acceptance_checkpoint_id, contract_canonical,
+         approved_by_thread_id, surface, created_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      "wfa_smuggled",
+      run.campaignId,
+      "campaign-acceptance-v2",
+      "canonical",
+      "thread-1",
+      "worker-tool",
+      Date.now(),
+    );
+
+    // Dropping the row makes the amendment pending again, which is the safe
+    // direction: an unreadable approval must not read as consent.
+    expect(listAcceptanceApprovals(db, { campaignId: run.campaignId })).toEqual(
+      [],
+    );
+  });
+
+  it("does not let an approved narrowing open a gate the plan still holds", () => {
+    const run = newRun();
+    markRunning(run.id);
+    const write = (checkpointId: string, checkpointJson: string) =>
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId,
+        checkpointJson,
+        phase: "Execute",
+        sourceCallId: null,
+      });
+    expect(
+      write("campaign-acceptance", acceptanceJson(["cli", "grader"])),
+    ).toBe("accepted");
+    expect(
+      write(
+        "campaign-plan",
+        planJson([{ id: "phase-gate", requiresClosed: ["cli", "grader"] }]),
+      ),
+    ).toBe("accepted");
+    expect(write("verify-cli", verificationJson("cli"))).toBe("accepted");
+
+    // The rewrite a gated run would reach for: redefine done so the open
+    // criterion is no longer part of it.
+    expect(
+      write(
+        "campaign-acceptance-v2",
+        acceptanceJson(["cli"], {
+          supersedes: "campaign-acceptance",
+          reason: "Grader is out of scope",
+        }),
+      ),
+    ).toBe("accepted");
+    expect(write("phase-gate", workItemJson("succeeded"))).toEqual({
+      kind: "gate_conflict",
+      openCriterionIds: ["grader"],
+    });
+
+    expect(
+      recordAcceptanceApproval(db, {
+        runId: run.id,
+        acceptanceCheckpointId: "campaign-acceptance-v2",
+        approvedByThreadId: "thread-human",
+        surface: "cli",
+      }),
+    ).toMatchObject({ kind: "approved" });
+
+    // Approval alone does not open the gate: the plan still requires "grader",
+    // and a criterion the approved contract no longer declares can never close.
+    expect(write("phase-gate", workItemJson("succeeded"))).toEqual({
+      kind: "gate_conflict",
+      openCriterionIds: ["grader"],
+    });
+
+    // Restating the plan against the approved contract is the second, explicit
+    // step. Both the contract change and the gate change are on the record.
+    expect(
+      write(
+        "campaign-plan",
+        planJson([{ id: "phase-gate", requiresClosed: ["cli"] }]),
+      ),
+    ).toBe("accepted");
+    expect(write("phase-gate", workItemJson("succeeded"))).toBe("accepted");
   });
 
   it("rejects checkpoint writes after the run becomes terminal", () => {

@@ -173,12 +173,18 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   order, is always accepted. When the campaign's stated outcomes genuinely
   change, publish a **new** acceptance ID carrying
   `amends: { supersedes, reason }` that names the acceptance checkpoint it
-  replaces. That amendment becomes what coverage measures, the superseded
-  contract stays readable, and the change is reported to the human with its
-  reason. Amending is not a way to make a shortfall disappear: if the outcome is
-  simply not met, leave the contract alone and report a blocked work item.
-  Enforcement is campaign-wide, so a child run cannot publish its own contract
-  either.
+  replaces. Publishing that amendment does not put it into effect: it is stored
+  and shown to the human with its reason, but coverage keeps measuring the
+  approved contract until a person approves the change from the workflow panel
+  or with `bb workflows approve-amendment`. You cannot issue that approval —
+  your tools are the checkpoint and result tools — so treat a scope change as a
+  request, say plainly in `reason` what you want to change and why, and keep
+  working against the approved contract meanwhile. Amending is not a way to make
+  a shortfall disappear: if the outcome is simply not met, leave the contract
+  alone and report a blocked work item. An approved narrowing also does not open
+  a gate whose `requiresClosed` still names the dropped criterion; restate the
+  plan without that requirement. Enforcement is campaign-wide, so a child run
+  cannot publish its own contract either.
   Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
   run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass
@@ -561,6 +567,7 @@ bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>
+bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json
 ```

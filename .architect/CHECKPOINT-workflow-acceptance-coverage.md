@@ -8,51 +8,45 @@ shape).
 - Worktree: `/Users/erik/.bb/personal-workspaces/env_ycdb7z3gdg/bb-workflow-acceptance`
 - Branch: `feature/workflow-acceptance-coverage` off `e2b88b053` (repo `env_88g5eb749t/bb-workflow-details`)
 - Detail: [detail-acceptance-coverage.md](detail-acceptance-coverage.md)
-- PR: https://github.com/erik668/bb/pull/1 (3 commits, 19 files, +2057/-30)
+- PR: https://github.com/erik668/bb/pull/1 (3 commits pushed, 19 files, +2057/-30;
+  cuts 3 and 4 below are local-only)
 
 ## Done
 
-Two cuts, both **verified**: 326/326 plugin tests pass, typecheck clean
-(`pnpm exec turbo run typecheck test --filter=bb-plugin-workflows --force`).
+Four cuts, all **verified**: 342/342 plugin tests pass, lint and typecheck clean
+(`pnpm exec turbo run test lint typecheck --filter=bb-plugin-workflows --force`,
+6/6 tasks successful).
 
-**Cut 1 — derived coverage** (`855717620`, 17 files, +1282/-28).
+**Cuts 1–2 — derived coverage (`855717620`) and immutability enforcement
+(`7d5d28a04`)**. Fifth checkpoint kind `acceptance`; pure `workflow-coverage.ts`
+derivation carried to the panel and `bb workflows details`; same-ID republish
+refused (`acceptance_conflict`), a real scope change requiring a new ID with
+`amends: { supersedes, reason }`, and `amendments[]` +
+`unauthorizedAcceptanceIds[]` re-walked on read. Detail:
+[archive/acceptance-coverage-cuts-1-2-through-2026-08-24.md](archive/acceptance-coverage-cuts-1-2-through-2026-08-24.md).
 
-- `plugins/workflows/src/workflow-checkpoint.ts` — fifth checkpoint kind
-  `acceptance` (1–100 criteria: `id`/`statement`/`provenBy`/`detail`); plan items
-  gained `satisfies`, verifications gained `acceptanceId`.
-- `plugins/workflows/src/workflow-coverage.ts` — pure derivation (no DB).
-  `closed` / `in-flight` / `uncovered` per criterion + `orphanWorkItemIds`,
-  `unknownReferences`, `unanchoredProgress`.
-- `plugins/workflows/src/data.ts` — dedicated campaign-wide checkpoint read
-  (`listCampaignCoverageCheckpoints`).
-- `service.ts` / `ui-contract.ts` / `server.ts` / `app.tsx` / `cli.ts` — carry
-  `coverage` + `coverageTruncated` to the panel and to `bb workflows details`.
-- Docs: `plugins/workflows/README.md`, `skills/workflows/SKILL.md`.
+**Cut 3 — closure gating** (`18b2191d2`, 12 files, +592/-12). A
+`nodeType: "gate"` plan item declares `requiresClosed: string[]` — the inverse
+of `satisfies`, refused by the schema on a work node — and a claim of
+`succeeded` on that item is refused (`{ kind: "gate_conflict"; openCriterionIds }`)
+while any named criterion is open. Closure comes from
+`deriveAcceptanceCoverage`, not a second query; fail closed, last plan wins, and
+only _success_ is gated so honest `failed`/`blocked` reporting stays free. Two
+mutation checks confirmed the tests kill the faults.
 
-**Cut 2 — immutability enforcement** (`7d5d28a04`, 14 files, +878/-106).
-Everything is committed; the tree is clean. The contract is now
-write-once in practice, not just by intent. Design and the honest limits are in
-[detail-acceptance-coverage.md](detail-acceptance-coverage.md#immutability-what-is-actually-enforced);
-the short version:
-
-- The first cut's real hole was the **silent in-place** one, not the one the
-  notes described: checkpoints are keyed `(run_id, checkpoint_id)` and UPDATEd,
-  so a same-ID republish destroyed the original body and `amendmentCount`
-  reported `0`. Refused now (`acceptance_conflict`, campaign-scoped, inside the
-  existing write transaction).
-- A genuine scope change has a legal move: a **new** acceptance ID carrying
-  `amends: { supersedes, reason }`. Restating the same body in any criterion
-  order stays free.
-- `amendmentCount` → `amendments[]` + `unauthorizedAcceptanceIds[]`. The
-  derivation re-walks the chain on read, so a contract edited around the tool
-  path is _reported_, not adopted. The panel renders undeclared divergence as a
-  warning ahead of every other note.
-- One shared `canonicalizeAcceptanceCriteria` for the guard and the derivation;
-  it now includes `detail`, so a quietly deleted qualifier counts as a change.
-- Tests: 3 in `data.test.ts`, 4 rewritten in `workflow-coverage.test.ts`, 2 in
-  `workflow-checkpoint.test.ts`, an end-to-end refusal on a live worker in
-  `server-harness.test.ts`. Two mutation checks confirmed the tests kill the
-  faults (write-side refusal → `return false`; read-side gate → `if (true)`).
+**Cut 4 — human-issued amendment approval** (uncommitted, 17 files, +1255/-80
+including both architect docs). A declared amendment is now **accepted but
+inert** — stored, readable, listed as `pendingAmendments`, and not what coverage
+measures until a human approves it. New `workflow_acceptance_approvals` table
+(migration 15) outside the checkpoint ledger; reachable only via
+`workflowApproveAmendment` (panel, origin thread) and `bb workflows
+approve-amendment <run-id> --acceptance <id>` (CLI, project-scoped), both
+recording the approving thread and surface. The approval is bound to the
+canonical criteria body, not the ID. An approved narrowing does **not** open a
+gate whose `requiresClosed` still names the dropped criterion. Tests: 4 coverage,
+3 data, 2 panel, 2 CLI validation, plus an end-to-end `server-harness` block that
+first asserts the live worker has no approval tool. Design:
+[detail-acceptance-coverage.md](detail-acceptance-coverage.md#approval-is-a-different-record-than-the-amendment).
 
 ## Now
 
@@ -75,12 +69,13 @@ notes rendering in `app.tsx` and `ui-contract.ts`.
 
 ## Next
 
-1. **Closure gating**: a `gate` node must not succeed while a criterion it gates
-   is open. Needs the gate→criterion edge to be explicit first.
-2. **Human-issued amendment approval** — the one thing that would turn
-   attribution into authorization. Needs an out-of-band action (a panel
-   affordance writing a record the worker tool path cannot mint).
-3. Unbuilt by design: composer status line, precondition budgets.
+1. Commit cut 4 and push `feature/workflow-acceptance-coverage` to `fork` —
+   `3dfcb94c7`, `18b2191d2`, and cut 4 are all unpushed, so PR #1 does not show
+   closure gating or approval yet.
+2. An **independent** pre-handoff critic pass (not self-review) before the PR is
+   updated for review.
+3. Retarget PR #1 to `main` once `feature/workflow-detail-ledger` lands.
+4. Unbuilt by design: composer status line, precondition budgets.
 
 ## Known unrelated flake
 

@@ -68,8 +68,9 @@ marked `checkpointsOmitted`; this caps the combined details response at 16 MiB
 while keeping its full chronology visible. Both surfaces additionally report
 `acceptanceCoverage`, derived over the campaign's whole checkpoint ledger rather
 than the hydrated subset: per-criterion `closed`/`in-flight`/`uncovered` state,
-succeeded work items that advance no stated outcome, the declared amendment
-chain with each reason, acceptance checkpoints whose body diverges without
+succeeded work items that advance no stated outcome, the approved amendment
+chain with each reason and who approved it, amendments still awaiting approval,
+acceptance checkpoints whose body diverges without
 declaring an amendment, links naming no declared criterion, and whether work is
 landing while nothing has closed. It is `null` when the campaign declared no acceptance contract, and
 `acceptanceCoverageTruncated` reports a ledger too large to read in full.
@@ -79,7 +80,7 @@ and BB theme tokens. Directive attributes and restored panel parameters are
 treated as untrusted input. The backend additionally binds every requested run
 to the directive message or panel thread, so a run ID from an unrelated thread
 cannot be inspected through these UI RPCs. Only the origin thread may stop a
-run. The service publishes a deduplicated `workflow-runs` realtime signal for
+run or approve an amendment from the panel. The service publishes a deduplicated `workflow-runs` realtime signal for
 the origin and presentation threads when a run starts, is claimed, settles, or
 is cancelled, so the composer status surface learns about new runs without a
 standing poll; it and the active message cards poll once per second only while
@@ -121,9 +122,20 @@ that cannot be rewritten in place: once a campaign has published a contract, a
 write that changes its criteria body is refused campaign-wide unless it arrives
 as a new checkpoint ID carrying `amends: { supersedes, reason }`. Restating the
 same body is always accepted, criterion order is not part of the contract, and
-`detail` is. Coverage measures the head of the declared amendment chain and
-re-derives that chain on read, so a contract changed by writing to the database
-directly is reported rather than adopted. Plan and work-item checkpoints may publish
+`detail` is. Declaring an amendment is not authorizing one: coverage keeps
+measuring the approved contract and lists the change under `pendingAmendments`
+until a person approves it through the workflow panel or `bb workflows
+approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>`. A worker's
+tool list is exactly the checkpoint and result tools, so that approval is
+outside the path a drifting workflow can reach. Each approval records the
+approving thread and the surface it came from and binds to the canonical
+criteria body it was issued against, so republishing different criteria under an
+already-approved checkpoint ID needs a new approval. Coverage measures the head
+of the approved amendment chain and re-derives that chain on read, so a contract
+changed by writing to the database directly is reported rather than adopted.
+An approved narrowing does not by itself open a gate whose `requiresClosed`
+still names the dropped criterion; the plan has to be restated too, so both
+changes are on the record. Plan and work-item checkpoints may publish
 bounded `dependsOn` edges; plan-local dependencies must reference known items
 and remain acyclic. Work items may be typed as work or gate nodes. A gate item
 may declare `requiresClosed`, the criteria it refuses to pass while any of them
@@ -262,6 +274,7 @@ bb workflows details <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>
+bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json
 ```

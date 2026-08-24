@@ -108,8 +108,8 @@ readings; defeating one is not enough.
 
 `amends.reason` is written by the same agent the contract constrains, so it is
 attribution, not authorization. It was deliberately NOT named or shaped like an
-approval field. A real gate needs a human action the agent's tool path cannot
-issue; until that exists, claiming authorization here would be a fake gate.
+approval field. Authorization is now a separate record — see "Approval is a
+different record than the amendment" below.
 
 One canonicalizer (`canonicalizeAcceptanceCriteria` in `workflow-checkpoint.ts`)
 serves both the write guard and the derivation — two would be two different
@@ -118,11 +118,85 @@ part of the contract) and **includes `detail`**, because a quietly deleted
 qualifier ("must also pass in the EU region") narrows what done means. `title`
 and `summary` are excluded, so retitling stays free.
 
-## Deferred, with reasons
+## Closure gating: the edge, then the guard
 
-- **Human-issued amendment approval.** See above: needs an out-of-band action
-  (a panel affordance writing a record the worker tool path cannot mint) before
-  an approval field would mean anything.
-- **Closure gating.** A `gate` node should not be allowed to succeed while a
-  criterion it gates is open. Needs the gate→criterion edge to be explicit
-  first.
+The gate→criterion edge is `requiresClosed` on a `nodeType: "gate"` plan item —
+the **inverse** of `satisfies`. It is named for what it waits on rather than
+`gates`, because "this node gates X" reads equally as the reverse edge. The
+schema refuses it on a work node: a field that reads as a gate and is never
+enforced is worse than no field.
+
+The edge and the claim live in different checkpoints by design — the plan
+declares the requirement, and success is reported later on a work-item row — so
+the guard is a campaign-wide read ordered exactly like the coverage read. **Last
+plan wins** for a given item ID, matching how coverage resolves a work item back
+to its declaration; a gate only an older plan declared is not something the
+campaign is still stuck behind.
+
+Closure is resolved by calling `deriveAcceptanceCoverage`, not by a second
+query, so "closed" has exactly one definition. Two consequences worth keeping:
+
+- **Fail closed.** A criterion no contract declares can never close, so it
+  counts as open. A typo in `requiresClosed` blocks the gate loudly instead of
+  silently disabling it.
+- **Only a claim of success is gated.** `failed`, `blocked`, and `running` are
+  always accepted — that is the honest reporting the refusal steers toward, so
+  blocking it too would push an agent into working around the gate.
+
+The refusal is a `{ kind: "gate_conflict"; openCriterionIds }` variant of the
+write outcome (a mixed `string | object` union, narrowed with
+`typeof outcome !== "string"`), so the agent is told what to close instead of
+guessing. Coverage exposes the same set as `openGates`: the readable side of the
+refusal, so a campaign can see what it is waiting on without tripping the guard.
+
+Two mutation checks confirmed the tests bind: `false && …` on the guard, and
+dropping the `status === "succeeded"` restriction. Both were caught, so the
+"honest reporting is allowed" assertions hold as well as the refusal ones.
+
+## Approval is a different record than the amendment
+
+Declaring a change is not authorizing one. A declared amendment is now
+**accepted but inert**: stored, readable, listed as `pendingAmendments`, and not
+what coverage measures. It becomes the contract only when an approval exists.
+
+Why this is a real gate rather than another self-attestation: the workflow
+worker's tool list is exactly `["bb_workflow_checkpoint", "bb_workflow_result"]`
+(`server.ts`), so an approval reachable only through the UI RPC and the CLI is
+structurally outside the path a drifting workflow can use. This is still
+tamper-**evidence** — an agent with shell access can reach the CLI — but the
+approval names the thread it came from and the surface (`panel` | `cli`), both
+set by the entry point and never by the caller's payload. A self-reported actor
+string is exactly what this replaces.
+
+- **Bound to the body, not just the ID.** The approval stores
+  `canonicalizeAcceptanceCriteria` of what was approved, so approving one set of
+  criteria cannot bless a different set republished later under the same
+  checkpoint ID. The canonical string is stored rather than a hash to keep
+  `node:crypto` out of a module the browser bundle reaches.
+- **Approvals live outside the checkpoint ledger** (`workflow_acceptance_approvals`,
+  campaign-scoped, `ON CONFLICT DO NOTHING` so clicking twice is one approval).
+  Putting them in the ledger would put them back on the surface the worker
+  writes to.
+- **`approvals` is a required parameter** of `deriveAcceptanceCoverage`. A
+  default would let a forgetful caller report every amendment as pending — a
+  wrong answer that looks like a working one.
+- **Rows are parsed on read** (`acceptanceApprovalSchema.safeParse` per row,
+  invalid rows dropped). A dropped row makes the amendment pending again, which
+  is the safe direction: an unreadable approval must not read as consent.
+- **A pending amendment still counts as "seen"** for a later amendment's
+  `supersedes`. It is a real, readable checkpoint, and approving the later one
+  approves the body it carries.
+- **The gate guard reads approvals too**, for the same reason coverage does:
+  otherwise a gated run could open its own gate by publishing an amendment that
+  deletes the criterion it is stuck on.
+
+One deliberate strictness: an **approved narrowing does not by itself open a
+gate** whose `requiresClosed` still names the dropped criterion. The criterion
+is now undeclared, and fail-closed says undeclared can never close. The plan has
+to be restated without that requirement, so both the contract change and the
+gate change are on the record. Tested on both sides
+(`workflow-coverage.test.ts`, `data.test.ts`).
+
+## Still deferred, with reasons
+
+- Composer status line and precondition budgets: unbuilt by design.

@@ -68,6 +68,8 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
   bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]
   bb workflows list [--limit <1-50>]
   bb workflows stop <run-id>
+  bb workflows approve-amendment <run-id>
+                        --acceptance <acceptance-checkpoint-id>
 
 Use `details` for durable structured selected-plan, work-item/ticket, and
 verification state. Use paged `history` for the chronological run and agent-call
@@ -84,7 +86,13 @@ otherwise inherit their parent run's presentation/root relationship or use the
 nearest visible ancestor. An explicit presentation target must be a visible
 thread in the same project and environment and must be the origin or one of its
 ancestors. Presentation-thread inspection is read-only; stop control remains
-with the origin. The target must be available from the same BB server;
+with the origin. `details` also reports `acceptanceCoverage` for the campaign.
+A workflow that changes its own acceptance contract must publish an amending
+acceptance checkpoint, and that change stays inert — readable, but not the
+contract coverage is measured against — until a person approves it from the
+workflow panel or with `approve-amendment`. The recorded approval names the
+approving thread and the surface it came from, and it is bound to the exact
+criteria body it was issued against. The target must be available from the same BB server;
 workflows do not federate state across servers. Status, list, and history run
 records include
 `originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
