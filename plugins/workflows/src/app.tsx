@@ -1412,7 +1412,11 @@ function AcceptanceStateChip({
     >
       <Icon
         name={
-          state === "closed" ? "Check" : state === "in-flight" ? "Circle" : "Clock"
+          state === "closed"
+            ? "Check"
+            : state === "in-flight"
+              ? "Circle"
+              : "Clock"
         }
         className="size-3"
         aria-hidden
@@ -1432,20 +1436,42 @@ function AcceptanceCoverageNotes({
   coverage: AcceptanceCoverageView;
   truncated: boolean;
 }) {
-  const notes = [
-    coverage.unanchoredProgress
-      ? `${coverage.orphanWorkItemIds.length} work ${coverage.orphanWorkItemIds.length === 1 ? "item has" : "items have"} succeeded and no stated outcome has closed yet.`
-      : null,
-    coverage.amendmentCount === 0
+  const amendment = coverage.amendments.at(-1);
+  const notes: { text: string; alert: boolean }[] = [
+    // Loudest first. The write path refuses an undeclared contract change, so
+    // seeing one means the ledger was written some other way and every count
+    // below it is measured against a contract nobody declared.
+    coverage.unauthorizedAcceptanceIds.length === 0
       ? null
-      : `The acceptance contract was rewritten ${coverage.amendmentCount === 1 ? "once" : `${coverage.amendmentCount} times`}; the original still applies here.`,
+      : {
+          alert: true,
+          text: `${coverage.unauthorizedAcceptanceIds.length === 1 ? "An acceptance checkpoint" : `${coverage.unauthorizedAcceptanceIds.length} acceptance checkpoints`} changed this contract without declaring an amendment (${coverage.unauthorizedAcceptanceIds.join(", ")}). Coverage still measures the declared contract; treat the change as unreviewed.`,
+        },
+    coverage.unanchoredProgress
+      ? {
+          alert: true,
+          text: `${coverage.orphanWorkItemIds.length} work ${coverage.orphanWorkItemIds.length === 1 ? "item has" : "items have"} succeeded and no stated outcome has closed yet.`,
+        }
+      : null,
+    amendment === undefined
+      ? null
+      : {
+          alert: false,
+          text: `Contract amended ${coverage.amendments.length === 1 ? "once" : `${coverage.amendments.length} times`}, most recently by ${amendment.acceptanceId} replacing ${amendment.supersedes}: ${amendment.reason}`,
+        },
     coverage.unknownReferences.length === 0
       ? null
-      : `${coverage.unknownReferences.length} link${coverage.unknownReferences.length === 1 ? "" : "s"} name no declared criterion: ${coverage.unknownReferences.join(", ")}.`,
+      : {
+          alert: false,
+          text: `${coverage.unknownReferences.length} link${coverage.unknownReferences.length === 1 ? "" : "s"} name no declared criterion: ${coverage.unknownReferences.join(", ")}.`,
+        },
     truncated
-      ? "This campaign outgrew the coverage read, so these counts cover only its earlier checkpoints."
+      ? {
+          alert: false,
+          text: "This campaign outgrew the coverage read, so these counts cover only its earlier checkpoints.",
+        }
       : null,
-  ].filter((note): note is string => note !== null);
+  ].filter((note): note is { text: string; alert: boolean } => note !== null);
   if (notes.length === 0) return null;
   return (
     <div
@@ -1453,7 +1479,18 @@ function AcceptanceCoverageNotes({
       className="mt-2 space-y-1 rounded border border-border-seam bg-muted/30 px-2 py-1.5 text-2xs text-subtle-foreground"
     >
       {notes.map((note) => (
-        <p key={note}>{note}</p>
+        <p
+          key={note.text}
+          // An amendment reason is author-supplied and can be long. Clamping is
+          // visual only, so the full text stays selectable and copyable.
+          className={
+            note.alert
+              ? "line-clamp-3 break-words text-warning-text"
+              : "line-clamp-3 break-words"
+          }
+        >
+          {note.text}
+        </p>
       ))}
     </div>
   );
@@ -1469,7 +1506,9 @@ function AcceptanceCoverage({
   return (
     <div>
       <div className="mb-1.5 flex items-baseline justify-between gap-2">
-        <p className="text-2xs font-medium text-subtle-foreground">Acceptance</p>
+        <p className="text-2xs font-medium text-subtle-foreground">
+          Acceptance
+        </p>
         <p className="text-2xs text-subtle-foreground">
           {coverage.closedCount} of {coverage.criteria.length} closed
           {coverage.inFlightCount === 0

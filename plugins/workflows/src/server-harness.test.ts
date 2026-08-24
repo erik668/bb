@@ -1071,6 +1071,84 @@ describe("workflows plugin", () => {
           { threadId: "child-6", projectId: "project-test" },
         ),
       ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+
+      // The acceptance contract has to be unrewritable through the tool path
+      // itself, not only in the data layer: this is the anchor every other
+      // checkpoint is measured against.
+      const acceptanceCriteria = [
+        {
+          id: "sealed-result",
+          statement: "A cancelled job still yields a sealed result artifact.",
+          provenBy: "artifact",
+          detail: null,
+        },
+      ];
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "acceptance",
+              id: "campaign-acceptance",
+              title: "Campaign acceptance",
+              status: "succeeded",
+              summary: null,
+              criteria: acceptanceCriteria,
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "acceptance",
+              id: "campaign-acceptance",
+              title: "Campaign acceptance",
+              status: "succeeded",
+              summary: null,
+              criteria: [
+                {
+                  id: "something-easier",
+                  statement: "A narrower outcome this run can actually close.",
+                  provenBy: "artifact",
+                  detail: null,
+                },
+              ],
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toMatchObject({
+        isError: true,
+        content: [
+          {
+            text: expect.stringContaining(
+              "cannot be rewritten. Publish a new acceptance checkpoint",
+            ),
+          },
+        ],
+      });
+      // Restating the contract it already published is not a rewrite.
+      await expect(
+        harness.callAgentTool(
+          "bb_workflow_checkpoint",
+          {
+            checkpoint: {
+              kind: "acceptance",
+              id: "campaign-acceptance",
+              title: "Campaign acceptance restated",
+              status: "succeeded",
+              summary: null,
+              criteria: acceptanceCriteria,
+            },
+          },
+          { threadId: "child-6", projectId: "project-test" },
+        ),
+      ).resolves.toBe(JSON.stringify({ accepted: true }, null, 2));
+
       await harness.emitThreadEvent("thread.idle", {
         thread: { id: "child-6" } as never,
         lastAssistantText: "ordinary text",

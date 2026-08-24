@@ -68,9 +68,10 @@ marked `checkpointsOmitted`; this caps the combined details response at 16 MiB
 while keeping its full chronology visible. Both surfaces additionally report
 `acceptanceCoverage`, derived over the campaign's whole checkpoint ledger rather
 than the hydrated subset: per-criterion `closed`/`in-flight`/`uncovered` state,
-succeeded work items that advance no stated outcome, contract amendments,
-links naming no declared criterion, and whether work is landing while nothing
-has closed. It is `null` when the campaign declared no acceptance contract, and
+succeeded work items that advance no stated outcome, the declared amendment
+chain with each reason, acceptance checkpoints whose body diverges without
+declaring an amendment, links naming no declared criterion, and whether work is
+landing while nothing has closed. It is `null` when the campaign declared no acceptance contract, and
 `acceptanceCoverageTruncated` reports a ledger too large to read in full.
 
 Both surfaces are implemented by the plugin app with `@bb/shared-ui` controls
@@ -115,7 +116,14 @@ inherits the current phase. Supported checkpoint kinds are `acceptance`, `plan`,
 the campaign's outcomes — stable criterion IDs with a statement, a `provenBy` of
 `command`, `artifact`, or `human`, and optional detail — so plans can be
 measured against something they did not author. Plan items link to it through
-`satisfies` and verifications through `acceptanceId`. Plan and work-item checkpoints may publish
+`satisfies` and verifications through `acceptanceId`. Acceptance is the one kind
+that cannot be rewritten in place: once a campaign has published a contract, a
+write that changes its criteria body is refused campaign-wide unless it arrives
+as a new checkpoint ID carrying `amends: { supersedes, reason }`. Restating the
+same body is always accepted, criterion order is not part of the contract, and
+`detail` is. Coverage measures the head of the declared amendment chain and
+re-derives that chain on read, so a contract changed by writing to the database
+directly is reported rather than adopted. Plan and work-item checkpoints may publish
 bounded `dependsOn` edges; plan-local dependencies must reference known items
 and remain acyclic. Work items may be typed as work or gate nodes. Transitions
 record the actor, source and target states, affected work items, rationale, and

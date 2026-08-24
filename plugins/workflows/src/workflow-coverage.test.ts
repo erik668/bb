@@ -7,6 +7,10 @@ import { deriveAcceptanceCoverage } from "./workflow-coverage.js";
 function acceptance(
   ids: readonly string[],
   id = "acceptance",
+  options: {
+    amends?: { supersedes: string; reason: string };
+    detail?: string;
+  } = {},
 ): WorkflowCheckpoint {
   return {
     kind: "acceptance",
@@ -18,8 +22,9 @@ function acceptance(
       id: criterionId,
       statement: `Criterion ${criterionId} holds`,
       provenBy: "command",
-      detail: null,
+      detail: options.detail ?? null,
     })),
+    ...(options.amends === undefined ? {} : { amends: options.amends }),
   };
 }
 
@@ -131,10 +136,7 @@ describe("acceptance coverage", () => {
     // stated Phase 0 outcome.
     const coverage = deriveAcceptanceCoverage([
       acceptance(["cli", "grader"]),
-      plan([
-        { id: "containment", satisfies: [] },
-        { id: "image-pinning" },
-      ]),
+      plan([{ id: "containment", satisfies: [] }, { id: "image-pinning" }]),
       workItem("containment"),
       workItem("image-pinning"),
     ]);
@@ -162,10 +164,7 @@ describe("acceptance coverage", () => {
   it("excludes work that is unfinished or anchored from orphans", () => {
     const coverage = deriveAcceptanceCoverage([
       acceptance(["cli"]),
-      plan([
-        { id: "cli-unit", satisfies: ["cli"] },
-        { id: "in-progress" },
-      ]),
+      plan([{ id: "cli-unit", satisfies: ["cli"] }, { id: "in-progress" }]),
       workItem("cli-unit"),
       workItem("in-progress", "running"),
     ]);
@@ -204,23 +203,74 @@ describe("acceptance coverage", () => {
     expect(coverage?.orphanWorkItemIds).toEqual([]);
   });
 
-  it("counts a rewritten contract as an amendment but tolerates reordering", () => {
-    const rewritten = deriveAcceptanceCoverage([
+  it("measures the campaign against a declared amendment", () => {
+    const coverage = deriveAcceptanceCoverage([
+      acceptance(["cli", "grader"]),
+      acceptance(["containment"], "acceptance-v2", {
+        amends: { supersedes: "acceptance", reason: "Grader moved to phase 2" },
+      }),
+    ]);
+
+    // A scope change that says so is legitimate, so it becomes authoritative
+    // rather than being reported forever against a contract nobody holds.
+    expect(coverage?.acceptanceId).toBe("acceptance-v2");
+    expect(coverage?.criteria.map((criterion) => criterion.id)).toEqual([
+      "containment",
+    ]);
+    expect(coverage?.amendments).toEqual([
+      {
+        acceptanceId: "acceptance-v2",
+        supersedes: "acceptance",
+        reason: "Grader moved to phase 2",
+      },
+    ]);
+    expect(coverage?.unauthorizedAcceptanceIds).toEqual([]);
+  });
+
+  it("refuses to adopt a contract that changed without declaring it", () => {
+    // The write path refuses this, so reaching it means the ledger was written
+    // another way. Coverage must not let the rewrite become the measure.
+    const coverage = deriveAcceptanceCoverage([
       acceptance(["cli", "grader"]),
       acceptance(["containment"], "acceptance-v2"),
     ]);
-    expect(rewritten?.amendmentCount).toBe(1);
-    // The first contract stays authoritative; the rewrite does not silently win.
-    expect(rewritten?.criteria.map((criterion) => criterion.id)).toEqual([
+
+    expect(coverage?.acceptanceId).toBe("acceptance");
+    expect(coverage?.criteria.map((criterion) => criterion.id)).toEqual([
       "cli",
       "grader",
     ]);
+    expect(coverage?.amendments).toEqual([]);
+    expect(coverage?.unauthorizedAcceptanceIds).toEqual(["acceptance-v2"]);
+  });
 
+  it("rejects an amendment naming a predecessor the campaign never published", () => {
+    const coverage = deriveAcceptanceCoverage([
+      acceptance(["cli"]),
+      acceptance(["containment"], "acceptance-v2", {
+        amends: { supersedes: "acceptance-that-never-existed", reason: "why" },
+      }),
+    ]);
+
+    expect(coverage?.acceptanceId).toBe("acceptance");
+    expect(coverage?.unauthorizedAcceptanceIds).toEqual(["acceptance-v2"]);
+  });
+
+  it("treats reordering as the same contract and a changed detail as a new one", () => {
     const reordered = deriveAcceptanceCoverage([
       acceptance(["cli", "grader"]),
       acceptance(["grader", "cli"], "acceptance-restated"),
     ]);
-    expect(reordered?.amendmentCount).toBe(0);
+    expect(reordered?.amendments).toEqual([]);
+    expect(reordered?.unauthorizedAcceptanceIds).toEqual([]);
+
+    // A qualifier deleted from `detail` narrows what done means, so it counts
+    // as a contract change even though every criterion ID is unchanged.
+    const requalified = deriveAcceptanceCoverage([
+      acceptance(["cli"], "acceptance", { detail: "Must also pass in the EU" }),
+      acceptance(["cli"], "acceptance-v2"),
+    ]);
+    expect(requalified?.unauthorizedAcceptanceIds).toEqual(["acceptance-v2"]);
   });
 
   it("collects references that match no declared criterion", () => {

@@ -69,6 +69,33 @@ export const WORKFLOW_CHECKPOINT_LIMITS = {
 export const MAX_WORKFLOW_CHECKPOINTS_PER_RUN = 512;
 export const MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN = 4 * 1024 * 1024;
 
+const acceptanceCriterionSchema = z
+  .object({
+    id: checkpointIdSchema,
+    statement: z.string().min(1).max(8_192),
+    provenBy: workflowAcceptanceProvenBySchema,
+    detail: z.string().min(1).max(16_384).nullable(),
+  })
+  .strict();
+
+/**
+ * Declares that this acceptance checkpoint deliberately replaces an earlier
+ * one. Absence means "this is the campaign's original contract", so it is
+ * optional rather than nullable: the omission is the common case and carries
+ * meaning, and the write path refuses a changed contract that omits it.
+ *
+ * This records an amendment; it does not authorize one. The reason is written
+ * by the same agent the contract constrains, so its value is that the change
+ * becomes attributable and visible rather than silent — the original body
+ * survives in its own row and stays readable.
+ */
+const acceptanceAmendmentSchema = z
+  .object({
+    supersedes: checkpointIdSchema,
+    reason: z.string().min(1).max(8_192),
+  })
+  .strict();
+
 /**
  * The campaign's acceptance contract: the outcomes that define done, published
  * separately from the plans that pursue them. A plan is re-authored every run;
@@ -83,19 +110,8 @@ const acceptanceCheckpointSchema = z
     title: checkpointTitleSchema,
     status: checkpointStatusSchema,
     summary: checkpointSummarySchema,
-    criteria: z
-      .array(
-        z
-          .object({
-            id: checkpointIdSchema,
-            statement: z.string().min(1).max(8_192),
-            provenBy: workflowAcceptanceProvenBySchema,
-            detail: z.string().min(1).max(16_384).nullable(),
-          })
-          .strict(),
-      )
-      .min(1)
-      .max(100),
+    criteria: z.array(acceptanceCriterionSchema).min(1).max(100),
+    amends: acceptanceAmendmentSchema.optional(),
   })
   .strict()
   .superRefine((checkpoint, context) => {
@@ -105,6 +121,14 @@ const acceptanceCheckpointSchema = z
       field: "criteria",
       message: "Acceptance criterion IDs must be unique",
     });
+    if (checkpoint.amends?.supersedes === checkpoint.id) {
+      context.addIssue({
+        code: "custom",
+        message:
+          "An acceptance checkpoint cannot supersede itself; an amendment needs a new checkpoint ID so the superseded contract survives",
+        path: ["amends", "supersedes"],
+      });
+    }
   });
 
 const planCheckpointSchema = z
@@ -277,3 +301,65 @@ export type WorkflowAcceptanceCheckpoint = z.infer<
 export type WorkflowAcceptanceCriterion =
   WorkflowAcceptanceCheckpoint["criteria"][number];
 export type WorkflowPlanCheckpoint = z.infer<typeof planCheckpointSchema>;
+export type WorkflowAcceptanceAmendment = z.infer<
+  typeof acceptanceAmendmentSchema
+>;
+
+/**
+ * The single definition of "the same acceptance contract", shared by the write
+ * guard that refuses a rewrite and the derivation that reports one. Two
+ * canonicalizers would be two different answers to that question.
+ *
+ * Criterion order is not part of the contract, so criteria are sorted by ID
+ * before comparison and reordering is not a rewrite. `detail` IS part of it: a
+ * quietly deleted qualifier ("must also pass in the EU region") narrows what
+ * done means, which is the drift shape this exists to catch. `title` and
+ * `summary` are presentation and are excluded, so retitling stays free.
+ */
+export function canonicalizeAcceptanceCriteria(
+  criteria: readonly WorkflowAcceptanceCriterion[],
+): string {
+  return JSON.stringify(
+    [...criteria]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((criterion) => [
+        criterion.id,
+        criterion.statement,
+        criterion.provenBy,
+        criterion.detail,
+      ]),
+  );
+}
+
+const storedAcceptanceSchema = z
+  .object({
+    criteria: z.array(acceptanceCriterionSchema),
+    amends: acceptanceAmendmentSchema.optional(),
+  })
+  .passthrough();
+
+/**
+ * Reads an acceptance body out of a stored checkpoint row for the write guard.
+ *
+ * The data layer holds raw JSON rather than a parsed checkpoint, so the parse
+ * happens here, at that boundary, instead of casting there. Returns null when
+ * the row carries no readable acceptance body: malformed JSON and rows written
+ * outside the tool path cannot be compared, and the guard treats an
+ * uncomparable row as absent rather than as a match.
+ */
+export function readStoredAcceptance(
+  json: string,
+): { canonical: string; supersedes: string | null } | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  const parsed = storedAcceptanceSchema.safeParse(value);
+  if (!parsed.success) return null;
+  return {
+    canonical: canonicalizeAcceptanceCriteria(parsed.data.criteria),
+    supersedes: parsed.data.amends?.supersedes ?? null,
+  };
+}

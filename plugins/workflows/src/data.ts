@@ -5,6 +5,7 @@ import type { JsonValue, WorkflowAgentOptions } from "./types.js";
 import {
   MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
   MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
+  readStoredAcceptance,
 } from "./workflow-checkpoint.js";
 import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
 
@@ -126,7 +127,8 @@ export type UpsertWorkflowCheckpointOutcome =
   | "inactive"
   | "limit_exceeded"
   | "ownership_conflict"
-  | "kind_conflict";
+  | "kind_conflict"
+  | "acceptance_conflict";
 
 type StoreStructuredResultOutcome =
   | "accepted"
@@ -679,6 +681,91 @@ export function updateRunPhase(db: Db, id: string, phase: string): void {
   ).run(phase, id);
 }
 
+/**
+ * Decides whether a write would change the campaign's acceptance contract.
+ *
+ * Acceptance is the one checkpoint kind the campaign is measured against, so an
+ * orchestrator that can rewrite it can always agree with itself. Two vectors
+ * have to be closed and only one of them is loud:
+ *
+ * - Republishing under the same ID UPDATEs the row in place and destroys the
+ *   original, leaving the derivation nothing to compare and nothing to report.
+ *   That is refused unconditionally — an amendment cannot overwrite the thing it
+ *   supersedes.
+ * - Publishing a different contract under a new ID keeps the original readable,
+ *   so it is accepted only when it names what it supersedes.
+ *
+ * Campaign-scoped rather than run-scoped, because acceptance belongs to the
+ * campaign: a child run publishing its own contract is the same rewrite one
+ * level out. Only acceptance writes pay for this query, and both legs of the
+ * join are indexed (`workflow_runs(campaign_id, ...)`,
+ * `workflow_checkpoints(run_id, ordinal)`).
+ *
+ * This makes a rewritten contract evident, not impossible. Nothing here can
+ * stop a writer that edits the database directly, which is why the derivation
+ * re-checks the amendment chain on read instead of trusting the newest row.
+ */
+function conflictsWithCampaignAcceptance(
+  db: Db,
+  args: {
+    runId: string;
+    checkpointId: string;
+    incoming: { canonical: string; supersedes: string | null };
+  },
+): boolean {
+  const rows = db
+    .prepare(
+      `SELECT checkpoint.checkpoint_id AS checkpointId,
+         checkpoint.run_id AS runId,
+         checkpoint.checkpoint_json AS checkpointJson
+       FROM workflow_checkpoints AS checkpoint
+       JOIN workflow_runs AS run ON run.id = checkpoint.run_id
+       WHERE COALESCE(run.campaign_id, run.id) = (
+           SELECT COALESCE(campaign_id, id) FROM workflow_runs WHERE id = ?
+         )
+         AND CASE WHEN json_valid(checkpoint.checkpoint_json)
+                  THEN json_extract(checkpoint.checkpoint_json, '$.kind')
+             END = 'acceptance'`,
+    )
+    .all(args.runId) as {
+    checkpointId: string;
+    runId: string;
+    checkpointJson: string;
+  }[];
+
+  // A row whose body cannot be read cannot be compared, so it is excluded from
+  // the equality check while still counting as a valid supersede target.
+  const existing = rows.map((row) => ({
+    checkpointId: row.checkpointId,
+    runId: row.runId,
+    acceptance: readStoredAcceptance(row.checkpointJson),
+  }));
+  if (existing.length === 0) {
+    // An amendment naming a predecessor this campaign never published is a
+    // fabricated chain, not an amendment.
+    return args.incoming.supersedes !== null;
+  }
+
+  const inPlaceTarget = existing.find(
+    (row) => row.runId === args.runId && row.checkpointId === args.checkpointId,
+  );
+  if (
+    inPlaceTarget?.acceptance !== undefined &&
+    inPlaceTarget.acceptance !== null &&
+    inPlaceTarget.acceptance.canonical !== args.incoming.canonical
+  ) {
+    return true;
+  }
+
+  const comparable = existing.filter((row) => row.acceptance !== null);
+  const unchanged = comparable.every(
+    (row) => row.acceptance?.canonical === args.incoming.canonical,
+  );
+  if (unchanged) return false;
+
+  return !existing.some((row) => row.checkpointId === args.incoming.supersedes);
+}
+
 export function upsertWorkflowCheckpoint(
   db: Db,
   input: {
@@ -731,6 +818,20 @@ export function upsertWorkflowCheckpoint(
       existing.kind !== incoming.kind
     ) {
       return "kind_conflict";
+    }
+    const incomingAcceptance =
+      incoming.kind === "acceptance"
+        ? readStoredAcceptance(input.checkpointJson)
+        : null;
+    if (
+      incomingAcceptance !== null &&
+      conflictsWithCampaignAcceptance(db, {
+        runId: input.runId,
+        checkpointId: input.checkpointId,
+        incoming: incomingAcceptance,
+      })
+    ) {
+      return "acceptance_conflict";
     }
     const totals = db
       .prepare(

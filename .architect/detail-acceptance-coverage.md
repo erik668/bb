@@ -36,7 +36,7 @@ Test coverage for both: "re-opens a criterion the newest plan dropped" and
 ## Preconditions are legitimate orphans
 
 A containment/bring-up gate is a `nodeType: "gate"` work item that satisfies
-nothing, so succeeded-but-unanchored work is *normal*. Drift is **sustained**
+nothing, so succeeded-but-unanchored work is _normal_. Drift is **sustained**
 orphan work with no acceptance movement — captured mechanically as
 `unanchoredProgress = closedCount === 0 && orphanWorkItemIds.length > 0`. No
 tuned threshold.
@@ -57,7 +57,7 @@ runs — i.e. exactly when drift-checking starts to matter. Hence
 checkpoint.ordinal`) capped at `MAX_WORKFLOW_COVERAGE_CHECKPOINTS = 5_000` with
 truncation reported, not silent.
 
-## Two bugs the tests caught (keep the tests)
+## Three bugs the tests caught (keep the tests)
 
 1. **`json_extract` raises on malformed JSON.** The campaign-wide read touches
    rows bounded hydration never parses, and `service-policy.test.ts` deliberately
@@ -69,14 +69,60 @@ truncation reported, not silent.
 2. **`WorkflowCheckpointDetails` short-circuits on an empty ledger** — which is
    the exact state of a campaign whose contract lives in an omitted older run.
    The empty-state guard now also checks `state.coverage === null`.
+3. **The `app.test.tsx` coverage fixture was untyped**, sitting inside a fake RPC
+   response. When the coverage contract changed it drifted silently, failed the
+   `.strict()` parse, and surfaced as "Unable to find text: Acceptance" instead
+   of a compile error. Now `satisfies WorkflowAcceptanceCoverage`.
+
+## Immutability: what is actually enforced
+
+The first cut had a hole worse than the one it documented. Checkpoints are keyed
+`(run_id, checkpoint_id)` and an existing row is **UPDATEd in place**
+(`data.ts`), so republishing acceptance under the same ID destroyed the original
+body. `amendmentCount` compared distinct acceptance _rows_, saw one, and
+reported zero amendments — the anchor was rewritten and coverage said nothing.
+That was the remote-evals `MISSION.md` failure reproduced inside the ledger.
+
+Now closed at the write path (`conflictsWithCampaignAcceptance`, returning the
+new `acceptance_conflict` outcome), campaign-scoped because acceptance belongs to
+the campaign and a child run publishing its own contract is the same rewrite one
+level out:
+
+- Same ID, changed body → refused unconditionally. An amendment cannot overwrite
+  the thing it supersedes, so `amends` cannot rescue it (the schema also refuses
+  `supersedes === id`).
+- New ID, changed body → accepted only with `amends: { supersedes, reason }`
+  naming an acceptance the campaign really published.
+- Restating the same body, in any criterion order → always accepted. A resumed
+  run legitimately republishes its checkpoints, and refusing that would push an
+  orchestrator into working around the contract entirely.
+
+**This is tamper-evidence, not tamper-proofing, and the distinction is
+deliberate.** The writer is an agent with shell access to the same SQLite file,
+so no in-process design makes the anchor unwritable. What is achievable is that
+the original survives, every change is attributed with a reason, and the
+_derivation independently re-checks the amendment chain on read_ — so a contract
+edited around the tool path is reported (`unauthorizedAcceptanceIds`) and does
+NOT become what coverage measures. Enforcement and derivation are two separate
+readings; defeating one is not enough.
+
+`amends.reason` is written by the same agent the contract constrains, so it is
+attribution, not authorization. It was deliberately NOT named or shaped like an
+approval field. A real gate needs a human action the agent's tool path cannot
+issue; until that exists, claiming authorization here would be a fake gate.
+
+One canonicalizer (`canonicalizeAcceptanceCriteria` in `workflow-checkpoint.ts`)
+serves both the write guard and the derivation — two would be two different
+answers to "is this the same contract". It sorts by criterion ID (order is not
+part of the contract) and **includes `detail`**, because a quietly deleted
+qualifier ("must also pass in the EU region") narrows what done means. `title`
+and `summary` are excluded, so retitling stays free.
 
 ## Deferred, with reasons
 
-- **Immutability.** A rewritten contract is currently reported
-  (`amendmentCount`) with the *first* body staying authoritative — not refused.
-  Reordering is tolerated (`canonicalCriteria` sorts by id before stringifying),
-  so only a genuine rewrite counts. Enforcement needs a human-approved amendment
-  path, otherwise a legitimate scope change has no legal move.
+- **Human-issued amendment approval.** See above: needs an out-of-band action
+  (a panel affordance writing a record the worker tool path cannot mint) before
+  an approval field would mean anything.
 - **Closure gating.** A `gate` node should not be allowed to succeed while a
   criterion it gates is open. Needs the gate→criterion edge to be explicit
   first.

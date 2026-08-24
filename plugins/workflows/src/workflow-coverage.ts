@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
-  type WorkflowAcceptanceCriterion,
   type WorkflowCheckpoint,
+  canonicalizeAcceptanceCriteria,
   workflowAcceptanceProvenBySchema,
 } from "./workflow-checkpoint.js";
 
@@ -41,6 +41,16 @@ const acceptanceCriterionCoverageSchema = z
   })
   .strict();
 
+const acceptanceAmendmentRecordSchema = z
+  .object({
+    /** The amending checkpoint, which becomes authoritative from here on. */
+    acceptanceId: z.string(),
+    /** The acceptance checkpoint it replaced, still readable in the ledger. */
+    supersedes: z.string(),
+    reason: z.string(),
+  })
+  .strict();
+
 /**
  * Shared by the derivation and the UI contract so the summary the composer
  * renders cannot drift from the one this module computes.
@@ -53,12 +63,18 @@ export const workflowAcceptanceCoverageSchema = z
     inFlightCount: z.number().int().nonnegative(),
     uncoveredCount: z.number().int().nonnegative(),
     /**
-     * Acceptance checkpoints published after the first with a different
-     * criteria body. Until campaign-scoped immutability is enforced, a
-     * rewritten contract is the drift, so it is surfaced rather than silently
-     * adopted.
+     * Declared amendments in ledger order. The write path refuses a changed
+     * contract that does not declare itself, so a campaign whose scope really
+     * did change ends up with a readable chain instead of a rewritten anchor.
      */
-    amendmentCount: z.number().int().nonnegative(),
+    amendments: z.array(acceptanceAmendmentRecordSchema),
+    /**
+     * Acceptance checkpoints whose body differs from the authoritative contract
+     * without declaring an amendment. The write path refuses these, so a
+     * non-empty list means the ledger was written outside the tool path — the
+     * reason this is re-derived on read rather than trusting the newest row.
+     */
+    unauthorizedAcceptanceIds: z.array(z.string()),
     /** `satisfies` / `acceptanceId` values matching no declared criterion. */
     unknownReferences: z.array(z.string()),
     /**
@@ -85,18 +101,9 @@ export type AcceptanceCriterionCoverage = z.infer<
 export type WorkflowAcceptanceCoverage = z.infer<
   typeof workflowAcceptanceCoverageSchema
 >;
-
-function canonicalCriteria(criteria: readonly WorkflowAcceptanceCriterion[]) {
-  return JSON.stringify(
-    [...criteria]
-      .sort((left, right) => left.id.localeCompare(right.id))
-      .map((criterion) => [
-        criterion.id,
-        criterion.statement,
-        criterion.provenBy,
-      ]),
-  );
-}
+export type AcceptanceAmendmentRecord = z.infer<
+  typeof acceptanceAmendmentRecordSchema
+>;
 
 /**
  * Derives coverage from one campaign's checkpoints in chronological order.
@@ -111,13 +118,44 @@ export function deriveAcceptanceCoverage(
   const acceptances = checkpoints.filter(
     (checkpoint) => checkpoint.kind === "acceptance",
   );
-  const contract = acceptances[0];
-  if (contract === undefined) return null;
+  const original = acceptances[0];
+  if (original === undefined) return null;
 
-  const baseline = canonicalCriteria(contract.criteria);
-  const amendmentCount = acceptances
-    .slice(1)
-    .filter((later) => canonicalCriteria(later.criteria) !== baseline).length;
+  // The authoritative contract is the head of the declared amendment chain, not
+  // simply the newest acceptance checkpoint. A campaign whose scope legitimately
+  // changed is measured against what it amended to; a contract that changed
+  // without saying so is reported and does NOT take over, so editing the ledger
+  // directly cannot make coverage agree with a rewrite.
+  //
+  // An amendment is accepted here when it names any earlier acceptance
+  // checkpoint. The write path already refuses one that names a predecessor the
+  // campaign never published, so the read side only has to separate a declared
+  // amendment from an undeclared rewrite.
+  let contract = original;
+  const amendments: AcceptanceAmendmentRecord[] = [];
+  const unauthorizedAcceptanceIds: string[] = [];
+  const seenAcceptanceIds = new Set([original.id]);
+  for (const later of acceptances.slice(1)) {
+    const changed =
+      canonicalizeAcceptanceCriteria(later.criteria) !==
+      canonicalizeAcceptanceCriteria(contract.criteria);
+    if (!changed) {
+      seenAcceptanceIds.add(later.id);
+      continue;
+    }
+    const amends = later.amends;
+    if (amends !== undefined && seenAcceptanceIds.has(amends.supersedes)) {
+      amendments.push({
+        acceptanceId: later.id,
+        supersedes: amends.supersedes,
+        reason: amends.reason,
+      });
+      contract = later;
+    } else {
+      unauthorizedAcceptanceIds.push(later.id);
+    }
+    seenAcceptanceIds.add(later.id);
+  }
 
   // Two different resolutions of "the plan", deliberately:
   //
@@ -220,7 +258,8 @@ export function deriveAcceptanceCoverage(
     uncoveredCount: criteria.filter(
       (criterion) => criterion.state === "uncovered",
     ).length,
-    amendmentCount,
+    amendments,
+    unauthorizedAcceptanceIds,
     unknownReferences: [...unknownReferences],
     orphanWorkItemIds,
     unanchoredProgress: closedCount === 0 && orphanWorkItemIds.length > 0,

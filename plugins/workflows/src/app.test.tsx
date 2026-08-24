@@ -2,6 +2,7 @@
 import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import type { WorkflowAcceptanceCoverage } from "./workflow-coverage.js";
 import type { WorkflowCheckpointView, WorkflowRunView } from "./ui-contract.js";
 
 const app = await loadPluginApp(() => import("./app"));
@@ -1038,7 +1039,7 @@ describe("workflow thread panel", () => {
     expect(slot.queryByText("Invalid build graph")).toBeNull();
   });
 
-  it("renders derived acceptance coverage and its unanchored-progress warning", async () => {
+  it("renders derived acceptance coverage and the notes it derives", async () => {
     const slot = renderSlot(
       app.threadPanelActions[0]!,
       { threadId: "thr_origin", params: { runId: run.id } },
@@ -1065,8 +1066,7 @@ describe("workflow thread panel", () => {
                   },
                   {
                     id: "sealed-result",
-                    statement:
-                      "A cancelled job still yields a sealed result.",
+                    statement: "A cancelled job still yields a sealed result.",
                     provenBy: "artifact",
                     state: "in-flight",
                     satisfiedBy: ["sealing"],
@@ -1076,11 +1076,21 @@ describe("workflow thread panel", () => {
                 closedCount: 0,
                 inFlightCount: 1,
                 uncoveredCount: 1,
-                amendmentCount: 0,
+                amendments: [
+                  {
+                    acceptanceId: "phase-0-acceptance-v2",
+                    supersedes: "phase-0-acceptance",
+                    reason: "The CLI outcome moved to phase 1",
+                  },
+                ],
+                unauthorizedAcceptanceIds: ["phase-0-acceptance-v3"],
                 unknownReferences: [],
                 orphanWorkItemIds: ["containment"],
                 unanchoredProgress: true,
-              },
+                // Typed against the derivation's own contract, so the next
+                // coverage field lands here as a compile error rather than as a
+                // panel that silently renders nothing.
+              } satisfies WorkflowAcceptanceCoverage,
               coverageTruncated: false,
               runs: [{ run, checkpoints: [], checkpointsOmitted: false }],
             },
@@ -1099,6 +1109,19 @@ describe("workflow thread panel", () => {
     expect(
       slot.getByText(
         "1 work item has succeeded and no stated outcome has closed yet.",
+      ),
+    ).toBeTruthy();
+    // An undeclared contract change is the alarm: the write path refuses it, so
+    // its presence means the counts above were measured against a contract
+    // nobody declared.
+    expect(
+      slot.getByText(
+        "An acceptance checkpoint changed this contract without declaring an amendment (phase-0-acceptance-v3). Coverage still measures the declared contract; treat the change as unreviewed.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.getByText(
+        "Contract amended once, most recently by phase-0-acceptance-v2 replacing phase-0-acceptance: The CLI outcome moved to phase 1",
       ),
     ).toBeTruthy();
   });

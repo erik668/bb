@@ -156,11 +156,22 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   is re-authored every run; acceptance is the fixed reference those plans are
   measured against, so keep it stable and let the plan move. Link work to it
   with `satisfies` on plan items and `acceptanceId` on verifications. Only a
-  succeeded verification naming a criterion closes it; a criterion the newest
-  plan no longer declares reverts to uncovered, and republishing a different
-  criteria body is reported as an amendment rather than silently adopted. Do
-  not restate a precondition as an outcome — a containment or bring-up gate is
-  a `nodeType: "gate"` work item that satisfies nothing.
+  succeeded verification naming a criterion closes it, and a criterion the
+  newest plan no longer declares reverts to uncovered. Do not restate a
+  precondition as an outcome — a containment or bring-up gate is a
+  `nodeType: "gate"` work item that satisfies nothing.
+  The contract cannot be rewritten. Republishing the same acceptance ID with a
+  different criteria body is refused, and so is a different body under a new ID
+  that does not say what it replaces; restating the same body, in any criterion
+  order, is always accepted. When the campaign's stated outcomes genuinely
+  change, publish a **new** acceptance ID carrying
+  `amends: { supersedes, reason }` that names the acceptance checkpoint it
+  replaces. That amendment becomes what coverage measures, the superseded
+  contract stays readable, and the change is reported to the human with its
+  reason. Amending is not a way to make a shortfall disappear: if the outcome is
+  simply not met, leave the contract alone and report a blocked work item.
+  Enforcement is campaign-wide, so a child run cannot publish its own contract
+  either.
   Checkpoints are bounded to 64 KiB/8,192 JSON nodes each and 512 rows/4 MiB per
   run, so update stable IDs instead of creating event-log IDs.
 - `args`: the value passed as `bb_workflow_run`'s `args` input, verbatim. Pass
@@ -454,8 +465,10 @@ runs inherit the campaign and reject conflicts. Campaign aggregation remains
 restricted to one project, environment, and presentation thread, with at most
 100 runs per campaign. Campaign details also report derived acceptance
 coverage over the campaign's full ledger — how many criteria are closed, in
-flight, and uncovered, which succeeded work items advance no stated outcome, and
-whether work is landing while no outcome has closed. Campaign details list every
+flight, and uncovered, which succeeded work items advance no stated outcome,
+whether work is landing while no outcome has closed, the declared amendment
+chain with each reason, and any acceptance checkpoint whose body diverges
+without declaring an amendment. Campaign details list every
 run but hydrate checkpoint
 ledgers for only the selected run plus the newest runs, up to four total;
 older entries are explicitly marked `checkpointsOmitted`.

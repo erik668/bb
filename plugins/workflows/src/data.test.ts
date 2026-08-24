@@ -539,6 +539,206 @@ describe("workflow durable data", () => {
     ).toBe("kind_conflict");
   });
 
+  // The acceptance contract is the only checkpoint the campaign is measured
+  // against, so these guard the write path that keeps an orchestrator from
+  // quietly agreeing with itself.
+  function acceptanceJson(
+    criteria: readonly string[],
+    amends?: { supersedes: string; reason: string },
+  ): string {
+    return JSON.stringify({
+      kind: "acceptance",
+      id: "ignored-by-the-data-layer",
+      title: "Acceptance",
+      status: "succeeded",
+      summary: null,
+      criteria: criteria.map((id) => ({
+        id,
+        statement: `Criterion ${id} holds`,
+        provenBy: "command",
+        detail: null,
+      })),
+      ...(amends === undefined ? {} : { amends }),
+    });
+  }
+
+  it("refuses an in-place rewrite of the acceptance contract", () => {
+    const run = newRun();
+    markRunning(run.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["cli", "grader"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    // Reordering is not a change, and a resumed run legitimately republishes
+    // the contract it already published.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["grader", "cli"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    // This is the silent vector: the same ID UPDATEs the row in place, so
+    // accepting it would destroy the original and leave nothing to report.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["containment"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("acceptance_conflict");
+
+    // Even declaring an amendment cannot rescue an in-place overwrite.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["containment"], {
+          supersedes: "campaign-acceptance",
+          reason: "Scope changed",
+        }),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("acceptance_conflict");
+
+    expect(
+      listWorkflowCheckpointsForRun(db, run.id).map((row) =>
+        JSON.parse(row.checkpointJson),
+      ),
+    ).toMatchObject([{ criteria: [{ id: "grader" }, { id: "cli" }] }]);
+  });
+
+  it("accepts a changed contract only when it names what it supersedes", () => {
+    const run = newRun();
+    markRunning(run.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["cli"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance-v2",
+        checkpointJson: acceptanceJson(["containment"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("acceptance_conflict");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance-v2",
+        checkpointJson: acceptanceJson(["containment"], {
+          supersedes: "campaign-acceptance",
+          reason: "The CLI outcome moved to phase 1",
+        }),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    // A fabricated chain is not an amendment.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: run.id,
+        checkpointId: "campaign-acceptance-v3",
+        checkpointJson: acceptanceJson(["something-else"], {
+          supersedes: "campaign-acceptance-that-never-existed",
+          reason: "Scope changed",
+        }),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("acceptance_conflict");
+  });
+
+  it("scopes acceptance immutability to the campaign, not the run", () => {
+    const first = newRun();
+    markRunning(first.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: first.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["cli"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+
+    const later = createRun(db, {
+      projectId: "project-1",
+      originThreadId: "thread-1",
+      presentationThreadId: "thread-1",
+      parentRunId: first.id,
+      rootRunId: first.id,
+      campaignId: first.campaignId,
+      environmentId: "environment-1",
+      originProvider: "codex",
+      originModel: "gpt-test",
+      originReasoningLevel: "medium",
+      originPermissionMode: "full",
+      name: "test-workflow",
+      source: "return null",
+      sourceHash: "hash",
+      argsJson: "null",
+      settingsJson:
+        '{"maxActiveRuns":4,"maxConcurrentAgents":8,"maxAgentCalls":100,"totalRunTimeoutMs":86400000,"retentionDays":30,"maxNotificationBytes":16384}',
+      resumedFromRunId: null,
+    });
+    markRunning(later.id);
+
+    // A later run in the same campaign restating the contract is harmless;
+    // changing it there is the same rewrite one level out.
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: later.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["cli"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: later.id,
+        checkpointId: "campaign-acceptance-run-2",
+        checkpointJson: acceptanceJson(["containment"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("acceptance_conflict");
+
+    // A different campaign is unconstrained by this one's contract.
+    const unrelated = newRun();
+    markRunning(unrelated.id);
+    expect(
+      upsertWorkflowCheckpoint(db, {
+        runId: unrelated.id,
+        checkpointId: "campaign-acceptance",
+        checkpointJson: acceptanceJson(["containment"]),
+        phase: "Acceptance",
+        sourceCallId: null,
+      }),
+    ).toBe("accepted");
+  });
+
   it("rejects checkpoint writes after the run becomes terminal", () => {
     const run = newRun();
     markRunning(run.id);

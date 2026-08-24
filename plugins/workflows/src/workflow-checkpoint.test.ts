@@ -237,7 +237,12 @@ describe("workflow checkpoint contract", () => {
     {
       name: "an unknown provenance",
       criteria: [
-        { id: "graded", statement: "A grader agrees", provenBy: "vibes", detail: null },
+        {
+          id: "graded",
+          statement: "A grader agrees",
+          provenBy: "vibes",
+          detail: null,
+        },
       ],
     },
   ])("rejects an acceptance contract with $name", ({ criteria }) => {
@@ -249,6 +254,56 @@ describe("workflow checkpoint contract", () => {
         status: "running",
         summary: null,
         criteria,
+      }),
+    ).toThrow();
+  });
+
+  it("accepts an amendment that names the contract it supersedes", () => {
+    expect(
+      workflowCheckpointSchema.parse({
+        kind: "acceptance",
+        id: "phase-0-acceptance-v2",
+        title: "Phase 0 acceptance",
+        status: "succeeded",
+        summary: null,
+        criteria: [
+          {
+            id: "sealed-result",
+            statement: "A cancelled job still yields a sealed result artifact.",
+            provenBy: "artifact",
+            detail: null,
+          },
+        ],
+        amends: {
+          supersedes: "phase-0-acceptance",
+          reason:
+            "The CLI outcome moved to phase 1 after the containment spike.",
+        },
+      }),
+    ).toMatchObject({
+      amends: { supersedes: "phase-0-acceptance" },
+    });
+  });
+
+  it("rejects an acceptance checkpoint that supersedes itself", () => {
+    // Superseding your own ID is an in-place rewrite wearing an amendment's
+    // clothes: it destroys the body it claims to replace.
+    expect(() =>
+      workflowCheckpointSchema.parse({
+        kind: "acceptance",
+        id: "phase-0-acceptance",
+        title: "Phase 0 acceptance",
+        status: "succeeded",
+        summary: null,
+        criteria: [
+          {
+            id: "sealed-result",
+            statement: "A cancelled job still yields a sealed result artifact.",
+            provenBy: "artifact",
+            detail: null,
+          },
+        ],
+        amends: { supersedes: "phase-0-acceptance", reason: "Scope changed" },
       }),
     ).toThrow();
   });

@@ -355,6 +355,15 @@ function assertBoundedJson(
   }
 }
 
+/**
+ * Both publish paths refuse an acceptance rewrite, and both have to name the
+ * same legal move, so the guidance has one definition. It is written as an
+ * instruction rather than a diagnosis because its only reader is an agent
+ * deciding what to do next.
+ */
+const ACCEPTANCE_CONFLICT_GUIDANCE =
+  "The campaign's acceptance contract cannot be rewritten. Publish a new acceptance checkpoint under a different ID with an `amends` field naming the checkpoint it supersedes and why, or leave the contract unchanged and report the shortfall as a blocked work item.";
+
 function serializeWorkflowCheckpoint(value: unknown): {
   checkpoint: WorkflowCheckpoint;
   json: string;
@@ -1753,7 +1762,9 @@ export function createWorkflowService(
             ? "This checkpoint ID is owned by the workflow or another worker"
             : outcome === "kind_conflict"
               ? "A checkpoint ID cannot change checkpoint kind"
-              : "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail";
+              : outcome === "acceptance_conflict"
+                ? ACCEPTANCE_CONFLICT_GUIDANCE
+                : "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail";
       return {
         ok: false,
         terminal: outcome === "inactive",
@@ -2007,6 +2018,9 @@ export function createWorkflowService(
           throw new Error(
             "Workflow checkpoint ID cannot change checkpoint kind",
           );
+        }
+        if (outcome === "acceptance_conflict") {
+          throw new Error(ACCEPTANCE_CONFLICT_GUIDANCE);
         }
         publishRunChanged(run);
       },
