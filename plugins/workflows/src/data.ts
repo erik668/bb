@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { artifactMigrations } from "./artifact-storage.js";
 import type { ResolvedWorkflowExecutionSelection } from "./cache.js";
 import type { JsonValue, WorkflowAgentOptions } from "./types.js";
 import {
@@ -365,6 +366,7 @@ export const migrations = [
      created_at INTEGER NOT NULL,
      UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
    );`,
+  ...artifactMigrations,
 ];
 
 type CreateWorkflowRunInput = Omit<

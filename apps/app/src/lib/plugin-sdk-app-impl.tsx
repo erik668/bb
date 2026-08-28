@@ -1,5 +1,10 @@
 import { useCallback, useMemo } from "react";
-import type { MarkdownProps, PluginSdkApp } from "@get-bb/plugin-sdk";
+import type {
+  ExperimentalArtifactReviewProps,
+  MarkdownProps,
+  PluginSdkApp,
+} from "@get-bb/plugin-sdk";
+import { ExperimentalArtifactReviewHost } from "@/components/plugin/ExperimentalArtifactReview";
 import { PluginDiff } from "@/components/plugin/PluginDiff";
 import { PluginNewThreadComposer } from "@/components/plugin/PluginNewThreadComposer";
 import { PluginProviderModelPicker } from "@/components/plugin/PluginProviderModelPicker";
@@ -68,6 +73,7 @@ export const pluginSdkAppImplementation = {
   // exception to §5.5) — stable product capabilities, not a UI kit.
   ThreadChat: PluginThreadChat,
   Markdown: PluginMarkdown,
+  experimental_ArtifactReview: PluginArtifactReview,
   experimental_FileLink: ExperimentalFileLink,
   experimental_UrlLink: ExperimentalUrlLink,
   // Experimental (see docs/api_to_audit.md): the create-side counterpart to
@@ -92,6 +98,15 @@ export const pluginSdkAppImplementation = {
   // plugin re-vendors provider names or icons.
   experimental_useProviders: useProviders,
 } satisfies PluginSdkApp;
+
+function PluginArtifactReview(props: ExperimentalArtifactReviewProps) {
+  return (
+    <ExperimentalArtifactReviewHost
+      {...props}
+      renderMarkdown={(content) => <PluginMarkdown content={content} />}
+    />
+  );
+}
 
 /**
  * The public chat-message markdown renderer: the host's MarkdownPreview with
