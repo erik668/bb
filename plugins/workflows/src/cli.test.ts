@@ -179,6 +179,7 @@ describe("workflows CLI argument validation", () => {
       "list",
       "stop",
       "approve-amendment",
+      "artifact",
     ]);
     expect(
       harness.registrations.cli?.commands.find(

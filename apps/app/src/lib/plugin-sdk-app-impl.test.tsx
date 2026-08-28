@@ -57,6 +57,31 @@ describe("plugin SDK Markdown", () => {
   });
 });
 
+describe("plugin SDK artifact review", () => {
+  it("preserves canonical Markdown source offsets on rendered blocks", () => {
+    const content = "# Architecture\n\nA **formatted** paragraph.";
+    const paragraphStart = content.indexOf("A **formatted** paragraph.");
+    const ArtifactReview =
+      pluginSdkAppImplementation.experimental_ArtifactReview;
+    render(
+      <AppNavigationHostProvider capabilities={{ openUrl: vi.fn(() => true) }}>
+        <ArtifactReview
+          content={content}
+          annotations={[]}
+          onSelectionChange={vi.fn()}
+        />
+      </AppNavigationHostProvider>,
+    );
+
+    const paragraph = document.querySelector<HTMLParagraphElement>(
+      "p[data-markdown-source-start][data-markdown-source-end]",
+    );
+    expect(paragraph?.textContent).toBe("A formatted paragraph.");
+    expect(paragraph?.dataset.markdownSourceStart).toBe(String(paragraphStart));
+    expect(paragraph?.dataset.markdownSourceEnd).toBe(String(content.length));
+  });
+});
+
 describe("plugin SDK navigation components", () => {
   it("exposes the file link through the real runtime", () => {
     const openFilePreview = vi.fn(() => true);

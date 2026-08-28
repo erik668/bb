@@ -724,6 +724,20 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
   the same checkpoint ID needs a new approval. The command is refused from a
   workflow worker thread and from another project: the point of the record is
   that a person outside the run issued it.
+- Review campaign artifacts with `bb workflows artifact <action> <run-id>`:
+  `seed` creates Requirements, Architecture, and Decisions; `list` returns
+  summaries; `show --id <artifact-id> [--revision <n>]` returns verified
+  Markdown, history, and comments; `revise --id <artifact-id> --content <text>
+--expected-revision <n>` appends an immutable revision. Use `comment --id
+<artifact-id> --quote <text> --body <text>` (plus `--start <offset>` when the
+  quote repeats), `reply --annotation <id> --body <text>`, and `decide
+--annotation <id> --outcome <accepted|declined> --class
+<editorial|refinement|contract|architecture>`. Accepted non-editorial
+  feedback requires `assess --change <id> --verdict
+<no-design-impact|bounded-design-delta|redesign-required> --summary <text>`
+  before `confirm --change <id>`; live worker propagation remains disabled.
+  `steward` creates or returns the campaign's durable hidden discussion thread.
+  Mutation commands accept optional `--mutation <id>` for safe retries.
 - Before choosing an explicit provider/model/reasoning tuple, run `bb provider
 list --environment "$BB_ENVIRONMENT_ID" --json`, then query only the chosen
   provider with `bb provider models <provider-id> --environment

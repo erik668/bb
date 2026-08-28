@@ -224,7 +224,7 @@ describe("workflow durable data", () => {
           .pluck()
           .all(),
       ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
-      expect(migrations).toHaveLength(15);
+      expect(migrations).toHaveLength(18);
       expect(getRunRequired(productionDb, "wfr_legacy")).toMatchObject({
         originThreadId: "thread-legacy",
         presentationThreadId: "thread-legacy",
