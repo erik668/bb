@@ -52,6 +52,12 @@
 - Do not run package scripts directly, such as `pnpm --filter @bb/foo test`, or raw `npx tsc --noEmit` unless you are deliberately bypassing repo orchestration for investigation.
 - Generated modules are not committed: `packages/templates/src/generated/`, `packages/plugin-build/src/generated/`, and `packages/plugin-sdk/bundled-types/` are gitignored. Turbo tasks (`@bb/templates#generate:*`, `@bb/plugin-build#generate`, `@get-bb/plugin-sdk#build:types`) produce them before every dependent build, typecheck, and test task, and `pnpm install` runs the cheap ones. If your editor cannot resolve `@get-bb/plugin-sdk` inside a plugin, run `pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk` once. Never commit a generated module and never add a `--check` mode for one; when you add a generated module, add a turbo task with explicit `inputs`/`outputs` and edges from its consumers.
 
+## Local Packaged App Replacement
+
+- Never create a launchd job, watcher, detached helper, or retry loop to install or relaunch a local BB build.
+- The supported macOS replacement command is `pnpm --filter @bb/desktop run install:packaged:macos -- ...`. Run it once in the foreground only after the user has explicitly approved replacing the installed app.
+- The installer does not stop or start BB. The user must quit before installation and launch after inspecting the result. If installation fails, inspect its recovery artifacts; do not retry automatically.
+
 ## Testing
 
 - Only write high quality tests that verify where there could be potential bugs. Avoid testing trivial getters/setters, framework wiring, or other code that is unlikely to break.
