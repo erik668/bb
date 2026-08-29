@@ -62,13 +62,44 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
   bb workflows run (--script '<javascript>'|--source '<javascript>'|
                    --file <path>|--name <name>)
                    [--args '<json>'] [--resume <run-id>]
+                   [--present-in <thread-id>] [--campaign <campaign-id>]
   bb workflows status <run-id>
+  bb workflows details <run-id>
   bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]
   bb workflows list [--limit <1-50>]
   bb workflows stop <run-id>
+  bb workflows approve-amendment <run-id>
+                        --acceptance <acceptance-checkpoint-id>
 
-Commands must run from a BB project thread. Workflows has six plugin
-settings, configurable with `bb plugin config workflows set <key> <value>`:
+Use `details` for durable structured selected-plan, work-item/ticket, and
+verification state. Use paged `history` for the chronological run and agent-call
+event stream. `details` lists every run in the selected campaign, but hydrates
+checkpoint ledgers for only the selected run plus the newest runs, up to four
+total. Older entries are explicitly marked `checkpointsOmitted`.
+Use the `campaignId` returned by a prior run with `--campaign` to continue that
+existing build story; an unknown campaign ID is rejected, and a campaign is
+capped at 100 runs. `--present-in`
+surfaces a CLI-launched run's active card and
+inspector in another thread while its origin retains execution, environment,
+permission, and completion-notification ownership. Hidden workflow workers
+otherwise inherit their parent run's presentation/root relationship or use the
+nearest visible ancestor. An explicit presentation target must be a visible
+thread in the same project and environment and must be the origin or one of its
+ancestors. Presentation-thread inspection is read-only; stop control remains
+with the origin. `details` also reports `acceptanceCoverage` for the campaign.
+A workflow that changes its own acceptance contract must publish an amending
+acceptance checkpoint, and that change stays inert — readable, but not the
+contract coverage is measured against — until a person approves it from the
+workflow panel or with `approve-amendment`, which is refused when it comes from
+a workflow worker thread. The recorded approval names the approving thread and
+the surface it came from, and it is bound to the exact criteria body it was
+issued against. The target must be available from the same BB server;
+workflows do not federate state across servers. Status, list, and history run
+records include
+`originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
+`campaignId`.
+Commands must run from a BB project thread. Workflows has six plugin settings,
+configurable with `bb plugin config workflows set <key> <value>`:
 `maxActiveRuns` (default 4, range 1–32), `maxConcurrentAgents` (8, 1–64),
 `maxAgentCalls` (100, 1–1000), `totalRunTimeoutMs` (86400000, 60000–604800000),
 `retentionDays` (7, 1–3650), and `maxNotificationBytes` (16384,

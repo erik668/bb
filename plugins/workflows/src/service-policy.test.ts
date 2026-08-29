@@ -1,13 +1,21 @@
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import {
+  createFakePluginHost,
+  makeThreadResponse,
+} from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   type Db,
   deleteTerminalRuns,
+  attachCallThread,
+  claimQueuedRun,
   getCall,
   getRun,
   getRunRequired,
   listExpiredTerminalRuns,
   migrations,
+  settleRun,
+  startCall,
 } from "./data.js";
 import plugin from "./server.js";
 import {
@@ -19,6 +27,11 @@ import {
   DEFAULT_WORKFLOW_SETTINGS,
   type WorkflowSettings,
 } from "./settings.js";
+import {
+  MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+  MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
+} from "./workflow-campaign.js";
+import type { WorkflowCheckpoint } from "./workflow-checkpoint.js";
 
 async function eventually(
   assertion: () => void | Promise<void>,
@@ -64,15 +77,60 @@ interface WorkerState {
   deleted: boolean;
 }
 
+type ThreadTimelineResult = Awaited<
+  ReturnType<BbPluginApi["sdk"]["threads"]["timeline"]>
+>;
+
+type ContextWindowUsage = NonNullable<
+  ThreadTimelineResult["contextWindowUsage"]
+>;
+
+function timelineResult(
+  contextWindowUsage?: ContextWindowUsage,
+): ThreadTimelineResult {
+  return {
+    rows: [],
+    activePromptMode: null,
+    activeThinking: null,
+    activeWorkflows: [],
+    activeBackgroundCommands: [],
+    pendingTodos: null,
+    goal: null,
+    modelFallback: null,
+    ...(contextWindowUsage === undefined ? {} : { contextWindowUsage }),
+    timelinePage: {
+      kind: "latest",
+      segmentLimit: 0,
+      returnedSegmentCount: 0,
+      hasOlderRows: false,
+      olderCursor: null,
+    },
+    maxSeq: 0,
+  };
+}
+
 function setup(
   settings: WorkflowSettings = DEFAULT_WORKFLOW_SETTINGS,
   files: Record<string, string> = {},
 ) {
   let childCount = 0;
   let originDeleted = false;
+  let contextCaptureFails = false;
   const workers = new Map<string, WorkerState>();
   const archived: string[] = [];
   const archiveFailures = new Set<string>();
+  const contextUsage = new Map<string, ContextWindowUsage>();
+  const threads = new Map([
+    [
+      "origin",
+      makeThreadResponse({
+        id: "origin",
+        projectId: "project-test",
+        environmentId: "environment-1",
+        providerId: "codex",
+      }),
+    ],
+  ]);
   const { bb, harness } = createFakePluginHost({
     pluginId: "workflows",
     sdk: {
@@ -85,12 +143,7 @@ function setup(
                 code: "thread_not_found",
               });
             }
-            return {
-              id: threadId,
-              environmentId: "environment-1",
-              providerId: "codex",
-              status: "idle",
-            } as never;
+            return threads.get(threadId)!;
           }
           const worker = workers.get(threadId);
           if (worker?.deleted) {
@@ -99,16 +152,23 @@ function setup(
               code: "thread_not_found",
             });
           }
-          return {
+          const configured = threads.get(threadId);
+          if (configured !== undefined) return configured;
+          return makeThreadResponse({
             id: threadId,
+            projectId: "project-test",
             environmentId: "environment-1",
             providerId: "codex",
             status: worker?.status ?? "active",
-          } as never;
+          });
         },
         output: async ({ threadId }) => ({
           output: workers.get(threadId)?.output ?? null,
         }),
+        timeline: async ({ threadId }) => {
+          if (contextCaptureFails) throw new Error("timeline unavailable");
+          return timelineResult(contextUsage.get(threadId));
+        },
         defaultExecutionOptions: async () => ({
           model: "gpt-test",
           reasoningLevel: "medium",
@@ -184,13 +244,23 @@ function setup(
   bb.storage.migrate(db, migrations);
   const service = createWorkflowService(bb, db, settings);
 
-  async function start(workflowSource: string) {
+  async function start(
+    workflowSource: string,
+    options: {
+      originThreadId?: string;
+      resumedFromRunId?: string | null;
+      campaignId?: string | null;
+      presentationThreadId?: string | null;
+    } = {},
+  ) {
     return service.start({
       projectId: "project-test",
-      originThreadId: "origin",
+      originThreadId: options.originThreadId ?? "origin",
       source: workflowSource,
       args: null,
-      resumedFromRunId: null,
+      resumedFromRunId: options.resumedFromRunId ?? null,
+      campaignId: options.campaignId ?? null,
+      presentationThreadId: options.presentationThreadId ?? null,
     });
   }
 
@@ -204,8 +274,29 @@ function setup(
     archived,
     failArchive: (threadId: string) => archiveFailures.add(threadId),
     childCount: () => childCount,
+    setThread: (
+      threadId: string,
+      overrides: Parameters<typeof makeThreadResponse>[0] = {},
+    ) => {
+      threads.set(
+        threadId,
+        makeThreadResponse({
+          id: threadId,
+          projectId: "project-test",
+          environmentId: "environment-1",
+          providerId: "codex",
+          ...overrides,
+        }),
+      );
+    },
     deleteOrigin: () => {
       originDeleted = true;
+    },
+    setContextUsage: (threadId: string, usage: ContextWindowUsage) => {
+      contextUsage.set(threadId, usage);
+    },
+    failContextCapture: () => {
+      contextCaptureFails = true;
     },
   };
 }
@@ -254,6 +345,12 @@ function expiredRunWithWorkers(
   return runId;
 }
 
+function threadSpawnInput(test: ReturnType<typeof setup>, index: number) {
+  const call = test.harness.sdk.callsTo("threads.spawn")[index];
+  if (call === undefined) throw new Error(`Missing thread spawn call ${index}`);
+  return call[0] as Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0];
+}
+
 describe("workflow service policy integration", () => {
   const harnesses: Array<ReturnType<typeof setup>["harness"]> = [];
 
@@ -262,9 +359,84 @@ describe("workflow service policy integration", () => {
     harnesses.length = 0;
   });
 
-  it("applies live settings to future run snapshots without mutating existing runs", async () => {
+  it("injects, persists, inspects, and replays a phase context profile without changing legacy prompts", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const profile = {
+      requiredSkills: ["code-navigation", "implementation-loop"],
+      memoryQueries: ["workflow replay and rollback compatibility"],
+      artifactRefs: [".architect/design/approved-design.md"],
+      stopCondition: "targeted verification passes",
+    };
+    const workflowSource = source(
+      `const legacy = await agent("legacy task");
+       const profiled = await agent("profiled task", {
+         contextProfile: ${JSON.stringify(profile)}
+       });
+       return { legacy, profiled };`,
+      "phase-context",
+    );
+    const run = await test.start(workflowSource);
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      const legacyPrompt = threadSpawnInput(test, 0).prompt;
+      expect(legacyPrompt).toBe(
+        `[BB workflow phase-context · run ${run.id}]\n\nlegacy task\n\nYour final text IS the return value (not a human-facing message), so return raw data.`,
+      );
+      test.service.onThreadIdle("child-1", "legacy-result");
+
+      await eventually(() => expect(test.childCount()).toBe(2));
+      const profiledPrompt = threadSpawnInput(test, 1).prompt;
+      expect(profiledPrompt).toContain("[Phase context manifest]");
+      for (const value of [
+        ...profile.requiredSkills,
+        ...profile.memoryQueries,
+        ...profile.artifactRefs,
+        profile.stopCondition,
+      ]) {
+        expect(profiledPrompt?.split(value)).toHaveLength(2);
+      }
+      expect(profiledPrompt).toContain(
+        "Memory queries are advisory and may be stale.",
+      );
+      expect(profiledPrompt).toContain(
+        "Artifact references are caller supplied and are not authenticated by Workflows.",
+      );
+      expect(getCall(test.db, run.id, 1)?.contextProfileJson).toBe(
+        JSON.stringify(profile),
+      );
+      expect(
+        test.service.inspect(run.id)?.calls[1]?.options.contextProfile,
+      ).toEqual(profile);
+
+      test.service.onThreadIdle("child-2", "profiled-result");
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+      );
+      const resumed = await test.start(workflowSource, {
+        resumedFromRunId: run.id,
+      });
+      await eventually(() =>
+        expect(getRunRequired(test.db, resumed.id).status).toBe("succeeded"),
+      );
+      expect(test.childCount()).toBe(2);
+      expect(test.service.inspect(resumed.id)?.calls).toMatchObject([
+        { replaySource: "resumed-run", options: { contextProfile: null } },
+        { replaySource: "resumed-run", options: { contextProfile: profile } },
+      ]);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("freezes run policy without persisting plugin-global admission", async () => {
     const initial = {
       maxActiveRuns: "1",
+      maxGlobalConcurrentAgents: "3",
       maxConcurrentAgents: "2",
       maxAgentCalls: "3",
       totalRunTimeoutMs: "120000",
@@ -304,6 +476,7 @@ describe("workflow service policy integration", () => {
     ) as { runId: string };
     const next = {
       maxActiveRuns: "2",
+      maxGlobalConcurrentAgents: "6",
       maxConcurrentAgents: "4",
       maxAgentCalls: "8",
       totalRunTimeoutMs: "180000",
@@ -339,12 +512,16 @@ describe("workflow service policy integration", () => {
     };
     expect(firstStatus.settings).toEqual(
       Object.fromEntries(
-        Object.entries(initial).map(([key, value]) => [key, Number(value)]),
+        Object.entries(initial)
+          .filter(([key]) => key !== "maxGlobalConcurrentAgents")
+          .map(([key, value]) => [key, Number(value)]),
       ),
     );
     expect(secondStatus.settings).toEqual(
       Object.fromEntries(
-        Object.entries(next).map(([key, value]) => [key, Number(value)]),
+        Object.entries(next)
+          .filter(([key]) => key !== "maxGlobalConcurrentAgents")
+          .map(([key, value]) => [key, Number(value)]),
       ),
     );
   });
@@ -506,7 +683,7 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("recovers nested launch ordering after failure and queues inline with path sources", async () => {
+  it("settles a later nested launch and returns null for an earlier parallel failure", async () => {
     const test = setup();
     harnesses.push(test.harness);
     const reads: string[] = [];
@@ -544,6 +721,7 @@ describe("workflow service policy integration", () => {
       const terminal = getRunRequired(test.db, run.id);
       expect(terminal.status).toBe("succeeded");
       expect(terminal.resultJson).toBe('[null,"inline"]');
+      expect(terminal.error).toBeNull();
     });
     controller.abort();
     await worker;
@@ -628,6 +806,287 @@ describe("workflow service policy integration", () => {
     await test.service.stop(second.id);
     controller.abort();
     await worker;
+  });
+
+  it("admits agent calls across active runs through one host-global limit", async () => {
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      maxActiveRuns: 2,
+      maxGlobalConcurrentAgents: 1,
+      maxConcurrentAgents: 2,
+    });
+    harnesses.push(test.harness);
+    const parallelSource = source(
+      `return await Promise.all([agent("first"), agent("second")]);`,
+      "global-agent-admission",
+    );
+    const first = await test.start(parallelSource);
+    const second = await test.start(parallelSource);
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      expect(getRunRequired(test.db, first.id).status).toBe("running");
+      expect(getRunRequired(test.db, second.id).status).toBe("running");
+
+      test.service.updateSettings({
+        ...DEFAULT_WORKFLOW_SETTINGS,
+        maxActiveRuns: 2,
+        maxGlobalConcurrentAgents: 2,
+        maxConcurrentAgents: 2,
+      });
+      await eventually(() => expect(test.childCount()).toBe(2));
+
+      test.service.onThreadIdle("child-1", "result-1");
+      test.service.onThreadIdle("child-2", "result-2");
+      await eventually(() => expect(test.childCount()).toBe(4));
+      test.service.onThreadIdle("child-3", "result-3");
+      test.service.onThreadIdle("child-4", "result-4");
+
+      await eventually(() => {
+        expect(getRunRequired(test.db, first.id).status).toBe("succeeded");
+        expect(getRunRequired(test.db, second.id).status).toBe("succeeded");
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("applies a lower live admission cap without cancelling active calls", async () => {
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      maxGlobalConcurrentAgents: 2,
+      maxConcurrentAgents: 3,
+    });
+    harnesses.push(test.harness);
+    const run = await test.start(
+      source(
+        `return await Promise.all([
+          agent("first"),
+          agent("second"),
+          agent("third"),
+        ]);`,
+        "decrease-global-agent-admission",
+      ),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(2));
+      test.service.updateSettings({
+        ...DEFAULT_WORKFLOW_SETTINGS,
+        maxGlobalConcurrentAgents: 1,
+        maxConcurrentAgents: 3,
+      });
+
+      test.service.onThreadIdle("child-1", "first result");
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded"),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(test.childCount()).toBe(2);
+
+      test.service.onThreadIdle("child-2", "second result");
+      await eventually(() => expect(test.childCount()).toBe(3));
+      test.service.onThreadIdle("child-3", "third result");
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+      );
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("removes a cancelled call from the host-global admission queue", async () => {
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      maxActiveRuns: 2,
+      maxGlobalConcurrentAgents: 1,
+      maxConcurrentAgents: 1,
+    });
+    harnesses.push(test.harness);
+    const first = await test.start(source(`return await agent("first");`));
+    const second = await test.start(source(`return await agent("second");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      await test.service.stop(second.id);
+      test.service.onThreadIdle("child-1", "done");
+
+      await eventually(() => {
+        expect(getRunRequired(test.db, first.id).status).toBe("succeeded");
+        expect(getRunRequired(test.db, second.id).status).toBe("cancelled");
+      });
+      expect(test.childCount()).toBe(1);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("reports declared context requirements against runtime-observed capacity", async () => {
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      maxGlobalConcurrentAgents: 4,
+    });
+    harnesses.push(test.harness);
+    const run = await test.start(
+      source(
+        `return await Promise.all([
+        agent("untracked"),
+        agent("unknown", { contextRequirement: { minimumTokens: 500000 } }),
+        agent("fit", { contextRequirement: { minimumTokens: 1000000 } }),
+        agent("undersized", { contextRequirement: { minimumTokens: 1000000 } }),
+      ]);`,
+        "context-fit",
+      ),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(4));
+      test.setContextUsage("child-3", {
+        usedTokens: 300_000,
+        modelContextWindow: 1_000_000,
+        estimated: false,
+      });
+      test.setContextUsage("child-4", {
+        usedTokens: 180_000,
+        modelContextWindow: 258_400,
+        estimated: true,
+      });
+
+      for (let index = 1; index <= 4; index += 1) {
+        test.service.onThreadIdle(`child-${index}`, `result-${index}`);
+      }
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+      );
+
+      await eventually(() =>
+        expect(test.service.inspect(run.id)!.calls).toMatchObject([
+          {
+            prompt: "untracked",
+            promptBytes: 9,
+            contextFit: "untracked",
+            observedModelContextWindow: null,
+          },
+          {
+            prompt: "unknown",
+            contextFit: "unknown",
+            options: { contextRequirement: { minimumTokens: 500_000 } },
+            observedModelContextWindow: null,
+          },
+          {
+            prompt: "fit",
+            contextFit: "fit",
+            observedContextUsedTokens: 300_000,
+            observedModelContextWindow: 1_000_000,
+            contextUsageEstimated: false,
+          },
+          {
+            prompt: "undersized",
+            contextFit: "undersized",
+            observedContextUsedTokens: 180_000,
+            observedModelContextWindow: 258_400,
+            contextUsageEstimated: true,
+          },
+        ]),
+      );
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("keeps context telemetry best-effort when the timeline is unavailable", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.failContextCapture();
+    const run = await test.start(
+      source(
+        `return await agent("work", {
+        contextRequirement: { minimumTokens: 1000000 }
+      });`,
+        "context-telemetry-failure",
+      ),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      test.service.onThreadIdle("child-1", "done");
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+      );
+      expect(test.service.inspect(run.id)!.calls[0]).toMatchObject({
+        contextFit: "unknown",
+        observedContextUsedTokens: null,
+        observedModelContextWindow: null,
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("settles ordinary output while context telemetry remains pending", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.harness.sdk.stub(
+      "threads.timeline",
+      (() => new Promise<ThreadTimelineResult>(() => undefined)) as never,
+    );
+    const run = await test.start(source(`return await agent("work");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      test.service.onThreadIdle("child-1", "done");
+      await eventually(() => {
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded");
+        expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded");
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("accepts structured output while context telemetry remains pending", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.harness.sdk.stub(
+      "threads.timeline",
+      (() => new Promise<ThreadTimelineResult>(() => undefined)) as never,
+    );
+    const run = await test.start(
+      source(`return await agent("structured", {
+        outputSchema: {
+          type: "object",
+          required: ["answer"],
+          properties: { answer: { type: "number" } }
+        }
+      });`),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      await expect(
+        test.service.submitStructuredResult("child-1", { answer: 42 }),
+      ).resolves.toEqual({ ok: true });
+      await eventually(() => {
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded");
+        expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded");
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
   });
 
   it.each([
@@ -965,6 +1424,12 @@ describe("workflow service policy integration", () => {
     const run = await test.start(
       source(`return await agent("never");`, "signal-run"),
     );
+    expect(run).toMatchObject({
+      originThreadId: "origin",
+      presentationThreadId: "origin",
+      parentRunId: null,
+      rootRunId: run.id,
+    });
     expect(signalsFor("origin")).toHaveLength(1);
     const controller = new AbortController();
     const worker = test.service.runWorker(controller.signal);
@@ -978,6 +1443,484 @@ describe("workflow service policy integration", () => {
     expect(signalsFor("origin")).toHaveLength(afterStop);
     controller.abort();
     await worker;
+  });
+
+  it("surfaces a hidden origin on its nearest visible ancestor without duplicate signals", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.setThread("root-visible", { visibility: "visible" });
+    test.setThread("middle-hidden", {
+      visibility: "hidden",
+      parentThreadId: "root-visible",
+    });
+    test.setThread("worker-hidden", {
+      visibility: "hidden",
+      parentThreadId: "middle-hidden",
+    });
+
+    const run = await test.start(source("return null", "hidden-origin"), {
+      originThreadId: "worker-hidden",
+    });
+    const runSignals = test.harness.realtimeSignals.filter(
+      (signal) => signal.channel === "workflow-runs",
+    );
+
+    expect(run).toMatchObject({
+      originThreadId: "worker-hidden",
+      presentationThreadId: "root-visible",
+      parentRunId: null,
+      rootRunId: run.id,
+    });
+    expect(
+      runSignals.map(
+        (signal) => (signal.payload as { threadId: string }).threadId,
+      ),
+    ).toEqual(["worker-hidden", "root-visible"]);
+  });
+
+  it("inherits presentation and root IDs when a workflow worker launches a nested run", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const parent = await test.start(source("return null", "causal-parent"));
+    expect(claimQueuedRun(test.db, 4)?.id).toBe(parent.id);
+    const parentCall = startCall(test.db, {
+      runId: parent.id,
+      callIndex: 0,
+      cacheKey: "causal-child",
+      prompt: "launch nested workflow",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: {
+        providerId: "codex",
+        model: "gpt-test",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+      },
+      replay: null,
+    });
+    expect(attachCallThread(test.db, parentCall.id, "nested-worker")).toBe(
+      true,
+    );
+    test.setThread("nested-worker", {
+      visibility: "hidden",
+      parentThreadId: "unrelated-visible-parent",
+    });
+
+    const nested = await test.start(source("return null", "causal-child"), {
+      originThreadId: "nested-worker",
+    });
+
+    expect(nested).toMatchObject({
+      originThreadId: "nested-worker",
+      presentationThreadId: "origin",
+      parentRunId: parent.id,
+      rootRunId: parent.id,
+      campaignId: parent.campaignId,
+    });
+  });
+
+  it("aggregates independent continuations by explicit campaign without changing causal lineage", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-plan"));
+    const second = await test.start(source("return null", "campaign-build"), {
+      campaignId: first.campaignId,
+    });
+
+    expect(first.campaignId).toBe(first.id);
+    expect(second).toMatchObject({
+      campaignId: first.campaignId,
+      parentRunId: null,
+      rootRunId: second.id,
+      presentationThreadId: first.presentationThreadId,
+    });
+    expect(
+      test.service.inspectCampaign(first.id)?.runs.map(({ run }) => run.id),
+    ).toEqual([first.id, second.id]);
+    await expect(
+      test.start(source("return null", "unknown-campaign"), {
+        campaignId: "build:unknown",
+      }),
+    ).rejects.toThrow(/unknown workflow campaign/i);
+    test.db
+      .prepare(
+        "UPDATE workflow_runs SET presentation_thread_id = ? WHERE id = ?",
+      )
+      .run("other-presentation", second.id);
+    expect(() => test.service.inspectCampaign(first.id)).toThrow(
+      /campaign scope is inconsistent/i,
+    );
+  });
+
+  it("bounds campaign checkpoint hydration while retaining every run summary", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const runs = [await test.start(source("return null", "campaign-root"))];
+    for (let index = 1; index < 6; index += 1) {
+      runs.push(
+        await test.start(source("return null", `campaign-run-${index}`), {
+          campaignId: runs[0]!.campaignId,
+        }),
+      );
+    }
+    test.db
+      .prepare(
+        `INSERT INTO workflow_checkpoints (
+           id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+           ordinal, created_at, updated_at
+         ) VALUES (?, ?, ?, ?, NULL, NULL, 0, 1, 1)`,
+      )
+      .run("wcp_omitted_invalid", runs[1]!.id, "invalid", "not-json");
+
+    const campaign = test.service.inspectCampaign(runs[0]!.id);
+    expect(campaign).not.toBeNull();
+    expect(campaign?.runs).toHaveLength(runs.length);
+    expect(campaign?.detailedRunLimit).toBe(
+      MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+    );
+    expect(campaign?.omittedCheckpointRunCount).toBe(2);
+    expect(
+      campaign?.runs
+        .filter((entry) => !entry.checkpointsOmitted)
+        .map((entry) => entry.run.id),
+    ).toEqual([runs[0]!.id, ...runs.slice(-3).map((run) => run.id)]);
+    expect(campaign?.runs.map((entry) => entry.run.id)).toEqual(
+      runs.map((run) => run.id),
+    );
+    expect(test.service.inspectCampaign(runs[1]!.id)?.runs).toHaveLength(
+      runs.length,
+    );
+  });
+
+  it("derives acceptance coverage from the full ledger past hydration bounds", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const runs = [await test.start(source("return null", "coverage-root"))];
+    for (let index = 1; index < 6; index += 1) {
+      runs.push(
+        await test.start(source("return null", `coverage-run-${index}`), {
+          campaignId: runs[0]!.campaignId,
+        }),
+      );
+    }
+    let ordinal = 0;
+    const publish = (runId: string, checkpoint: WorkflowCheckpoint) => {
+      ordinal += 1;
+      test.db
+        .prepare(
+          `INSERT INTO workflow_checkpoints (
+             id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
+             ordinal, created_at, updated_at
+           ) VALUES (?, ?, ?, ?, NULL, NULL, ?, 1, 1)`,
+        )
+        .run(
+          `wcp_${ordinal}`,
+          runId,
+          checkpoint.id,
+          JSON.stringify(checkpoint),
+          ordinal,
+        );
+    };
+
+    // The contract and the opening plan live on a run old enough that bounded
+    // hydration drops its checkpoints. Coverage must still see them, which is
+    // why it reads the ledger directly instead of the hydrated campaign view.
+    publish(runs[1]!.id, {
+      kind: "acceptance",
+      id: "phase-0",
+      title: "Phase 0 acceptance",
+      status: "succeeded",
+      summary: null,
+      criteria: [
+        {
+          id: "cli-runs-two-cases",
+          statement: "An engineer runs two synthetic cases from one command.",
+          provenBy: "command",
+          detail: null,
+        },
+        {
+          id: "sealed-result",
+          statement: "A cancelled job still yields a sealed result.",
+          provenBy: "artifact",
+          detail: null,
+        },
+      ],
+    });
+    publish(runs[1]!.id, {
+      kind: "plan",
+      id: "plan-run-1",
+      title: "Selected plan",
+      status: "succeeded",
+      summary: null,
+      detail: null,
+      items: [
+        {
+          id: "containment",
+          title: "Containment proof",
+          objective: "Precondition for running anything remotely.",
+          detail: null,
+          ticketRef: null,
+          nodeType: "gate",
+        },
+      ],
+    });
+    publish(runs[1]!.id, {
+      kind: "work-item",
+      id: "containment",
+      title: "Containment proof",
+      status: "succeeded",
+      summary: null,
+      ticketRef: null,
+      changedFiles: [],
+      blocker: null,
+    });
+    publish(runs[5]!.id, {
+      kind: "plan",
+      id: "plan-run-6",
+      title: "Selected plan",
+      status: "running",
+      summary: null,
+      detail: null,
+      items: [
+        {
+          id: "fae-remote",
+          title: "Add the remote command",
+          objective: "Expose the two synthetic cases.",
+          detail: null,
+          ticketRef: null,
+          satisfies: ["cli-runs-two-cases"],
+        },
+        {
+          id: "sealing",
+          title: "Seal results",
+          objective: "Seal a result even on cancellation.",
+          detail: null,
+          ticketRef: null,
+          satisfies: ["sealed-result"],
+        },
+      ],
+    });
+    publish(runs[5]!.id, {
+      kind: "verification",
+      id: "verify-remote",
+      title: "Two synthetic cases",
+      status: "succeeded",
+      summary: null,
+      workItemId: "fae-remote",
+      acceptanceId: "cli-runs-two-cases",
+      command: "pnpm fae remote",
+      counts: { passed: 2, failed: 0, skipped: 0 },
+    });
+
+    const campaign = test.service.inspectCampaign(runs[0]!.id);
+    expect(
+      campaign?.runs.find((entry) => entry.run.id === runs[1]!.id)
+        ?.checkpointsOmitted,
+    ).toBe(true);
+    expect(campaign?.coverageTruncated).toBe(false);
+    expect(campaign?.coverage?.acceptanceId).toBe("phase-0");
+    expect(
+      campaign?.coverage?.criteria.map((criterion) => [
+        criterion.id,
+        criterion.state,
+      ]),
+    ).toEqual([
+      ["cli-runs-two-cases", "closed"],
+      ["sealed-result", "in-flight"],
+    ]);
+    // The containment gate succeeded and satisfies nothing: legitimate
+    // precondition work, and not evidence that an outcome moved.
+    expect(campaign?.coverage?.orphanWorkItemIds).toEqual(["containment"]);
+    expect(campaign?.coverage?.unanchoredProgress).toBe(false);
+  });
+
+  it("fails campaign inspection closed on project scope corruption", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-project"));
+    const second = await test.start(
+      source("return null", "campaign-project-2"),
+      {
+        campaignId: first.campaignId,
+      },
+    );
+    test.db
+      .prepare("UPDATE workflow_runs SET project_id = ? WHERE id = ?")
+      .run("other-project", second.id);
+    expect(() => test.service.inspectCampaign(first.id)).toThrow(
+      /campaign scope is inconsistent/i,
+    );
+  });
+
+  it("fails campaign inspection closed on environment scope corruption", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(
+      source("return null", "campaign-environment"),
+    );
+    const second = await test.start(
+      source("return null", "campaign-environment-2"),
+      { campaignId: first.campaignId },
+    );
+    test.db
+      .prepare("UPDATE workflow_runs SET environment_id = ? WHERE id = ?")
+      .run("other-environment", second.id);
+    expect(() => test.service.inspectCampaign(first.id)).toThrow(
+      /campaign scope is inconsistent/i,
+    );
+  });
+
+  it("rejects independent campaign continuation from an unrelated thread tree", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-origin"));
+    test.setThread("unrelated-root", { visibility: "visible" });
+    await expect(
+      test.start(source("return null", "unrelated-continuation"), {
+        originThreadId: "unrelated-root",
+        campaignId: first.campaignId,
+      }),
+    ).rejects.toThrow(/must be the origin or one of its ancestors/i);
+  });
+
+  it("rejects resuming a campaign from an unrelated thread tree", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "resume-origin"));
+    settleRun(test.db, {
+      id: first.id,
+      status: "succeeded",
+      result: null,
+      error: null,
+    });
+    test.setThread("unrelated-resume-root", { visibility: "visible" });
+    await expect(
+      test.start(source("return null", "unrelated-resume"), {
+        originThreadId: "unrelated-resume-root",
+        resumedFromRunId: first.id,
+      }),
+    ).rejects.toThrow(/must be the origin or one of its ancestors/i);
+  });
+
+  it("rejects an existing campaign presentation mismatch", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(
+      source("return null", "campaign-presentation"),
+    );
+    test.setThread("alternate-visible", {
+      visibility: "visible",
+      parentThreadId: "origin",
+    });
+    test.setThread("alternate-child", {
+      visibility: "hidden",
+      parentThreadId: "alternate-visible",
+    });
+    await expect(
+      test.start(source("return null", "presentation-mismatch"), {
+        originThreadId: "alternate-child",
+        campaignId: first.campaignId,
+        presentationThreadId: "alternate-visible",
+      }),
+    ).rejects.toThrow(/campaign must use one presentation thread/i);
+  });
+
+  it("rejects explicit campaign conflicts with causal and resumed lineage", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const parent = await test.start(source("return null", "lineage-parent"));
+    const other = await test.start(source("return null", "other-campaign"));
+    expect(claimQueuedRun(test.db, 4)?.id).toBe(parent.id);
+    const parentCall = startCall(test.db, {
+      runId: parent.id,
+      callIndex: 0,
+      cacheKey: "lineage-conflict",
+      prompt: "launch conflicting nested workflow",
+      options: {
+        selection: null,
+        outputSchema: null,
+        contextRequirement: null,
+        contextProfile: null,
+        title: null,
+        phase: null,
+      },
+      selection: {
+        providerId: "codex",
+        model: "gpt-test",
+        reasoningLevel: "medium",
+        permissionMode: "full",
+      },
+      replay: null,
+    });
+    expect(attachCallThread(test.db, parentCall.id, "conflicting-child")).toBe(
+      true,
+    );
+    test.setThread("conflicting-child", {
+      visibility: "hidden",
+      parentThreadId: "origin",
+    });
+    await expect(
+      test.start(source("return null", "causal-conflict"), {
+        originThreadId: "conflicting-child",
+        campaignId: other.campaignId,
+      }),
+    ).rejects.toThrow(/campaign must match its causal parent/i);
+
+    settleRun(test.db, {
+      id: parent.id,
+      status: "succeeded",
+      result: null,
+      error: null,
+    });
+    await expect(
+      test.start(source("return null", "resume-conflict"), {
+        resumedFromRunId: parent.id,
+        campaignId: other.campaignId,
+      }),
+    ).rejects.toThrow(/campaign must match.*resumed run/i);
+  });
+
+  it("atomically caps a campaign at the UI contract run limit", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const first = await test.start(source("return null", "campaign-limit"));
+    for (
+      let index = 1;
+      index < MAX_WORKFLOW_RUNS_PER_CAMPAIGN - 1;
+      index += 1
+    ) {
+      await test.start(source("return null", `campaign-limit-${index}`), {
+        campaignId: first.campaignId,
+      });
+    }
+    const boundary = await Promise.allSettled([
+      test.start(source("return null", "campaign-limit-racer-a"), {
+        campaignId: first.campaignId,
+      }),
+      test.start(source("return null", "campaign-limit-racer-b"), {
+        campaignId: first.campaignId,
+      }),
+    ]);
+    expect(boundary.map((result) => result.status).sort()).toEqual([
+      "fulfilled",
+      "rejected",
+    ]);
+    expect(test.service.inspectCampaign(first.id)?.runs).toHaveLength(
+      MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
+    );
+    await expect(
+      test.start(source("return null", "campaign-limit-101"), {
+        campaignId: first.campaignId,
+      }),
+    ).rejects.toThrow(
+      new RegExp(`cannot exceed ${MAX_WORKFLOW_RUNS_PER_CAMPAIGN} runs`, "i"),
+    );
   });
 
   it("does not create or orphan a call when cancellation wins catalog or spawn", async () => {
@@ -1102,6 +2045,10 @@ describe("workflow service policy integration", () => {
         `UPDATE workflow_runs SET status = 'succeeded', result_json = 'null', finished_at = ? WHERE id = ?`,
       )
       .run(Date.now(), ancestor.id);
+    test.setThread("origin-2", {
+      visibility: "hidden",
+      parentThreadId: "origin",
+    });
     await expect(
       test.service.start({
         projectId: "project-test",

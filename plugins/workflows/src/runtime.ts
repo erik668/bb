@@ -699,6 +699,18 @@ export async function executeWorkflowScript({
     installHostVoidFunction(vm, "log", (handles) => {
       capabilities.log(handles[0] ? vm.getString(handles[0]) : "");
     });
+    installHostVoidFunction(vm, "checkpoint", (handles) => {
+      if (handles[0] === undefined) {
+        throw new Error("checkpoint value is required");
+      }
+      if (capabilities.checkpoint === undefined) {
+        throw new Error("checkpoint capability is unavailable");
+      }
+      capabilities.checkpoint(
+        dumpJson(vm, handles[0], "checkpoint value"),
+        currentPhase,
+      );
+    });
     installHostVoidFunction(vm, "phase", (handles) => {
       const value = handles[0] ? vm.dump(handles[0]) : undefined;
       if (typeof value !== "string" || value.trim() === "") {

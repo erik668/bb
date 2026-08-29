@@ -1,4 +1,7 @@
-import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import {
+  createFakePluginHost,
+  makeThreadResponse,
+} from "@get-bb/plugin-sdk/testing";
 import { readdirSync, readFileSync } from "node:fs";
 import { extname, relative, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -130,6 +133,18 @@ describe("workflows CLI argument validation", () => {
       argv: ["stop"],
       error: "stop requires a run ID",
     },
+    {
+      argv: ["details"],
+      error: "details requires a run ID",
+    },
+    {
+      argv: ["approve-amendment"],
+      error: "approve-amendment requires a run ID",
+    },
+    {
+      argv: ["approve-amendment", "run-1"],
+      error: "approve-amendment requires --acceptance",
+    },
   ])("rejects malformed invocation $argv", async ({ argv, error }) => {
     await expect(harness.runCli(argv)).resolves.toMatchObject({
       exitCode: 1,
@@ -140,11 +155,28 @@ describe("workflows CLI argument validation", () => {
   it("keeps one author tool and the shared Claude workflow language", async () => {
     expect(harness.registrations.agentTools.map((tool) => tool.name)).toEqual([
       "bb_workflow_run",
+      "bb_workflow_checkpoint",
       "bb_workflow_result",
     ]);
     expect(
       harness.registrations.cli?.commands.map((command) => command.name),
-    ).toEqual(["run", "validate", "status", "history", "list", "stop"]);
+    ).toEqual([
+      "run",
+      "validate",
+      "status",
+      "details",
+      "history",
+      "list",
+      "stop",
+      "approve-amendment",
+    ]);
+    expect(
+      harness.registrations.cli?.commands.find(
+        (command) => command.name === "run",
+      )?.usage,
+    ).toBe(
+      "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]",
+    );
     const run = harness.registrations.agentTools.find(
       (tool) => tool.name === "bb_workflow_run",
     );
@@ -212,6 +244,95 @@ describe("workflows CLI argument validation", () => {
       .map((path) => relative(root, path))
       .sort();
     expect(matches).toEqual([]);
+  });
+});
+
+describe("workflows CLI causal run output", () => {
+  it("reports presentation and run ancestry in list and history records", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "workflows",
+      agentSkillIds: ["workflows"],
+      sdk: {
+        threads: {
+          get: async ({ threadId }) =>
+            makeThreadResponse({
+              id: threadId,
+              projectId: "project-test",
+              environmentId: "environment-test",
+              providerId: "codex",
+              parentThreadId:
+                threadId === "origin-child" ? "root-thread" : null,
+              visibility: threadId === "origin-child" ? "hidden" : "visible",
+            }),
+          defaultExecutionOptions: async () => ({
+            model: "gpt-test",
+            reasoningLevel: "medium",
+            permissionMode: "full",
+            serviceTier: "default",
+            source: "default",
+          }),
+        },
+      },
+    });
+    await plugin(bb);
+
+    const launched = await harness.runCli(
+      [
+        "run",
+        "--script",
+        `export const meta = {
+          name: "causal-output",
+          description: "CLI causal output test",
+          phases: [],
+        };
+        return null;`,
+        "--present-in",
+        "root-thread",
+      ],
+      { threadId: "origin-child", projectId: "project-test" },
+    );
+    expect(launched.exitCode).toBe(0);
+    const runId = (JSON.parse(launched.stdout ?? "{}") as { runId: string })
+      .runId;
+    const causalIdentity = {
+      id: runId,
+      originThreadId: "origin-child",
+      presentationThreadId: "root-thread",
+      parentRunId: null,
+      rootRunId: runId,
+    };
+
+    const listed = await harness.runCli(["list"], {
+      threadId: "origin-child",
+      projectId: "project-test",
+    });
+    expect(JSON.parse(listed.stdout ?? "[]")).toEqual([
+      expect.objectContaining(causalIdentity),
+    ]);
+
+    const firstHistoryPage = await harness.runCli(
+      ["history", runId, "--cursor", "0"],
+      { threadId: "origin-child", projectId: "project-test" },
+    );
+    const fullRunRecord = JSON.parse(
+      (firstHistoryPage.stdout ?? "").split("\n")[0]!,
+    );
+    expect(fullRunRecord).toEqual(
+      expect.objectContaining({ type: "run", ...causalIdentity }),
+    );
+
+    const laterHistoryPage = await harness.runCli(
+      ["history", runId, "--cursor", "1"],
+      { threadId: "origin-child", projectId: "project-test" },
+    );
+    const runReferenceRecord = JSON.parse(
+      (laterHistoryPage.stdout ?? "").split("\n")[0]!,
+    );
+    expect(runReferenceRecord).toEqual(
+      expect.objectContaining({ type: "run-reference", ...causalIdentity }),
+    );
+
+    await harness.dispose();
   });
 });
 

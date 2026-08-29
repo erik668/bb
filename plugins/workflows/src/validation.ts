@@ -6,6 +6,8 @@ import type {
   JsonSchema,
   JsonValue,
   WorkflowAgentOptions,
+  WorkflowContextProfile,
+  WorkflowContextRequirement,
 } from "./types.js";
 
 export const MAX_WORKFLOW_SOURCE_BYTES = 512 * 1024;
@@ -14,6 +16,10 @@ const MAX_SCHEMA_DEPTH = 32;
 const MAX_SCHEMA_NODES = 4_096;
 const MAX_SCHEMA_PROPERTIES = 256;
 const MAX_SCHEMA_ENUM_VALUES = 256;
+const MAX_CONTEXT_PROFILE_ITEMS = 32;
+const MAX_CONTEXT_PROFILE_SKILL_LENGTH = 160;
+const MAX_CONTEXT_PROFILE_ENTRY_LENGTH = 512;
+const MAX_CONTEXT_PROFILE_STOP_LENGTH = 2_048;
 
 const SUPPORTED_SCHEMA_KEYWORDS = new Set([
   "$comment",
@@ -74,6 +80,8 @@ const UNSAFE_SCHEMA_KEYWORD_REASONS: Readonly<Record<string, string>> = {
 
 const HIDDEN_CONTROL_CHARACTER =
   /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/u;
+const CONTEXT_PROFILE_CONTROL_CHARACTER =
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/u;
 
 export function assertValidWorkflowSourceText(source: string): void {
   const sizeBytes = new TextEncoder().encode(source).byteLength;
@@ -117,17 +125,159 @@ const storedAgentOptionsSchema = z
       .strict()
       .nullable(),
     outputSchema: jsonSchemaValueSchema.nullable(),
+    contextRequirement: z
+      .object({
+        minimumTokens: z.number().int().positive().max(10_000_000),
+      })
+      .strict()
+      .nullable()
+      .default(null),
+    contextProfile: z.json().nullable().default(null),
     title: z.string().min(1).nullable(),
     phase: z.string().min(1).nullable().default(null),
   })
   .strict();
 
 export function parseStoredAgentOptions(value: unknown): WorkflowAgentOptions {
-  const options = storedAgentOptionsSchema.parse(value) as WorkflowAgentOptions;
+  const parsed = storedAgentOptionsSchema.parse(value);
+  const options: WorkflowAgentOptions = {
+    ...parsed,
+    contextProfile: parseContextProfile(parsed.contextProfile),
+  };
   if (options.outputSchema !== null) {
     assertValidJsonSchema(options.outputSchema, "stored agent outputSchema");
   }
   return options;
+}
+
+export function parseContextRequirement(
+  value: JsonValue | undefined,
+): WorkflowContextRequirement | null {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value)) {
+    throw new Error("agent options.contextRequirement must be an object");
+  }
+  const keys = Object.keys(value);
+  if (keys.length !== 1 || keys[0] !== "minimumTokens") {
+    throw new Error(
+      "agent options.contextRequirement must contain only minimumTokens",
+    );
+  }
+  const minimumTokens = value.minimumTokens;
+  if (
+    typeof minimumTokens !== "number" ||
+    !Number.isSafeInteger(minimumTokens) ||
+    minimumTokens < 1 ||
+    minimumTokens > 10_000_000
+  ) {
+    throw new Error(
+      "agent options.contextRequirement.minimumTokens must be an integer from 1 through 10000000",
+    );
+  }
+  return { minimumTokens };
+}
+
+function contextProfileString(
+  value: JsonValue,
+  path: string,
+  maxLength: number,
+): string {
+  if (typeof value !== "string") {
+    throw new Error(`${path} must be a string`);
+  }
+  if (CONTEXT_PROFILE_CONTROL_CHARACTER.test(value)) {
+    throw new Error(`${path} contains a control or invisible character`);
+  }
+  const normalized = value.trim();
+  if (normalized.length === 0) {
+    throw new Error(`${path} must be a non-empty string`);
+  }
+  if (normalized.length > maxLength) {
+    throw new Error(`${path} exceeds the ${maxLength}-character limit`);
+  }
+  return normalized;
+}
+
+function contextProfileList(
+  value: JsonValue | undefined,
+  path: string,
+  maxItemLength: number,
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new Error(`${path} must be an array`);
+  }
+  if (value.length > MAX_CONTEXT_PROFILE_ITEMS) {
+    throw new Error(
+      `${path} exceeds the ${MAX_CONTEXT_PROFILE_ITEMS}-item limit`,
+    );
+  }
+  for (let index = 0; index < value.length; index += 1) {
+    if (!Object.hasOwn(value, index)) {
+      throw new Error(`${path} must not contain sparse entries`);
+    }
+  }
+  const items = value.map((item, index) =>
+    contextProfileString(item, `${path}[${index}]`, maxItemLength),
+  );
+  if (new Set(items).size !== items.length) {
+    throw new Error(`${path} must not contain duplicate values`);
+  }
+  return items;
+}
+
+export function parseContextProfile(
+  value: JsonValue | undefined,
+): WorkflowContextProfile | null {
+  if (value === undefined || value === null) return null;
+  if (!isObject(value)) {
+    throw new Error("agent options.contextProfile must be an object");
+  }
+  const allowed = new Set([
+    "requiredSkills",
+    "memoryQueries",
+    "artifactRefs",
+    "stopCondition",
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) {
+      throw new Error(
+        `Unknown agent options.contextProfile property ${JSON.stringify(key)}`,
+      );
+    }
+  }
+  const requiredSkills = contextProfileList(
+    value.requiredSkills,
+    "agent options.contextProfile.requiredSkills",
+    MAX_CONTEXT_PROFILE_SKILL_LENGTH,
+  );
+  const memoryQueries = contextProfileList(
+    value.memoryQueries,
+    "agent options.contextProfile.memoryQueries",
+    MAX_CONTEXT_PROFILE_ENTRY_LENGTH,
+  );
+  const artifactRefs = contextProfileList(
+    value.artifactRefs,
+    "agent options.contextProfile.artifactRefs",
+    MAX_CONTEXT_PROFILE_ENTRY_LENGTH,
+  );
+  const stopCondition =
+    value.stopCondition === undefined || value.stopCondition === null
+      ? null
+      : contextProfileString(
+          value.stopCondition,
+          "agent options.contextProfile.stopCondition",
+          MAX_CONTEXT_PROFILE_STOP_LENGTH,
+        );
+  if (
+    requiredSkills.length === 0 &&
+    memoryQueries.length === 0 &&
+    artifactRefs.length === 0 &&
+    stopCondition === null
+  ) {
+    return null;
+  }
+  return { requiredSkills, memoryQueries, artifactRefs, stopCondition };
 }
 
 function optionalNonEmptyString(
@@ -348,6 +498,8 @@ export function parseAgentOptions(
     return {
       selection: null,
       outputSchema: null,
+      contextRequirement: null,
+      contextProfile: null,
       title: null,
       phase: null,
     };
@@ -360,6 +512,8 @@ export function parseAgentOptions(
     "reasoningLevel",
     "outputSchema",
     "schema",
+    "contextRequirement",
+    "contextProfile",
     "title",
     "label",
     "phase",
@@ -401,6 +555,8 @@ export function parseAgentOptions(
     );
   }
   const outputSchema = hasOutputSchema ? outputSchemaAlias : schemaAlias;
+  const contextRequirement = parseContextRequirement(value.contextRequirement);
+  const contextProfile = parseContextProfile(value.contextProfile);
 
   const title = optionalNonEmptyString(value, "title");
   const label = optionalNonEmptyString(value, "label");
@@ -416,6 +572,8 @@ export function parseAgentOptions(
         ? { provider, model, reasoningLevel }
         : null,
     outputSchema,
+    contextRequirement,
+    contextProfile,
     title: title ?? label,
     phase: optionalNonEmptyString(value, "phase"),
   };

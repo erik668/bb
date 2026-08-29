@@ -25,6 +25,8 @@ function cacheInput(): WorkflowCallCacheInput {
       properties: { approved: { type: "boolean" } },
       required: ["approved"],
     },
+    contextRequirement: null,
+    contextProfile: null,
     executionSemantics: {
       workerPromptVersion: "worker-prompt-v1",
       resultProtocolVersion: "structured-result-v1",
@@ -47,6 +49,8 @@ describe("workflow call cache identity", () => {
         properties: { approved: { type: "boolean" } },
         type: "object",
       },
+      contextRequirement: null,
+      contextProfile: null,
       selection: {
         permissionMode: "accept-edits",
         reasoningLevel: "medium",
@@ -104,6 +108,25 @@ describe("workflow call cache identity", () => {
       (input: WorkflowCallCacheInput) => ({
         ...input,
         outputSchema: { type: "string" },
+      }),
+    ],
+    [
+      "context requirement",
+      (input: WorkflowCallCacheInput) => ({
+        ...input,
+        contextRequirement: { minimumTokens: 1_000_000 },
+      }),
+    ],
+    [
+      "context profile",
+      (input: WorkflowCallCacheInput) => ({
+        ...input,
+        contextProfile: {
+          requiredSkills: ["implementation-loop"],
+          memoryQueries: [],
+          artifactRefs: [],
+          stopCondition: "implementation verified",
+        },
       }),
     ],
     [
