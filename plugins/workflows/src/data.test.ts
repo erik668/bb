@@ -22,6 +22,7 @@ import {
   listAcceptanceApprovals,
   listRunsForCampaign,
   migrations,
+  migrationStatement,
   recordAcceptanceApproval,
   queueCallProviderRetry,
   recordCallContextUsage,
@@ -45,7 +46,7 @@ describe("workflow durable data", () => {
   beforeEach(() => {
     db = new Database(":memory:");
     db.pragma("foreign_keys = ON");
-    db.exec(migrations.join("\n"));
+    db.exec(migrations.map(migrationStatement).join("\n"));
   });
 
   afterEach(() => {
@@ -137,7 +138,11 @@ describe("workflow durable data", () => {
       expect(
         migrations
           .slice(0, productionMigrationCount)
-          .map((sql) => createHash("sha256").update(sql).digest("hex")),
+          .map((migration) =>
+            createHash("sha256")
+              .update(migrationStatement(migration))
+              .digest("hex"),
+          ),
       ).toEqual(productionMigrationHashes);
       bb.storage.migrate(
         productionDb,
@@ -380,6 +385,68 @@ describe("workflow durable data", () => {
       expect(
         countRunsForCampaign(productionDb, rollbackLegacy.campaignId),
       ).toBe(2);
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("reopens a database whose ledger reserved the artifact-lineage indexes", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "workflows" });
+    const forkDb = bb.storage.database();
+    try {
+      bb.storage.migrate(forkDb, migrations);
+
+      // Exactly what an 8-migration build leaves behind after opening a
+      // database the artifact-review build had already migrated: the rows stay,
+      // but the host no longer knows which statement wrote them.
+      const reserve = forkDb.prepare(
+        "UPDATE _bb_migrations SET statement_hash = 'legacy-unknown' WHERE id = ?",
+      );
+      for (let id = 8; id <= 13; id += 1) reserve.run(id);
+
+      expect(() => bb.storage.migrate(forkDb, migrations)).not.toThrow();
+
+      // Every reservation released, and nothing was replayed — an ALTER TABLE
+      // rerun would have thrown "duplicate column name".
+      expect(
+        forkDb
+          .prepare(
+            "SELECT COUNT(*) FROM _bb_migrations WHERE statement_hash = 'legacy-unknown'",
+          )
+          .pluck()
+          .get(),
+      ).toBe(0);
+      expect(
+        forkDb
+          .prepare("SELECT id, statement_hash FROM _bb_migrations ORDER BY id")
+          .all(),
+      ).toEqual(
+        migrations.map((migration, id) => ({
+          id,
+          statement_hash: createHash("sha256")
+            .update(migrationStatement(migration))
+            .digest("hex"),
+        })),
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("refuses a reserved index whose schema is not actually present", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "workflows" });
+    const db = bb.storage.database();
+    try {
+      bb.storage.migrate(db, migrations);
+      db.exec(
+        "UPDATE _bb_migrations SET statement_hash = 'legacy-unknown' WHERE id = 13",
+      );
+      // Drop the one object migration 13 creates, so its probe reports false.
+      db.exec("DROP INDEX workflow_runs_campaign_created_idx");
+
+      expect(() => bb.storage.migrate(db, migrations)).toThrow(
+        /migration 13 is reserved by an unidentified legacy migration/,
+      );
     } finally {
       await harness.dispose();
     }
@@ -1161,9 +1228,10 @@ describe("workflow durable data", () => {
     // The write path refuses this, so reaching it means the ledger was written
     // another way. Written directly, the same ID now carries two contracts.
     const sibling = newRun();
-    db.prepare(
-      `UPDATE workflow_runs SET campaign_id = ? WHERE id = ?`,
-    ).run(run.campaignId, sibling.id);
+    db.prepare(`UPDATE workflow_runs SET campaign_id = ? WHERE id = ?`).run(
+      run.campaignId,
+      sibling.id,
+    );
     db.prepare(
       `INSERT INTO workflow_checkpoints
          (id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
@@ -1209,9 +1277,9 @@ describe("workflow durable data", () => {
         phase: "Execute",
         sourceCallId: null,
       });
-    expect(write("campaign-acceptance", acceptanceJson(["cli", "grader"]))).toBe(
-      "accepted",
-    );
+    expect(
+      write("campaign-acceptance", acceptanceJson(["cli", "grader"])),
+    ).toBe("accepted");
     expect(
       write(
         "campaign-plan",
@@ -1224,9 +1292,7 @@ describe("workflow durable data", () => {
     // one level out: the human approval that guards the contract would guard
     // nothing if the plan that gates on it could be rewritten by the same agent
     // through the same tool.
-    expect(
-      write("campaign-plan", planJson([{ id: "phase-gate" }])),
-    ).toEqual({
+    expect(write("campaign-plan", planJson([{ id: "phase-gate" }]))).toEqual({
       kind: "gate_weakened",
       gateId: "phase-gate",
       droppedCriterionIds: ["grader"],

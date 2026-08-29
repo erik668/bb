@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { PluginMigration } from "@get-bb/plugin-sdk";
 import { artifactMigrations } from "./artifact-storage.js";
 import type { ResolvedWorkflowExecutionSelection } from "./cache.js";
 import type { JsonValue, WorkflowAgentOptions } from "./types.js";
@@ -246,6 +247,47 @@ const acceptanceApprovalMigration = `CREATE TABLE IF NOT EXISTS workflow_accepta
      UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
    );`;
 
+/**
+ * Wraps a migration whose index an older lineage may already have applied.
+ *
+ * A database that ran the artifact-review build and was later opened by a build
+ * declaring fewer migrations has its extra ledger rows reserved as
+ * `legacy-unknown`: applied, but by a statement the host cannot identify. The
+ * host refuses such an index by default, since a plugin could otherwise reuse it
+ * and silently skip a schema change. A read-only probe showing the index's
+ * schema is already in place is the evidence that releases it.
+ *
+ * The statement text must stay byte-identical: adoption records its sha256, and
+ * a database that already holds that hash rejects any edit.
+ */
+function adoptable(
+  statement: string,
+  isApplied: (db: Db) => boolean,
+): PluginMigration {
+  return { statement, adoptIfApplied: isApplied };
+}
+
+/** The SQL a migration runs, whether it was declared bare or with a probe. */
+export function migrationStatement(migration: PluginMigration): string {
+  return typeof migration === "string" ? migration : migration.statement;
+}
+
+function hasColumns(db: Db, table: string, columns: string[]): boolean {
+  const present = db
+    .prepare<[string], { name: string }>(
+      "SELECT name FROM pragma_table_info(?)",
+    )
+    .all(table);
+  return columns.every((column) => present.some((row) => row.name === column));
+}
+
+function hasObjects(db: Db, type: "table" | "index", names: string[]): boolean {
+  const find = db.prepare<[string, string], { name: string }>(
+    "SELECT name FROM sqlite_master WHERE type = ? AND name = ?",
+  );
+  return names.every((name) => find.get(type, name) !== undefined);
+}
+
 export const migrations = [
   `CREATE TABLE IF NOT EXISTS workflow_runs (
      id TEXT PRIMARY KEY,
@@ -325,14 +367,30 @@ export const migrations = [
   `UPDATE workflow_runs SET replay_barrier_index = NULL
      WHERE replay_safety_version = 1;`,
   `ALTER TABLE workflow_calls ADD COLUMN provider_retry_attempts INTEGER NOT NULL DEFAULT 0;`,
-  `ALTER TABLE workflow_calls ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0;
+  adoptable(
+    `ALTER TABLE workflow_calls ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0;
    UPDATE workflow_calls SET prompt_bytes = length(CAST(prompt AS BLOB));
    ALTER TABLE workflow_calls ADD COLUMN observed_context_used_tokens INTEGER;
    ALTER TABLE workflow_calls ADD COLUMN observed_model_context_window INTEGER;
    ALTER TABLE workflow_calls ADD COLUMN context_usage_estimated INTEGER;`,
-  `ALTER TABLE workflow_calls ADD COLUMN context_minimum_tokens INTEGER;`,
-  `ALTER TABLE workflow_calls ADD COLUMN context_profile_json TEXT;`,
-  `CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+    (db) =>
+      hasColumns(db, "workflow_calls", [
+        "prompt_bytes",
+        "observed_context_used_tokens",
+        "observed_model_context_window",
+        "context_usage_estimated",
+      ]),
+  ),
+  adoptable(
+    `ALTER TABLE workflow_calls ADD COLUMN context_minimum_tokens INTEGER;`,
+    (db) => hasColumns(db, "workflow_calls", ["context_minimum_tokens"]),
+  ),
+  adoptable(
+    `ALTER TABLE workflow_calls ADD COLUMN context_profile_json TEXT;`,
+    (db) => hasColumns(db, "workflow_calls", ["context_profile_json"]),
+  ),
+  adoptable(
+    `CREATE TABLE IF NOT EXISTS workflow_checkpoints (
      id TEXT PRIMARY KEY,
      run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
      checkpoint_id TEXT NOT NULL,
@@ -346,7 +404,12 @@ export const migrations = [
    );
    CREATE INDEX IF NOT EXISTS workflow_checkpoints_run_created_idx
      ON workflow_checkpoints(run_id, ordinal);`,
-  `ALTER TABLE workflow_runs ADD COLUMN presentation_thread_id TEXT;
+    (db) =>
+      hasObjects(db, "table", ["workflow_checkpoints"]) &&
+      hasObjects(db, "index", ["workflow_checkpoints_run_created_idx"]),
+  ),
+  adoptable(
+    `ALTER TABLE workflow_runs ADD COLUMN presentation_thread_id TEXT;
    ALTER TABLE workflow_runs ADD COLUMN parent_run_id TEXT REFERENCES workflow_runs(id) ON DELETE SET NULL;
    ALTER TABLE workflow_runs ADD COLUMN root_run_id TEXT;
    UPDATE workflow_runs
@@ -357,10 +420,26 @@ export const migrations = [
      ON workflow_runs(presentation_thread_id, created_at DESC);
    CREATE INDEX IF NOT EXISTS workflow_runs_root_created_idx
      ON workflow_runs(root_run_id, created_at ASC);`,
-  `ALTER TABLE workflow_runs ADD COLUMN campaign_id TEXT;
+    (db) =>
+      hasColumns(db, "workflow_runs", [
+        "presentation_thread_id",
+        "parent_run_id",
+        "root_run_id",
+      ]) &&
+      hasObjects(db, "index", [
+        "workflow_runs_presentation_created_idx",
+        "workflow_runs_root_created_idx",
+      ]),
+  ),
+  adoptable(
+    `ALTER TABLE workflow_runs ADD COLUMN campaign_id TEXT;
    UPDATE workflow_runs SET campaign_id = id WHERE campaign_id IS NULL;
    CREATE INDEX IF NOT EXISTS workflow_runs_campaign_created_idx
      ON workflow_runs(campaign_id, created_at ASC);`,
+    (db) =>
+      hasColumns(db, "workflow_runs", ["campaign_id"]) &&
+      hasObjects(db, "index", ["workflow_runs_campaign_created_idx"]),
+  ),
   // Approvals live outside the checkpoint ledger on purpose: the ledger is
   // what a workflow writes about itself, and an approval is the one fact about
   // a campaign that its own tool path must not be able to produce. The
