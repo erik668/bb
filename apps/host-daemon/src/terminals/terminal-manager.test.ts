@@ -95,6 +95,7 @@ async function cleanupTempDirs(): Promise<void> {
 
 class FakeTerminalPty implements TerminalPtyProcess {
   disposeCount: number;
+  disposeError: Error | null;
   readonly killCalls: (string | null)[];
   readonly resizeCalls: ResizeCall[];
   readonly writeCalls: (Buffer | string)[];
@@ -107,6 +108,7 @@ class FakeTerminalPty implements TerminalPtyProcess {
 
   constructor() {
     this.disposeCount = 0;
+    this.disposeError = null;
     this.killCalls = [];
     this.resizeCalls = [];
     this.writeCalls = [];
@@ -118,6 +120,9 @@ class FakeTerminalPty implements TerminalPtyProcess {
 
   dispose(): void {
     this.disposeCount += 1;
+    if (this.disposeError !== null) {
+      throw this.disposeError;
+    }
   }
 
   kill(signal?: string): void {
@@ -1335,6 +1340,36 @@ describe("TerminalManager", () => {
     await expect(
       harness.runtimeManager.evictIdleEnvironments(),
     ).resolves.toEqual(["env-1"]);
+  });
+
+  it("acknowledges exit when terminal PTY disposal fails", async () => {
+    vi.useFakeTimers();
+    const harness = createHarnessWithOptions({
+      closeGracePeriodMs: 10,
+      onSendMessage: () => undefined,
+      resolveShell: async () => "/bin/zsh",
+    });
+    const pty = await openTerminal(harness);
+    pty.disposeError = new Error("PTY disposal failed");
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    await vi.advanceTimersByTimeAsync(10);
+
+    expect(pty.disposeCount).toBe(1);
+    expect(
+      harness.messages.filter((message) => message.type === "terminal.exited"),
+    ).toEqual([
+      {
+        type: "terminal.exited",
+        terminalId: "term-1",
+        exitCode: null,
+        closeReason: "user",
+      },
+    ]);
   });
 
   it("kills all terminals on shutdown", async () => {
