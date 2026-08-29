@@ -494,7 +494,7 @@ argument drives a dev client through Metro instead.
   (`pnpm exec turbo run build typecheck lint` in `Checks`, the `packages`
   test shard for `vitest`), like every workspace package.
 - `.github/workflows/mobile-e2e.yml` (`Mobile E2E`) runs the flows above on
-  the `blacksmith-6vcpu-macos-15` runner: label a pull request `mobile-e2e`,
+  the `macos-15` runner: label a pull request `mobile-e2e`,
   dispatch it by hand (optional `flows` input), or wait for the nightly run.
   It selects Xcode 26.2 (`DEVELOPER_DIR`, falling back to the newest 26.x),
   boots the simulator `pick-simulator.mjs` chooses, installs Maestro 2.8.0
