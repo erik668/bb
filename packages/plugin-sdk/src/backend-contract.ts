@@ -9,6 +9,7 @@ import type { ProviderFork } from "@bb/domain/provider-fork";
 import type { BbSdk } from "@bb/sdk";
 import type { ThreadResponse } from "@bb/server-contract";
 import type { JsonValue } from "./json-value.js";
+import type { PluginMigration } from "./internal/migration-ledger.js";
 import type {
   PluginRpcContract,
   PluginRpcHandlers,
@@ -117,6 +118,8 @@ export interface PluginSettings {
 // Storage (design §4.3).
 // ---------------------------------------------------------------------------
 
+export type { PluginMigration };
+
 export interface PluginKvStorage {
   get<T>(key: string): Promise<T | undefined>;
   set(key: string, value: unknown): Promise<void>;
@@ -141,8 +144,12 @@ export interface PluginStorage {
    * `_bb_migrations` table; unapplied statements run in one transaction. The
    * host records each statement hash and rejects changed or reused indexes.
    * Append-only — never reorder or edit shipped statements.
+   *
+   * A plain string is the usual form. Pass the object form with
+   * `adoptIfApplied` only to release an index reserved by an unidentified
+   * legacy migration — see {@link PluginMigration}.
    */
-  migrate(db: Database.Database, statements: string[]): void;
+  migrate(db: Database.Database, migrations: PluginMigration[]): void;
 }
 
 // ---------------------------------------------------------------------------

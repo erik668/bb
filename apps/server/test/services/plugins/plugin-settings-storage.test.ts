@@ -457,9 +457,58 @@ describe("plugin settings + storage", () => {
         api.storage.migrate(database, [
           "CREATE TABLE items (id INTEGER PRIMARY KEY)",
           "SELECT 1",
-          "SELECT 2",
+          "CREATE TABLE ghost (id INTEGER PRIMARY KEY)",
         ]),
-      ).toThrow(/migration 2 does not match the recorded statement/);
+      ).toThrow(/migration 2 is reserved by an unidentified legacy migration/);
+      expect(
+        database
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ghost'",
+          )
+          .get(),
+      ).toBeUndefined();
+    });
+
+    it("releases a reserved legacy index when adoptIfApplied proves the effect is present", async () => {
+      const rootDir = await writePlugin(workDir, {
+        name: "bb-plugin-legacy-adoption",
+        serverSource: `export default function plugin() {}`,
+      });
+      await service.installPath(rootDir);
+
+      const api = service.getApi("legacy-adoption");
+      expect(api).toBeDefined();
+      if (!api) throw new Error("legacy-adoption plugin did not load");
+      const database = api.storage.database();
+      database.exec(
+        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL); INSERT INTO _bb_migrations VALUES (0, 1), (1, 1)",
+      );
+      api.storage.migrate(database, [
+        "CREATE TABLE items (id INTEGER PRIMARY KEY)",
+      ]);
+
+      // The `name` column is already here, applied by a build this one knows
+      // nothing about; the probe says so, and the statement never runs.
+      api.storage.migrate(database, [
+        "CREATE TABLE items (id INTEGER PRIMARY KEY)",
+        {
+          statement: "ALTER TABLE items ADD COLUMN name TEXT",
+          adoptIfApplied: (db) =>
+            db
+              .prepare<[], { name: string }>("PRAGMA table_info(items)")
+              .all()
+              .some((column) => column.name === "name"),
+        },
+      ]);
+
+      expect(
+        database
+          .prepare("SELECT id, statement_hash FROM _bb_migrations ORDER BY id")
+          .all(),
+      ).toEqual([
+        { id: 0, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+        { id: 1, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      ]);
     });
 
     it("returns one reused handle per plugin load instead of a connection per call", async () => {

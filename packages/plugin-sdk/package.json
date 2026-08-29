@@ -1,6 +1,6 @@
 {
   "name": "@get-bb/plugin-sdk",
-  "version": "0.4.28",
+  "version": "0.4.29",
   "homepage": "https://github.com/get-bb/bb#readme",
   "bugs": {
     "url": "https://github.com/get-bb/bb/issues"
@@ -85,6 +85,12 @@
       "types": "./bundled-types/bb-plugin-sdk-internal-host-policy.d.ts",
       "import": "./dist/internal/host-policy.js",
       "default": "./dist/internal/host-policy.js"
+    },
+    "./internal/migration-ledger": {
+      "source": "./src/internal/migration-ledger.ts",
+      "types": "./bundled-types/bb-plugin-sdk-internal-migration-ledger.d.ts",
+      "import": "./dist/internal/migration-ledger.js",
+      "default": "./dist/internal/migration-ledger.js"
     },
     "./internal/plugin-app-collector": {
       "source": "./src/internal/plugin-app-collector.ts",

@@ -125,6 +125,7 @@ Read the installed declarations for exact current signatures.
 - `PluginMessageDirectiveOpenWorkspaceFile`
 - `PluginMessageDirectiveProps`
 - `PluginMessageDirectiveRegistration`
+- `PluginMigration`
 - `PluginNavPanelProps`
 - `PluginNavPanelRegistration`
 - `PluginNewThreadPanelActionContext`
