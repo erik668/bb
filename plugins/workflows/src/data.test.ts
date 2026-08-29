@@ -377,6 +377,80 @@ describe("workflow durable data", () => {
     }
   });
 
+  it("upgrades the direct-build artifact lineage without replaying assistance columns", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "workflows" });
+    const legacyDb = bb.storage.database();
+    try {
+      bb.storage.migrate(legacyDb, migrations.slice(0, 14));
+      legacyDb.exec(`
+        CREATE TABLE workflow_artifact_annotations (id TEXT PRIMARY KEY);
+        CREATE TABLE workflow_artifact_changes (id TEXT PRIMARY KEY);
+        ALTER TABLE workflow_artifact_annotations
+          ADD COLUMN assistance_status TEXT
+            CHECK (assistance_status IN ('pending', 'ready', 'error'));
+        ALTER TABLE workflow_artifact_annotations
+          ADD COLUMN suggested_semantic_class TEXT
+            CHECK (suggested_semantic_class IN ('editorial', 'refinement', 'contract', 'architecture'));
+        ALTER TABLE workflow_artifact_annotations
+          ADD COLUMN suggested_rationale TEXT;
+        ALTER TABLE workflow_artifact_annotations
+          ADD COLUMN assistance_error TEXT;
+        ALTER TABLE workflow_artifact_changes
+          ADD COLUMN assistance_status TEXT
+            CHECK (assistance_status IN ('pending', 'ready', 'error'));
+        ALTER TABLE workflow_artifact_changes
+          ADD COLUMN suggested_architecture_verdict TEXT
+            CHECK (suggested_architecture_verdict IN ('no-design-impact', 'bounded-design-delta', 'redesign-required'));
+        ALTER TABLE workflow_artifact_changes
+          ADD COLUMN suggested_architecture_summary TEXT;
+        ALTER TABLE workflow_artifact_changes
+          ADD COLUMN assistance_error TEXT;
+      `);
+      const recordLegacyMigration = legacyDb.prepare(
+        "INSERT INTO _bb_migrations (id, applied_at) VALUES (?, ?)",
+      );
+      for (const id of [14, 15, 16]) recordLegacyMigration.run(id, id);
+
+      expect(
+        legacyDb
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_acceptance_approvals'",
+          )
+          .get(),
+      ).toBeUndefined();
+
+      expect(() => bb.storage.migrate(legacyDb, migrations)).not.toThrow();
+      expect(
+        legacyDb
+          .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+          .pluck()
+          .all(),
+      ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
+      expect(
+        legacyDb
+          .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'workflow_acceptance_approvals'",
+          )
+          .get(),
+      ).toEqual({ name: "workflow_acceptance_approvals" });
+      expect(
+        legacyDb
+          .prepare("PRAGMA table_info(workflow_artifact_annotations)")
+          .all()
+          .map((column) => (column as { name: string }).name),
+      ).toEqual(
+        expect.arrayContaining([
+          "assistance_status",
+          "suggested_semantic_class",
+          "suggested_rationale",
+          "assistance_error",
+        ]),
+      );
+    } finally {
+      await harness.dispose();
+    }
+  });
+
   it("upserts the latest checkpoint state without duplicating its position", () => {
     const run = newRun();
     markRunning(run.id);
