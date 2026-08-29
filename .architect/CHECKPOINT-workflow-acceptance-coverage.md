@@ -77,25 +77,28 @@ real-handler `callRpc` test.
 
 ## Now
 
-Merging. All five cuts are committed and pushed to
-`fork/feature/workflow-acceptance-coverage`; PR #1 is retargeted to `main` and
-its body is being brought in line with the corrected security claim and the
-three new refusals.
+**Merged.** PR #1 landed on `erik668/bb` `main` as `fb28c9263` (merge commit,
+history preserved). Nothing in flight.
+
+Because the PR was retargeted from the unmerged `feature/workflow-detail-ledger`
+to `main`, that branch's 8 commits (`ba43902`…`e2b88b053`) landed with this
+work's 7.
 
 - `fork` remote (`https://github.com/erik668/bb.git`). Upstream `get-bb/bb` is
-  READ-only for this token.
-- Dev server running from this worktree: http://localhost:12089
-  (`scripts/bb-dev-app current`; `pnpm dev:stop` to stop).
+  READ-only for this token, so nothing here has reached upstream.
+- Dev server still running from this worktree: http://localhost:12089
+  (`pnpm dev:stop` to stop).
 
-**Conflict watch.** `feature/workflow-detail-ledger` is dirty in
-`env_88g5eb749t/bb-workflow-details` with uncommitted edits to the same files
-this branch changed — `app.tsx`, `service.ts`, `ui-contract.ts`, `README.md`,
-`SKILL.md`, `server-harness.test.ts`. Whichever lands second reconciles the
-notes rendering in `app.tsx` and `ui-contract.ts`.
+**Conflict watch.** `feature/workflow-detail-ledger` is still dirty in
+`env_88g5eb749t/bb-workflow-details` with uncommitted edits to files this work
+changed — `app.tsx`, `service.ts`, `ui-contract.ts`, `README.md`, `SKILL.md`,
+`server-harness.test.ts`. Those edits now need reconciling against merged `main`,
+not against a sibling branch.
 
 ## Next
 
-1. Merge PR #1.
+1. Reconcile the dirty `feature/workflow-detail-ledger` worktree against merged
+   `main` (notes rendering in `app.tsx` / `ui-contract.ts`).
 2. Unbuilt by design: composer status line, precondition budgets. Three
    non-blocking deferrals are recorded with reasons in
    [detail-acceptance-coverage.md](detail-acceptance-coverage.md#still-deferred-with-reasons).

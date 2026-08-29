@@ -58,6 +58,7 @@ import {
   type StandardSchemaV1InferInput,
   type MarkdownProps,
   type UrlLinkProps,
+  type ExperimentalArtifactReviewProps,
   type ExperimentalFileLinkProps,
   type ExperimentalFileOpenOptions,
   type ExperimentalAppPanel,
@@ -331,6 +332,58 @@ function TestMarkdown({ content, className }: MarkdownProps) {
   return (
     <div data-testid="bb-markdown" className={className}>
       {content}
+    </div>
+  );
+}
+
+function TestArtifactReview({
+  content,
+  annotations,
+  onSelectionChange,
+  onFeedbackRequest,
+  className,
+}: ExperimentalArtifactReviewProps) {
+  const exactQuote = content.slice(0, Math.min(content.length, 12));
+  const selection =
+    exactQuote.length === 0
+      ? null
+      : {
+          blockId: "test-block-0",
+          start: 0,
+          end: exactQuote.length,
+          exactQuote,
+          prefix: "",
+          suffix: content.slice(exactQuote.length, exactQuote.length + 64),
+        };
+  return (
+    <div
+      data-testid="bb-artifact-review"
+      data-annotation-count={annotations.length}
+      className={className}
+    >
+      <div>{content}</div>
+      <button
+        type="button"
+        data-testid="bb-artifact-review-select"
+        disabled={exactQuote.length === 0}
+        onClick={() => onSelectionChange(selection)}
+      >
+        Select test text
+      </button>
+      {selection === null || onFeedbackRequest === undefined ? null : (
+        <button
+          type="button"
+          data-testid="bb-artifact-review-feedback"
+          onClick={() =>
+            onFeedbackRequest({
+              selection,
+              viewport: { x: 120, y: 80 },
+            })
+          }
+        >
+          Add test feedback
+        </button>
+      )}
     </div>
   );
 }
@@ -794,6 +847,7 @@ const testPluginSdkApp = {
   },
   ThreadChat: TestThreadChat,
   Markdown: TestMarkdown,
+  experimental_ArtifactReview: TestArtifactReview,
   experimental_FileLink: TestFileLink,
   UrlLink: TestUrlLink,
   experimental_NewThreadComposer: TestNewThreadComposer,

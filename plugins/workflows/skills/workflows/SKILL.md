@@ -90,6 +90,33 @@ Use bb workflows status for compact progress. Redirect bounded history pages
 into BB_THREAD_STORAGE before inspection because history can contain full
 prompts and results.
 
+## Review campaign artifacts
+
+A campaign keeps durable Requirements, Architecture, and Decisions artifacts
+under bb workflows artifact <action> <run-id>:
+
+```sh
+bb workflows artifact seed <run-id>
+bb workflows artifact list <run-id>
+bb workflows artifact show <run-id> --id <artifact-id> --revision <n>
+bb workflows artifact revise <run-id> --id <artifact-id> --content <text> --expected-revision <n>
+```
+
+seed creates the three artifacts, list returns summaries, show returns verified
+Markdown with history and comments, and revise appends an immutable revision.
+
+Discuss and decide against a revision with comment --id <artifact-id> --quote
+<text> --body <text>, adding --start <offset> when the quote repeats; reply
+--annotation <id> --body <text>; and decide --annotation <id> --outcome
+<accepted|declined> --class <editorial|refinement|contract|architecture>.
+
+Accepted non-editorial feedback requires assess --change <id> --verdict
+<no-design-impact|bounded-design-delta|redesign-required> --summary <text>
+before confirm --change <id>. Live worker propagation remains disabled.
+
+steward creates or returns the campaign's durable hidden discussion thread.
+Every mutation command accepts an optional --mutation <id> for safe retries.
+
 ## Quality check
 
 - The user explicitly requested workflow orchestration.

@@ -1,8 +1,15 @@
+import { randomUUID } from "node:crypto";
 import type {
   BbPluginApi,
   PluginCliContext,
   PluginCliResult,
 } from "@get-bb/plugin-sdk";
+import {
+  defaultWorkflowArtifactDocuments,
+  type WorkflowArtifactScope,
+  type WorkflowArtifactSemanticClass,
+  type WorkflowArtifactService,
+} from "./artifact-storage.js";
 import type { JsonValue } from "./types.js";
 import type {
   WorkflowCallInspection,
@@ -16,6 +23,8 @@ import {
   workflowRunSettingsSnapshot,
 } from "./settings.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
+import { buildWorkflowRunView } from "./ui-view.js";
+import { WORKFLOW_RUNS_REALTIME_CHANNEL } from "./realtime-channel.js";
 
 const STATUS_INLINE_RESULT_MAX_BYTES = 8 * 1024;
 const STATUS_DISPLAY_TEXT_MAX_BYTES = 1_024;
@@ -136,6 +145,20 @@ function parseIntegerOption(
     throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
   }
   return value;
+}
+
+function requiredOption(
+  options: ReadonlyMap<string, string>,
+  name: string,
+): string {
+  const value = options.get(name)?.trim();
+  if (value === undefined || value === "")
+    throw new Error(`${name} is required`);
+  return value;
+}
+
+function mutationId(options: ReadonlyMap<string, string>): string {
+  return options.get("--mutation")?.trim() || `cli-${randomUUID()}`;
 }
 
 function parseStoredJson(value: string, description: string): JsonValue {
@@ -369,6 +392,7 @@ function callLogRecord(call: WorkflowCallInspection, exportedAt: number) {
 export function registerWorkflowCli(
   bb: BbPluginApi,
   service: WorkflowService,
+  artifactService: WorkflowArtifactService,
 ): void {
   bb.cli.register({
     name: "workflows",
@@ -417,6 +441,12 @@ export function registerWorkflowCli(
         summary: "Approve a declared change to a campaign acceptance contract",
         usage:
           "bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>",
+      },
+      {
+        name: "artifact",
+        summary: "Review durable workflow campaign artifacts",
+        usage:
+          "bb workflows artifact <list|seed|show|revise|comment|reply|decide|assess|confirm|steward> <run-id> [options]",
       },
     ],
     async run(argv, ctx) {
@@ -625,8 +655,268 @@ export function registerWorkflowCli(
             }),
           );
         }
+        if (command === "artifact") {
+          const action = argv[1];
+          const allowedActions = new Set([
+            "list",
+            "seed",
+            "show",
+            "revise",
+            "comment",
+            "reply",
+            "decide",
+            "assess",
+            "confirm",
+            "steward",
+          ]);
+          if (action === undefined || !allowedActions.has(action)) {
+            throw new Error(
+              "Usage: bb workflows artifact <list|seed|show|revise|comment|reply|decide|assess|confirm|steward> <run-id> [options]",
+            );
+          }
+          const allowedOptionsByAction: Record<string, readonly string[]> = {
+            list: [],
+            seed: ["--mutation"],
+            show: ["--id", "--revision"],
+            revise: ["--id", "--content", "--expected-revision", "--mutation"],
+            comment: [
+              "--id",
+              "--revision",
+              "--quote",
+              "--start",
+              "--body",
+              "--mutation",
+            ],
+            reply: ["--annotation", "--body", "--mutation"],
+            decide: [
+              "--annotation",
+              "--outcome",
+              "--class",
+              "--rationale",
+              "--mutation",
+            ],
+            assess: ["--change", "--verdict", "--summary", "--mutation"],
+            confirm: ["--change", "--mutation"],
+            steward: [],
+          };
+          const { options, positionals } = parseArguments(
+            argv.slice(2),
+            allowedOptionsByAction[action]!,
+            `artifact ${action}`,
+          );
+          const context = requireContext(ctx);
+          const runId = positionals[0]!;
+          const run = service.inspect(runId);
+          if (
+            run === null ||
+            run.projectId !== context.projectId ||
+            (run.originThreadId !== context.threadId &&
+              run.presentationThreadId !== context.threadId)
+          ) {
+            throw new Error(`Unknown workflow run ${runId}`);
+          }
+          const scope: WorkflowArtifactScope = {
+            campaignId: run.campaignId,
+            projectId: run.projectId,
+            environmentId: run.environmentId,
+            presentationThreadId: run.presentationThreadId,
+            originRunId: run.rootRunId,
+          };
+          const publishChanged = () =>
+            bb.realtime.publish(WORKFLOW_RUNS_REALTIME_CHANNEL, {
+              threadId: run.presentationThreadId,
+            });
+          if (action === "list") return success(artifactService.list(scope));
+          if (action === "seed") {
+            const runView = buildWorkflowRunView(run);
+            const result = artifactService.seed(
+              scope,
+              defaultWorkflowArtifactDocuments({
+                campaignName: run.name,
+                description: runView.description,
+                campaignId: run.campaignId,
+              }),
+              mutationId(options),
+            );
+            publishChanged();
+            return success(result);
+          }
+          if (action === "show") {
+            const revisionRaw = options.get("--revision");
+            const revision =
+              revisionRaw === undefined
+                ? undefined
+                : parseIntegerOption(
+                    options,
+                    "--revision",
+                    1,
+                    1,
+                    Number.MAX_SAFE_INTEGER,
+                  );
+            return success(
+              artifactService.read(
+                scope,
+                requiredOption(options, "--id"),
+                revision,
+              ),
+            );
+          }
+          if (action === "revise") {
+            const artifactId = requiredOption(options, "--id");
+            const current = artifactService.read(scope, artifactId);
+            const expectedRevision = parseIntegerOption(
+              options,
+              "--expected-revision",
+              0,
+              1,
+              Number.MAX_SAFE_INTEGER,
+            );
+            const result = artifactService.seed(
+              scope,
+              [
+                {
+                  kind: current.artifact.kind,
+                  title: current.artifact.title,
+                  content: requiredOption(options, "--content"),
+                  expectedRevision,
+                },
+              ],
+              mutationId(options),
+            );
+            publishChanged();
+            return success(result);
+          }
+          if (action === "comment") {
+            const artifactId = requiredOption(options, "--id");
+            const revision = parseIntegerOption(
+              options,
+              "--revision",
+              artifactService.read(scope, artifactId).artifact.currentRevision,
+              1,
+              Number.MAX_SAFE_INTEGER,
+            );
+            const detail = artifactService.read(scope, artifactId, revision);
+            const quote = requiredOption(options, "--quote");
+            const startRaw = options.get("--start");
+            const start =
+              startRaw === undefined
+                ? detail.content.indexOf(quote)
+                : parseIntegerOption(
+                    options,
+                    "--start",
+                    0,
+                    0,
+                    detail.content.length,
+                  );
+            if (
+              start < 0 ||
+              detail.content.slice(start, start + quote.length) !== quote
+            ) {
+              throw new Error(
+                "--quote was not found at the requested artifact position",
+              );
+            }
+            if (
+              startRaw === undefined &&
+              detail.content.indexOf(quote, start + 1) !== -1
+            ) {
+              throw new Error(
+                "--quote occurs more than once; pass --start to disambiguate",
+              );
+            }
+            const result = artifactService.addAnnotation(scope, {
+              artifactId,
+              revision,
+              kind: "comment",
+              anchor: {
+                blockId: `cli-${start}`,
+                start,
+                end: start + quote.length,
+                exactQuote: quote,
+                prefix: detail.content.slice(Math.max(0, start - 64), start),
+                suffix: detail.content.slice(
+                  start + quote.length,
+                  start + quote.length + 64,
+                ),
+              },
+              body: requiredOption(options, "--body"),
+              clientMutationId: mutationId(options),
+            });
+            publishChanged();
+            return success(result);
+          }
+          if (action === "reply") {
+            const result = artifactService.reply(scope, {
+              annotationId: requiredOption(options, "--annotation"),
+              body: requiredOption(options, "--body"),
+              clientMutationId: mutationId(options),
+            });
+            publishChanged();
+            return success(result);
+          }
+          if (action === "decide") {
+            const outcome = requiredOption(options, "--outcome");
+            if (outcome !== "accepted" && outcome !== "declined") {
+              throw new Error("--outcome must be accepted or declined");
+            }
+            const semanticClassInput = requiredOption(options, "--class");
+            let semanticClass: WorkflowArtifactSemanticClass;
+            switch (semanticClassInput) {
+              case "editorial":
+              case "refinement":
+              case "contract":
+              case "architecture":
+                semanticClass = semanticClassInput;
+                break;
+              default:
+                throw new Error(
+                  "--class must be editorial, refinement, contract, or architecture",
+                );
+            }
+            const result = artifactService.decide(scope, {
+              annotationId: requiredOption(options, "--annotation"),
+              outcome,
+              semanticClass,
+              rationale: options.get("--rationale") ?? "",
+              clientMutationId: mutationId(options),
+            });
+            publishChanged();
+            return success(result);
+          }
+          if (action === "assess") {
+            const verdict = requiredOption(options, "--verdict");
+            if (
+              verdict !== "no-design-impact" &&
+              verdict !== "bounded-design-delta" &&
+              verdict !== "redesign-required"
+            ) {
+              throw new Error(
+                "--verdict must be no-design-impact, bounded-design-delta, or redesign-required",
+              );
+            }
+            const result = artifactService.assessChange(scope, {
+              changeId: requiredOption(options, "--change"),
+              verdict,
+              summary: requiredOption(options, "--summary"),
+              clientMutationId: mutationId(options),
+            });
+            publishChanged();
+            return success(result);
+          }
+          if (action === "confirm") {
+            const result = artifactService.confirmChange(scope, {
+              changeId: requiredOption(options, "--change"),
+              clientMutationId: mutationId(options),
+            });
+            publishChanged();
+            return success(result);
+          }
+          const result = await artifactService.ensureSteward(scope, run.name);
+          publishChanged();
+          return success(result);
+        }
         return failure(
-          "Usage: bb workflows <run|validate|status|details|history|list|stop|approve-amendment> [options]",
+          "Usage: bb workflows <run|validate|status|details|history|list|stop|approve-amendment|artifact> [options]",
         );
       } catch (error) {
         return failure(error instanceof Error ? error.message : String(error));

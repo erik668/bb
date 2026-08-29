@@ -259,6 +259,25 @@ type MarkdownTableHeaderProps = ComponentPropsWithoutRef<"th"> & ExtraProps;
 type MarkdownUnorderedListProps = ComponentPropsWithoutRef<"ul"> & ExtraProps;
 type MarkdownRehypePlugins = NonNullable<ReactMarkdownOptions["rehypePlugins"]>;
 
+function markdownSourcePositionAttributes(node: ExtraProps["node"]): {
+  "data-markdown-source-start"?: number;
+  "data-markdown-source-end"?: number;
+} {
+  const start = node?.position?.start.offset;
+  const end = node?.position?.end.offset;
+  return typeof start === "number" && typeof end === "number"
+    ? {
+        "data-markdown-source-start": start,
+        "data-markdown-source-end": end,
+      }
+    : {};
+}
+
+// A table may grow past its text column up to the container width, but never
+// past the nearest ancestor that clips or scrolls horizontally. The limit
+// variable is measured in `useMarkdownTableContentWidthVariable`; without it a
+// negative `marginInline` moves the table left of the scroll origin, where no
+// scroll can reach it (plan approval cards, message bubbles, side chat).
 const MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE = "--md-table-breakout-max";
 const MARKDOWN_TABLE_BREAKOUT_WIDTH = `max(100%, min(1100px, 100cqw - 2rem, var(${MARKDOWN_TABLE_BREAKOUT_LIMIT_VARIABLE}, 100cqw)))`;
 const MARKDOWN_CONTENT_WIDTH_VARIABLE = "--md-content-w";
@@ -787,49 +806,67 @@ function MarkdownPre({ children }: MarkdownPreProps) {
   return <>{children}</>;
 }
 
-function MarkdownH1({ children }: MarkdownHeadingProps) {
+function MarkdownH1({ children, node }: MarkdownHeadingProps) {
   return (
-    <h1 className="mb-2 mt-4 text-lg font-semibold text-foreground first:mt-0">
+    <h1
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-2 mt-4 text-lg font-semibold text-foreground first:mt-0"
+    >
       {children}
     </h1>
   );
 }
 
-function MarkdownH2({ children }: MarkdownHeadingProps) {
+function MarkdownH2({ children, node }: MarkdownHeadingProps) {
   return (
-    <h2 className="mb-2 mt-4 text-base font-semibold text-foreground first:mt-0">
+    <h2
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-2 mt-4 text-base font-semibold text-foreground first:mt-0"
+    >
       {children}
     </h2>
   );
 }
 
-function MarkdownH3({ children }: MarkdownHeadingProps) {
+function MarkdownH3({ children, node }: MarkdownHeadingProps) {
   return (
-    <h3 className="mb-2 mt-3 text-sm font-semibold text-foreground first:mt-0">
+    <h3
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-2 mt-3 text-sm font-semibold text-foreground first:mt-0"
+    >
       {children}
     </h3>
   );
 }
 
-function MarkdownH4({ children }: MarkdownHeadingProps) {
+function MarkdownH4({ children, node }: MarkdownHeadingProps) {
   return (
-    <h4 className="mb-1 mt-3 text-sm font-medium text-foreground first:mt-0">
+    <h4
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-1 mt-3 text-sm font-medium text-foreground first:mt-0"
+    >
       {children}
     </h4>
   );
 }
 
-function MarkdownH5({ children }: MarkdownHeadingProps) {
+function MarkdownH5({ children, node }: MarkdownHeadingProps) {
   return (
-    <h5 className="mb-1 mt-2 text-sm font-semibold uppercase text-muted-foreground first:mt-0">
+    <h5
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-1 mt-2 text-sm font-semibold uppercase text-muted-foreground first:mt-0"
+    >
       {children}
     </h5>
   );
 }
 
-function MarkdownH6({ children }: MarkdownHeadingProps) {
+function MarkdownH6({ children, node }: MarkdownHeadingProps) {
   return (
-    <h6 className="mb-1 mt-2 text-xs font-semibold uppercase text-muted-foreground first:mt-0">
+    <h6
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-1 mt-2 text-xs font-semibold uppercase text-muted-foreground first:mt-0"
+    >
       {children}
     </h6>
   );
@@ -838,11 +875,15 @@ function MarkdownH6({ children }: MarkdownHeadingProps) {
 function MarkdownParagraph({
   children,
   className: _className,
-  node: _node,
+  node,
   ...paragraphProps
 }: MarkdownParagraphProps) {
   return (
-    <p {...paragraphProps} className="mb-2 text-foreground last:mb-0">
+    <p
+      {...paragraphProps}
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-2 text-foreground last:mb-0"
+    >
       {children}
     </p>
   );
@@ -868,13 +909,23 @@ function MarkdownOrderedList({
   );
 }
 
-function MarkdownListItem({ children }: MarkdownListItemProps) {
-  return <li className="mb-1 text-foreground">{children}</li>;
+function MarkdownListItem({ children, node }: MarkdownListItemProps) {
+  return (
+    <li
+      {...markdownSourcePositionAttributes(node)}
+      className="mb-1 text-foreground"
+    >
+      {children}
+    </li>
+  );
 }
 
-function MarkdownBlockquote({ children }: MarkdownBlockquoteProps) {
+function MarkdownBlockquote({ children, node }: MarkdownBlockquoteProps) {
   return (
-    <blockquote className="my-2 border-l-2 border-surface-selected-border pl-3 text-muted-foreground">
+    <blockquote
+      {...markdownSourcePositionAttributes(node)}
+      className="my-2 border-l-2 border-surface-selected-border pl-3 text-muted-foreground"
+    >
       {children}
     </blockquote>
   );
@@ -909,16 +960,26 @@ function MarkdownTableHead({ children }: MarkdownTableHeadProps) {
   return <thead className="bg-surface-recessed">{children}</thead>;
 }
 
-function MarkdownTableHeader({ children }: MarkdownTableHeaderProps) {
+function MarkdownTableHeader({ children, node }: MarkdownTableHeaderProps) {
   return (
-    <th className="border border-border px-2 py-1 text-left font-medium">
+    <th
+      {...markdownSourcePositionAttributes(node)}
+      className="border border-border px-2 py-1 text-left font-medium"
+    >
       {children}
     </th>
   );
 }
 
-function MarkdownTableCell({ children }: MarkdownTableCellProps) {
-  return <td className="border border-border px-2 py-1">{children}</td>;
+function MarkdownTableCell({ children, node }: MarkdownTableCellProps) {
+  return (
+    <td
+      {...markdownSourcePositionAttributes(node)}
+      className="border border-border px-2 py-1"
+    >
+      {children}
+    </td>
+  );
 }
 
 function renderMarkdownImage({

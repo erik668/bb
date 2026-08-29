@@ -1,5 +1,10 @@
 import { useCallback, useMemo } from "react";
-import type { MarkdownProps, PluginSdkApp } from "@get-bb/plugin-sdk";
+import type {
+  ExperimentalArtifactReviewProps,
+  MarkdownProps,
+  PluginSdkApp,
+} from "@get-bb/plugin-sdk";
+import { ExperimentalArtifactReviewHost } from "@/components/plugin/ExperimentalArtifactReview";
 import { PluginDiff } from "@/components/plugin/PluginDiff";
 import { PluginNewThreadComposer } from "@/components/plugin/PluginNewThreadComposer";
 import { PluginProviderModelPicker } from "@/components/plugin/PluginProviderModelPicker";
@@ -54,6 +59,7 @@ export const pluginSdkAppImplementation = installDeprecatedAliases(
     useSettings,
     ThreadChat: PluginThreadChat,
     Markdown: PluginMarkdown,
+    experimental_ArtifactReview: PluginArtifactReview,
     experimental_FileLink: ExperimentalFileLink,
     UrlLink: PluginUrlLink,
     experimental_NewThreadComposer: PluginNewThreadComposer,
@@ -70,6 +76,15 @@ export const pluginSdkAppImplementation = installDeprecatedAliases(
   } satisfies PluginSdkApp,
   { experimental_UrlLink: "UrlLink" },
 );
+
+function PluginArtifactReview(props: ExperimentalArtifactReviewProps) {
+  return (
+    <ExperimentalArtifactReviewHost
+      {...props}
+      renderMarkdown={(content) => <PluginMarkdown content={content} />}
+    />
+  );
+}
 
 function PluginMarkdown({ content, className }: MarkdownProps) {
   const timelineNavigation = useThreadTimelineNavigation();

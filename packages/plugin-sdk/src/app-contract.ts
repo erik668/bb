@@ -1903,6 +1903,52 @@ export interface MarkdownProps {
   className?: string;
 }
 
+/** A revision-bound Markdown selection produced by the artifact review host. */
+export interface ExperimentalArtifactReviewSelection {
+  /** Stable within the immutable revision. */
+  blockId: string;
+  /** UTF-16 offsets into the canonical Markdown source. */
+  start: number;
+  end: number;
+  exactQuote: string;
+  prefix: string;
+  suffix: string;
+}
+
+/** A contextual request to compose feedback beside a reviewed source block. */
+export interface ExperimentalArtifactReviewFeedbackRequest {
+  selection: ExperimentalArtifactReviewSelection;
+  /** Viewport coordinates from the user's context-menu invocation. */
+  viewport: { x: number; y: number };
+}
+
+/** Minimal saved-annotation state the host needs to render review context. */
+export interface ExperimentalArtifactReviewAnnotation {
+  id: string;
+  kind: "highlight" | "comment";
+  exactQuote: string;
+  status: "open" | "resolved" | "orphaned";
+}
+
+/**
+ * Props for BB's selection-aware Markdown artifact renderer. Persistence and
+ * policy remain with the owning plugin; the host owns faithful Markdown
+ * rendering and converts browser selections into canonical source anchors.
+ * Experimental: see docs/api_to_audit.md.
+ */
+export interface ExperimentalArtifactReviewProps {
+  content: string;
+  annotations: readonly ExperimentalArtifactReviewAnnotation[];
+  onSelectionChange: (
+    selection: ExperimentalArtifactReviewSelection | null,
+  ) => void;
+  /** Opens the owning plugin's feedback composer near the reviewed text. */
+  onFeedbackRequest?: (
+    request: ExperimentalArtifactReviewFeedbackRequest,
+  ) => void;
+  className?: string;
+}
+
 /**
  * Props for BB's semantic URL link. The host owns ordinary activation while
  * retaining browser-owned anchor behavior for app routes, modifiers, explicit
@@ -2131,6 +2177,8 @@ export interface PluginSdkApp {
    * {@link MarkdownProps}).
    */
   Markdown: ComponentType<MarkdownProps>;
+  /** Selection-aware host Markdown renderer for durable artifact review. */
+  experimental_ArtifactReview: ComponentType<ExperimentalArtifactReviewProps>;
   /**
    * A real anchor whose ordinary HTTP(S) activation uses BB's URL preference.
    * Experimental: see docs/api_to_audit.md.

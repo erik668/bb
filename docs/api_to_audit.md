@@ -1657,6 +1657,30 @@ files, thread-storage files, and project files that use the primary host.
    this remains compatible with persisted opener tabs created before the field
    existed.
 
+## `experimental_ArtifactReview` (`@get-bb/plugin-sdk/app`)
+
+**What it does.** Renders canonical Markdown through BB's host renderer and
+converts a browser text selection into a revision-local source anchor containing
+UTF-16 offsets, the exact quote, bounded prefix/suffix context, and a block id.
+The owning plugin persists annotations and supplies their minimal visible state;
+the host owns only rendering and selection capture.
+
+**Audit before stabilizing.**
+
+1. **Source mapping.** The initial implementation maps rendered text back to
+   the first exact occurrence in Markdown source. Add syntax-aware mapping or a
+   disambiguation protocol before claiming stable anchors for repeated text or
+   selections whose rendered bytes differ from Markdown source.
+2. **Anchor units.** Confirm UTF-16 offsets are the right public currency across
+   browser selection, server validation, and future non-JavaScript consumers.
+3. **Annotation rendering.** The host currently reports saved annotation counts
+   while the plugin renders discussion state. Decide whether inline marks,
+   overlap behavior, and orphan placement belong in the host contract.
+4. **Accessibility and input methods.** Audit keyboard-only selection, touch
+   selection on iOS Safari, screen-reader feedback, and selection clearing.
+5. **Size and performance.** Define an input cap or virtualization strategy
+   before large campaign artifacts use the component broadly.
+
 ## `experimental_SourceCode` / `experimental_Diff` (`@get-bb/plugin-sdk/app`)
 
 **Kept experimental (2026-08-22).** one consumer (the github plugin's `Diff`); items 2–4 (multi-file input, language override, worker pool at the component) all change the prop surface.

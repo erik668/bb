@@ -70,12 +70,21 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
   bb workflows stop <run-id>
   bb workflows approve-amendment <run-id>
                         --acceptance <acceptance-checkpoint-id>
+  bb workflows artifact <list|seed|show|revise|comment|reply|decide|assess|confirm|steward>
+                        <run-id> [options]
 
 Use `details` for durable structured selected-plan, work-item/ticket, and
 verification state. Use paged `history` for the chronological run and agent-call
 event stream. `details` lists every run in the selected campaign, but hydrates
 checkpoint ledgers for only the selected run plus the newest runs, up to four
 total. Older entries are explicitly marked `checkpointsOmitted`.
+Use `bb workflows artifact seed <run-id>` to create the campaign's durable
+Requirements, Architecture, and Decisions set. `artifact list` and `artifact
+show --id <artifact-id> [--revision <n>]` inspect immutable history. The
+`revise`, `comment`, `reply`, `decide`, `assess`, and `confirm` actions expose
+the same local-owner review and architecture-before-admission path as the
+workflow inspector; `artifact steward` creates or returns the campaign's
+durable hidden discussion thread.
 Use the `campaignId` returned by a prior run with `--campaign` to continue that
 existing build story; an unknown campaign ID is rejected, and a campaign is
 capped at 100 runs. `--present-in`

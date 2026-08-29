@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import { artifactMigrations } from "./artifact-storage.js";
 import type { ResolvedWorkflowExecutionSelection } from "./cache.js";
 import type { JsonValue, WorkflowAgentOptions } from "./types.js";
 import {
@@ -234,6 +235,17 @@ const CALL_SELECT = `
     started_at AS startedAt, finished_at AS finishedAt
   FROM workflow_calls`;
 
+const acceptanceApprovalMigration = `CREATE TABLE IF NOT EXISTS workflow_acceptance_approvals (
+     id TEXT PRIMARY KEY,
+     campaign_id TEXT NOT NULL,
+     acceptance_checkpoint_id TEXT NOT NULL,
+     contract_canonical TEXT NOT NULL,
+     approved_by_thread_id TEXT NOT NULL,
+     surface TEXT NOT NULL,
+     created_at INTEGER NOT NULL,
+     UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
+   );`;
+
 export const migrations = [
   `CREATE TABLE IF NOT EXISTS workflow_runs (
      id TEXT PRIMARY KEY,
@@ -354,16 +366,13 @@ export const migrations = [
   // a campaign that its own tool path must not be able to produce. The
   // canonical body is stored rather than a hash so this module stays free of
   // `node:crypto`, which the browser bundle would have to carry.
-  `CREATE TABLE IF NOT EXISTS workflow_acceptance_approvals (
-     id TEXT PRIMARY KEY,
-     campaign_id TEXT NOT NULL,
-     acceptance_checkpoint_id TEXT NOT NULL,
-     contract_canonical TEXT NOT NULL,
-     approved_by_thread_id TEXT NOT NULL,
-     surface TEXT NOT NULL,
-     created_at INTEGER NOT NULL,
-     UNIQUE(campaign_id, acceptance_checkpoint_id, contract_canonical)
-   );`,
+  acceptanceApprovalMigration,
+  ...artifactMigrations,
+  // The direct-build playground used IDs 14..16 for artifact schema before
+  // acceptance approvals landed at ID 14 on the personal fork. Repeating this
+  // idempotent table creation at the append-only tip upgrades both ledgers
+  // without replaying ALTER TABLE statements or rewriting recorded IDs.
+  acceptanceApprovalMigration,
 ];
 
 type CreateWorkflowRunInput = Omit<

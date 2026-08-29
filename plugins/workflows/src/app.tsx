@@ -29,7 +29,9 @@ import {
   type WorkflowStatusPillState,
 } from "@bb/shared-ui/workflow-progress";
 import {
+  experimental_ArtifactReview as ArtifactReview,
   definePluginApp,
+  ThreadChat,
   useBbNavigate,
   useComposerView,
   useRealtime,
@@ -37,6 +39,8 @@ import {
   useRpc,
   type PluginMessageDirectiveProps,
   type PluginThreadPanelProps,
+  type ExperimentalArtifactReviewFeedbackRequest,
+  type ExperimentalArtifactReviewSelection,
 } from "@get-bb/plugin-sdk/app";
 import {
   WORKFLOW_RUNS_REALTIME_CHANNEL,
@@ -45,10 +49,30 @@ import {
 import type { workflowUiRpcContract } from "./ui-contract.js";
 import type {
   WorkflowCallView,
+  WorkflowArtifactDetailView,
+  WorkflowArtifactSummaryView,
   WorkflowCampaignView,
   WorkflowCheckpointView,
   WorkflowRunView,
 } from "./ui-contract.js";
+
+type ArtifactListLoadState =
+  | { status: "loading" }
+  | {
+      status: "ready";
+      artifacts: WorkflowArtifactSummaryView[];
+      error: string | null;
+    }
+  | { status: "error"; message: string };
+
+type ArtifactDetailLoadState =
+  | { status: "loading" }
+  | {
+      status: "ready";
+      detail: WorkflowArtifactDetailView;
+      error: string | null;
+    }
+  | { status: "error"; message: string };
 
 type RunLoadState =
   | { status: "loading" }
@@ -506,6 +530,105 @@ function useWorkflowRunDetails(
   });
   useVisibleActivePolling(refresh, active);
   return { state, refresh };
+}
+
+function useWorkflowArtifacts(
+  threadId: string,
+  runId: string,
+): {
+  state: ArtifactListLoadState;
+  refresh: () => Promise<void>;
+} {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [state, setState] = useState<ArtifactListLoadState>({
+    status: "loading",
+  });
+  const requestSequence = useRef(0);
+  const refresh = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    try {
+      const result = await rpc.call("workflowArtifactList", {
+        threadId,
+        runId,
+      });
+      if (sequence === requestSequence.current) {
+        setState({ status: "ready", artifacts: result.artifacts, error: null });
+      }
+    } catch (error) {
+      if (sequence === requestSequence.current) {
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) =>
+          current.status === "ready"
+            ? { ...current, error: message }
+            : { status: "error", message },
+        );
+      }
+    }
+  }, [rpc, runId, threadId]);
+  useEffect(() => {
+    void refresh();
+    return () => {
+      requestSequence.current += 1;
+    };
+  }, [refresh]);
+  useRealtime(WORKFLOW_RUNS_REALTIME_CHANNEL, (payload) => {
+    if (workflowRunsSignalThreadId(payload) === threadId) void refresh();
+  });
+  return { state, refresh };
+}
+
+function useWorkflowArtifact(
+  threadId: string,
+  runId: string,
+  artifactId: string,
+  revision: number | null,
+): {
+  state: ArtifactDetailLoadState;
+  refresh: () => Promise<void>;
+} {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [state, setState] = useState<ArtifactDetailLoadState>({
+    status: "loading",
+  });
+  const requestSequence = useRef(0);
+  const refresh = useCallback(async () => {
+    const sequence = ++requestSequence.current;
+    try {
+      const detail = await rpc.call("workflowArtifactRead", {
+        threadId,
+        runId,
+        artifactId,
+        revision,
+      });
+      if (sequence === requestSequence.current) {
+        setState({ status: "ready", detail, error: null });
+      }
+    } catch (error) {
+      if (sequence === requestSequence.current) {
+        const message = error instanceof Error ? error.message : String(error);
+        setState((current) =>
+          current.status === "ready"
+            ? { ...current, error: message }
+            : { status: "error", message },
+        );
+      }
+    }
+  }, [artifactId, revision, rpc, runId, threadId]);
+  useEffect(() => {
+    setState({ status: "loading" });
+    void refresh();
+    return () => {
+      requestSequence.current += 1;
+    };
+  }, [refresh]);
+  useRealtime(WORKFLOW_RUNS_REALTIME_CHANNEL, (payload) => {
+    if (workflowRunsSignalThreadId(payload) === threadId) void refresh();
+  });
+  return { state, refresh };
+}
+
+function nextClientMutationId(): string {
+  return globalThis.crypto.randomUUID();
 }
 
 function subscribeDocumentVisibility(onChange: () => void): () => void {
@@ -1955,6 +2078,789 @@ function WorkflowCheckpointDetails({
   );
 }
 
+type ArtifactAnnotation = WorkflowArtifactDetailView["annotations"][number];
+type ArtifactSemanticClass = NonNullable<
+  ArtifactAnnotation["decision"]
+>["semanticClass"];
+
+function semanticClass(value: string): ArtifactSemanticClass {
+  switch (value) {
+    case "editorial":
+    case "refinement":
+    case "contract":
+    case "architecture":
+      return value;
+    default:
+      return "refinement";
+  }
+}
+
+function ArtifactAnnotationCard({
+  annotation,
+  threadId,
+  runId,
+  refresh,
+}: {
+  annotation: ArtifactAnnotation;
+  threadId: string;
+  runId: string;
+  refresh: () => Promise<void>;
+}) {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [replyBody, setReplyBody] = useState("");
+  const [rationale, setRationale] = useState("");
+  const [assessmentSummary, setAssessmentSummary] = useState("");
+  const [classification, setClassification] =
+    useState<ArtifactSemanticClass>("refinement");
+  const [verdict, setVerdict] = useState<
+    "no-design-impact" | "bounded-design-delta" | "redesign-required"
+  >("no-design-impact");
+  const [appliedDecisionSuggestion, setAppliedDecisionSuggestion] = useState<
+    string | null
+  >(null);
+  const [appliedArchitectureSuggestion, setAppliedArchitectureSuggestion] =
+    useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const mutate = async (operation: () => Promise<unknown>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await operation();
+      await refresh();
+    } catch (mutationError) {
+      setError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : String(mutationError),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const decision = annotation.decision;
+  const change = decision?.change ?? null;
+  const decisionSuggestion = annotation.assistance;
+  const decisionSuggestionKey =
+    decisionSuggestion?.status === "ready" &&
+    decisionSuggestion.semanticClass !== null &&
+    decisionSuggestion.rationale !== null
+      ? `${decisionSuggestion.semanticClass}\u0000${decisionSuggestion.rationale}`
+      : null;
+  const architectureSuggestion = change?.assistance ?? null;
+  const architectureSuggestionKey =
+    architectureSuggestion?.status === "ready" &&
+    architectureSuggestion.verdict !== null &&
+    architectureSuggestion.summary !== null
+      ? `${architectureSuggestion.verdict}\u0000${architectureSuggestion.summary}`
+      : null;
+
+  useEffect(() => {
+    if (
+      decision === null &&
+      decisionSuggestionKey !== null &&
+      decisionSuggestionKey !== appliedDecisionSuggestion &&
+      decisionSuggestion !== null &&
+      decisionSuggestion.semanticClass !== null &&
+      decisionSuggestion.rationale !== null
+    ) {
+      setClassification(decisionSuggestion.semanticClass);
+      setRationale(decisionSuggestion.rationale);
+      setAppliedDecisionSuggestion(decisionSuggestionKey);
+    }
+  }, [
+    appliedDecisionSuggestion,
+    decision,
+    decisionSuggestion,
+    decisionSuggestionKey,
+  ]);
+
+  useEffect(() => {
+    if (
+      change?.status === "accepted-pending-impact" &&
+      architectureSuggestionKey !== null &&
+      architectureSuggestionKey !== appliedArchitectureSuggestion &&
+      architectureSuggestion !== null &&
+      architectureSuggestion.verdict !== null &&
+      architectureSuggestion.summary !== null
+    ) {
+      setVerdict(architectureSuggestion.verdict);
+      setAssessmentSummary(architectureSuggestion.summary);
+      setAppliedArchitectureSuggestion(architectureSuggestionKey);
+    }
+  }, [
+    appliedArchitectureSuggestion,
+    architectureSuggestion,
+    architectureSuggestionKey,
+    change?.status,
+  ]);
+
+  return (
+    <li className="rounded-md border border-border-seam bg-muted/20 p-2.5">
+      <div className="flex items-start gap-2">
+        <span className="rounded bg-muted px-1.5 py-0.5 text-2xs font-medium text-muted-foreground">
+          {annotation.kind === "comment" ? "Comment" : "Highlight"}
+        </span>
+        <span className="ml-auto text-2xs text-subtle-foreground">
+          {annotation.status}
+        </span>
+      </div>
+      <blockquote className="mt-2 border-l-2 border-border pl-2 text-xs text-muted-foreground">
+        {annotation.anchor.exactQuote}
+      </blockquote>
+      {annotation.comments.length === 0 ? null : (
+        <ol className="mt-2 space-y-1.5" aria-label="Comment history">
+          {annotation.comments.map((comment) => (
+            <li key={comment.id} className="rounded bg-background px-2 py-1.5">
+              <p className="whitespace-pre-wrap text-xs text-foreground">
+                {comment.body}
+              </p>
+              <p className="mt-1 text-2xs text-subtle-foreground">
+                {comment.author} ·{" "}
+                {new Date(comment.createdAt).toLocaleString()}
+              </p>
+            </li>
+          ))}
+        </ol>
+      )}
+      {annotation.status === "open" ? (
+        <div className="mt-2 space-y-2">
+          <div className="flex gap-1.5">
+            <input
+              aria-label="Reply to annotation"
+              value={replyBody}
+              onChange={(event) => setReplyBody(event.target.value)}
+              placeholder="Continue the discussion"
+              className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+            />
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy || replyBody.trim() === ""}
+              onClick={() =>
+                void mutate(async () => {
+                  await rpc.call("workflowArtifactReply", {
+                    threadId,
+                    runId,
+                    annotationId: annotation.id,
+                    body: replyBody,
+                    clientMutationId: nextClientMutationId(),
+                  });
+                  setReplyBody("");
+                })
+              }
+            >
+              Reply
+            </Button>
+          </div>
+          {decisionSuggestion?.status === "pending" ? (
+            <p className="text-2xs text-muted-foreground">
+              Campaign steward is drafting the classification and rationale…
+            </p>
+          ) : null}
+          {decisionSuggestion?.status === "ready" ? (
+            <p className="text-2xs text-success-text">
+              Suggested by the campaign steward. Review or edit before deciding.
+            </p>
+          ) : null}
+          {decisionSuggestion?.status === "error" ? (
+            <p className="text-2xs text-warning-text">
+              Steward assistance was unavailable: {decisionSuggestion.error}
+            </p>
+          ) : null}
+          <div className="grid gap-1.5 sm:grid-cols-2">
+            <select
+              aria-label="Feedback impact"
+              value={classification}
+              onChange={(event) =>
+                setClassification(semanticClass(event.target.value))
+              }
+              className="rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+            >
+              <option value="editorial">Editorial</option>
+              <option value="refinement">Refinement</option>
+              <option value="contract">Contract</option>
+              <option value="architecture">Architecture</option>
+            </select>
+            <input
+              aria-label="Decision rationale"
+              value={rationale}
+              onChange={(event) => setRationale(event.target.value)}
+              placeholder="Decision rationale"
+              className="rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+            />
+          </div>
+          <div className="flex gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy}
+              onClick={() =>
+                void mutate(() =>
+                  rpc.call("workflowArtifactDecide", {
+                    threadId,
+                    runId,
+                    annotationId: annotation.id,
+                    outcome: "accepted",
+                    semanticClass: classification,
+                    rationale,
+                    clientMutationId: nextClientMutationId(),
+                  }),
+                )
+              }
+            >
+              Accept feedback
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() =>
+                void mutate(() =>
+                  rpc.call("workflowArtifactDecide", {
+                    threadId,
+                    runId,
+                    annotationId: annotation.id,
+                    outcome: "declined",
+                    semanticClass: classification,
+                    rationale,
+                    clientMutationId: nextClientMutationId(),
+                  }),
+                )
+              }
+            >
+              Decline
+            </Button>
+          </div>
+        </div>
+      ) : null}
+      {decision === null ? null : (
+        <div className="mt-2 rounded-md border border-border-seam bg-background p-2 text-xs">
+          <p className="font-medium text-foreground">
+            {decision.outcome === "accepted" ? "Accepted" : "Declined"} ·{" "}
+            {decision.semanticClass}
+          </p>
+          {decision.rationale === "" ? null : (
+            <p className="mt-1 text-muted-foreground">{decision.rationale}</p>
+          )}
+          {change?.status === "accepted-pending-impact" ? (
+            <div className="mt-2 space-y-2">
+              <p className="text-warning-text">
+                Awaiting architecture assessment. Running workers have not
+                received this change.
+              </p>
+              {architectureSuggestion?.status === "pending" ? (
+                <p className="text-muted-foreground">
+                  Architecting agents are assessing the accepted feedback…
+                </p>
+              ) : null}
+              {architectureSuggestion?.status === "ready" ? (
+                <p className="text-success-text">
+                  Drafted from two architecting-agent reviews and campaign
+                  steward synthesis. Review or edit before recording.
+                </p>
+              ) : null}
+              {architectureSuggestion?.status === "error" ? (
+                <p className="text-warning-text">
+                  Architecture assistance was unavailable:{" "}
+                  {architectureSuggestion.error}
+                </p>
+              ) : null}
+              <select
+                aria-label="Architecture verdict"
+                value={verdict}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (
+                    value === "no-design-impact" ||
+                    value === "bounded-design-delta" ||
+                    value === "redesign-required"
+                  ) {
+                    setVerdict(value);
+                  }
+                }}
+                className="w-full rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+              >
+                <option value="no-design-impact">No design impact</option>
+                <option value="bounded-design-delta">
+                  Bounded design delta
+                </option>
+                <option value="redesign-required">Redesign required</option>
+              </select>
+              <textarea
+                aria-label="Architecture assessment summary"
+                value={assessmentSummary}
+                onChange={(event) => setAssessmentSummary(event.target.value)}
+                placeholder="Record the architecture assessment"
+                className="min-h-16 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+              />
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy || assessmentSummary.trim() === ""}
+                onClick={() =>
+                  void mutate(() =>
+                    rpc.call("workflowArtifactAssessChange", {
+                      threadId,
+                      runId,
+                      changeId: change.id,
+                      verdict,
+                      summary: assessmentSummary,
+                      clientMutationId: nextClientMutationId(),
+                    }),
+                  )
+                }
+              >
+                Record architecture assessment
+              </Button>
+            </div>
+          ) : null}
+          {change?.status === "awaiting-confirmation" ? (
+            <div className="mt-2 space-y-2">
+              <p className="text-muted-foreground">
+                {change.architectureVerdict}: {change.architectureSummary}
+              </p>
+              <Button
+                type="button"
+                size="sm"
+                disabled={busy}
+                onClick={() =>
+                  void mutate(() =>
+                    rpc.call("workflowArtifactConfirmChange", {
+                      threadId,
+                      runId,
+                      changeId: change.id,
+                      clientMutationId: nextClientMutationId(),
+                    }),
+                  )
+                }
+              >
+                Confirm admission
+              </Button>
+            </div>
+          ) : null}
+          {change?.status === "admitted" ? (
+            <p className="mt-2 text-success-text">
+              Admitted after review. Live worker propagation remains disabled
+              for this development slice.
+            </p>
+          ) : null}
+        </div>
+      )}
+      {error === null ? null : (
+        <p role="alert" className="mt-2 text-xs text-destructive-text">
+          {error}
+        </p>
+      )}
+    </li>
+  );
+}
+
+function WorkflowArtifactDocument({
+  threadId,
+  runId,
+  artifactId,
+  onBack,
+}: {
+  threadId: string;
+  runId: string;
+  artifactId: string;
+  onBack: () => void;
+}) {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [revision, setRevision] = useState<number | null>(null);
+  const { state, refresh } = useWorkflowArtifact(
+    threadId,
+    runId,
+    artifactId,
+    revision,
+  );
+  const [selection, setSelection] =
+    useState<ExperimentalArtifactReviewSelection | null>(null);
+  const [feedbackViewport, setFeedbackViewport] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
+  const [commentBody, setCommentBody] = useState("");
+  const [stewardThreadId, setStewardThreadId] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (state.status === "ready") {
+      setStewardThreadId(state.detail.stewardThreadId);
+    }
+  }, [state]);
+
+  if (state.status === "loading") return <LoadingPreview />;
+  if (state.status === "error")
+    return <EmptyOrError>{state.message}</EmptyOrError>;
+  const { detail } = state;
+  const addAnnotation = async (kind: "highlight" | "comment") => {
+    if (selection === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await rpc.call("workflowArtifactAnnotate", {
+        threadId,
+        runId,
+        artifactId,
+        revision: detail.selectedRevision.revision,
+        kind,
+        anchor: selection,
+        body: kind === "comment" ? commentBody : null,
+        clientMutationId: nextClientMutationId(),
+      });
+      setSelection(null);
+      setFeedbackViewport(null);
+      setCommentBody("");
+      window.getSelection()?.removeAllRanges();
+      await refresh();
+    } catch (mutationError) {
+      setError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : String(mutationError),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ensureSteward = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await rpc.call("workflowArtifactEnsureSteward", {
+        threadId,
+        runId,
+      });
+      setStewardThreadId(result.threadId);
+      await refresh();
+    } catch (mutationError) {
+      setError(
+        mutationError instanceof Error
+          ? mutationError.message
+          : String(mutationError),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section
+      aria-labelledby="workflow-artifact-document-heading"
+      className="space-y-3"
+    >
+      <div className="flex items-start gap-2">
+        <Button type="button" size="sm" variant="ghost" onClick={onBack}>
+          <Icon name="ChevronLeft" className="size-3" aria-hidden />
+          Artifacts
+        </Button>
+        <div className="min-w-0 flex-1 text-right">
+          <h3
+            id="workflow-artifact-document-heading"
+            className="truncate text-sm font-medium text-foreground"
+          >
+            {detail.artifact.title}
+          </h3>
+          <p className="text-2xs text-subtle-foreground">
+            Revision {detail.selectedRevision.revision} ·{" "}
+            {detail.selectedRevision.status}
+          </p>
+        </div>
+      </div>
+      {state.error === null ? null : <RefreshWarning message={state.error} />}
+      <div
+        className="flex flex-wrap gap-1"
+        aria-label="Artifact revision history"
+      >
+        {detail.history.map((entry) => (
+          <Button
+            key={entry.revision}
+            type="button"
+            size="sm"
+            variant={
+              entry.revision === detail.selectedRevision.revision
+                ? "default"
+                : "outline"
+            }
+            onClick={() => setRevision(entry.revision)}
+          >
+            Revision {entry.revision}
+          </Button>
+        ))}
+      </div>
+      <ArtifactReview
+        content={detail.content}
+        annotations={detail.annotations.map((annotation) => ({
+          id: annotation.id,
+          kind: annotation.kind,
+          exactQuote: annotation.anchor.exactQuote,
+          status: annotation.status,
+        }))}
+        onSelectionChange={(nextSelection) => {
+          setSelection(nextSelection);
+          if (nextSelection === null) setFeedbackViewport(null);
+        }}
+        onFeedbackRequest={(
+          request: ExperimentalArtifactReviewFeedbackRequest,
+        ) => {
+          setSelection(request.selection);
+          setFeedbackViewport(request.viewport);
+        }}
+      />
+      {selection === null ? null : (
+        <div
+          className={cn(
+            "space-y-2 rounded-md border border-accent/30 bg-background p-2.5",
+            feedbackViewport === null
+              ? "bg-accent/5"
+              : "fixed z-50 w-[min(24rem,calc(100vw-1.5rem))] shadow-xl",
+          )}
+          style={
+            feedbackViewport === null
+              ? undefined
+              : {
+                  left: `min(${feedbackViewport.x}px, calc(100vw - 24.75rem))`,
+                  top: `min(${feedbackViewport.y}px, calc(100vh - 18rem))`,
+                }
+          }
+        >
+          <div className="flex items-center gap-2">
+            <p className="text-xs font-medium text-foreground">Selected text</p>
+            {feedbackViewport === null ? null : (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="ml-auto"
+                onClick={() => {
+                  setSelection(null);
+                  setFeedbackViewport(null);
+                  setCommentBody("");
+                }}
+              >
+                Cancel
+              </Button>
+            )}
+          </div>
+          <blockquote className="border-l-2 border-accent pl-2 text-xs text-muted-foreground">
+            {selection.exactQuote}
+          </blockquote>
+          <textarea
+            aria-label="New artifact comment"
+            value={commentBody}
+            onChange={(event) => setCommentBody(event.target.value)}
+            placeholder="Add feedback about this selection"
+            className="min-h-20 w-full resize-y rounded-md border border-input bg-background px-2 py-1.5 text-xs"
+          />
+          <div className="flex gap-1.5">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void addAnnotation("highlight")}
+            >
+              Save highlight
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              disabled={busy || commentBody.trim() === ""}
+              onClick={() => void addAnnotation("comment")}
+            >
+              Add comment
+            </Button>
+          </div>
+        </div>
+      )}
+      {error === null ? null : (
+        <p role="alert" className="text-xs text-destructive-text">
+          {error}
+        </p>
+      )}
+      <div>
+        <div className="mb-2 flex items-center gap-2">
+          <h4 className="text-xs font-medium text-muted-foreground">
+            Review discussion
+          </h4>
+          <span className="ml-auto text-2xs text-subtle-foreground">
+            {detail.annotations.length} saved
+          </span>
+        </div>
+        {detail.annotations.length === 0 ? (
+          <p className="text-xs text-subtle-foreground">
+            Select text above to add the first durable highlight or comment.
+          </p>
+        ) : (
+          <ol className="space-y-2">
+            {detail.annotations.map((annotation) => (
+              <ArtifactAnnotationCard
+                key={annotation.id}
+                annotation={annotation}
+                threadId={threadId}
+                runId={runId}
+                refresh={refresh}
+              />
+            ))}
+          </ol>
+        )}
+      </div>
+      <div className="rounded-md border border-border-seam p-2.5">
+        <div className="flex items-center gap-2">
+          <div className="min-w-0 flex-1">
+            <h4 className="text-xs font-medium text-foreground">
+              Campaign steward
+            </h4>
+            <p className="mt-0.5 text-2xs text-subtle-foreground">
+              Durable advisory discussion for the whole campaign.
+            </p>
+          </div>
+          {stewardThreadId === null ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={busy}
+              onClick={() => void ensureSteward()}
+            >
+              Start discussion
+            </Button>
+          ) : null}
+        </div>
+        {stewardThreadId === null ? null : (
+          <div className="mt-2 h-96 min-h-0 overflow-hidden rounded-md border border-border-seam">
+            <ThreadChat
+              threadId={stewardThreadId}
+              variant="compact"
+              layout="document"
+              permissionPolicy="editable"
+              className="h-full"
+            />
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function WorkflowArtifactsSection({
+  threadId,
+  runId,
+}: {
+  threadId: string;
+  runId: string;
+}) {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const { state, refresh } = useWorkflowArtifacts(threadId, runId);
+  const [selectedArtifactId, setSelectedArtifactId] = useState<string | null>(
+    null,
+  );
+  const [seeding, setSeeding] = useState(false);
+  const [seedError, setSeedError] = useState<string | null>(null);
+  if (selectedArtifactId !== null) {
+    return (
+      <WorkflowArtifactDocument
+        threadId={threadId}
+        runId={runId}
+        artifactId={selectedArtifactId}
+        onBack={() => setSelectedArtifactId(null)}
+      />
+    );
+  }
+  if (state.status === "loading") {
+    return (
+      <section aria-label="Loading workflow artifacts" className="space-y-2">
+        <Skeleton className="h-16 w-full" />
+        <Skeleton className="h-16 w-full" />
+      </section>
+    );
+  }
+  if (state.status === "error")
+    return <RefreshWarning message={state.message} />;
+  const seed = async () => {
+    setSeeding(true);
+    setSeedError(null);
+    try {
+      await rpc.call("workflowArtifactSeed", {
+        threadId,
+        runId,
+        documents: null,
+        clientMutationId: nextClientMutationId(),
+      });
+      await refresh();
+    } catch (error) {
+      setSeedError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSeeding(false);
+    }
+  };
+  return (
+    <section aria-labelledby="workflow-artifacts-heading" className="space-y-2">
+      <div>
+        <h3
+          id="workflow-artifacts-heading"
+          className="text-xs font-medium text-muted-foreground"
+        >
+          Artifacts
+        </h3>
+        <p className="mt-1 text-2xs text-subtle-foreground">
+          Immutable campaign requirements, architecture, and decisions.
+        </p>
+      </div>
+      {state.error === null ? null : <RefreshWarning message={state.error} />}
+      {state.artifacts.length === 0 ? (
+        <div className="rounded-md border border-dashed border-border p-3">
+          <p className="text-xs text-muted-foreground">
+            This campaign has no review artifacts yet.
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            className="mt-2"
+            disabled={seeding}
+            onClick={() => void seed()}
+          >
+            {seeding ? "Creating…" : "Create review artifacts"}
+          </Button>
+        </div>
+      ) : (
+        <ol className="grid gap-2 sm:grid-cols-3">
+          {state.artifacts.map((artifact) => (
+            <li key={artifact.id}>
+              <button
+                type="button"
+                className="h-full w-full rounded-md border border-border-seam bg-muted/20 p-2.5 text-left transition-colors hover:bg-muted/40"
+                onClick={() => setSelectedArtifactId(artifact.id)}
+              >
+                <span className="block text-xs font-medium text-foreground">
+                  {artifact.title}
+                </span>
+                <span className="mt-1 block text-2xs text-subtle-foreground">
+                  Revision {artifact.currentRevision} · {artifact.status}
+                </span>
+                <span className="mt-1 block text-2xs text-muted-foreground">
+                  {artifact.openAnnotationCount} open
+                </span>
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {seedError === null ? null : (
+        <p role="alert" className="text-xs text-destructive-text">
+          {seedError}
+        </p>
+      )}
+    </section>
+  );
+}
+
 function WorkflowRunPanelLoaded({
   threadId,
   runId,
@@ -2124,6 +3030,8 @@ function WorkflowRunPanelLoaded({
               : null
           }
         />
+        <div className="my-4 h-px bg-border-seam" />
+        <WorkflowArtifactsSection threadId={threadId} runId={run.id} />
         <div className="my-4 h-px bg-border-seam" />
         <h3 className="mb-2 text-xs font-medium text-muted-foreground">
           Run details

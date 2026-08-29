@@ -7,7 +7,13 @@ import {
   canonicalizeAcceptanceCriteria,
   type WorkflowAcceptanceCriterion,
 } from "./workflow-checkpoint.js";
-import type { WorkflowCheckpointView, WorkflowRunView } from "./ui-contract.js";
+import type {
+  WorkflowArtifactDetailView,
+  WorkflowArtifactSummaryView,
+  WorkflowCheckpointView,
+  WorkflowRunView,
+} from "./ui-contract.js";
+import { workflowUiRpcContract } from "./ui-contract.js";
 
 const app = await loadPluginApp(() => import("./app"));
 
@@ -828,6 +834,193 @@ describe("workflow-preview directive", () => {
 });
 
 describe("workflow thread panel", () => {
+  it("creates and reloads revision-bound feedback through the artifact review UI", async () => {
+    const artifact: WorkflowArtifactSummaryView = {
+      id: "wfa_requirements",
+      kind: "requirements",
+      title: "Requirements",
+      currentRevision: 1,
+      status: "admitted",
+      blobSha256: "a".repeat(64),
+      openAnnotationCount: 0,
+      createdAt: 1_000,
+      updatedAt: 1_000,
+    };
+    const content = "# Requirements\n\nShip safely.";
+    let annotations: WorkflowArtifactDetailView["annotations"] = [];
+    const detail = (): WorkflowArtifactDetailView => ({
+      artifact: { ...artifact, openAnnotationCount: annotations.length },
+      selectedRevision: {
+        revision: 1,
+        status: "admitted",
+        blobSha256: artifact.blobSha256,
+        createdBy: "local-owner",
+        createdAt: 1_000,
+      },
+      content,
+      history: [
+        {
+          revision: 1,
+          status: "admitted",
+          blobSha256: artifact.blobSha256,
+          createdBy: "local-owner",
+          createdAt: 1_000,
+        },
+      ],
+      annotations,
+      stewardThreadId: null,
+    });
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({ checkpoints: [] }),
+          workflowArtifactList: () => ({ artifacts: [artifact] }),
+          workflowArtifactRead: () => detail(),
+          workflowArtifactAnnotate: (input) => {
+            const parsedInput =
+              workflowUiRpcContract.workflowArtifactAnnotate.input.parse(input);
+            annotations = [
+              {
+                id: "wfaa_comment",
+                artifactRevision: parsedInput.revision,
+                kind: parsedInput.kind,
+                anchor: parsedInput.anchor,
+                status: "open",
+                createdBy: "local-owner",
+                createdAt: 2_000,
+                comments:
+                  parsedInput.body === null
+                    ? []
+                    : [
+                        {
+                          id: "wfac_comment",
+                          body: parsedInput.body,
+                          author: "local-owner",
+                          createdAt: 2_000,
+                        },
+                      ],
+                assistance: {
+                  status: "ready",
+                  semanticClass: "contract",
+                  rationale: "This changes the rollback contract.",
+                  error: null,
+                  generatedBy: "campaign-steward",
+                },
+                decision: null,
+              },
+            ];
+            return { annotationId: "wfaa_comment" };
+          },
+          workflowArtifactDecide: (input) => {
+            const parsedInput =
+              workflowUiRpcContract.workflowArtifactDecide.input.parse(input);
+            annotations = annotations.map((annotation) => ({
+              ...annotation,
+              status: "resolved" as const,
+              decision: {
+                id: "wfad_decision",
+                outcome: parsedInput.outcome,
+                semanticClass: parsedInput.semanticClass,
+                rationale: parsedInput.rationale,
+                decidedBy: "local-owner",
+                createdAt: 3_000,
+                change: {
+                  id: "wfach_change",
+                  semanticClass: parsedInput.semanticClass,
+                  status: "accepted-pending-impact" as const,
+                  architectureVerdict: null,
+                  architectureSummary: null,
+                  assistance: {
+                    status: "ready" as const,
+                    verdict: "bounded-design-delta" as const,
+                    summary:
+                      "Update the architecture and decision records for the rollback gate.",
+                    error: null,
+                    generatedBy: "architecting-agents" as const,
+                  },
+                  workerPropagation: "disabled" as const,
+                  createdAt: 3_000,
+                  admittedAt: null,
+                },
+              },
+            }));
+            return { decisionId: "wfad_decision", changeId: "wfach_change" };
+          },
+        },
+      },
+    );
+
+    fireEvent.click(await slot.findByRole("button", { name: /Requirements/ }));
+    fireEvent.click(await slot.findByTestId("bb-artifact-review-feedback"));
+    const commentInput = slot.getByLabelText("New artifact comment");
+    expect(commentInput.closest(".fixed")).not.toBeNull();
+    fireEvent.change(commentInput, {
+      target: { value: "Clarify the rollback signal." },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Add comment" }));
+
+    expect(await slot.findByText("Clarify the rollback signal.")).toBeTruthy();
+    expect(
+      await slot.findByText(/Suggested by the campaign steward/),
+    ).toBeTruthy();
+    await waitFor(() => {
+      expect(
+        (slot.getByLabelText("Feedback impact") as HTMLSelectElement).value,
+      ).toBe("contract");
+      expect(
+        (slot.getByLabelText("Decision rationale") as HTMLInputElement).value,
+      ).toBe("This changes the rollback contract.");
+    });
+    fireEvent.change(slot.getByLabelText("Feedback impact"), {
+      target: { value: "architecture" },
+    });
+    fireEvent.change(slot.getByLabelText("Decision rationale"), {
+      target: { value: "Human-edited decision rationale." },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Accept feedback" }));
+    expect(
+      await slot.findByText("Human-edited decision rationale."),
+    ).toBeTruthy();
+    expect(
+      await slot.findByText(/Drafted from two architecting-agent reviews/),
+    ).toBeTruthy();
+    await waitFor(() => {
+      expect(
+        (slot.getByLabelText("Architecture verdict") as HTMLSelectElement)
+          .value,
+      ).toBe("bounded-design-delta");
+      expect(
+        (
+          slot.getByLabelText(
+            "Architecture assessment summary",
+          ) as HTMLTextAreaElement
+        ).value,
+      ).toBe(
+        "Update the architecture and decision records for the rollback gate.",
+      );
+    });
+    fireEvent.change(slot.getByLabelText("Architecture verdict"), {
+      target: { value: "redesign-required" },
+    });
+    fireEvent.change(slot.getByLabelText("Architecture assessment summary"), {
+      target: { value: "Human-edited architecture assessment." },
+    });
+    expect(
+      (slot.getByLabelText("Architecture verdict") as HTMLSelectElement).value,
+    ).toBe("redesign-required");
+    expect(
+      (
+        slot.getByLabelText(
+          "Architecture assessment summary",
+        ) as HTMLTextAreaElement
+      ).value,
+    ).toBe("Human-edited architecture assessment.");
+    expect(slot.getByText("# Requiremen")).toBeTruthy();
+  });
+
   it("shows related-run provenance and opens the execution origin thread", async () => {
     const relatedRun: WorkflowRunView = {
       ...run,
@@ -1680,6 +1873,7 @@ describe("workflow thread panel", () => {
       {
         rpc: {
           workflowRunView: () => ({ run }),
+          workflowArtifactList: () => ({ artifacts: [] }),
           workflowRunDetails: () => {
             throw new Error("Checkpoint service unavailable");
           },
@@ -1702,6 +1896,7 @@ describe("workflow thread panel", () => {
       {
         rpc: {
           workflowRunView: () => ({ run }),
+          workflowArtifactList: () => ({ artifacts: [] }),
           workflowRunDetails: () => {
             if (failRefresh) throw new Error("Temporary checkpoint failure");
             return { checkpoints };

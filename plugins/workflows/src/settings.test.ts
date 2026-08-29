@@ -215,7 +215,7 @@ describe("workflow settings policy", () => {
       maxConcurrentAgents: 6,
       maxAgentCalls: 100,
       totalRunTimeoutMs: 86_400_000,
-      retentionDays: 30,
+      retentionDays: 7,
       maxNotificationBytes: 16_384,
     });
     expect(parseStoredWorkflowSettings(snapshot)).toEqual({

@@ -1,9 +1,17 @@
 import type { BbPluginApi, PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import {
+  assertWorkflowArtifactIntegrity,
+  createWorkflowArtifactService,
+  defaultWorkflowArtifactDocuments,
+  initializeWorkflowArtifactStorage,
+  type WorkflowArtifactScope,
+} from "./artifact-storage.js";
 import { registerWorkflowCli } from "./cli.js";
 import { migrations } from "./data.js";
 import { toJsonValue } from "./json-value.js";
 import { createWorkflowService } from "./service.js";
+import { WORKFLOW_RUNS_REALTIME_CHANNEL } from "./realtime-channel.js";
 import {
   DEFAULT_WORKFLOW_SETTINGS,
   registerWorkflowSettings,
@@ -91,7 +99,9 @@ function errorResult(error: string): PluginAgentToolResult {
 export default async function plugin(bb: BbPluginApi) {
   const settings = registerWorkflowSettings(bb);
   const db = bb.storage.database();
+  initializeWorkflowArtifactStorage(db);
   bb.storage.migrate(db, migrations);
+  assertWorkflowArtifactIntegrity(db);
   let initialSettings = DEFAULT_WORKFLOW_SETTINGS;
   try {
     initialSettings = await settings.get();
@@ -101,6 +111,7 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
   const service = createWorkflowService(bb, db, initialSettings);
+  const artifactService = createWorkflowArtifactService(bb, db);
   settings.onChange(
     (next) => service.updateSettings(next),
     (error) =>
@@ -108,7 +119,7 @@ export default async function plugin(bb: BbPluginApi) {
         `Workflow settings are invalid; the last valid values remain active: ${error.message}`,
       ),
   );
-  registerWorkflowCli(bb, service);
+  registerWorkflowCli(bb, service, artifactService);
 
   function workflowForThread(threadId: string, runId: string | null) {
     const run =
@@ -141,6 +152,29 @@ export default async function plugin(bb: BbPluginApi) {
     return representative === undefined
       ? run
       : (service.inspect(representative.id) ?? run);
+  }
+
+  function artifactScope(
+    run: NonNullable<ReturnType<typeof workflowForThread>>,
+  ): WorkflowArtifactScope {
+    return {
+      campaignId: run.campaignId,
+      projectId: run.projectId,
+      environmentId: run.environmentId,
+      presentationThreadId: run.presentationThreadId,
+      originRunId: run.rootRunId,
+    };
+  }
+
+  function requireArtifactRun(threadId: string, runId: string | null) {
+    const run = workflowForThread(threadId, runId);
+    if (run === null)
+      throw new Error("No workflow run is available for artifact review");
+    return run;
+  }
+
+  function publishArtifactsChanged(threadId: string): void {
+    bb.realtime.publish(WORKFLOW_RUNS_REALTIME_CHANNEL, { threadId });
   }
 
   bb.rpc.register(workflowUiRpcContract, {
@@ -233,6 +267,122 @@ export default async function plugin(bb: BbPluginApi) {
         supersedes: approval.supersedes,
         newlyApproved: approval.newlyApproved,
       };
+    },
+    workflowArtifactList({ threadId, runId }) {
+      const run = workflowForThread(threadId, runId);
+      return {
+        artifacts: run === null ? [] : artifactService.list(artifactScope(run)),
+      };
+    },
+    workflowArtifactSeed({ threadId, runId, documents, clientMutationId }) {
+      const run = requireArtifactRun(threadId, runId);
+      const runView = buildWorkflowRunView(run);
+      const result = artifactService.seed(
+        artifactScope(run),
+        documents ??
+          defaultWorkflowArtifactDocuments({
+            campaignName: run.name,
+            description: runView.description,
+            campaignId: run.campaignId,
+          }),
+        clientMutationId,
+      );
+      publishArtifactsChanged(run.presentationThreadId);
+      return result;
+    },
+    workflowArtifactRead({ threadId, runId, artifactId, revision }) {
+      const run = requireArtifactRun(threadId, runId);
+      const scope = artifactScope(run);
+      const detail = artifactService.read(
+        scope,
+        artifactId,
+        revision ?? undefined,
+      );
+      for (const annotation of detail.annotations) {
+        if (annotation.assistance?.status === "pending") {
+          void artifactService
+            .draftDecision(scope, run.name, annotation.id)
+            .then(() => publishArtifactsChanged(run.presentationThreadId))
+            .catch((error) =>
+              bb.log.warn(
+                `Artifact decision assistance recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+        }
+        const change = annotation.decision?.change;
+        if (change?.assistance?.status === "pending") {
+          void artifactService
+            .draftArchitecture(scope, run.name, change.id)
+            .then(() => publishArtifactsChanged(run.presentationThreadId))
+            .catch((error) =>
+              bb.log.warn(
+                `Artifact architecture assistance recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+              ),
+            );
+        }
+      }
+      return detail;
+    },
+    workflowArtifactAnnotate({ threadId, runId, ...input }) {
+      const run = requireArtifactRun(threadId, runId);
+      const result = artifactService.addAnnotation(artifactScope(run), input);
+      publishArtifactsChanged(run.presentationThreadId);
+      void artifactService
+        .draftDecision(artifactScope(run), run.name, result.annotationId)
+        .then(() => publishArtifactsChanged(run.presentationThreadId))
+        .catch((error) =>
+          bb.log.warn(
+            `Artifact decision assistance failed: ${error instanceof Error ? error.message : String(error)}`,
+          ),
+        );
+      return result;
+    },
+    workflowArtifactReply({ threadId, runId, ...input }) {
+      const run = requireArtifactRun(threadId, runId);
+      const result = artifactService.reply(artifactScope(run), input);
+      publishArtifactsChanged(run.presentationThreadId);
+      return result;
+    },
+    workflowArtifactDecide({ threadId, runId, ...input }) {
+      const run = requireArtifactRun(threadId, runId);
+      const result = artifactService.decide(artifactScope(run), input);
+      publishArtifactsChanged(run.presentationThreadId);
+      if (
+        input.outcome === "accepted" &&
+        input.semanticClass !== "editorial" &&
+        result.changeId !== null
+      ) {
+        void artifactService
+          .draftArchitecture(artifactScope(run), run.name, result.changeId)
+          .then(() => publishArtifactsChanged(run.presentationThreadId))
+          .catch((error) =>
+            bb.log.warn(
+              `Artifact architecture assistance failed: ${error instanceof Error ? error.message : String(error)}`,
+            ),
+          );
+      }
+      return result;
+    },
+    workflowArtifactAssessChange({ threadId, runId, ...input }) {
+      const run = requireArtifactRun(threadId, runId);
+      const result = artifactService.assessChange(artifactScope(run), input);
+      publishArtifactsChanged(run.presentationThreadId);
+      return result;
+    },
+    workflowArtifactConfirmChange({ threadId, runId, ...input }) {
+      const run = requireArtifactRun(threadId, runId);
+      const result = artifactService.confirmChange(artifactScope(run), input);
+      publishArtifactsChanged(run.presentationThreadId);
+      return result;
+    },
+    async workflowArtifactEnsureSteward({ threadId, runId }) {
+      const run = requireArtifactRun(threadId, runId);
+      const result = await artifactService.ensureSteward(
+        artifactScope(run),
+        run.name,
+      );
+      publishArtifactsChanged(run.presentationThreadId);
+      return result;
     },
   });
 
