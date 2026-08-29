@@ -186,6 +186,12 @@ export const artifactMigrations = [
      created_by TEXT NOT NULL,
      created_at INTEGER NOT NULL,
      resolved_at INTEGER,
+     assistance_status TEXT
+       CHECK (assistance_status IN ('pending', 'ready', 'error')),
+     suggested_semantic_class TEXT
+       CHECK (suggested_semantic_class IN ('editorial', 'refinement', 'contract', 'architecture')),
+     suggested_rationale TEXT,
+     assistance_error TEXT,
      FOREIGN KEY (artifact_id, artifact_revision)
        REFERENCES workflow_artifact_revisions(artifact_id, revision) ON DELETE RESTRICT
    );
@@ -218,6 +224,12 @@ export const artifactMigrations = [
      status TEXT NOT NULL CHECK (status IN ('accepted-pending-impact', 'awaiting-confirmation', 'admitted')),
      architecture_verdict TEXT CHECK (architecture_verdict IN ('no-design-impact', 'bounded-design-delta', 'redesign-required')),
      architecture_summary TEXT,
+     assistance_status TEXT
+       CHECK (assistance_status IN ('pending', 'ready', 'error')),
+     suggested_architecture_verdict TEXT
+       CHECK (suggested_architecture_verdict IN ('no-design-impact', 'bounded-design-delta', 'redesign-required')),
+     suggested_architecture_summary TEXT,
+     assistance_error TEXT,
      worker_propagation TEXT NOT NULL DEFAULT 'disabled' CHECK (worker_propagation = 'disabled'),
      created_at INTEGER NOT NULL,
      admitted_at INTEGER,
@@ -257,26 +269,6 @@ export const artifactMigrations = [
      ON workflow_artifacts(campaign_id, project_id, environment_id, kind);
    CREATE UNIQUE INDEX IF NOT EXISTS workflow_artifact_stewards_authority_idx
      ON workflow_artifact_stewards(campaign_id, project_id, environment_id);`,
-  `ALTER TABLE workflow_artifact_annotations
-     ADD COLUMN assistance_status TEXT
-       CHECK (assistance_status IN ('pending', 'ready', 'error'));
-   ALTER TABLE workflow_artifact_annotations
-     ADD COLUMN suggested_semantic_class TEXT
-       CHECK (suggested_semantic_class IN ('editorial', 'refinement', 'contract', 'architecture'));
-   ALTER TABLE workflow_artifact_annotations
-     ADD COLUMN suggested_rationale TEXT;
-   ALTER TABLE workflow_artifact_annotations
-     ADD COLUMN assistance_error TEXT;
-   ALTER TABLE workflow_artifact_changes
-     ADD COLUMN assistance_status TEXT
-       CHECK (assistance_status IN ('pending', 'ready', 'error'));
-   ALTER TABLE workflow_artifact_changes
-     ADD COLUMN suggested_architecture_verdict TEXT
-       CHECK (suggested_architecture_verdict IN ('no-design-impact', 'bounded-design-delta', 'redesign-required'));
-   ALTER TABLE workflow_artifact_changes
-     ADD COLUMN suggested_architecture_summary TEXT;
-   ALTER TABLE workflow_artifact_changes
-     ADD COLUMN assistance_error TEXT;`,
 ] as const;
 
 const MAX_ARTIFACT_BYTES = 512 * 1024;
