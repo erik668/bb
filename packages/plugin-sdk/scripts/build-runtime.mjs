@@ -93,6 +93,11 @@ const entries = [
     external: ["zod", "zod/*"],
   },
   {
+    source: "src/internal/migration-ledger.ts",
+    output: "dist/internal/migration-ledger.js",
+    external: ["better-sqlite3"],
+  },
+  {
     source: "src/internal/plugin-app-collector.ts",
     output: "dist/internal/plugin-app-collector.js",
     external: [],

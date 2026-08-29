@@ -81,14 +81,32 @@ give non-secrets defaults and handle missing secrets explicitly.
 - `bb.storage.database()` — the plugin's own better-sqlite3 database at
   `<dataDir>/plugins/<id>/data.db` (WAL, busy_timeout 5000). Handles are
   host-tracked and closed on reload; a closed handle throws.
-- `bb.storage.migrate(db, statements)` — statement index = migration id;
-  unapplied statements run in one transaction. **Append-only**: never
-  reorder or edit shipped statements, only push new ones.
+- `bb.storage.migrate(db, migrations)` — statement index = migration id;
+  unapplied statements run in one transaction. The host records each
+  statement's hash and rejects a changed or reused index. **Append-only**:
+  never reorder or edit shipped statements, only push new ones.
+- A `PluginMigration` is usually a plain string. Pass the object form
+  `{ statement, adoptIfApplied }` only to recover a database whose ledger
+  records a migration at that index but not which statement produced it
+  (`statement_hash` is `legacy-unknown` — it ran under a build this one does
+  not know). `migrate` refuses such an index by default, because applying the
+  statement could skip a schema change that index never ran.
+  `adoptIfApplied(db)` is a read-only probe returning true when this
+  migration's effect is _already_ present; when it does, the row is adopted
+  and the statement is **not** executed.
 
 ```ts
 const db = bb.storage.database();
 bb.storage.migrate(db, [
   `CREATE TABLE IF NOT EXISTS issues (id TEXT PRIMARY KEY, title TEXT NOT NULL)`,
+  {
+    statement: `ALTER TABLE issues ADD COLUMN state TEXT`,
+    adoptIfApplied: (db) =>
+      db
+        .prepare<[], { name: string }>(`PRAGMA table_info(issues)`)
+        .all()
+        .some((column) => column.name === "state"),
+  },
 ]);
 ```
 

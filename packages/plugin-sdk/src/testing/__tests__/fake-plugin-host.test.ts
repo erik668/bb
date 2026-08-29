@@ -226,9 +226,46 @@ describe("storage", () => {
       bb.storage.migrate(db, [
         "CREATE TABLE notes (id INTEGER PRIMARY KEY)",
         "SELECT 1",
-        "SELECT 2",
+        "CREATE TABLE ghost (id INTEGER PRIMARY KEY)",
       ]),
-    ).toThrow(/migration 2 does not match the recorded statement/);
+    ).toThrow(/migration 2 is reserved by an unidentified legacy migration/);
+    expect(
+      db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ghost'",
+        )
+        .get(),
+    ).toBeUndefined();
+  });
+
+  it("releases a reserved legacy index when adoptIfApplied proves the effect is present", () => {
+    const { bb } = createFakePluginHost();
+    const db = bb.storage.database();
+    db.exec(
+      "CREATE TABLE notes (id INTEGER PRIMARY KEY, starred INTEGER); CREATE TABLE _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL); INSERT INTO _bb_migrations VALUES (0, 1), (1, 1)",
+    );
+    bb.storage.migrate(db, ["CREATE TABLE notes (id INTEGER PRIMARY KEY)"]);
+
+    bb.storage.migrate(db, [
+      "CREATE TABLE notes (id INTEGER PRIMARY KEY)",
+      {
+        statement: "ALTER TABLE notes ADD COLUMN starred INTEGER",
+        adoptIfApplied: (database) =>
+          database
+            .prepare<[], { name: string }>("PRAGMA table_info(notes)")
+            .all()
+            .some((column) => column.name === "starred"),
+      },
+    ]);
+
+    expect(
+      db
+        .prepare("SELECT id, statement_hash FROM _bb_migrations ORDER BY id")
+        .all(),
+    ).toEqual([
+      { id: 0, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+      { id: 1, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
+    ]);
   });
 
   it("database() replaces a handle the plugin closed itself, like the host", () => {

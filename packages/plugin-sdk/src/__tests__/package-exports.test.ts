@@ -33,6 +33,7 @@ describe("packed plugin SDK exports", () => {
       "./internal/composer-view",
       "./internal/file-navigation-validation",
       "./internal/host-policy",
+      "./internal/migration-ledger",
       "./internal/plugin-app-collector",
       "./testing",
       "./testing/app",

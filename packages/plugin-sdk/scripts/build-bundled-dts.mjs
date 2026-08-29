@@ -87,6 +87,10 @@ const outputs = {
     pkgRoot,
     "src/internal/host-policy.ts",
   ),
+  "bb-plugin-sdk-internal-migration-ledger.d.ts": path.join(
+    pkgRoot,
+    "src/internal/migration-ledger.ts",
+  ),
   "bb-plugin-sdk-internal-plugin-app-collector.d.ts": path.join(
     pkgRoot,
     "src/internal/plugin-app-collector.ts",
