@@ -13,9 +13,11 @@ import type {
   WorkflowAgentOptions,
   WorkflowBudgetSnapshot,
   WorkflowExecutionScheduler,
+  WorkflowCheckRequest,
   WorkflowReference,
   WorkflowRuntimeLimits,
 } from "./types.js";
+import { workflowCheckRequestSchema } from "./check-contract.js";
 import { parseAgentOptions } from "./validation.js";
 
 const DEFAULT_LIMITS: WorkflowRuntimeLimits = {
@@ -506,6 +508,100 @@ function installHostVoidFunction(
   fn.dispose();
 }
 
+function installCheckFunction(
+  vm: QuickJSContext,
+  runtime: QuickJSRuntime,
+  capabilities: ExecuteWorkflowScriptArgs["capabilities"],
+  enterVm: () => void,
+  signal: AbortSignal | undefined,
+): { close(reason?: string): void } {
+  const pending = new Set<PendingWorkflowCall>();
+  let closed = false;
+  const finish = (
+    call: PendingWorkflowCall,
+    settlement: { value: JsonValue } | { error: unknown },
+  ) => {
+    if (closed || !pending.delete(call)) return;
+    if ("value" in settlement) {
+      const handle = jsonToHandle(vm, settlement.value);
+      call.deferred.resolve(handle);
+      handle.dispose();
+    } else {
+      const handle = vm.newError(errorMessage(settlement.error));
+      call.deferred.reject(handle);
+      handle.dispose();
+    }
+    call.deferred.dispose();
+    enterVm();
+    vm.unwrapResult(runtime.executePendingJobs());
+  };
+  const fn = vm.newFunction("check", (...handles) => {
+    const deferred = vm.newPromise();
+    const promise = deferred.handle.dup();
+    if (closed || capabilities.check === undefined) {
+      const error = vm.newError("Workflow checks are unavailable");
+      deferred.reject(error);
+      error.dispose();
+      deferred.dispose();
+      return promise;
+    }
+    let request: WorkflowCheckRequest;
+    try {
+      request = workflowCheckRequestSchema.parse(
+        handles[0] ? dumpJson(vm, handles[0], "check request") : undefined,
+      );
+    } catch (error) {
+      const handle = vm.newError(errorMessage(error));
+      deferred.reject(handle);
+      handle.dispose();
+      deferred.dispose();
+      return promise;
+    }
+    const call: PendingWorkflowCall = {
+      controller: new AbortController(),
+      deferred,
+    };
+    pending.add(call);
+    let execution: Promise<JsonValue>;
+    try {
+      execution = capabilities.check(request, call.controller.signal);
+    } catch (error) {
+      finish(call, { error });
+      return promise;
+    }
+    void execution.then(
+      (value) => finish(call, { value }),
+      (error) => finish(call, { error }),
+    );
+    return promise;
+  });
+  vm.setProp(vm.global, "check", fn);
+  fn.dispose();
+  const close = (reason?: string) => {
+    if (closed) return;
+    closed = true;
+    signal?.removeEventListener("abort", abort);
+    for (const call of pending) {
+      call.controller.abort(reason);
+      if (reason !== undefined && call.deferred.alive) {
+        const error = vm.newError(reason);
+        call.deferred.reject(error);
+        error.dispose();
+      }
+      call.deferred.dispose();
+    }
+    pending.clear();
+    if (reason !== undefined) {
+      enterVm();
+      vm.unwrapResult(runtime.executePendingJobs());
+    }
+  };
+  const abort = () => close("Workflow cancelled");
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted === true) abort();
+  return { close };
+}
+
 const HARDENING_SOURCE = `
 (() => {
   const forbidden = (name) => () => { throw new Error(name + " is unavailable in workflows"); };
@@ -668,6 +764,7 @@ export async function executeWorkflowScript({
   const vm = runtime.newContext();
   let agentBridge: { close(reason?: string): void } | undefined;
   let workflowBridge: { close: (reason?: string) => void } | undefined;
+  let checkBridge: { close: (reason?: string) => void } | undefined;
   let currentPhase: string | null = null;
 
   try {
@@ -693,6 +790,13 @@ export async function executeWorkflowScript({
       limits,
       scheduler,
       depth,
+      enterVm,
+      signal,
+    );
+    checkBridge = installCheckFunction(
+      vm,
+      runtime,
+      capabilities,
       enterVm,
       signal,
     );
@@ -747,6 +851,7 @@ export async function executeWorkflowScript({
     }
     throw error;
   } finally {
+    checkBridge?.close();
     workflowBridge?.close();
     agentBridge?.close();
     vm.dispose();

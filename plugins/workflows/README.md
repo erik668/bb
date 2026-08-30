@@ -88,8 +88,11 @@ a run is active and the page is visible, refresh once when the page or the
 realtime connection comes back, and stop when terminal.
 
 The security boundary is the QuickJS context: workflow code has JSON data and
-explicit orchestration capabilities, but no Node, filesystem, shell, network,
-imports, clock, or randomness. The QuickJS WASM is embedded in the plugin's
+explicit orchestration capabilities, but no Node, direct filesystem or shell,
+network, imports, clock, or randomness. `check()` is the sole host-execution
+exception. It resolves a named command from a SHA-256-pinned workspace manifest,
+runs it without a shell only when the origin permission mode is `full`, and
+accepts only a bounded structured receipt. The QuickJS WASM is embedded in the plugin's
 single-file server bundle so packaged built-ins need no sidecar asset.
 JSON Schema compilation and result validation necessarily run in the Node host,
 not inside QuickJS, so every metadata and agent-output schema is restricted
@@ -195,6 +198,11 @@ including file edits and other writes, because resume is restricted to the same
 environment workspace where those effects remain. Runs created before
 replay-safety metadata existed replay nothing.
 
+Checks are deliberately never replayed. Every `check()` runs live and forms a
+replay barrier: successful agent calls before it may be reused, while every
+agent call after it runs live. Checks must be sequential and may not overlap an
+agent call.
+
 Agent calls retry transient provider failures twice with bounded backoff before
 the failure reaches the workflow script. Retryability comes from an explicit
 SDK `retryable` marker when available or conservative overload, rate-limit,
@@ -224,6 +232,68 @@ top-level runs, and `{ script }` is inline source. Each child is parsed,
 schema-validated, and evaluated in a separate QuickJS VM. Parent and child VMs
 share one FIFO agent scheduler, call budget, cancellation signal, replay order,
 and phase/progress record. A child cannot invoke a grandchild.
+
+## Deterministic checks
+
+`check(request)` executes a project-owned deterministic suite in the workflow's
+origin workspace before a downstream agent is admitted. It requires the run's
+origin permission mode to be `full` and reads exactly
+`.bb/workflow-checks.json` from that environment. The workflow pins the complete
+manifest bytes by SHA-256:
+
+```json
+{
+  "version": 1,
+  "suites": {
+    "terraform-hcl": {
+      "version": 1,
+      "argv": ["workflow-gates", "check", "terraform-hcl"],
+      "inputs": [
+        {
+          "path": "checks/terraform-hcl.mjs",
+          "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        }
+      ],
+      "timeoutMs": 120000
+    }
+  }
+}
+```
+
+The executable receives one JSON object on stdin containing `suite`,
+`manifestSha256`, `contractSha256`, and `candidateSha256`. It must exit zero and
+write exactly one JSON receipt to stdout with those same pins plus
+`suiteVersion`, `selected`, `passed`, `failed`, `skipped`, `admitted`, and
+`findings`. `suiteVersion` must equal the manifest's expected version, and BB
+hashes every normalized workspace-relative `inputs` path before and after the
+suite runs. Admission is fail-closed: the counts must sum to `selected`, at
+least one check must be selected, and admitted receipts permit no failures or
+skips. Non-zero exit, timeout, cancellation, excessive output, malformed JSON,
+contradictory counts, or mismatched pins fail the workflow.
+
+```js
+const receipt = await check({
+  suite: "terraform-hcl",
+  manifestSha256: args.checkManifestSha256,
+  contractSha256: args.contractSha256,
+  candidateSha256: args.candidateSha256,
+});
+if (!receipt.admitted) return receipt;
+```
+
+The host starts the manifest's `argv` directly with no command shell. Each
+argument is therefore literal. Output is capped at 1 MiB per stream and suite
+timeouts cannot exceed 15 minutes. A run may invoke at most 32 checks. On POSIX
+hosts the command leads a process group; cancellation, timeout, and normal
+completion all reap descendants before the host call settles.
+
+Suite code is trusted project code running under the origin's `full` permission.
+BB verifies implementation digests before and after execution to catch stable or
+persistent source drift, but this is not an atomic filesystem snapshot: a
+concurrent adversarial swap-and-restore can evade it. BB also does not provide an
+OS read-only filesystem sandbox. Suites must be non-mutating by contract; use a
+BB-owned bundled suite or a disposable workspace when adversarial isolation is
+required.
 
 ## Settings
 

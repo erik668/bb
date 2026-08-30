@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
@@ -112,6 +113,9 @@ function timelineResult(
 function setup(
   settings: WorkflowSettings = DEFAULT_WORKFLOW_SETTINGS,
   files: Record<string, string> = {},
+  callHostRpc?: NonNullable<
+    Parameters<typeof createFakePluginHost>[0]
+  >["experimental_callHostRpc"],
 ) {
   let childCount = 0;
   let originDeleted = false;
@@ -133,6 +137,7 @@ function setup(
   ]);
   const { bb, harness } = createFakePluginHost({
     pluginId: "workflows",
+    experimental_callHostRpc: callHostRpc,
     sdk: {
       threads: {
         get: async ({ threadId }) => {
@@ -232,10 +237,26 @@ function setup(
           if (content === undefined)
             throw new Error(`Missing test file ${path}`);
           return {
+            path,
             content,
             contentEncoding: "utf8",
+            mimeType: "application/json",
             sizeBytes: Buffer.byteLength(content),
+            sha256: createHash("sha256").update(content).digest("hex"),
           } as never;
+        },
+      },
+      projects: {
+        fileContent: async ({ path }) => {
+          const content = files[`/workspace/${path}`];
+          if (content === undefined)
+            throw new Error(`Missing test file /workspace/${path}`);
+          return {
+            content,
+            contentEncoding: "utf8",
+            mimeType: "application/json",
+            sizeBytes: Buffer.byteLength(content),
+          };
         },
       },
     },
@@ -2422,6 +2443,162 @@ describe("workflow service policy integration", () => {
     expect(text).toContain(`bb workflows status ${run.id}`);
     expect(text).not.toContain("�");
   });
+
+  it("reruns checks on resume and prevents downstream agent replay", async () => {
+    const implementationPath = "checks/terraform-hcl.mjs";
+    const implementation = "export const version = 1;\n";
+    const manifest = JSON.stringify({
+      version: 1,
+      suites: {
+        "terraform-hcl": {
+          version: 1,
+          argv: ["workflow-gates", "check"],
+          inputs: [
+            {
+              path: implementationPath,
+              sha256: createHash("sha256").update(implementation).digest("hex"),
+            },
+          ],
+        },
+      },
+    });
+    const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
+    const contractSha256 = "b".repeat(64);
+    const candidateSha256 = "c".repeat(64);
+    const receipt = {
+      suite: "terraform-hcl",
+      suiteVersion: 1,
+      manifestSha256,
+      contractSha256,
+      candidateSha256,
+      selected: 1,
+      passed: 1,
+      failed: 0,
+      skipped: 0,
+      admitted: true,
+      findings: [],
+    };
+    const test = setup(
+      DEFAULT_WORKFLOW_SETTINGS,
+      {
+        "/workspace/.bb/workflow-checks.json": manifest,
+        [`/workspace/${implementationPath}`]: implementation,
+      },
+      async () => ({
+        exitCode: 0,
+        signal: null,
+        stdout: JSON.stringify(receipt),
+        stderr: "",
+        timedOut: false,
+        outputTruncated: false,
+      }),
+    );
+    harnesses.push(test.harness);
+    const workflowSource = source(`
+      const first = await agent("first");
+      const receipt = await check({
+        suite: "terraform-hcl",
+        manifestSha256: ${JSON.stringify(manifestSha256)},
+        contractSha256: ${JSON.stringify(contractSha256)},
+        candidateSha256: ${JSON.stringify(candidateSha256)},
+      });
+      const second = await agent("second");
+      return { first, receipt, second };
+    `);
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+
+    const original = await test.start(workflowSource);
+    await eventually(() => expect(test.childCount()).toBe(1));
+    test.service.onThreadIdle("child-1", "first-old");
+    await eventually(() => expect(test.childCount()).toBe(2));
+    test.service.onThreadIdle("child-2", "second-old");
+    await eventually(() =>
+      expect(getRunRequired(test.db, original.id).status).toBe("succeeded"),
+    );
+
+    const resumed = await test.start(workflowSource, { resumedFromRunId: original.id });
+    await eventually(() => expect(test.childCount()).toBe(3));
+    expect(getCall(test.db, resumed.id, 0)?.replaySource).toBe("resumed-run");
+    expect(getCall(test.db, resumed.id, 1)?.replaySource).toBeNull();
+    expect(test.harness.experimental_hostRpcCalls).toHaveLength(2);
+    test.service.onThreadIdle("child-3", "second-live");
+    await eventually(() =>
+      expect(getRunRequired(test.db, resumed.id).status).toBe("succeeded"),
+    );
+    controller.abort();
+    await worker;
+  });
+
+  it("rejects an agent started while a deterministic check is running", async () => {
+    const implementationPath = "checks/terraform-hcl.mjs";
+    const implementation = "export const version = 1;\n";
+    const manifest = JSON.stringify({
+      version: 1,
+      suites: {
+        "terraform-hcl": {
+          version: 1,
+          argv: ["workflow-gates", "check"],
+          inputs: [
+            {
+              path: implementationPath,
+              sha256: createHash("sha256").update(implementation).digest("hex"),
+            },
+          ],
+        },
+      },
+    });
+    const manifestSha256 = createHash("sha256").update(manifest).digest("hex");
+    const request = {
+      suite: "terraform-hcl",
+      manifestSha256,
+      contractSha256: "b".repeat(64),
+      candidateSha256: "c".repeat(64),
+    };
+    const test = setup(
+      DEFAULT_WORKFLOW_SETTINGS,
+      {
+        "/workspace/.bb/workflow-checks.json": manifest,
+        [`/workspace/${implementationPath}`]: implementation,
+      },
+      async () => ({
+        exitCode: 0,
+        signal: null,
+        stdout: JSON.stringify({
+          ...request,
+          suiteVersion: 1,
+          selected: 1,
+          passed: 1,
+          failed: 0,
+          skipped: 0,
+          admitted: true,
+          findings: [],
+        }),
+        stderr: "",
+        timedOut: false,
+        outputTruncated: false,
+      }),
+    );
+    harnesses.push(test.harness);
+    const workflowSource = source(`
+      return await Promise.all([
+        check(${JSON.stringify(request)}),
+        agent("must-not-overlap"),
+      ]);
+    `);
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    const run = await test.start(workflowSource);
+
+    await eventually(() =>
+      expect(getRunRequired(test.db, run.id).status).toBe("failed"),
+    );
+    expect(test.childCount()).toBe(0);
+    expect(test.harness.experimental_hostRpcCalls).toHaveLength(1);
+    controller.abort();
+    await worker;
+  });
+
 });
 
 describe("provider retry classification", () => {

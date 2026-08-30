@@ -1,3 +1,7 @@
+import type { WorkflowCheckRequest } from "./check-contract.js";
+
+export type { WorkflowCheckRequest } from "./check-contract.js";
+
 type JsonPrimitive = string | number | boolean | null;
 export type JsonValue =
   | JsonPrimitive
@@ -105,6 +109,10 @@ export interface WorkflowCapabilities {
     nameOrRef: WorkflowReference,
     args: JsonValue,
     context: NestedWorkflowContext,
+  ): Promise<JsonValue>;
+  check?(
+    request: WorkflowCheckRequest,
+    signal: AbortSignal,
   ): Promise<JsonValue>;
   log(message: string): void;
   phase(title: string): void;

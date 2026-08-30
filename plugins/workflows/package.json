@@ -15,6 +15,7 @@
     },
     "server": "./src/server.ts",
     "app": "./src/app.tsx",
+    "host": "./src/host.ts",
     "skills": [
       "skills"
     ]
