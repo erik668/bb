@@ -83,6 +83,30 @@ machines with no keychain identity (or with `CSC_IDENTITY_AUTO_DISCOVERY=false`,
 as CI sets for workflow-artifact-only builds), artifacts remain unsigned and
 macOS shows the normal Gatekeeper warning on first launch.
 
+### Replacing a local macOS app
+
+Replacing an installed app is deliberately a foreground-only, one-shot action.
+First quit BB yourself and confirm it has stopped. Then run the installer with
+absolute source and target paths, the expected packaged `node-pty` version, and
+the explicit confirmation flag:
+
+```bash
+expected_node_pty_version="$(node -p 'require("./apps/host-daemon/package.json").dependencies["node-pty"]')"
+pnpm --filter @bb/desktop run install:packaged:macos -- \
+  /absolute/path/to/bb.app \
+  /Applications/BB.app \
+  "$expected_node_pty_version" \
+  --confirm-replace
+```
+
+The installer refuses a running target, concurrent attempt, invalid signature,
+unexpected `node-pty` version, or pre-existing recovery artifact. It never quits
+or opens BB and never installs a background job or retry loop. After a successful
+install, the previous app remains beside the target as
+`BB.app.bb-install-backup`; launch BB yourself only after inspecting the result.
+If installation fails, do not retry automatically. Inspect the reported
+`.bb-install-stage`, `.bb-install-failed`, or `.bb-install-backup` artifact first.
+
 ### Linux (AppImage, x64)
 
 Linux packaging targets x64 glibc-based distributions. Install `python3`,
