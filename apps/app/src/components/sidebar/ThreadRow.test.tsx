@@ -433,7 +433,7 @@ describe("ThreadRow", () => {
     expect(screen.queryByLabelText("Unread thread succeeded")).toBeNull();
   });
 
-  it("replaces the draft icon with a plugin status and restores it when cleared", () => {
+  it("replaces the draft icon with a plugin status and restores it when cleared", async () => {
     setPluginThreadRowStatus("thr_test", "composer-status-test", {
       icon: "AiContentGenerator01",
       label: "Plugin improving draft",
@@ -443,6 +443,15 @@ describe("ThreadRow", () => {
     const runningIcon = screen.getByLabelText("Plugin improving draft");
     expect(runningIcon.getAttribute("data-icon")).toBe("AiContentGenerator01");
     expect(container.querySelector('[data-icon="Edit"]')).toBeNull();
+    const rowLink = screen.getByRole("link", {
+      name: "Open Thread (unsubmitted draft)",
+    });
+    fireEvent.pointerMove(rowLink);
+    expect(
+      await screen.findByRole("tooltip", {
+        name: "Thread — Plugin improving draft",
+      }),
+    ).not.toBeNull();
 
     act(() => {
       setPluginThreadRowStatus("thr_test", "composer-status-test", null);

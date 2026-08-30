@@ -20,6 +20,12 @@ import { Icon } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { Skeleton } from "@bb/shared-ui/skeleton";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@bb/shared-ui/tooltip";
+import {
   WorkflowPhaseStrip,
   WorkflowProgress,
   WorkflowStatusPill,
@@ -37,7 +43,9 @@ import {
   useRealtime,
   useRealtimeConnectionState,
   useRpc,
+  type PluginComposerThreadRowStatus,
   type PluginMessageDirectiveProps,
+  type PluginThreadHeaderActionProps,
   type PluginThreadPanelProps,
   type ExperimentalArtifactReviewFeedbackRequest,
   type ExperimentalArtifactReviewSelection,
@@ -54,7 +62,9 @@ import type {
   WorkflowCampaignView,
   WorkflowCheckpointView,
   WorkflowRunView,
+  WorkflowThreadStatusView,
 } from "./ui-contract.js";
+import { workflowThreadStatusesOutputSchema } from "./ui-contract.js";
 
 type ArtifactListLoadState =
   | { status: "loading" }
@@ -115,6 +125,11 @@ interface AmendmentApprovalTarget {
   onApproved: () => Promise<void>;
 }
 
+type ThreadStatusesLoadState =
+  | { status: "loading" }
+  | { status: "ready"; statuses: WorkflowThreadStatusView[] }
+  | { status: "error" };
+
 interface SharedWorkflowView {
   callsById: ReadonlyMap<string, WorkflowCallView>;
   currentPhaseIndex?: number;
@@ -122,6 +137,8 @@ interface SharedWorkflowView {
 }
 
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
+const IDLE_POLL_INTERVAL_MS = 5_000;
+const MAX_SIDEBAR_REFRESH_FAILURES = 3;
 const WORKFLOW_PANEL_ACTION_ID = "workflow-run";
 const WORKFLOW_CARD_ROW_HEIGHT = 32;
 const WORKFLOW_HEADER_GROUP_CLASS = activityRowClass(
@@ -160,6 +177,127 @@ function panelRunId(params: unknown): string | null | undefined {
 
 function isRunActive(run: WorkflowRunView): boolean {
   return run.status === "queued" || run.status === "running";
+}
+
+function callsForRun(run: WorkflowRunView): WorkflowCallView[] {
+  return [...run.phases.flatMap((phase) => phase.calls), ...run.unphasedCalls];
+}
+
+function callStatusLabel(status: WorkflowCallView["status"]): string {
+  switch (status) {
+    case "queued":
+      return "Queued";
+    case "running":
+      return "Running";
+    case "succeeded":
+      return "Complete";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+  }
+}
+
+interface WorkflowThreadSummary {
+  runId: string;
+  runName: string;
+  label: string;
+  accessibleLabel: string;
+  canOpenPanel: boolean;
+}
+
+function phaseLabel(phase: string | null): string {
+  return phase ?? "Other work";
+}
+
+function originPhaseLabel(
+  status: Extract<WorkflowThreadStatusView, { role: "origin" }>,
+): string {
+  const phases = status.activePhases.map(phaseLabel);
+  return phases.length > 0
+    ? phases.join(" + ")
+    : status.runStatus === "queued"
+      ? "Queued"
+      : "Running";
+}
+
+function originStatusSummary(
+  statuses: ReadonlyArray<
+    Extract<WorkflowThreadStatusView, { role: "origin" }>
+  >,
+): string {
+  return [
+    ...new Set(
+      statuses.flatMap((status) =>
+        status.activePhases.length > 0
+          ? status.activePhases.map(phaseLabel)
+          : [status.runStatus === "queued" ? "Queued" : "Running"],
+      ),
+    ),
+  ].join(" + ");
+}
+
+function summarizeThreadStatuses(
+  statuses: readonly WorkflowThreadStatusView[],
+): WorkflowThreadSummary | null {
+  const worker = statuses.find((status) => status.role === "worker");
+  const origins = statuses.filter((status) => status.role === "origin");
+  const primaryOrigin = origins[0];
+
+  if (worker !== undefined && primaryOrigin !== undefined) {
+    const workerPhase = phaseLabel(worker.phase);
+    const localLabel =
+      origins.length === 1
+        ? originPhaseLabel(primaryOrigin)
+        : `${origins.length} local workflows · ${originStatusSummary(origins)}`;
+    const localAccessibleLabel = origins
+      .map(
+        (status) =>
+          `workflow ${status.runName} started here: ${originPhaseLabel(status)}`,
+      )
+      .join("; ");
+    return {
+      runId: primaryOrigin.runId,
+      runName: primaryOrigin.runName,
+      label: `${workerPhase} · Local: ${localLabel}`,
+      accessibleLabel: `Parent workflow ${worker.runName}: ${workerPhase}, ${callStatusLabel(worker.callStatus)}; ${localAccessibleLabel}`,
+      canOpenPanel: true,
+    };
+  }
+
+  if (worker !== undefined) {
+    const workerPhase = phaseLabel(worker.phase);
+    return {
+      runId: worker.runId,
+      runName: worker.runName,
+      label: `${workerPhase} · ${callStatusLabel(worker.callStatus)}`,
+      accessibleLabel: `Workflow ${worker.runName}: ${workerPhase}, ${callStatusLabel(worker.callStatus)}`,
+      canOpenPanel: false,
+    };
+  }
+
+  if (primaryOrigin === undefined) return null;
+  if (origins.length > 1) {
+    const phaseSummary = originStatusSummary(origins);
+    return {
+      runId: primaryOrigin.runId,
+      runName: primaryOrigin.runName,
+      label: `${origins.length} workflows · ${phaseSummary}`,
+      accessibleLabel: origins
+        .map(
+          (status) => `Workflow ${status.runName}: ${originPhaseLabel(status)}`,
+        )
+        .join("; "),
+      canOpenPanel: true,
+    };
+  }
+  return {
+    runId: primaryOrigin.runId,
+    runName: primaryOrigin.runName,
+    label: originPhaseLabel(primaryOrigin),
+    accessibleLabel: `Workflow ${primaryOrigin.runName}: ${originPhaseLabel(primaryOrigin)}`,
+    canOpenPanel: true,
+  };
 }
 
 function runTerminalState(
@@ -379,10 +517,9 @@ function buildSharedWorkflowView(run: WorkflowRunView): SharedWorkflowView {
   if (otherWorkIndex !== null) {
     phases.push({ index: otherWorkIndex, title: "Other work" });
   }
-  const calls = [
-    ...run.phases.flatMap((phase) => phase.calls),
-    ...run.unphasedCalls,
-  ].sort((left, right) => left.index - right.index);
+  const calls = callsForRun(run).sort(
+    (left, right) => left.index - right.index,
+  );
   const callsById = new Map(calls.map((call) => [call.id, call] as const));
   const agents: WorkflowProgressAgent[] = calls.map((call) => {
     const context = contextMetadata(call);
@@ -750,6 +887,196 @@ function useActiveWorkflowRuns(threadId: string): {
   return { state, setRuns };
 }
 
+function useWorkflowThreadStatuses(threadId: string): ThreadStatusesLoadState {
+  const rpc = useRpc<typeof workflowUiRpcContract>();
+  const [state, setState] = useState<ThreadStatusesLoadState>({
+    status: "loading",
+  });
+  const requestSequence = useRef(0);
+
+  const refresh = useCallback(async (): Promise<boolean> => {
+    const sequence = ++requestSequence.current;
+    try {
+      const result = await rpc.call("workflowThreadStatuses", { threadId });
+      if (sequence === requestSequence.current) {
+        setState({ status: "ready", statuses: result.statuses });
+      }
+      return result.statuses.length > 0;
+    } catch {
+      if (sequence === requestSequence.current) setState({ status: "error" });
+      return false;
+    }
+  }, [rpc, threadId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timeout: number | null = null;
+    void Promise.resolve().then(() => {
+      if (!cancelled) setState({ status: "loading" });
+    });
+    const poll = async () => {
+      const active = await refresh();
+      if (cancelled) return;
+      timeout = window.setTimeout(
+        () => void poll(),
+        active ? ACTIVE_POLL_INTERVAL_MS : IDLE_POLL_INTERVAL_MS,
+      );
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      requestSequence.current += 1;
+      if (timeout !== null) window.clearTimeout(timeout);
+    };
+  }, [refresh]);
+
+  return state;
+}
+
+interface WorkflowThreadRowStatusProjection {
+  threadId: string;
+  status: PluginComposerThreadRowStatus;
+}
+
+function buildWorkflowThreadRowStatuses(
+  statuses: readonly WorkflowThreadStatusView[],
+): WorkflowThreadRowStatusProjection[] {
+  const byThread = new Map<string, WorkflowThreadStatusView[]>();
+  for (const status of statuses) {
+    const threadStatuses = byThread.get(status.threadId);
+    if (threadStatuses === undefined) byThread.set(status.threadId, [status]);
+    else threadStatuses.push(status);
+  }
+
+  const projections: WorkflowThreadRowStatusProjection[] = [];
+  for (const [threadId, threadStatuses] of byThread) {
+    const summary = summarizeThreadStatuses(threadStatuses);
+    if (summary !== null) {
+      projections.push({
+        threadId,
+        status: {
+          icon: "Workflow",
+          label: summary.accessibleLabel,
+          tone: "running",
+        },
+      });
+    }
+  }
+  return projections;
+}
+
+function workflowStatusesFromRpcEnvelope(
+  value: unknown,
+): WorkflowThreadStatusView[] {
+  if (!isRecord(value) || value.ok !== true || !isRecord(value.result)) {
+    throw new Error("Invalid workflow status response");
+  }
+  return workflowThreadStatusesOutputSchema.parse(value.result).statuses;
+}
+
+async function fetchAllActiveWorkflowThreadStatuses(
+  pluginId: string,
+  signal: AbortSignal,
+): Promise<WorkflowThreadStatusView[]> {
+  const response = await fetch(
+    `/api/v1/plugins/${encodeURIComponent(pluginId)}/rpc/workflowAllActiveThreadStatuses`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "null",
+      signal,
+    },
+  );
+  const payload: unknown = await response.json();
+  if (!response.ok) throw new Error("Could not load workflow statuses");
+  return workflowStatusesFromRpcEnvelope(payload);
+}
+
+function threadRowStatusesEqual(
+  left: PluginComposerThreadRowStatus,
+  right: PluginComposerThreadRowStatus,
+): boolean {
+  return (
+    left.icon === right.icon &&
+    left.label === right.label &&
+    left.tone === right.tone
+  );
+}
+
+function mountWorkflowThreadRowStatuses({
+  pluginId,
+  signal,
+  setThreadRowStatus,
+}: {
+  pluginId: string;
+  signal: AbortSignal;
+  setThreadRowStatus:
+    | ((threadId: string, status: PluginComposerThreadRowStatus | null) => void)
+    | undefined;
+}): () => void {
+  if (setThreadRowStatus === undefined) return () => undefined;
+  let timeout: number | null = null;
+  let refreshFailures = 0;
+  let knownStatuses = new Map<string, PluginComposerThreadRowStatus>();
+
+  const applyProjections = (
+    projections: readonly WorkflowThreadRowStatusProjection[],
+  ) => {
+    const nextStatuses = new Map(
+      projections.map((projection) => [projection.threadId, projection.status]),
+    );
+    for (const threadId of knownStatuses.keys()) {
+      if (!nextStatuses.has(threadId)) setThreadRowStatus(threadId, null);
+    }
+    for (const [threadId, status] of nextStatuses) {
+      const previous = knownStatuses.get(threadId);
+      if (previous === undefined || !threadRowStatusesEqual(previous, status)) {
+        setThreadRowStatus(threadId, status);
+      }
+    }
+    knownStatuses = nextStatuses;
+  };
+
+  const refresh = async (): Promise<number> => {
+    try {
+      const statuses = await fetchAllActiveWorkflowThreadStatuses(
+        pluginId,
+        signal,
+      );
+      if (signal.aborted) return IDLE_POLL_INTERVAL_MS;
+      refreshFailures = 0;
+      applyProjections(buildWorkflowThreadRowStatuses(statuses));
+      return statuses.length > 0
+        ? ACTIVE_POLL_INTERVAL_MS
+        : IDLE_POLL_INTERVAL_MS;
+    } catch {
+      if (signal.aborted) return IDLE_POLL_INTERVAL_MS;
+      refreshFailures += 1;
+      if (refreshFailures >= MAX_SIDEBAR_REFRESH_FAILURES) {
+        applyProjections([]);
+      }
+      return refreshFailures < MAX_SIDEBAR_REFRESH_FAILURES
+        ? ACTIVE_POLL_INTERVAL_MS
+        : IDLE_POLL_INTERVAL_MS;
+    }
+  };
+
+  const schedule = (delay: number) => {
+    timeout = window.setTimeout(() => {
+      void refresh().then((nextDelay) => {
+        if (!signal.aborted) schedule(nextDelay);
+      });
+    }, delay);
+  };
+  void refresh().then((delay) => {
+    if (!signal.aborted) schedule(delay);
+  });
+
+  return () => {
+    if (timeout !== null) window.clearTimeout(timeout);
+  };
+}
+
 export function EmptyOrError({ children }: { children: ReactNode }) {
   return (
     <div role="alert" className="text-sm text-muted-foreground">
@@ -787,6 +1114,77 @@ function WorkflowStatusBanner() {
   const view = useComposerView();
   if (view.scope.kind !== "thread") return null;
   return <WorkflowStatusBannerLoaded threadId={view.scope.threadId} />;
+}
+
+function WorkflowThreadHeaderAction({
+  threadId,
+  isCompactViewport,
+}: PluginThreadHeaderActionProps) {
+  const navigate = useBbNavigate();
+  const state = useWorkflowThreadStatuses(threadId);
+  const summary =
+    state.status === "ready" ? summarizeThreadStatuses(state.statuses) : null;
+  if (summary === null) return null;
+
+  const className = cn(
+    "h-7 max-w-64 gap-1.5 px-2 text-xs",
+    isCompactViewport && "w-7 px-0",
+  );
+  const content = (
+    <>
+      <Icon
+        name="Workflow"
+        className="size-3.5 shrink-0 animate-shine-icon text-success"
+        aria-hidden
+      />
+      <span
+        aria-live="polite"
+        aria-atomic="true"
+        className={isCompactViewport ? "sr-only" : "min-w-0 truncate"}
+      >
+        Workflow · {summary.label}
+      </span>
+    </>
+  );
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          {summary.canOpenPanel ? (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className={className}
+              aria-label={summary.accessibleLabel}
+              onClick={() =>
+                navigate.openThreadPanel({
+                  actionId: WORKFLOW_PANEL_ACTION_ID,
+                  title: summary.runName,
+                  params: { runId: summary.runId },
+                })
+              }
+            >
+              {content}
+            </Button>
+          ) : (
+            <div
+              role="status"
+              className={cn(
+                className,
+                "inline-flex items-center rounded-md border border-border bg-background",
+              )}
+              aria-label={summary.accessibleLabel}
+            >
+              {content}
+            </div>
+          )}
+        </TooltipTrigger>
+        <TooltipContent>{summary.accessibleLabel}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
 }
 
 function WorkflowComposerCard({
@@ -3074,6 +3472,21 @@ function WorkflowRunPanelLoaded({
 }
 
 export default definePluginApp((app) => {
+  app.contentScripts.register({
+    id: "workflow-thread-row-status",
+    mount({ pluginId, signal, experimental_setThreadRowStatus }) {
+      return mountWorkflowThreadRowStatuses({
+        pluginId,
+        signal,
+        setThreadRowStatus: experimental_setThreadRowStatus,
+      });
+    },
+  });
+  app.slots.experimental_threadHeaderAction({
+    id: "workflow-phase",
+    title: "Workflow phase",
+    component: WorkflowThreadHeaderAction,
+  });
   app.composer.customize({
     id: "workflow-status",
     scopes: ["thread"],

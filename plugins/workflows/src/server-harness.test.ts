@@ -3,7 +3,14 @@ import {
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { getCall, getRunRequired, migrations } from "./data.js";
+import {
+  attachCallThread,
+  createRun,
+  getCall,
+  getRunRequired,
+  migrations,
+  startCall,
+} from "./data.js";
 import plugin from "./server.js";
 import { createWorkflowService } from "./service.js";
 import {
@@ -153,6 +160,87 @@ describe("workflows plugin", () => {
     ).toMatchObject({ ok: true });
   });
 
+  it("projects every concurrently active phase through both thread status RPCs", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "workflows" });
+    hosts.push(harness);
+    await plugin(bb);
+    const db = bb.storage.database();
+    const run = createRun(db, {
+      projectId: "project-test",
+      originThreadId: "thread-test",
+      presentationThreadId: "thread-test",
+      parentRunId: null,
+      rootRunId: "",
+      environmentId: "environment-test",
+      originProvider: "codex",
+      originModel: "gpt-test",
+      originReasoningLevel: "medium",
+      originPermissionMode: "full",
+      name: "concurrent-phase-test",
+      source: "return null",
+      sourceHash: "concurrent-phase-hash",
+      argsJson: "null",
+      settingsJson:
+        '{"maxActiveRuns":4,"maxConcurrentAgents":8,"maxAgentCalls":100,"totalRunTimeoutMs":86400000,"retentionDays":30,"maxNotificationBytes":16384}',
+      resumedFromRunId: null,
+    });
+    db.prepare(`UPDATE workflow_runs SET status = 'running' WHERE id = ?`).run(
+      run.id,
+    );
+    const selection = {
+      providerId: "codex",
+      model: "gpt-test",
+      reasoningLevel: "medium",
+      permissionMode: "full",
+    } as const;
+    for (const [callIndex, phase] of ["Discover", "Review"].entries()) {
+      const call = startCall(db, {
+        runId: run.id,
+        callIndex,
+        cacheKey: `cache-${callIndex}`,
+        prompt: `Run ${phase}`,
+        options: {
+          selection: null,
+          outputSchema: null,
+          contextRequirement: null,
+          contextProfile: null,
+          title: null,
+          phase,
+        },
+        selection,
+        replay: null,
+      });
+      expect(attachCallThread(db, call.id, `child-${callIndex + 1}`)).toBe(
+        true,
+      );
+    }
+
+    await expect(
+      harness.callRpc("workflowThreadStatuses", { threadId: "thread-test" }),
+    ).resolves.toMatchObject({
+      statuses: [
+        {
+          role: "origin",
+          runId: run.id,
+          activePhases: ["Discover", "Review"],
+        },
+      ],
+    });
+    await expect(
+      harness.callRpc("workflowAllActiveThreadStatuses", null),
+    ).resolves.toMatchObject({
+      statuses: [
+        {
+          role: "origin",
+          runId: run.id,
+          activePhases: ["Discover", "Review"],
+        },
+        { role: "worker", threadId: "child-1", phase: "Discover" },
+        { role: "worker", threadId: "child-2", phase: "Review" },
+      ],
+    });
+  });
+
   it(
     "runs a structured workflow asynchronously and notifies its origin",
     async () => {
@@ -280,6 +368,23 @@ describe("workflows plugin", () => {
         harness.callRpc("workflowActiveRuns", { threadId: "other-thread" }),
       ).resolves.toEqual({ runs: [] });
       await expect(
+        harness.callRpc("workflowThreadStatuses", { threadId: "thread-test" }),
+      ).resolves.toMatchObject({
+        statuses: [
+          {
+            role: "origin",
+            threadId: "thread-test",
+            runId: started.runId,
+            activePhases: [],
+          },
+        ],
+      });
+      await expect(
+        harness.callRpc("workflowAllActiveThreadStatuses", null),
+      ).resolves.toMatchObject({
+        statuses: [{ role: "origin", runId: started.runId, activePhases: [] }],
+      });
+      await expect(
         harness.callRpc("workflowRunView", {
           threadId: "thread-test",
           runId: started.runId,
@@ -290,6 +395,37 @@ describe("workflows plugin", () => {
       const worker = harness.runService("workflow-worker");
       await eventually(() => {
         expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1);
+      });
+      await expect(
+        harness.callRpc("workflowThreadStatuses", { threadId: "thread-test" }),
+      ).resolves.toMatchObject({
+        statuses: [
+          {
+            role: "origin",
+            threadId: "thread-test",
+            runId: started.runId,
+            activePhases: ["Solve"],
+          },
+        ],
+      });
+      await expect(
+        harness.callRpc("workflowAllActiveThreadStatuses", null),
+      ).resolves.toMatchObject({
+        statuses: [
+          {
+            role: "origin",
+            threadId: "thread-test",
+            runId: started.runId,
+            activePhases: ["Solve"],
+          },
+          {
+            role: "worker",
+            threadId: "child-1",
+            runId: started.runId,
+            phase: "Solve",
+            callStatus: "running",
+          },
+        ],
       });
       expect(harness.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({
         parentThreadId: "thread-test",
@@ -303,6 +439,31 @@ describe("workflows plugin", () => {
           "Use bb_workflow_result to return your final response in the requested structured format. You MUST call this tool exactly once at the end of your response",
         ),
       });
+      await expect(
+        harness.callRpc("workflowThreadStatuses", { threadId: "child-1" }),
+      ).resolves.toMatchObject({
+        statuses: [
+          {
+            role: "worker",
+            threadId: "child-1",
+            runId: started.runId,
+            phase: "Solve",
+            callStatus: "running",
+          },
+        ],
+      });
+      await expect(
+        harness.callRpc("workflowRunView", {
+          threadId: "child-1",
+          runId: started.runId,
+        }),
+      ).rejects.toThrow("not available in this thread");
+      await expect(
+        harness.callRpc("workflowStopRun", {
+          threadId: "child-1",
+          runId: started.runId,
+        }),
+      ).rejects.toThrow("not available in this thread");
       await expect(
         harness.callRpc("workflowRunView", {
           threadId: "thread-test",
@@ -1648,7 +1809,9 @@ describe("workflows plugin", () => {
         runId,
         acceptanceId: "any-acceptance",
       }),
-    ).rejects.toThrow("Only the workflow origin thread can approve this amendment");
+    ).rejects.toThrow(
+      "Only the workflow origin thread can approve this amendment",
+    );
     await expect(
       harness.callRpc("workflowRunDetails", {
         threadId: "origin-child",

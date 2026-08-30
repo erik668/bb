@@ -5,6 +5,7 @@ import {
   type CSSProperties,
   type MouseEventHandler,
   type PointerEventHandler,
+  type ReactElement,
   type ReactNode,
   useRef,
 } from "react";
@@ -498,6 +499,25 @@ function ThreadTrailingIndicator({
   );
 }
 
+function ThreadRowStatusTooltip({
+  children,
+  label,
+}: {
+  children: ReactElement;
+  label: string | null;
+}) {
+  if (label === null) {
+    return children;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ThreadRowComponent({
   projectId,
   thread,
@@ -666,36 +686,45 @@ function ThreadRowComponent({
   const rowLinkRef = useRef<HTMLAnchorElement>(null);
   const rowContent = (
     <>
-      <NavLink
-        ref={rowLinkRef}
-        to={getThreadRoutePath({ projectId, threadId: thread.id })}
-        data-sidebar-thread-shortcut-target=""
-        data-sidebar-thread-id={thread.id}
-        onClick={(event) => {
-          if (isEditing) {
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-          }
-          setConversationCollapsed(false);
-          if (splitAvailable && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            openInSplit();
-            return;
-          }
-          if (consumeSidebarTitleDoubleClick(thread.id)) {
-            event.preventDefault();
-            event.stopPropagation();
-            startEditing();
-            return;
-          }
-          onProjectSelect?.();
-        }}
-        onDoubleClick={isEditing ? undefined : startTitleEditing}
-        aria-label={linkLabel}
-        aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
-        className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
-      />
+      <ThreadRowStatusTooltip
+        label={
+          trailingIndicatorResolution.pluginStatusIsVisible &&
+          pluginThreadRowStatus !== null
+            ? `${labelTitle} — ${pluginThreadRowStatus.label}`
+            : null
+        }
+      >
+        <NavLink
+          ref={rowLinkRef}
+          to={getThreadRoutePath({ projectId, threadId: thread.id })}
+          data-sidebar-thread-shortcut-target=""
+          data-sidebar-thread-id={thread.id}
+          onClick={(event) => {
+            if (isEditing) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            setConversationCollapsed(false);
+            if (splitAvailable && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              openInSplit();
+              return;
+            }
+            if (consumeSidebarTitleDoubleClick(thread.id)) {
+              event.preventDefault();
+              event.stopPropagation();
+              startEditing();
+              return;
+            }
+            onProjectSelect?.();
+          }}
+          onDoubleClick={isEditing ? undefined : startTitleEditing}
+          aria-label={linkLabel}
+          aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
+          className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
+        />
+      </ThreadRowStatusTooltip>
       <span
         className={cn(
           "flex min-w-0 flex-1 items-center gap-1.5",
