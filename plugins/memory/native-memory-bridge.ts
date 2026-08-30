@@ -1,7 +1,7 @@
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   nativeMemoryHostContract,
-  NATIVE_MEMORY_PROVIDER,
+  type NativeMemoryLayout,
   type NativeMemoryReadResult,
 } from "./native-memory-contract.js";
 import {
@@ -11,9 +11,10 @@ import {
 } from "./native-memory-store.js";
 
 const AUTOMATIC_SCAN_DEBOUNCE_MS = 30_000;
+const UNSUPPORTED_SCAN_DEBOUNCE_MS = 10 * 60_000;
 
 type ReconciledNativeMemoryScan = {
-  provider: typeof NATIVE_MEMORY_PROVIDER;
+  layout: NativeMemoryLayout;
   repositoryKey: string;
 } & NativeMemoryReconcileResult;
 
@@ -31,6 +32,16 @@ export class NativeMemoryBridge {
   private enabled: boolean;
   private readonly host;
   private readonly automaticScans = new Map<string, number>();
+  /**
+   * Environments whose last automatic scan came back `unsupported` — the host
+   * could not read a memory layout there at all. They back off to
+   * {@link UNSUPPORTED_SCAN_DEBOUNCE_MS} instead of being dropped for good,
+   * because `unsupported` also covers a transient scan fault. This is what
+   * makes the idle path affordable without branching on the thread's provider:
+   * whether an environment has native memory is a fact about the workspace and
+   * host, not about which agent happened to go idle in it.
+   */
+  private readonly unsupportedScans = new Set<string>();
   private readonly inFlight = new Map<
     string,
     Promise<NativeMemoryScanOutcome>
@@ -53,7 +64,10 @@ export class NativeMemoryBridge {
 
   setEnabled(enabled: boolean): void {
     this.enabled = enabled;
-    if (!enabled) this.automaticScans.clear();
+    if (!enabled) {
+      this.automaticScans.clear();
+      this.unsupportedScans.clear();
+    }
   }
 
   async scanEnvironment(input: {
@@ -69,10 +83,10 @@ export class NativeMemoryBridge {
     const key = `${input.projectId}:${input.environmentId}`;
     if (input.automatic) {
       const lastScan = this.automaticScans.get(key);
-      if (
-        lastScan !== undefined &&
-        Date.now() - lastScan < AUTOMATIC_SCAN_DEBOUNCE_MS
-      ) {
+      const debounce = this.unsupportedScans.has(key)
+        ? UNSUPPORTED_SCAN_DEBOUNCE_MS
+        : AUTOMATIC_SCAN_DEBOUNCE_MS;
+      if (lastScan !== undefined && Date.now() - lastScan < debounce) {
         return {
           kind: "unsupported",
           reason: "automatic scan was debounced",
@@ -85,7 +99,11 @@ export class NativeMemoryBridge {
     this.inFlight.set(key, scan);
     try {
       const outcome = await scan;
-      if (input.automatic) this.automaticScans.set(key, Date.now());
+      if (input.automatic) {
+        this.automaticScans.set(key, Date.now());
+        if (outcome.kind === "unsupported") this.unsupportedScans.add(key);
+        else this.unsupportedScans.delete(key);
+      }
       return outcome;
     } finally {
       this.inFlight.delete(key);
@@ -104,20 +122,21 @@ export class NativeMemoryBridge {
       throw new Error("environment has no workspace path");
     }
     const scanned = await this.host.call(
-      "scanClaudeMemory",
+      "scanNativeMemory",
       { workspacePath: environment.path },
       { hostId: environment.hostId },
     );
     if (scanned.kind === "unsupported") return scanned;
     const reconciled = this.observations.reconcile({
       projectId,
+      layout: scanned.layout,
       hostId: environment.hostId,
       repositoryKey: scanned.repositoryKey,
       environmentId,
       sources: scanned.kind === "ok" ? scanned.sources : [],
     });
     const reconciledScan = {
-      provider: NATIVE_MEMORY_PROVIDER,
+      layout: scanned.layout,
       repositoryKey: scanned.repositoryKey,
       ...reconciled,
     };
@@ -162,7 +181,7 @@ export class NativeMemoryBridge {
       throw new Error("the observation's source environment is unavailable");
     }
     const result = await this.host.call(
-      "readClaudeMemory",
+      "readNativeMemory",
       {
         workspacePath: environment.path,
         repositoryKey: observation.repositoryKey,

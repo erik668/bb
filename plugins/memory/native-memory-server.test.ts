@@ -38,13 +38,16 @@ async function loadNativePlugin(input: {
   enabled: boolean;
   sources?: NativeMemorySource[];
   readContent?: string;
+  scanSupported?: boolean;
 }): Promise<{
   host: FakePluginHost;
   setSources(sources: NativeMemorySource[]): void;
   setReadKind(kind: "ok" | "stale" | "not_found"): void;
+  setScanSupported(supported: boolean): void;
 }> {
   let sources = input.sources ?? [];
   let readKind: "ok" | "stale" | "not_found" = "ok";
+  let scanSupported = input.scanSupported ?? true;
   const host = createFakePluginHost({
     pluginId: "memory",
     settings: { nativeMemoryObservations: input.enabled },
@@ -54,9 +57,13 @@ async function loadNativePlugin(input: {
       },
     },
     experimental_callHostRpc: ({ method, input: rpcInput }) => {
-      if (method === "scanClaudeMemory") {
+      if (method === "scanNativeMemory") {
+        if (!scanSupported) {
+          return { kind: "unsupported", reason: "no memory layout here" };
+        }
         return {
           kind: "ok",
+          layout: "claude-memory-dir",
           repositoryKey: "a".repeat(32),
           sources,
         };
@@ -80,6 +87,9 @@ async function loadNativePlugin(input: {
     },
     setReadKind(kind) {
       readKind = kind;
+    },
+    setScanSupported(supported) {
+      scanSupported = supported;
     },
   };
 }
@@ -130,23 +140,67 @@ describe("provider-native memory shadow bridge", () => {
     });
   });
 
-  it("ignores non-Claude idle events even when shadow observation is enabled", async () => {
-    const { host } = await loadNativePlugin({ enabled: true });
+  it("observes an environment on any provider's idle event", async () => {
+    const { host } = await loadNativePlugin({
+      enabled: true,
+      sources: [source("MEMORY.md", "1".repeat(64))],
+    });
     await host.harness.emitThreadEvent("thread.idle", {
       thread: makeThreadResponse({
-        id: "thread-codex",
+        id: "thread-other",
         projectId: "project-a",
         environmentId: "environment-a",
-        providerId: "codex",
+        providerId: "some-other-provider",
       }),
       lastAssistantText: "done",
     });
 
-    expect(host.harness.experimental_hostRpcCalls).toEqual([]);
+    // Which agent went idle must not decide whether the workspace is scanned:
+    // the host owns that answer, so a thread on any provider reaches it.
+    expect(
+      host.harness.experimental_hostRpcCalls.map((call) => call.method),
+    ).toEqual(["scanNativeMemory"]);
     const status = (await host.harness.callRpc("nativeMemoryStatus", {
       projectId: "project-a",
     })) as { counts: { available: number; removed: number } };
-    expect(status.counts).toEqual({ available: 0, removed: 0 });
+    expect(status.counts).toEqual({ available: 1, removed: 0 });
+  });
+
+  it("backs off an environment whose host reports no readable layout", async () => {
+    const { host, setScanSupported } = await loadNativePlugin({
+      enabled: true,
+      scanSupported: false,
+    });
+    const idle = async (threadId: string) => {
+      await host.harness.emitThreadEvent("thread.idle", {
+        thread: makeThreadResponse({
+          id: threadId,
+          projectId: "project-a",
+          environmentId: "environment-a",
+          providerId: "some-other-provider",
+        }),
+        lastAssistantText: "done",
+      });
+    };
+
+    await idle("thread-1");
+    await idle("thread-2");
+    await idle("thread-3");
+
+    // One round trip answers for the whole environment. This is what pays for
+    // dropping the provider-id guard: idle traffic no longer costs a scan.
+    expect(host.harness.experimental_hostRpcCalls).toHaveLength(1);
+
+    // The backoff must not be permanent — `unsupported` also covers a
+    // transient scan fault, so an explicit scan still reaches the host.
+    setScanSupported(true);
+    await expect(
+      host.harness.callRpc("scanNativeMemory", {
+        projectId: "project-a",
+        environmentId: "environment-a",
+      }),
+    ).resolves.toMatchObject({ outcome: { kind: "ok" } });
+    expect(host.harness.experimental_hostRpcCalls).toHaveLength(2);
   });
 
   it("reconciles hashes and removals without creating active or candidate memory", async () => {

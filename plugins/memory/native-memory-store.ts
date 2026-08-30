@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
-  NATIVE_MEMORY_PROVIDER,
+  NATIVE_MEMORY_LAYOUTS,
+  type NativeMemoryLayout,
   type NativeMemorySource,
 } from "./native-memory-contract.js";
 
@@ -12,7 +13,7 @@ export type NativeMemoryObservationState = "available" | "removed";
 export interface NativeMemoryObservation {
   id: string;
   projectId: string;
-  provider: typeof NATIVE_MEMORY_PROVIDER;
+  layout: NativeMemoryLayout;
   hostId: string;
   repositoryKey: string;
   sourceKey: string;
@@ -39,7 +40,7 @@ export interface NativeMemoryReconcileResult {
 interface ObservationRow {
   id: string;
   project_id: string;
-  provider: string;
+  layout: string;
   host_id: string;
   repository_key: string;
   source_key: string;
@@ -60,13 +61,14 @@ function observationId(): string {
 }
 
 function fromRow(row: ObservationRow): NativeMemoryObservation {
-  if (row.provider !== NATIVE_MEMORY_PROVIDER) {
-    throw new Error(`unsupported native memory provider "${row.provider}"`);
+  const layout = NATIVE_MEMORY_LAYOUTS.find((known) => known === row.layout);
+  if (!layout) {
+    throw new Error(`unsupported native memory layout "${row.layout}"`);
   }
   return {
     id: row.id,
     projectId: row.project_id,
-    provider: NATIVE_MEMORY_PROVIDER,
+    layout,
     hostId: row.host_id,
     repositoryKey: row.repository_key,
     sourceKey: row.source_key,
@@ -88,6 +90,7 @@ export class NativeMemoryObservationStore {
 
   reconcile(input: {
     projectId: string;
+    layout: NativeMemoryLayout;
     hostId: string;
     repositoryKey: string;
     environmentId: string;
@@ -97,12 +100,12 @@ export class NativeMemoryObservationStore {
       const now = Date.now();
       const existing = this.db
         .prepare(
-          `SELECT * FROM provider_memory_observations
-           WHERE project_id = ? AND provider = ? AND host_id = ? AND repository_key = ?`,
+          `SELECT * FROM native_memory_observations
+           WHERE project_id = ? AND layout = ? AND host_id = ? AND repository_key = ?`,
         )
         .all(
           input.projectId,
-          NATIVE_MEMORY_PROVIDER,
+          input.layout,
           input.hostId,
           input.repositoryKey,
         ) as ObservationRow[];
@@ -123,8 +126,8 @@ export class NativeMemoryObservationStore {
         if (!current) {
           this.db
             .prepare(
-              `INSERT INTO provider_memory_observations (
-                 id, project_id, provider, host_id, repository_key, source_key,
+              `INSERT INTO native_memory_observations (
+                 id, project_id, layout, host_id, repository_key, source_key,
                  content_hash, byte_length, modified_at, state, source_version,
                  environment_id, first_observed_at, last_observed_at, changed_at,
                  removed_at
@@ -133,7 +136,7 @@ export class NativeMemoryObservationStore {
             .run(
               observationId(),
               input.projectId,
-              NATIVE_MEMORY_PROVIDER,
+              input.layout,
               input.hostId,
               input.repositoryKey,
               source.sourceKey,
@@ -152,7 +155,7 @@ export class NativeMemoryObservationStore {
         const contentChanged = current.content_hash !== source.contentHash;
         this.db
           .prepare(
-            `UPDATE provider_memory_observations SET
+            `UPDATE native_memory_observations SET
                content_hash = ?, byte_length = ?, modified_at = ?, state = 'available',
                source_version = ?, environment_id = ?, last_observed_at = ?,
                changed_at = ?, removed_at = NULL
@@ -180,7 +183,7 @@ export class NativeMemoryObservationStore {
           continue;
         this.db
           .prepare(
-            `UPDATE provider_memory_observations
+            `UPDATE native_memory_observations
              SET state = 'removed', last_observed_at = ?, removed_at = ?
              WHERE id = ?`,
           )
@@ -192,13 +195,13 @@ export class NativeMemoryObservationStore {
         (
           this.db
             .prepare(
-              `SELECT COUNT(*) AS count FROM provider_memory_observations
-               WHERE project_id = ? AND provider = ? AND host_id = ?
+              `SELECT COUNT(*) AS count FROM native_memory_observations
+               WHERE project_id = ? AND layout = ? AND host_id = ?
                  AND repository_key = ? AND state = 'available'`,
             )
             .get(
               input.projectId,
-              NATIVE_MEMORY_PROVIDER,
+              input.layout,
               input.hostId,
               input.repositoryKey,
             ) as { count: number }
@@ -215,7 +218,7 @@ export class NativeMemoryObservationStore {
   ): NativeMemoryObservation[] {
     const rows = this.db
       .prepare(
-        `SELECT * FROM provider_memory_observations
+        `SELECT * FROM native_memory_observations
          WHERE project_id = ? AND state = ?
          ORDER BY changed_at DESC, source_key ASC
          LIMIT ?`,
@@ -227,7 +230,7 @@ export class NativeMemoryObservationStore {
   get(id: string, projectId: string): NativeMemoryObservation | null {
     const row = this.db
       .prepare(
-        `SELECT * FROM provider_memory_observations
+        `SELECT * FROM native_memory_observations
          WHERE id = ? AND project_id = ?`,
       )
       .get(id, projectId) as ObservationRow | undefined;
@@ -237,7 +240,7 @@ export class NativeMemoryObservationStore {
   counts(projectId: string): { available: number; removed: number } {
     const rows = this.db
       .prepare(
-        `SELECT state, COUNT(*) AS count FROM provider_memory_observations
+        `SELECT state, COUNT(*) AS count FROM native_memory_observations
          WHERE project_id = ? GROUP BY state`,
       )
       .all(projectId) as Array<{

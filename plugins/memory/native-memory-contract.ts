@@ -1,7 +1,16 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
-export const NATIVE_MEMORY_PROVIDER = "claude-code" as const;
+/**
+ * On-disk memory layouts the host scanner knows how to read. A layout names a
+ * filesystem convention this plugin implements — `claude-memory-dir` is the
+ * `~/.claude/settings.json` + `~/.claude/projects/<key>/memory/` tree — not a
+ * bb provider id. Nothing routes on it: bb never maps a thread's provider onto
+ * a layout, and no provider declares one. Adding an agent's memory tree means
+ * adding a scanner and an entry here, with no change to the idle path.
+ */
+export const NATIVE_MEMORY_LAYOUTS = ["claude-memory-dir"] as const;
+export type NativeMemoryLayout = (typeof NATIVE_MEMORY_LAYOUTS)[number];
 export const NATIVE_MEMORY_MAX_FILE_BYTES = 64 * 1024;
 export const NATIVE_MEMORY_MAX_FILES = 128;
 export const NATIVE_MEMORY_MAX_TOTAL_BYTES = 1024 * 1024;
@@ -19,6 +28,7 @@ const sourceKeySchema = z
     "source key must be a safe relative path",
   );
 const contentHashSchema = z.string().regex(/^[a-f0-9]{64}$/u);
+export const nativeMemoryLayoutSchema = z.enum(NATIVE_MEMORY_LAYOUTS);
 
 export const nativeMemorySourceSchema = z
   .object({
@@ -35,6 +45,7 @@ export const nativeMemoryScanResultSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("ok"),
+      layout: nativeMemoryLayoutSchema,
       repositoryKey: repositoryKeySchema,
       sources: z.array(nativeMemorySourceSchema).max(NATIVE_MEMORY_MAX_FILES),
     })
@@ -42,6 +53,7 @@ export const nativeMemoryScanResultSchema = z.discriminatedUnion("kind", [
   z
     .object({
       kind: z.literal("not_found"),
+      layout: nativeMemoryLayoutSchema,
       repositoryKey: repositoryKeySchema,
       reason: z.string().min(1).max(500),
     })
@@ -80,11 +92,11 @@ export type NativeMemoryReadResult = z.infer<
 >;
 
 export const nativeMemoryHostContract = defineRpcContract({
-  scanClaudeMemory: {
+  scanNativeMemory: {
     input: z.object({ workspacePath: workspacePathSchema }).strict(),
     output: nativeMemoryScanResultSchema,
   },
-  readClaudeMemory: {
+  readNativeMemory: {
     input: z
       .object({
         workspacePath: workspacePathSchema,

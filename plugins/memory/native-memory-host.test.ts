@@ -64,18 +64,19 @@ describe("provider-native memory host boundary", () => {
   it("reports a missing store and handles an empty store without inventing observations", async () => {
     const missing = await fixture();
     const missingResult = await missing.harness.experimental_call(
-      "scanClaudeMemory",
+      "scanNativeMemory",
       { workspacePath: missing.workspace },
     );
     expect(missingResult).toMatchObject({
       kind: "not_found",
+      layout: "claude-memory-dir",
       reason: "Claude auto-memory directory was not found",
     });
 
     const empty = await fixture();
     await mkdir(empty.memoryRoot, { recursive: true });
     await expect(
-      empty.harness.experimental_call("scanClaudeMemory", {
+      empty.harness.experimental_call("scanNativeMemory", {
         workspacePath: empty.workspace,
       }),
     ).resolves.toMatchObject({ kind: "ok", sources: [] });
@@ -94,11 +95,13 @@ describe("provider-native memory host boundary", () => {
     await writeFile(outside, "outside\n");
     await symlink(outside, path.join(memoryRoot, "linked.md"));
 
-    const scanned = await harness.experimental_call("scanClaudeMemory", {
+    const scanned = await harness.experimental_call("scanNativeMemory", {
       workspacePath: workspace,
     });
     expect(scanned).toMatchObject({
       kind: "ok",
+      // The host names the layout it matched; the server never assumes one.
+      layout: "claude-memory-dir",
       sources: [
         {
           sourceKey: "MEMORY.md",
@@ -115,7 +118,7 @@ describe("provider-native memory host boundary", () => {
     if (!source) throw new Error("expected the topic source");
 
     await expect(
-      harness.experimental_call("readClaudeMemory", {
+      harness.experimental_call("readNativeMemory", {
         workspacePath: workspace,
         repositoryKey: scanned.repositoryKey,
         sourceKey: source.sourceKey,
@@ -128,7 +131,7 @@ describe("provider-native memory host boundary", () => {
     });
 
     await expect(
-      harness.experimental_call("readClaudeMemory", {
+      harness.experimental_call("readNativeMemory", {
         workspacePath: workspace,
         repositoryKey: "f".repeat(32),
         sourceKey: source.sourceKey,
@@ -141,7 +144,7 @@ describe("provider-native memory host boundary", () => {
       "Use Turbo safely.\n",
     );
     await expect(
-      harness.experimental_call("readClaudeMemory", {
+      harness.experimental_call("readNativeMemory", {
         workspacePath: workspace,
         repositoryKey: scanned.repositoryKey,
         sourceKey: source.sourceKey,
@@ -168,7 +171,7 @@ describe("provider-native memory host boundary", () => {
     );
 
     await expect(
-      harness.experimental_call("scanClaudeMemory", {
+      harness.experimental_call("scanNativeMemory", {
         workspacePath: workspace,
       }),
     ).resolves.toMatchObject({
@@ -180,7 +183,7 @@ describe("provider-native memory host boundary", () => {
   it("rejects traversal before it reaches the filesystem boundary", async () => {
     const { harness, workspace } = await fixture();
     await expect(
-      harness.experimental_call("readClaudeMemory", {
+      harness.experimental_call("readNativeMemory", {
         workspacePath: workspace,
         repositoryKey: "a".repeat(32),
         sourceKey: "../outside.md",

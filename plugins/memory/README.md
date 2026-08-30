@@ -98,11 +98,17 @@ memory through the CLI.
 - Retrieval is FTS5 keyword search in this version; embeddings and automatic
   background PR ingestion remain deferred. The bundled `memory-dreaming` skill
   provides the evidence-first synthesis/challenge phase when explicitly loaded.
-- Native observation currently supports Claude Code's documented Markdown
-  auto-memory layout. Codex native memory remains unobserved until it has a
-  stable, testable source adapter.
-- The bridge is polling-based (manual or Claude thread-idle), not a filesystem
-  watcher. Provider files remain the source of truth and are never modified.
+- Native observation reads on-disk *layouts*, not providers: the host scanner
+  ships one adapter today (`claude-memory-dir`, Claude Code's documented
+  Markdown auto-memory tree) and reports which one it matched. Another agent's
+  memory tree is a new adapter plus an entry in `NATIVE_MEMORY_LAYOUTS` — no
+  change to the scan trigger. Nothing branches on a bb provider id.
+- The bridge is polling-based (manual, or any thread going idle in the
+  environment), not a filesystem watcher. Whether a workspace has native memory
+  is a fact about the workspace and host, so the scan trigger does not care
+  which agent went idle; an environment whose host reports no readable layout
+  backs off to one scan per 10 minutes. Provider files remain the source of
+  truth and are never modified.
 - The safety scanner is a guardrail, not a substitute for avoiding sensitive
   memory content.
 

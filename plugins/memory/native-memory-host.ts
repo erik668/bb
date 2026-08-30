@@ -17,8 +17,12 @@ import {
   NATIVE_MEMORY_MAX_TOTAL_BYTES,
   type NativeMemoryReadResult,
   type NativeMemoryScanResult,
+  type NativeMemoryLayout,
   type NativeMemorySource,
 } from "./native-memory-contract.js";
+
+/** The layout this scanner implements: Claude Code's on-disk memory tree. */
+const LAYOUT: NativeMemoryLayout = "claude-memory-dir";
 
 const execFile = promisify(nodeExecFile);
 const MAX_DIRECTORY_DEPTH = 4;
@@ -222,7 +226,7 @@ export function createNativeMemoryHostEntry(
   return experimental_defineHostEntry({
     contract: nativeMemoryHostContract,
     handlers: {
-      async scanClaudeMemory(input): Promise<NativeMemoryScanResult> {
+      async scanNativeMemory(input): Promise<NativeMemoryScanResult> {
         let resolved: ResolvedClaudeMemory;
         try {
           resolved = await resolveClaudeMemory(deps, input.workspacePath);
@@ -236,6 +240,7 @@ export function createNativeMemoryHostEntry(
         if (!root) {
           return {
             kind: "not_found",
+            layout: LAYOUT,
             repositoryKey: resolved.repositoryKey,
             reason: "Claude auto-memory directory was not found",
           };
@@ -263,7 +268,12 @@ export function createNativeMemoryHostEntry(
               modifiedAt: Math.trunc(file.stat.mtimeMs),
             });
           }
-          return { kind: "ok", repositoryKey: resolved.repositoryKey, sources };
+          return {
+            kind: "ok",
+            layout: LAYOUT,
+            repositoryKey: resolved.repositoryKey,
+            sources,
+          };
         } catch (error) {
           return {
             kind: "unsupported",
@@ -271,7 +281,7 @@ export function createNativeMemoryHostEntry(
           };
         }
       },
-      async readClaudeMemory(input): Promise<NativeMemoryReadResult> {
+      async readNativeMemory(input): Promise<NativeMemoryReadResult> {
         let resolved: ResolvedClaudeMemory;
         try {
           resolved = await resolveClaudeMemory(deps, input.workspacePath);
