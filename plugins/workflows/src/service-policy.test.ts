@@ -526,6 +526,26 @@ describe("workflow service policy integration", () => {
     );
   });
 
+  it("parents every worker to the workflow origin thread", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source(`return await agent("owned");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+
+    await eventually(() => expect(test.childCount()).toBe(1));
+    expect(test.harness.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({
+      parentThreadId: "origin",
+    });
+
+    test.service.onThreadIdle("child-1", "done");
+    await eventually(() =>
+      expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+    );
+    controller.abort();
+    await worker;
+  });
+
   it("resolves named and path children on the origin host", async () => {
     const named = source("return { kind: 'named', args };", "named-child");
     const path = source("return { kind: 'path', args };", "path-child");

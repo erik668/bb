@@ -291,9 +291,9 @@ describe("workflows plugin", () => {
       await eventually(() => {
         expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1);
       });
-      expect(harness.sdk.callsTo("threads.spawn")[0]?.[0]).not.toHaveProperty(
-        "parentThreadId",
-      );
+      expect(harness.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({
+        parentThreadId: "thread-test",
+      });
       expect(harness.sdk.callsTo("threads.spawn")[0]?.[0]).not.toHaveProperty(
         "sectionId",
       );

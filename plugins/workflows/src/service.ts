@@ -1407,6 +1407,7 @@ export function createWorkflowService(
           throwIfCancelled(signal);
           const child = await bb.sdk.threads.spawn({
             projectId: run.projectId,
+            parentThreadId: run.originThreadId,
             environment: { type: "reuse", environmentId: run.environmentId },
             prompt: childPrompt(run, prompt, options),
             title: options.title ?? `${run.name} · ${callIndex + 1}`,
