@@ -950,16 +950,17 @@ function RootComposeSurface({
         : rootPanelHostPathTerminalTarget,
     [rootPanelEnvironmentId, rootPanelHostPathTerminalTarget],
   );
-  const { threadStorageFiles: rootThreadStorageFiles } = useThreadStorageViewer(
-    {
-      fileListEnabled: shouldLoadThreadStorageFileList({
-        hasThread: rootPanelThreadId !== null,
-        isSecondaryPanelOpen,
-        secondaryTabs: fixedPanelTabsState.secondary.tabs,
-      }),
-      threadId: rootPanelThreadId ?? undefined,
-    },
-  );
+  const {
+    checkThreadStorageFileExists: checkRootThreadStorageFileExists,
+    threadStorageFiles: rootThreadStorageFiles,
+  } = useThreadStorageViewer({
+    fileListEnabled: shouldLoadThreadStorageFileList({
+      hasThread: rootPanelThreadId !== null,
+      isSecondaryPanelOpen,
+      secondaryTabs: fixedPanelTabsState.secondary.tabs,
+    }),
+    threadId: rootPanelThreadId ?? undefined,
+  });
   const environmentTerminalsListQuery = useEnvironmentTerminals(
     rootPanelEnvironmentId ?? "",
     {
@@ -1018,6 +1019,7 @@ function RootComposeSurface({
     openPluginPanel,
     openTab,
     orderedSecondaryFileTabs,
+    reopenClosedTab,
     reorderTab,
     selectFileSearchResult,
     updateBrowserTab,
@@ -1030,7 +1032,8 @@ function RootComposeSurface({
     projectHostId: rootProjectHostId,
     projectId: isProjectless ? null : projectId,
     retainedTerminalId,
-    storageFiles: rootThreadStorageFiles?.files,
+    storageFileExists: checkRootThreadStorageFileExists,
+    storageFiles: rootThreadStorageFiles,
     terminalSessions: loadedTerminalSessions,
   });
   const rootPluginPanelActions = usePluginNewThreadPanelActions({
@@ -1356,6 +1359,11 @@ function RootComposeSurface({
   useAppCommandHandler("panel.newTab", () => {
     if (!isFocusedPane) return false;
     handleOpenNewTab();
+    return true;
+  });
+  useAppCommandHandler("panel.reopenClosedTab", () => {
+    if (!isFocusedPane || !reopenClosedTab()) return false;
+    openCompactDrawer();
     return true;
   });
   useAppCommandHandler("file.quickOpen", () => {

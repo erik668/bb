@@ -658,6 +658,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     secondaryTabs: fixedPanelTabsState.secondary.tabs,
   });
   const {
+    checkThreadStorageFileExists,
     isThreadStorageFilesLoading,
     refetchThreadStorageFiles,
     threadStorageFiles,
@@ -683,6 +684,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     openTab,
     openPluginPanel,
     orderedSecondaryFileTabs,
+    reopenClosedTab,
     reorderTab,
     selectFileSearchResult,
     updateBrowserTab,
@@ -691,7 +693,8 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     syncThreadId: threadId,
     environmentId: thread?.environmentId,
     retainedTerminalId,
-    storageFiles: threadStorageFiles?.files,
+    storageFileExists: checkThreadStorageFileExists,
+    storageFiles: threadStorageFiles,
     terminalSessions: terminalsListQuery.data?.sessions,
   });
   const pluginPanelActions = usePluginPanelActions({
@@ -1555,6 +1558,11 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
   useAppCommandHandler("panel.newTab", () => {
     if (!isFocused) return false;
     handleOpenNewTab();
+    return true;
+  });
+  useAppCommandHandler("panel.reopenClosedTab", () => {
+    if (!isFocused || !reopenClosedTab()) return false;
+    openCompactDrawer();
     return true;
   });
   useAppCommandHandler("file.quickOpen", () => {
