@@ -28,6 +28,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@bb/process-utils": "workspace:*",
     "@bb/shared-ui": "workspace:*",
     "@jitl/quickjs-singlefile-cjs-release-sync": "^0.32.0",
     "acorn": "8.16.0",

@@ -6,9 +6,10 @@ import {
 import {
   isProcessGroupAlive,
   killProcessGroup,
-  spawnPipedProcess,
-  stopProcessTreeAfterLeaderClose,
-} from "./process-tree.js";
+  spawnPortablePipedProcess,
+  stopProcessGroupLeaderFirst,
+  supportsProcessGroups,
+} from "@bb/process-utils";
 
 function runProcess(
   input: {
@@ -28,11 +29,14 @@ function runProcess(
     timedOut: boolean;
     outputTruncated: boolean;
   }>((resolve, reject) => {
-    const child = spawnPipedProcess({
+    const child = spawnPortablePipedProcess({
       command: input.executable,
-      commandArgs: input.args,
+      args: input.args,
       cwd: input.cwd,
       env: process.env,
+      // Detaching is what puts the check in its own process group, so a suite
+      // that forks survivors can be torn down as a tree rather than a leader.
+      detached: supportsProcessGroups(),
     });
     let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
     let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
@@ -54,10 +58,10 @@ function runProcess(
       (child.exitCode === null && child.signalCode === null);
     const terminate = () => {
       if (processTreeAlive()) {
-        killProcessGroup(child, "SIGTERM");
+        killProcessGroup({ child, signal: "SIGTERM" });
         forceKillTimeout ??= setTimeout(() => {
           if (processTreeAlive()) {
-            killProcessGroup(child, "SIGKILL");
+            killProcessGroup({ child, signal: "SIGKILL" });
           }
         }, 5_000);
       }
@@ -95,8 +99,9 @@ function runProcess(
       if (settled) return;
       settled = true;
       cleanup();
-      void stopProcessTreeAfterLeaderClose(child, {
-        terminateGraceMs: 5_000,
+      void stopProcessGroupLeaderFirst({
+        child,
+        timeoutMs: 5_000,
         killGraceMs: 1_000,
       }).then(() => {
         resolve({

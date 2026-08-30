@@ -1,7 +1,7 @@
 import { experimental_createHostEntryHarness } from "@get-bb/plugin-sdk/testing/host";
 import { describe, expect, it } from "vitest";
 import workflowCheckHostEntry from "./host.js";
-import { supportsProcessGroups } from "./process-tree.js";
+import { supportsProcessGroups } from "@bb/process-utils";
 
 describe("workflow check host entry", () => {
   it("executes argv without shell interpolation and streams stdin", async () => {
