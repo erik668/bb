@@ -11,7 +11,7 @@ async function loadPlugin(): Promise<FakePluginHost> {
   return host;
 }
 
-async function addMemory(
+async function proposeMemory(
   host: FakePluginHost,
   input: {
     scope: "global" | "project";
@@ -25,7 +25,7 @@ async function addMemory(
   },
 ) {
   const argv = [
-    "add",
+    "propose",
     "--scope",
     input.scope,
     "--name",
@@ -38,6 +38,8 @@ async function addMemory(
     "Durable fact used by a future thread",
     "--kind",
     input.kind ?? "fact",
+    "--evidence",
+    `Merged PR evidence for ${input.name}`,
     "--json",
   ];
   for (const tag of input.tags ?? []) argv.push("--tag", tag);
@@ -47,7 +49,7 @@ async function addMemory(
     threadId: `thread-${input.projectId}`,
   });
   expect(result.exitCode, result.stderr).toBe(0);
-  return JSON.parse(result.stdout ?? "").memory as {
+  return JSON.parse(result.stdout ?? "").candidate as {
     id: string;
     version: number;
     scope: string;
@@ -56,10 +58,37 @@ async function addMemory(
   };
 }
 
+async function addMemory(
+  host: FakePluginHost,
+  input: Parameters<typeof proposeMemory>[1],
+) {
+  const candidate = await proposeMemory(host, input);
+  const approved = (await host.harness.callRpc("approveCandidate", {
+    id: candidate.id,
+    expectedVersion: candidate.version,
+    reason: "Workspace owner verified the evidence",
+  })) as {
+    memory: {
+      id: string;
+      version: number;
+      scope: string;
+      projectId: string | null;
+      name: string;
+    };
+  };
+  return approved.memory;
+}
+
 describe("bb-plugin-memory", () => {
   it("registers a CLI and instruction catalog without native agent tools", async () => {
     const host = await loadPlugin();
     expect(host.harness.registrations.cli?.name).toBe("memory");
+    const commands =
+      host.harness.registrations.cli?.commands.map((command) => command.name) ??
+      [];
+    expect(commands).toContain("propose");
+    expect(commands).not.toContain("approve");
+    expect(commands).not.toContain("reject");
     expect(host.harness.registrations.agentTools).toEqual([]);
     expect(host.harness.registrations.instructionProvider).not.toBeNull();
   });
@@ -203,93 +232,261 @@ describe("bb-plugin-memory", () => {
     expect(missingProject.stderr).toContain("requires a BB project context");
   });
 
-  it("uses optimistic versions for updates and forgetting", async () => {
+  it("keeps proposals out of active retrieval until owner approval", async () => {
     const host = await loadPlugin();
-    const memory = await addMemory(host, {
+    const candidate = await proposeMemory(host, {
       scope: "global",
       projectId: "project-a",
       name: "answer-style",
       summary: "Prefer short answers.",
       kind: "preference",
     });
-    const updated = await host.harness.runCli(
-      [
-        "update",
-        memory.id,
-        "--expected-version",
-        "1",
-        "--summary",
-        "Prefer concise answers with concrete evidence.",
-        "--reason",
-        "User refined the preference",
-        "--json",
-      ],
-      { projectId: "project-a", threadId: "thread-a" },
-    );
-    expect(updated.exitCode, updated.stderr).toBe(0);
-    expect(JSON.parse(updated.stdout ?? "").memory.version).toBe(2);
-
-    const stale = await host.harness.runCli(
-      [
-        "update",
-        memory.id,
-        "--expected-version",
-        "1",
-        "--summary",
-        "Stale write",
-        "--reason",
-        "stale",
-      ],
+    const hidden = await host.harness.runCli(
+      ["get", candidate.id, "--scope", "all", "--json"],
       { projectId: "project-a" },
     );
-    expect(stale.exitCode).toBe(1);
-    expect(stale.stderr).toContain("version conflict");
+    expect(hidden.exitCode).toBe(1);
+    const instructions = host.harness.registrations.instructionProvider?.({
+      threadId: "thread-a",
+      projectId: "project-a",
+    });
+    expect(instructions).not.toContain(candidate.id);
 
-    const forgotten = await host.harness.runCli(
-      [
-        "forget",
-        memory.id,
-        "--expected-version",
-        "2",
-        "--reason",
-        "User revoked this preference",
-        "--json",
-      ],
-      { projectId: "project-a", threadId: "thread-a" },
-    );
-    expect(forgotten.exitCode, forgotten.stderr).toBe(0);
-    expect(JSON.parse(forgotten.stdout ?? "").forgotten.version).toBe(3);
+    const approved = (await host.harness.callRpc("approveCandidate", {
+      id: candidate.id,
+      expectedVersion: 1,
+      reason: "I verified this preference",
+    })) as {
+      memory: { id: string; version: number };
+      receipt: { actor: string; candidateVersion: number };
+    };
+    expect(approved.receipt).toMatchObject({
+      actor: "memory-settings-owner",
+      candidateVersion: 1,
+    });
 
-    const get = await host.harness.runCli(
-      ["get", memory.id, "--scope", "all", "--json"],
+    const visible = await host.harness.runCli(
+      ["get", approved.memory.id, "--scope", "all", "--json"],
       { projectId: "project-a" },
     );
-    expect(get.exitCode).toBe(1);
+    expect(visible.exitCode, visible.stderr).toBe(0);
+    expect(JSON.parse(visible.stdout ?? "").memory.name).toBe("answer-style");
+    expect(
+      host.harness.registrations.instructionProvider?.({
+        threadId: "thread-a",
+        projectId: "project-a",
+      }),
+    ).toContain(approved.memory.id);
+  });
 
-    const history = await host.harness.runCli(["history", memory.id, "--json"]);
-    expect(history.exitCode, history.stderr).toBe(0);
-    const versions = JSON.parse(history.stdout ?? "").history as Array<{
-      version: number;
-      action: string;
-    }>;
-    expect(versions.map(({ version, action }) => [version, action])).toEqual([
-      [3, "forget"],
-      [2, "update"],
-      [1, "create"],
-    ]);
-
-    const boundedHistory = await host.harness.runCli([
-      "history",
-      memory.id,
-      "--limit",
-      "2",
+  it("keeps the add compatibility alias candidate-only", async () => {
+    const host = await loadPlugin();
+    const result = await host.harness.runCli(
+      [
+        "add",
+        "--scope",
+        "global",
+        "--name",
+        "legacy-add-call",
+        "--summary",
+        "Legacy callers still require owner review.",
+        "--details",
+        "The add alias creates only a candidate.",
+        "--reason",
+        "Compatibility behavior",
+        "--evidence",
+        "Legacy CLI contract probe",
+        "--json",
+      ],
+      { projectId: "project-a", threadId: "legacy-thread" },
+    );
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout ?? "")).toMatchObject({
+      candidate: { status: "pending", name: "legacy-add-call" },
+    });
+    const catalog = await host.harness.runCli([
+      "catalog",
+      "--scope",
+      "global",
       "--json",
     ]);
+    expect(JSON.parse(catalog.stdout ?? "").memories).toEqual([]);
+  });
+
+  it("forces owner review to include the latest adversarial challenge", async () => {
+    const host = await loadPlugin();
+    const candidate = await proposeMemory(host, {
+      scope: "project",
+      projectId: "project-a",
+      name: "reviewer-null-style",
+      summary: "Prefer explicit null checks in this subsystem.",
+      kind: "preference",
+    });
+
+    const hiddenFromOtherProject = await host.harness.runCli(
+      ["candidate", candidate.id, "--json"],
+      { projectId: "project-b", threadId: "other-project-thread" },
+    );
+    expect(hiddenFromOtherProject.exitCode).toBe(1);
+    expect(hiddenFromOtherProject.stderr).toContain("was not found");
+
+    const challenged = await host.harness.runCli(
+      [
+        "challenge",
+        candidate.id,
+        "--summary",
+        "The preference conflicts with the local optional-value convention.",
+        "--evidence",
+        "src/example.ts uses the established undefined convention",
+        "--json",
+      ],
+      { projectId: "project-a", threadId: "critic-thread" },
+    );
+    expect(challenged.exitCode, challenged.stderr).toBe(0);
+    const challengedCandidate = JSON.parse(challenged.stdout ?? "")
+      .candidate as { version: number; challenges: unknown[] };
+    expect(challengedCandidate).toMatchObject({ version: 2 });
+    expect(challengedCandidate.challenges).toHaveLength(1);
+
+    await expect(
+      host.harness.callRpc("approveCandidate", {
+        id: candidate.id,
+        expectedVersion: 1,
+        reason: "Stale review",
+      }),
+    ).rejects.toThrow("version conflict");
+
+    const approved = (await host.harness.callRpc("approveCandidate", {
+      id: candidate.id,
+      expectedVersion: 2,
+      reason: "I inspected the counterexample and still adopt this preference",
+    })) as {
+      candidate: {
+        status: string;
+        decisionReceipt: { candidateVersion: number };
+      };
+    };
+    expect(approved.candidate).toMatchObject({
+      status: "approved",
+      decisionReceipt: { candidateVersion: 2 },
+    });
+  });
+
+  it("rejects a candidate without activating it and closes terminal decisions", async () => {
+    const host = await loadPlugin();
+    const candidate = await proposeMemory(host, {
+      scope: "global",
+      projectId: "project-a",
+      name: "unsupported-review-comment",
+      summary: "Always use a singleton for parsers.",
+    });
+
+    const rejected = (await host.harness.callRpc("rejectCandidate", {
+      id: candidate.id,
+      expectedVersion: 1,
+      reason: "The reviewer comment does not survive source inspection",
+    })) as {
+      candidate: { status: string };
+      receipt: { decision: string; promotedMemoryId: string | null };
+    };
+    expect(rejected).toMatchObject({
+      candidate: { status: "rejected" },
+      receipt: { decision: "reject", promotedMemoryId: null },
+    });
     expect(
-      JSON.parse(boundedHistory.stdout ?? "").history.map(
-        (entry: { version: number }) => entry.version,
-      ),
-    ).toEqual([3, 2]);
+      (
+        await host.harness.runCli(
+          ["search", "singleton parsers", "--scope", "all", "--json"],
+          { projectId: "project-a" },
+        )
+      ).stdout,
+    ).not.toContain("unsupported-review-comment");
+    await expect(
+      host.harness.callRpc("approveCandidate", {
+        id: candidate.id,
+        expectedVersion: 2,
+        reason: "Conflicting second decision",
+      }),
+    ).rejects.toThrow("already rejected");
+    const terminalChallenge = await host.harness.runCli(
+      [
+        "challenge",
+        candidate.id,
+        "--summary",
+        "Late counterevidence",
+        "--evidence",
+        "A late artifact",
+      ],
+      { projectId: "project-a", threadId: "critic-thread" },
+    );
+    expect(terminalChallenge.exitCode).toBe(1);
+    expect(terminalChallenge.stderr).toContain("already rejected");
+  });
+
+  it("rolls back approval atomically when the active name collides", async () => {
+    const host = await loadPlugin();
+    const active = await addMemory(host, {
+      scope: "global",
+      projectId: "project-a",
+      name: "collision-memory",
+      summary: "Original active memory.",
+    });
+    const candidate = await proposeMemory(host, {
+      scope: "global",
+      projectId: "project-a",
+      name: "collision-memory",
+      summary: "Conflicting candidate memory.",
+    });
+
+    await expect(
+      host.harness.callRpc("approveCandidate", {
+        id: candidate.id,
+        expectedVersion: 1,
+        reason: "Attempt a colliding promotion",
+      }),
+    ).rejects.toThrow("active global memory");
+
+    const pending = (await host.harness.callRpc("listCandidates")) as {
+      candidates: Array<{
+        id: string;
+        status: string;
+        version: number;
+        decisionReceipt: unknown;
+      }>;
+    };
+    expect(pending.candidates).toContainEqual(
+      expect.objectContaining({
+        id: candidate.id,
+        status: "pending",
+        version: 1,
+        decisionReceipt: null,
+      }),
+    );
+    const catalog = await host.harness.runCli([
+      "catalog",
+      "--scope",
+      "global",
+      "--json",
+    ]);
+    const activeIds = JSON.parse(catalog.stdout ?? "").memories.map(
+      (entry: { id: string }) => entry.id,
+    );
+    expect(activeIds).toEqual([active.id]);
+  });
+
+  it("does not expose active-memory update or deletion to agents", async () => {
+    const host = await loadPlugin();
+    const memory = await addMemory(host, {
+      scope: "global",
+      projectId: "project-a",
+      name: "owner-controlled",
+      summary: "Only the owner changes active memory.",
+    });
+    for (const command of ["update", "forget"]) {
+      const result = await host.harness.runCli([command, memory.id]);
+      expect(result.exitCode).toBe(1);
+      expect(result.stderr).toContain("restricted to Settings");
+    }
   });
 
   it("lists every scope and edits or deletes memories through settings RPC", async () => {
@@ -346,6 +543,25 @@ describe("bb-plugin-memory", () => {
 
   it("rejects prompt-injection content, secret-like values, and duplicates", async () => {
     const host = await loadPlugin();
+    const noEvidence = await host.harness.runCli(
+      [
+        "propose",
+        "--scope",
+        "global",
+        "--name",
+        "no-evidence",
+        "--summary",
+        "A plausible claim",
+        "--details",
+        "But it has no evidence.",
+        "--reason",
+        "test",
+      ],
+      { projectId: "project-a" },
+    );
+    expect(noEvidence.exitCode).toBe(1);
+    expect(noEvidence.stderr).toContain("evidence requires at least one item");
+
     const injection = await host.harness.runCli(
       [
         "add",
@@ -384,7 +600,7 @@ describe("bb-plugin-memory", () => {
     expect(secret.exitCode).toBe(1);
     expect(secret.stderr).toContain("credential assignment");
 
-    await addMemory(host, {
+    await proposeMemory(host, {
       scope: "global",
       projectId: "project-a",
       name: "one-name",
@@ -403,6 +619,8 @@ describe("bb-plugin-memory", () => {
         "Second details",
         "--reason",
         "test",
+        "--evidence",
+        "A second source artifact",
       ],
       { projectId: "project-a" },
     );

@@ -128,24 +128,37 @@ an explicit selection; never guess ACP model IDs.
 The Memory plugin is an opt-in install, bundled with the app:
 `bb plugin install memory`. Once installed, it injects a compact global and
 current-project memory index into agent context and progressively discloses
-full records through CLI-only commands. Because its store works across
-providers, we recommend disabling provider-native memory under Settings →
-Providers to avoid duplicate or conflicting stores. Settings → Memory lists
-every global and project memory and supports version-checked edits and soft
-deletion.
+full records through CLI-only commands. Settings → Memory lists every active
+global and project memory, supports version-checked edits and soft deletion,
+and is the only surface that may promote or reject candidate memories.
+
+An optional read-only compatibility bridge treats Claude Code auto-memory as
+project-scoped shadow observations. Enable it under Extensions → Plugins →
+Memory or run `bb plugin config memory set nativeMemoryObservations true`.
+The bridge stores hashes and provenance, never modifies provider files, and
+never creates candidates or active memories automatically.
 
   bb memory catalog [--scope project|global|all] [--json]
   bb memory search <query> [--scope project|global|all] [--json]
   bb memory get <id> [--scope project|global|all] [--json]
-  bb memory add --scope project|global --name <name> --summary <text>
-                --details <text> --reason <text> [--kind <kind>]
-                [--tag <tag>]... [--importance <0-100>] [--pinned] [--json]
-  bb memory update <id> --expected-version <n> [fields...] [--json]
-  bb memory forget <id> --expected-version <n> --reason <text> [--json]
+  bb memory propose --scope project|global --name <name> --summary <text>
+                    --details <text> --reason <text> --evidence <text>
+                    [--kind <kind>] [--tag <tag>]... [--importance <0-100>]
+                    [--pinned] [--json]
+  bb memory candidates [--scope project|global|all]
+                       [--status pending|approved|rejected] [--json]
+  bb memory candidate <id> [--json]
+  bb memory challenge <id> --summary <text> --evidence <text> [--json]
   bb memory history <id> [--scope project|global|all] [--limit 1-100] [--json]
+  bb memory native status [--json]
+  bb memory native scan --environment <id> [--json]
+  bb memory native observations [--status available|removed] [--json]
+  bb memory native read <observation-id> [--json]
 
-Project writes use the invoking CLI's current project. Global writes require
-the explicit `--scope global` flag.
+Project proposals use the invoking CLI's current project. Global proposals
+require the explicit `--scope global` flag. Provider observations are untrusted
+evidence and must pass through the same bounded dreaming, challenge, and
+workspace-owner promotion path as all other learning.
 
 The Docs plugin is an opt-in official plugin bundled with the app:
 `bb plugin install docs`. Read-only discovery remains direct, while edits use

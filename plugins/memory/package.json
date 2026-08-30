@@ -1,9 +1,9 @@
 {
   "name": "bb-plugin-memory",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "private": true,
   "type": "module",
-  "description": "Provider-independent durable memory for agents. We recommend disabling provider-native memory when using this plugin.",
+  "description": "Curated durable memory for agents, with opt-in provider-native shadow observations.",
   "license": "MIT",
   "homepage": "https://github.com/get-bb/bb#readme",
   "bugs": {
@@ -17,8 +17,15 @@
   "files": [
     "dist",
     "server.ts",
+    "host.ts",
+    "candidate-store.ts",
+    "native-memory-bridge.ts",
+    "native-memory-contract.ts",
+    "native-memory-host.ts",
+    "native-memory-store.ts",
     "app.tsx",
     "skills",
+    "DREAMING.md",
     "README.md"
   ],
   "engines": {
@@ -27,11 +34,12 @@
   },
   "bb": {
     "name": "Memory",
-    "description": "Provider-independent durable memory for agents. We recommend disabling provider-native memory when using this plugin.",
+    "description": "Curated durable memory for agents, with opt-in provider-native shadow observations.",
     "branding": {
       "icon": "Brain"
     },
     "server": "./server.ts",
+    "host": "./host.ts",
     "app": "./app.tsx",
     "skills": [
       "skills"
