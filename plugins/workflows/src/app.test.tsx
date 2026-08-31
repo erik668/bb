@@ -22,8 +22,21 @@ import { workflowUiRpcContract } from "./ui-contract.js";
 
 const app = await loadPluginApp(() => import("./app"));
 
+/**
+ * jsdom has no page lifecycle, so drive `document.visibilityState` directly.
+ * Every poller in this plugin reads it through the same two helpers in app.tsx.
+ */
+function setVisibility(state: "visible" | "hidden") {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 afterEach(() => {
   cleanup();
+  setVisibility("visible");
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -465,6 +478,47 @@ describe("workflow thread phase indicators", () => {
     await mounted.lifecycle.dispose();
   });
 
+  it("does not re-arm the sidebar poll when the tab hides while a scan is in flight", async () => {
+    vi.useFakeTimers();
+    // Hiding between polls is the easy case — the listener clears the pending
+    // timer. This is the race: the scan was already issued, so there is no
+    // timer to clear, and only the post-await visibility read stops the loop.
+    let settle: (() => void) | null = null;
+    const fetchMock = vi.fn(
+      async () =>
+        await new Promise((resolve) => {
+          settle = () =>
+            resolve({
+              ok: true,
+              json: async () => ({
+                ok: true,
+                result: { statuses: [originStatus] },
+              }),
+            });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(settle).not.toBeNull();
+
+    await act(async () => {
+      setVisibility("hidden");
+      settle?.();
+      await Promise.resolve();
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await mounted.lifecycle.dispose();
+  });
+
   it("does not reapply unchanged sidebar projections", async () => {
     vi.useFakeTimers();
     vi.stubGlobal(
@@ -534,6 +588,116 @@ describe("workflow thread phase indicators", () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     await mounted.lifecycle.dispose();
+  });
+
+  it("refreshes the header on a workflow-runs signal naming its own thread", async () => {
+    vi.useFakeTimers();
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_origin",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        rpc: {
+          workflowThreadStatuses: () => ({ statuses: [originStatus] }),
+        },
+      },
+    );
+    try {
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(1);
+
+      await slot.emitRealtime("workflow-runs", { threadId: "thr_other" });
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(1);
+
+      await slot.emitRealtime("workflow-runs", { threadId: "thr_origin" });
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(2);
+    } finally {
+      slot.unmount();
+    }
+  });
+
+  it("pauses the header poll while the document is hidden and refreshes once when it is visible again", async () => {
+    vi.useFakeTimers();
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_origin",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        rpc: {
+          workflowThreadStatuses: () => ({ statuses: [originStatus] }),
+        },
+      },
+    );
+    try {
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      expect(slot.rpcCalls).toHaveLength(2);
+
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(10_000));
+      expect(slot.rpcCalls).toHaveLength(2);
+
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(3);
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      expect(slot.rpcCalls).toHaveLength(4);
+    } finally {
+      slot.unmount();
+    }
+  });
+
+  it("stops the sidebar scan while the document is hidden and resumes it on the way back", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { statuses: [originStatus] } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // The global scan is the expensive one: it walks every queued or running
+    // run in the workspace, so a hidden window must stop issuing it entirely.
+    await act(async () => {
+      setVisibility("hidden");
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      setVisibility("visible");
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    await mounted.lifecycle.dispose();
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -728,13 +892,6 @@ describe("workflow composer banner", () => {
 
   it("pauses polling while the document is hidden and refreshes once when it is visible again", async () => {
     vi.useFakeTimers();
-    const setVisibility = (state: "visible" | "hidden") => {
-      Object.defineProperty(document, "visibilityState", {
-        configurable: true,
-        get: () => state,
-      });
-      document.dispatchEvent(new Event("visibilitychange"));
-    };
     const slot = renderSlot(
       banner,
       {},
@@ -766,10 +923,6 @@ describe("workflow composer banner", () => {
       expect(slot.rpcCalls).toHaveLength(4);
     } finally {
       slot.unmount();
-      Object.defineProperty(document, "visibilityState", {
-        configurable: true,
-        get: () => "visible",
-      });
     }
   });
 

@@ -893,6 +893,7 @@ function useWorkflowThreadStatuses(threadId: string): ThreadStatusesLoadState {
     status: "loading",
   });
   const requestSequence = useRef(0);
+  const visible = useDocumentVisible();
 
   const refresh = useCallback(async (): Promise<boolean> => {
     const sequence = ++requestSequence.current;
@@ -908,12 +909,30 @@ function useWorkflowThreadStatuses(threadId: string): ThreadStatusesLoadState {
     }
   }, [rpc, threadId]);
 
+  // Wakes an origin thread's header the moment a run changes. The runs channel
+  // only signals a run's origin and presentation threads, never the worker
+  // threads it spawned, so this cannot replace the poll below for the worker
+  // role — it only removes the latency for the origin role.
+  useRealtime(WORKFLOW_RUNS_REALTIME_CHANNEL, (payload) => {
+    if (workflowRunsSignalThreadId(payload) === threadId) void refresh();
+  });
+
   useEffect(() => {
     let cancelled = false;
-    let timeout: number | null = null;
     void Promise.resolve().then(() => {
       if (!cancelled) setState({ status: "loading" });
     });
+    return () => {
+      cancelled = true;
+      requestSequence.current += 1;
+    };
+  }, [refresh]);
+
+  // A hidden tab polls zero times; becoming visible refreshes immediately.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    let timeout: number | null = null;
     const poll = async () => {
       const active = await refresh();
       if (cancelled) return;
@@ -925,10 +944,9 @@ function useWorkflowThreadStatuses(threadId: string): ThreadStatusesLoadState {
     void poll();
     return () => {
       cancelled = true;
-      requestSequence.current += 1;
       if (timeout !== null) window.clearTimeout(timeout);
     };
-  }, [refresh]);
+  }, [refresh, visible]);
 
   return state;
 }
@@ -1061,19 +1079,38 @@ function mountWorkflowThreadRowStatuses({
     }
   };
 
-  const schedule = (delay: number) => {
-    timeout = window.setTimeout(() => {
-      void refresh().then((nextDelay) => {
-        if (!signal.aborted) schedule(nextDelay);
-      });
-    }, delay);
+  const clearPending = () => {
+    if (timeout !== null) window.clearTimeout(timeout);
+    timeout = null;
   };
-  void refresh().then((delay) => {
-    if (!signal.aborted) schedule(delay);
+
+  // This script is mounted once per app window and outlives every route, so an
+  // ungated loop would keep scanning every active run in a window nobody is
+  // looking at. Polling therefore runs only while the document is visible; the
+  // visibility listener is what restarts it, and it refreshes on the way in so
+  // a returning window is never showing what was true when it was hidden.
+  const pollWhileVisible = () => {
+    clearPending();
+    void refresh().then((delay) => {
+      if (signal.aborted || !readDocumentVisible()) return;
+      clearPending();
+      timeout = window.setTimeout(() => {
+        timeout = null;
+        pollWhileVisible();
+      }, delay);
+    });
+  };
+
+  const unsubscribeVisibility = subscribeDocumentVisibility(() => {
+    if (signal.aborted) return;
+    if (readDocumentVisible()) pollWhileVisible();
+    else clearPending();
   });
+  if (readDocumentVisible()) pollWhileVisible();
 
   return () => {
-    if (timeout !== null) window.clearTimeout(timeout);
+    unsubscribeVisibility();
+    clearPending();
   };
 }
 
@@ -2132,8 +2169,8 @@ function PendingAmendments({
                 key={criterion.id}
                 className="text-2xs leading-relaxed text-muted-foreground"
               >
-                <span className="text-foreground">{criterion.id}</span>{" "}
-                &middot; {criterion.provenBy} &mdash; {criterion.statement}
+                <span className="text-foreground">{criterion.id}</span> &middot;{" "}
+                {criterion.provenBy} &mdash; {criterion.statement}
                 {criterion.detail === null ? null : ` (${criterion.detail})`}
               </li>
             ))}
