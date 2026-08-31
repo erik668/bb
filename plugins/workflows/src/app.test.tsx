@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
+import {
+  loadPluginApp,
+  mountPluginContentScripts,
+  renderSlot,
+} from "@get-bb/plugin-sdk/testing/app";
 import type { WorkflowAcceptanceCoverage } from "./workflow-coverage.js";
 import {
   canonicalizeAcceptanceCriteria,
@@ -12,14 +16,29 @@ import type {
   WorkflowArtifactSummaryView,
   WorkflowCheckpointView,
   WorkflowRunView,
+  WorkflowThreadStatusView,
 } from "./ui-contract.js";
 import { workflowUiRpcContract } from "./ui-contract.js";
 
 const app = await loadPluginApp(() => import("./app"));
 
+/**
+ * jsdom has no page lifecycle, so drive `document.visibilityState` directly.
+ * Every poller in this plugin reads it through the same two helpers in app.tsx.
+ */
+function setVisibility(state: "visible" | "hidden") {
+  Object.defineProperty(document, "visibilityState", {
+    configurable: true,
+    get: () => state,
+  });
+  document.dispatchEvent(new Event("visibilitychange"));
+}
+
 afterEach(() => {
   cleanup();
+  setVisibility("visible");
   vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 const message = {
@@ -233,8 +252,32 @@ function workCheckpoint(
   };
 }
 
+const originStatus: WorkflowThreadStatusView = {
+  role: "origin",
+  threadId: "thr_origin",
+  runId: run.id,
+  runName: run.name,
+  runStatus: "running",
+  activePhases: ["Review"],
+};
+
+const workerStatus: WorkflowThreadStatusView = {
+  role: "worker",
+  threadId: "thr_worker_2",
+  runId: run.id,
+  runName: run.name,
+  callStatus: "running",
+  phase: "Review",
+};
+
 describe("workflows app registration", () => {
-  it("registers the composer banner, chat directive, and thread panel action", () => {
+  it("registers thread phase indicators alongside the existing workflow surfaces", () => {
+    expect(app.contentScripts.map((script) => script.id)).toEqual([
+      "workflow-thread-row-status",
+    ]);
+    expect(app.threadHeaderActions).toMatchObject([
+      { id: "workflow-phase", title: "Workflow phase" },
+    ]);
     expect(app.composerCustomizations).toMatchObject([
       {
         id: "workflow-status",
@@ -253,6 +296,408 @@ describe("workflows app registration", () => {
         layout: "flush",
       },
     ]);
+  });
+});
+
+describe("workflow thread phase indicators", () => {
+  const header = app.threadHeaderActions[0]!;
+
+  it("shows every concurrently active phase on an origin thread", async () => {
+    const openThreadPanel = vi.fn(() => true);
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_origin",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        openThreadPanel,
+        rpc: {
+          workflowThreadStatuses: () => ({
+            statuses: [
+              { ...originStatus, activePhases: ["Discover", "Review"] },
+            ],
+          }),
+        },
+      },
+    );
+
+    const button = await slot.findByRole("button", {
+      name: "Workflow Review the release: Discover + Review",
+    });
+    expect(button.textContent).toBe("Workflow · Discover + Review");
+    fireEvent.click(button);
+    expect(openThreadPanel).toHaveBeenCalledWith({
+      actionId: "workflow-run",
+      title: run.name,
+      params: { runId: run.id },
+    });
+  });
+
+  it("shows the assigned phase and state on a worker thread", async () => {
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_worker_2",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        rpc: {
+          workflowThreadStatuses: () => ({
+            statuses: [workerStatus],
+          }),
+        },
+      },
+    );
+
+    const indicator = await slot.findByRole("status", {
+      name: "Workflow Review the release: Review, Running",
+    });
+    expect(indicator.textContent).toBe("Workflow · Review · Running");
+    expect(
+      indicator.querySelector('[data-icon="Workflow"]')?.getAttribute("class"),
+    ).toContain("animate-shine-icon");
+  });
+
+  it("keeps the exact phase in the compact header's accessible label", async () => {
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_worker_2",
+        projectId: "proj_1",
+        isCompactViewport: true,
+      },
+      {
+        rpc: {
+          workflowThreadStatuses: () => ({
+            statuses: [workerStatus],
+          }),
+        },
+      },
+    );
+
+    const indicator = await slot.findByRole("status", {
+      name: "Workflow Review the release: Review, Running",
+    });
+    expect(indicator.className).toContain("w-7");
+    expect(indicator.querySelector(".sr-only")?.textContent).toBe(
+      "Workflow · Review · Running",
+    );
+  });
+
+  it("summarizes parent and multiple locally-originated workflows consistently", async () => {
+    const localRun = {
+      ...originStatus,
+      threadId: "thr_worker_2",
+      runId: "wfr_22222222-2222-4222-8222-222222222222",
+      runName: "Verify the fix",
+      activePhases: ["Verify"],
+    } satisfies WorkflowThreadStatusView;
+    const secondLocalRun = {
+      ...localRun,
+      runId: "wfr_33333333-3333-4333-8333-333333333333",
+      runName: "Check the docs",
+      activePhases: ["Publish"],
+    } satisfies WorkflowThreadStatusView;
+    const openThreadPanel = vi.fn(() => true);
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_worker_2",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        openThreadPanel,
+        rpc: {
+          workflowThreadStatuses: () => ({
+            statuses: [workerStatus, localRun, secondLocalRun],
+          }),
+        },
+      },
+    );
+
+    const button = await slot.findByRole("button", {
+      name: "Parent workflow Review the release: Review, Running; workflow Verify the fix started here: Verify; workflow Check the docs started here: Publish",
+    });
+    expect(button.textContent).toBe(
+      "Workflow · Review · Local: 2 local workflows · Verify + Publish",
+    );
+    fireEvent.click(button);
+    expect(openThreadPanel).toHaveBeenCalledWith({
+      actionId: "workflow-run",
+      title: localRun.runName,
+      params: { runId: localRun.runId },
+    });
+  });
+
+  it("projects phases into sidebar rows and clears stale statuses", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: { statuses: [originStatus, workerStatus] },
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({ ok: true, result: { statuses: [] } }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mounted.inspection.getThreadRowStatus("thr_origin")).toEqual({
+      icon: "Workflow",
+      label: "Workflow Review the release: Review",
+      tone: "running",
+    });
+    expect(mounted.inspection.getThreadRowStatus("thr_worker_2")).toEqual({
+      icon: "Workflow",
+      label: "Workflow Review the release: Review, Running",
+      tone: "running",
+    });
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(mounted.inspection.getThreadRowStatus("thr_origin")).toBeNull();
+    expect(mounted.inspection.getThreadRowStatus("thr_worker_2")).toBeNull();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/plugins/workflows/rpc/workflowAllActiveThreadStatuses",
+      expect.objectContaining({ method: "POST", body: "null" }),
+    );
+    await mounted.lifecycle.dispose();
+  });
+
+  it("does not re-arm the sidebar poll when the tab hides while a scan is in flight", async () => {
+    vi.useFakeTimers();
+    // Hiding between polls is the easy case — the listener clears the pending
+    // timer. This is the race: the scan was already issued, so there is no
+    // timer to clear, and only the post-await visibility read stops the loop.
+    let settle: (() => void) | null = null;
+    const fetchMock = vi.fn(
+      async () =>
+        await new Promise((resolve) => {
+          settle = () =>
+            resolve({
+              ok: true,
+              json: async () => ({
+                ok: true,
+                result: { statuses: [originStatus] },
+              }),
+            });
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(settle).not.toBeNull();
+
+    await act(async () => {
+      setVisibility("hidden");
+      settle?.();
+      await Promise.resolve();
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await mounted.lifecycle.dispose();
+  });
+
+  it("does not reapply unchanged sidebar projections", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: { statuses: [originStatus] },
+        }),
+      }),
+    );
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mounted.inspection.threadRowStatusCalls).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(mounted.inspection.threadRowStatusCalls).toHaveLength(1);
+    await mounted.lifecycle.dispose();
+  });
+
+  it("clears sidebar projections after three malformed refreshes", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: { statuses: [originStatus] },
+        }),
+      })
+      .mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          ok: true,
+          result: { statuses: [{ unexpected: true }] },
+        }),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(mounted.inspection.getThreadRowStatus("thr_origin")).not.toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(mounted.inspection.getThreadRowStatus("thr_origin")).toBeNull();
+    await mounted.lifecycle.dispose();
+  });
+
+  it("degrades safely when the client lacks sidebar status support", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+      omitExperimentalThreadRowStatus: true,
+    });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    await mounted.lifecycle.dispose();
+  });
+
+  it("refreshes the header on a workflow-runs signal naming its own thread", async () => {
+    vi.useFakeTimers();
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_origin",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        rpc: {
+          workflowThreadStatuses: () => ({ statuses: [originStatus] }),
+        },
+      },
+    );
+    try {
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(1);
+
+      await slot.emitRealtime("workflow-runs", { threadId: "thr_other" });
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(1);
+
+      await slot.emitRealtime("workflow-runs", { threadId: "thr_origin" });
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(2);
+    } finally {
+      slot.unmount();
+    }
+  });
+
+  it("pauses the header poll while the document is hidden and refreshes once when it is visible again", async () => {
+    vi.useFakeTimers();
+    const slot = renderSlot(
+      header,
+      {
+        threadId: "thr_origin",
+        projectId: "proj_1",
+        isCompactViewport: false,
+      },
+      {
+        rpc: {
+          workflowThreadStatuses: () => ({ statuses: [originStatus] }),
+        },
+      },
+    );
+    try {
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(1);
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      expect(slot.rpcCalls).toHaveLength(2);
+
+      await act(async () => {
+        setVisibility("hidden");
+      });
+      await act(async () => vi.advanceTimersByTimeAsync(10_000));
+      expect(slot.rpcCalls).toHaveLength(2);
+
+      await act(async () => {
+        setVisibility("visible");
+      });
+      await act(async () => Promise.resolve());
+      expect(slot.rpcCalls).toHaveLength(3);
+      await act(async () => vi.advanceTimersByTimeAsync(1_000));
+      expect(slot.rpcCalls).toHaveLength(4);
+    } finally {
+      slot.unmount();
+    }
+  });
+
+  it("stops the sidebar scan while the document is hidden and resumes it on the way back", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ ok: true, result: { statuses: [originStatus] } }),
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const mounted = await mountPluginContentScripts(app, {
+      pluginId: "workflows",
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    // The global scan is the expensive one: it walks every queued or running
+    // run in the workspace, so a hidden window must stop issuing it entirely.
+    await act(async () => {
+      setVisibility("hidden");
+    });
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      setVisibility("visible");
+      await Promise.resolve();
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    await mounted.lifecycle.dispose();
+    await act(async () => vi.advanceTimersByTimeAsync(10_000));
+    expect(fetchMock).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -447,13 +892,6 @@ describe("workflow composer banner", () => {
 
   it("pauses polling while the document is hidden and refreshes once when it is visible again", async () => {
     vi.useFakeTimers();
-    const setVisibility = (state: "visible" | "hidden") => {
-      Object.defineProperty(document, "visibilityState", {
-        configurable: true,
-        get: () => state,
-      });
-      document.dispatchEvent(new Event("visibilitychange"));
-    };
     const slot = renderSlot(
       banner,
       {},
@@ -485,10 +923,6 @@ describe("workflow composer banner", () => {
       expect(slot.rpcCalls).toHaveLength(4);
     } finally {
       slot.unmount();
-      Object.defineProperty(document, "visibilityState", {
-        configurable: true,
-        get: () => "visible",
-      });
     }
   });
 

@@ -120,6 +120,17 @@ export interface WorkflowCallCounts {
   cancelled: number;
 }
 
+export interface ActiveWorkflowThreadStatusRow {
+  runId: string;
+  runName: string;
+  originThreadId: string;
+  runStatus: "queued" | "running";
+  runPhase: string | null;
+  childThreadId: string | null;
+  callStatus: "queued" | "running" | null;
+  callPhase: string | null;
+}
+
 export interface WorkflowCheckpointRow {
   id: string;
   runId: string;
@@ -589,6 +600,56 @@ export function listActiveRunsForThread(
     )
     .all(threadId, threadId)
     .map(runRow);
+}
+
+export function listActiveWorkflowThreadStatuses(
+  db: Db,
+): ActiveWorkflowThreadStatusRow[] {
+  return db
+    .prepare(
+      `SELECT runs.id AS runId, runs.name AS runName,
+         runs.origin_thread_id AS originThreadId, runs.status AS runStatus,
+         runs.phase AS runPhase, calls.child_thread_id AS childThreadId,
+         calls.status AS callStatus,
+         json_extract(calls.options_json, '$.phase') AS callPhase
+       FROM workflow_runs runs
+       LEFT JOIN workflow_calls calls
+         ON calls.run_id = runs.id
+        AND calls.status IN ('queued', 'running')
+       WHERE runs.status IN ('queued', 'running')
+       ORDER BY runs.created_at DESC, runs.rowid DESC, calls.call_index`,
+    )
+    .all() as ActiveWorkflowThreadStatusRow[];
+}
+
+export function listActiveWorkflowThreadStatusesForThread(
+  db: Db,
+  threadId: string,
+): ActiveWorkflowThreadStatusRow[] {
+  return db
+    .prepare(
+      `SELECT runs.id AS runId, runs.name AS runName,
+         runs.origin_thread_id AS originThreadId, runs.status AS runStatus,
+         runs.phase AS runPhase, calls.child_thread_id AS childThreadId,
+         calls.status AS callStatus,
+         json_extract(calls.options_json, '$.phase') AS callPhase
+       FROM workflow_runs runs
+       LEFT JOIN workflow_calls calls
+         ON calls.run_id = runs.id
+        AND calls.status IN ('queued', 'running')
+       WHERE runs.status IN ('queued', 'running')
+         AND (
+           runs.origin_thread_id = ?
+           OR EXISTS (
+             SELECT 1 FROM workflow_calls thread_call
+             WHERE thread_call.run_id = runs.id
+               AND thread_call.child_thread_id = ?
+               AND thread_call.status IN ('queued', 'running')
+           )
+         )
+       ORDER BY runs.created_at DESC, runs.rowid DESC, calls.call_index`,
+    )
+    .all(threadId, threadId) as ActiveWorkflowThreadStatusRow[];
 }
 
 export function listRuns(

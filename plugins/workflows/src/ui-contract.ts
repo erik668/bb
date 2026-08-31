@@ -116,6 +116,35 @@ const workflowCampaignViewSchema = z
   })
   .strict();
 
+const activeRunStatusSchema = z.enum(["queued", "running"]);
+
+export const workflowThreadStatusViewSchema = z.discriminatedUnion("role", [
+  z
+    .object({
+      role: z.literal("origin"),
+      threadId: z.string(),
+      runId: z.string(),
+      runName: z.string(),
+      runStatus: activeRunStatusSchema,
+      activePhases: z.array(z.string().nullable()),
+    })
+    .strict(),
+  z
+    .object({
+      role: z.literal("worker"),
+      threadId: z.string(),
+      runId: z.string(),
+      runName: z.string(),
+      callStatus: activeRunStatusSchema,
+      phase: z.string().nullable(),
+    })
+    .strict(),
+]);
+
+export const workflowThreadStatusesOutputSchema = z
+  .object({ statuses: z.array(workflowThreadStatusViewSchema) })
+  .strict();
+
 const runLookupInputSchema = z
   .object({
     threadId: z.string().trim().min(1),
@@ -284,6 +313,14 @@ export const workflowUiRpcContract = defineRpcContract({
       })
       .strict(),
   },
+  workflowThreadStatuses: {
+    input: threadLookupInputSchema,
+    output: workflowThreadStatusesOutputSchema,
+  },
+  workflowAllActiveThreadStatuses: {
+    input: z.null(),
+    output: workflowThreadStatusesOutputSchema,
+  },
   workflowStopRun: {
     input: z
       .object({
@@ -436,4 +473,7 @@ export type WorkflowArtifactDetailView = z.infer<
 >;
 export type WorkflowArtifactAnchorView = z.infer<
   typeof workflowArtifactAnchorSchema
+>;
+export type WorkflowThreadStatusView = z.infer<
+  typeof workflowThreadStatusViewSchema
 >;
