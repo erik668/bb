@@ -56,6 +56,9 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   them sequentially — they cannot overlap agents or other checks — and a run may
   invoke at most 32. Suite code is trusted and must be non-mutating; this is not
   an atomic source snapshot or an OS read-only sandbox.
+  Suites are declared only in the origin repo's manifest, so a repo with no
+  `.bb/workflow-checks.json` cannot run checks at all — see
+  `docs/adopting-workflow-checks.md` before writing a workflow that needs one.
 - `agent(prompt: string, opts?)`: spawn a BB worker. Without `schema`, returns
   its final text as a string. With `schema` (a JSON Schema), the worker is forced
   to call `bb_workflow_result` and `agent()` returns the validated value — no

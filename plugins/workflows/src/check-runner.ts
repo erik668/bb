@@ -11,8 +11,8 @@ import {
   type WorkflowCheckRequest,
 } from "./check-contract.js";
 
-const CHECK_MANIFEST_PATH = ".bb/workflow-checks.json";
-const checkSuiteSchema = z
+export const CHECK_MANIFEST_PATH = ".bb/workflow-checks.json";
+export const checkSuiteSchema = z
   .object({
     version: z.number().int().positive(),
     argv: z.array(z.string().min(1).max(8192)).min(1).max(128),
@@ -35,7 +35,7 @@ const checkSuiteSchema = z
       .default(120_000),
   })
   .strict();
-const checkManifestSchema = z
+export const checkManifestSchema = z
   .object({
     version: z.literal(1),
     suites: z.record(workflowCheckSuiteIdSchema, checkSuiteSchema),

@@ -235,6 +235,12 @@ and phase/progress record. A child cannot invoke a grandchild.
 
 ## Deterministic checks
 
+Repository owners adopting this feature should read
+[`docs/adopting-workflow-checks.md`](../../docs/adopting-workflow-checks.md),
+which covers the digest-pinning order, the receipt contract from the suite's
+side, and the worked example this repository ships in `.bb/`. The rest of this
+section is the workflow author's view.
+
 `check(request)` executes a project-owned deterministic suite in the workflow's
 origin workspace before a downstream agent is admitted. It requires the run's
 origin permission mode to be `full` and reads exactly
