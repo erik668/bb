@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "suites": {
+    "bb-config": {
+      "version": 1,
+      "argv": ["node", ".bb/checks/bb-config.mjs"],
+      "inputs": [
+        {
+          "path": ".bb/checks/bb-config.mjs",
+          "sha256": "65f355a166733a0bcb8ea8ce9d1a1951c14eecf9d9880e6df5c27d26857b1995"
+        }
+      ],
+      "timeoutMs": 60000
+    }
+  }
+}

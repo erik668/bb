@@ -3736,6 +3736,9 @@ importers:
 
   plugins/workflows:
     dependencies:
+      '@bb/process-utils':
+        specifier: workspace:*
+        version: link:../../packages/process-utils
       '@bb/shared-ui':
         specifier: workspace:*
         version: link:../../packages/shared-ui

@@ -31,7 +31,7 @@ const sourceInputFields = {
     .string()
     .min(1)
     .describe(
-      "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/parallel()/pipeline()/phase().",
+      "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/check()/parallel()/pipeline()/phase().",
     )
     .optional(),
   source: z

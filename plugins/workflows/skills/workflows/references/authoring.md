@@ -13,7 +13,7 @@ export const meta = {
     { title: "Verify", detail: "Adversarial verification" },
   ],
 };
-// script body starts here — use agent()/parallel()/pipeline()/phase()/log()
+// script body starts here — use agent()/check()/parallel()/pipeline()/phase()/log()
 phase("Review");
 const reviews = await parallel([
   () => agent(`Review correctness: ${args.task}`),
@@ -44,6 +44,21 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
 
 ## Script body hooks
 
+- `check(request)`: run a named deterministic suite from the origin
+  workspace's SHA-256-pinned `.bb/workflow-checks.json` before admitting
+  downstream agent work. The request carries `suite`, `manifestSha256`,
+  `contractSha256`, and `candidateSha256`; each suite pins its expected receipt
+  version and every project-owned implementation input digest, verified before
+  and after the process. That detects stable or persistent drift, not an
+  adversarial concurrent swap-and-restore. Checks need `full` origin permission,
+  run without a shell, accept only a bounded fail-closed JSON receipt, never
+  replay on resume, and prevent every later `agent()` call from replaying. Await
+  them sequentially — they cannot overlap agents or other checks — and a run may
+  invoke at most 32. Suite code is trusted and must be non-mutating; this is not
+  an atomic source snapshot or an OS read-only sandbox.
+  Suites are declared only in the origin repo's manifest, so a repo with no
+  `.bb/workflow-checks.json` cannot run checks at all — see
+  `docs/adopting-workflow-checks.md` before writing a workflow that needs one.
 - `agent(prompt: string, opts?)`: spawn a BB worker. Without `schema`, returns
   its final text as a string. With `schema` (a JSON Schema), the worker is forced
   to call `bb_workflow_result` and `agent()` returns the validated value — no

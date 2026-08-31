@@ -1,8 +1,40 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeWorkflowScript } from "./runtime.js";
-import type { WorkflowCapabilities } from "./types.js";
+import type { WorkflowCapabilities, WorkflowCheckRequest } from "./types.js";
 
 describe("workflow QuickJS runtime", () => {
+  it("exposes only strictly validated structured check requests", async () => {
+    const check = vi.fn(async (_request: WorkflowCheckRequest) => ({
+      admitted: true,
+    }));
+    const request = {
+      suite: "terraform-hcl",
+      manifestSha256: "a".repeat(64),
+      contractSha256: "b".repeat(64),
+      candidateSha256: "c".repeat(64),
+    };
+    const result = await executeWorkflowScript({
+      args: { request },
+      body: `
+        const receipt = await check(args.request);
+        let rejected = false;
+        try { await check({ ...args.request, command: "rm" }); }
+        catch { rejected = true; }
+        return { receipt, rejected };
+      `,
+      capabilities: {
+        agent: async () => null,
+        check,
+        log: vi.fn(),
+        phase: vi.fn(),
+      },
+    });
+
+    expect(result).toEqual({ receipt: { admitted: true }, rejected: true });
+    expect(check).toHaveBeenCalledOnce();
+    expect(check.mock.calls[0]?.[0]).toEqual(request);
+  });
+
   it("awaits multiple concurrent host agents", async () => {
     const calls: string[] = [];
     const result = await executeWorkflowScript({
