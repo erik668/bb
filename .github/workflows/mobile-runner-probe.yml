@@ -20,7 +20,7 @@ env:
 jobs:
   probe:
     name: Probe macOS runner toolchain
-    runs-on: blacksmith-6vcpu-macos-15
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
       - name: Checkout repository

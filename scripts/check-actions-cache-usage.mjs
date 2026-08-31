@@ -8,9 +8,8 @@
 // macOS smoke leg reached 12.7 GB of Turbo caches while reporting 0 of 8 task
 // hits — the symptom was "CI feels slow", which is nobody's alert.
 //
-// Blacksmith's Linux runners serve `actions/cache` from their own colocated
-// store, so those entries never appear here. Anything this reports is running
-// on a GitHub-hosted runner and is charged against the quota.
+// All current CI runners use GitHub's cache service, so every `actions/cache`
+// entry contributes to this quota.
 
 import { appendFileSync } from "node:fs";
 
@@ -80,8 +79,7 @@ async function main() {
       `(${Math.round(fraction * 100)}%) across ${usage.active_caches_count} entries. ` +
       "GitHub evicts least-recently-used entries without reporting it, so caches " +
       "are about to start missing. Run `gh cache list --limit 100 --json key,sizeInBytes` " +
-      "to find the job writing oversized entries; a job on a Blacksmith Linux runner " +
-      "should not appear here at all.",
+      "to find the job writing oversized entries.",
   );
 }
 
