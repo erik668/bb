@@ -1673,7 +1673,6 @@ export function createWorkflowArtifactService(
       const fork = await bb.sdk.threads.fork({
         sourceThreadId: scope.presentationThreadId,
         visibility: "hidden",
-        workspace: "reuse",
         agentContextSeed: [
           {
             type: "text",

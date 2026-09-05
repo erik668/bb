@@ -485,15 +485,13 @@ function resolveStructuredValue(
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve) => {
     if (signal.aborted) return resolve();
-    const timeout = setTimeout(resolve, ms);
-    signal.addEventListener(
-      "abort",
-      () => {
-        clearTimeout(timeout);
-        resolve();
-      },
-      { once: true },
-    );
+    const settle = () => {
+      clearTimeout(timeout);
+      signal.removeEventListener("abort", settle);
+      resolve();
+    };
+    const timeout = setTimeout(settle, ms);
+    signal.addEventListener("abort", settle, { once: true });
   });
 }
 
@@ -2213,12 +2211,12 @@ export function createWorkflowService(
         publishRunChanged(run);
         const controller = new AbortController();
         controllers.set(run.id, controller);
-        signal.addEventListener("abort", () => controller.abort(), {
-          once: true,
+        const abortRun = () => controller.abort();
+        signal.addEventListener("abort", abortRun, { once: true });
+        const execution = executeRun(run, controller.signal).finally(() => {
+          signal.removeEventListener("abort", abortRun);
+          active.delete(execution);
         });
-        const execution = executeRun(run, controller.signal).finally(() =>
-          active.delete(execution),
-        );
         active.add(execution);
       }
       if (Date.now() >= nextMaintenanceAt) {

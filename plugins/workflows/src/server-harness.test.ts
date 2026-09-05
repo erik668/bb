@@ -1,5 +1,6 @@
 import {
   createFakePluginHost,
+  makePluginAgentConfigurationContext,
   makeThreadResponse,
 } from "@get-bb/plugin-sdk/testing";
 import { afterEach, describe, expect, it } from "vitest";
@@ -111,7 +112,7 @@ describe("workflows plugin", () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "workflows",
       agentSkillIds: ["workflows"],
-      settings: { maxActiveRuns: "not-a-number" },
+      settings: { maxActiveRuns: 0 },
     });
     hosts.push(harness);
     await expect(plugin(bb)).resolves.toBeUndefined();
@@ -122,7 +123,7 @@ describe("workflows plugin", () => {
     expect(
       harness.registrations.services.map((service) => service.name),
     ).toEqual(["workflow-worker"]);
-    await harness.setSettings({ maxActiveRuns: "5" });
+    await harness.setSettings({ maxActiveRuns: 5 });
   });
 
   it("registers tool schemas without recursive $refs", async () => {
@@ -325,34 +326,15 @@ describe("workflows plugin", () => {
         },
       });
 
-      const workerConfig = await harness.resolveAgentConfiguration({
-        thread: {
-          id: "child-1",
-          title: null,
-          parentThreadId: "thread-test",
-          sourceThreadId: null,
-        },
-        project: {
-          id: "project-test",
-          kind: "standard",
-          name: "test",
-          gitRemoteUrl: null,
-        },
-        environment: {
-          id: "environment-1",
-          name: null,
-          path: "/tmp/test",
-          workspaceProvisionType: "unmanaged",
-          branchName: null,
-        },
-        host: { id: "host-1", name: "host" },
-        provider: {
-          id: "codex",
-          model: "gpt-test",
-          capabilities: { supportsNativeUserQuestion: false },
-        },
-        origin: { kind: null, pluginId: "workflows" },
-      });
+      const workerConfig = await harness.resolveAgentConfiguration(
+        makePluginAgentConfigurationContext({
+          thread: {
+            id: "child-1",
+            parentThreadId: "thread-test",
+          },
+          origin: { pluginId: "workflows" },
+        }),
+      );
       expect(workerConfig.tools.map((tool) => tool.name)).toEqual([
         "bb_workflow_checkpoint",
         "bb_workflow_result",
@@ -370,34 +352,9 @@ describe("workflows plugin", () => {
         additionalProperties: false,
       });
 
-      const authorConfig = await harness.resolveAgentConfiguration({
-        thread: {
-          id: "thread-test",
-          title: null,
-          parentThreadId: null,
-          sourceThreadId: null,
-        },
-        project: {
-          id: "project-test",
-          kind: "standard",
-          name: "test",
-          gitRemoteUrl: null,
-        },
-        environment: {
-          id: "environment-1",
-          name: null,
-          path: "/tmp/test",
-          workspaceProvisionType: "unmanaged",
-          branchName: null,
-        },
-        host: { id: "host-1", name: "host" },
-        provider: {
-          id: "codex",
-          model: "gpt-test",
-          capabilities: { supportsNativeUserQuestion: false },
-        },
-        origin: { kind: null, pluginId: null },
-      });
+      const authorConfig = await harness.resolveAgentConfiguration(
+        makePluginAgentConfigurationContext(),
+      );
       expect(authorConfig.tools.map((tool) => tool.name)).toEqual([
         "bb_workflow_run",
       ]);
@@ -1648,7 +1605,9 @@ describe("workflows plugin", () => {
         runId,
         acceptanceId: "any-acceptance",
       }),
-    ).rejects.toThrow("Only the workflow origin thread can approve this amendment");
+    ).rejects.toThrow(
+      "Only the workflow origin thread can approve this amendment",
+    );
     await expect(
       harness.callRpc("workflowRunDetails", {
         threadId: "origin-child",

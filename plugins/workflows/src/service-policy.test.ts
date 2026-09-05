@@ -98,6 +98,7 @@ function timelineResult(
     goal: null,
     modelFallback: null,
     ...(contextWindowUsage === undefined ? {} : { contextWindowUsage }),
+    contextBoundarySeq: null,
     timelinePage: {
       kind: "latest",
       segmentLimit: 0,
@@ -435,13 +436,13 @@ describe("workflow service policy integration", () => {
 
   it("freezes run policy without persisting plugin-global admission", async () => {
     const initial = {
-      maxActiveRuns: "1",
-      maxGlobalConcurrentAgents: "3",
-      maxConcurrentAgents: "2",
-      maxAgentCalls: "3",
-      totalRunTimeoutMs: "120000",
-      retentionDays: "7",
-      maxNotificationBytes: "2048",
+      maxActiveRuns: 1,
+      maxGlobalConcurrentAgents: 3,
+      maxConcurrentAgents: 2,
+      maxAgentCalls: 3,
+      totalRunTimeoutMs: 120_000,
+      retentionDays: 7,
+      maxNotificationBytes: 2048,
     };
     const { bb, harness } = createFakePluginHost({
       pluginId: "workflows",
@@ -475,13 +476,13 @@ describe("workflow service policy integration", () => {
       })) as string,
     ) as { runId: string };
     const next = {
-      maxActiveRuns: "2",
-      maxGlobalConcurrentAgents: "6",
-      maxConcurrentAgents: "4",
-      maxAgentCalls: "8",
-      totalRunTimeoutMs: "180000",
-      retentionDays: "14",
-      maxNotificationBytes: "4096",
+      maxActiveRuns: 2,
+      maxGlobalConcurrentAgents: 6,
+      maxConcurrentAgents: 4,
+      maxAgentCalls: 8,
+      totalRunTimeoutMs: 180_000,
+      retentionDays: 14,
+      maxNotificationBytes: 4096,
     };
     await harness.setSettings(next);
     const second = JSON.parse(
@@ -514,14 +515,14 @@ describe("workflow service policy integration", () => {
       Object.fromEntries(
         Object.entries(initial)
           .filter(([key]) => key !== "maxGlobalConcurrentAgents")
-          .map(([key, value]) => [key, Number(value)]),
+          .map(([key, value]) => [key, value]),
       ),
     );
     expect(secondStatus.settings).toEqual(
       Object.fromEntries(
         Object.entries(next)
           .filter(([key]) => key !== "maxGlobalConcurrentAgents")
-          .map(([key, value]) => [key, Number(value)]),
+          .map(([key, value]) => [key, value]),
       ),
     );
   });
