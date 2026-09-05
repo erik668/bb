@@ -4,12 +4,13 @@ import {
   getEnvironment,
   getThread,
 } from "@bb/db";
-import type {
-  ProjectExecutionDefaults,
-  Project,
-  Thread,
-  ThreadOriginKind,
-  ThreadVisibility,
+import {
+  PERSONAL_PROJECT_ID,
+  type ProjectExecutionDefaults,
+  type Project,
+  type Thread,
+  type ThreadOriginKind,
+  type ThreadVisibility,
 } from "@bb/domain";
 import type { BaseBranchSpec, UnmanagedBranchSpec } from "@bb/server-contract";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
@@ -602,6 +603,17 @@ export async function createThreadFromRequest(
     requestInput.environment.environmentId === sourceThread.environmentId
       ? sourceThread.environmentId
       : undefined);
+  const environmentParentThread =
+    forkSourceEnvironmentId !== undefined
+      ? null
+      : (sourceThread ?? parentThread);
+  const parentEnvironment =
+    requestInput.projectId === PERSONAL_PROJECT_ID &&
+    requestInput.environment.type === "host" &&
+    requestInput.environment.workspace.type === "personal" &&
+    environmentParentThread?.environmentId
+      ? getEnvironment(deps.db, environmentParentThread.environmentId)
+      : null;
   if (requestInput.startedOnBehalfOf !== null) {
     const senderThread = sourceThread ?? parentThread;
     if (senderThread === null) {
@@ -659,10 +671,8 @@ export async function createThreadFromRequest(
       requestedVisibility: requestInput.visibility,
     }),
     environment: resolveCreateThreadEnvironment({
-      parentThread:
-        forkSourceEnvironmentId !== undefined
-          ? null
-          : (sourceThread ?? parentThread),
+      parentEnvironment,
+      parentThread: environmentParentThread,
       projectId: requestInput.projectId,
       requestedEnvironment: requestInput.environment,
     }),

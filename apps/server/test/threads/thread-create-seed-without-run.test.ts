@@ -101,6 +101,97 @@ describe("thread creation telemetry", () => {
 });
 
 describe("thread creation with startedOnBehalfOf (seed-without-run)", () => {
+  it("creates a personal child instead of reusing its unmanaged parent environment", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-personal-child-unmanaged-parent",
+      });
+      ensurePersonalProject(harness.db);
+      const parentEnvironment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/personal-child-unmanaged-parent",
+        projectId: PERSONAL_PROJECT_ID,
+        workspaceProvisionType: "unmanaged",
+      });
+      const parentThread = seedThread(harness.deps, {
+        environmentId: parentEnvironment.id,
+        projectId: PERSONAL_PROJECT_ID,
+      });
+
+      const child = await createThreadFromRequest(harness.deps, {
+        environment: {
+          type: "host",
+          hostId: host.id,
+          workspace: { type: "personal" },
+        },
+        input: textInput("Create a personal child"),
+        origin: "app",
+        parentThreadId: parentThread.id,
+        projectId: PERSONAL_PROJECT_ID,
+        providerId: "codex",
+        startedOnBehalfOf: null,
+      });
+
+      const childEnvironment = getEnvironment(
+        harness.db,
+        getThread(harness.db, child.id)?.environmentId ?? "",
+      );
+      expect(childEnvironment).toMatchObject({
+        hostId: host.id,
+        projectId: PERSONAL_PROJECT_ID,
+        workspaceProvisionType: "personal",
+      });
+      expect(childEnvironment?.id).not.toBe(parentEnvironment.id);
+    });
+  });
+
+  it("keeps an explicit personal child host instead of reusing a parent on another host", async () => {
+    await withTestHarness(async (harness) => {
+      const { host: parentHost } = seedHostSession(harness.deps, {
+        id: "host-personal-child-parent",
+      });
+      const { host: requestedHost } = seedHostSession(harness.deps, {
+        id: "host-personal-child-requested",
+      });
+      ensurePersonalProject(harness.db);
+      const parentEnvironment = seedEnvironment(harness.deps, {
+        hostId: parentHost.id,
+        path: "/tmp/personal-child-parent",
+        projectId: PERSONAL_PROJECT_ID,
+        workspaceProvisionType: "personal",
+      });
+      const parentThread = seedThread(harness.deps, {
+        environmentId: parentEnvironment.id,
+        projectId: PERSONAL_PROJECT_ID,
+      });
+
+      const child = await createThreadFromRequest(harness.deps, {
+        environment: {
+          type: "host",
+          hostId: requestedHost.id,
+          workspace: { type: "personal" },
+        },
+        input: textInput("Use the requested personal host"),
+        origin: "app",
+        parentThreadId: parentThread.id,
+        projectId: PERSONAL_PROJECT_ID,
+        providerId: "codex",
+        startedOnBehalfOf: null,
+      });
+
+      const childEnvironment = getEnvironment(
+        harness.db,
+        getThread(harness.db, child.id)?.environmentId ?? "",
+      );
+      expect(childEnvironment).toMatchObject({
+        hostId: requestedHost.id,
+        projectId: PERSONAL_PROJECT_ID,
+        workspaceProvisionType: "personal",
+      });
+      expect(childEnvironment?.id).not.toBe(parentEnvironment.id);
+    });
+  });
+
   it("persists an agent fork start while cloning the source provider session", async () => {
     await withTestHarness(async (harness) => {
       const capture = installTelemetryCaptureSpy(harness);

@@ -1,4 +1,5 @@
 import type {
+  Environment,
   PermissionMode,
   ProjectExecutionDefaults,
   RecordedPermissionMode,
@@ -77,6 +78,10 @@ interface ResolveThreadExecutionPermissionModeArgs {
 }
 
 interface ResolveCreateThreadEnvironmentArgs {
+  parentEnvironment?: Pick<
+    Environment,
+    "hostId" | "path" | "projectId" | "status" | "workspaceProvisionType"
+  > | null;
   parentThread?: ParentThread | null;
   projectId: string;
   requestedEnvironment: EnvironmentArgs;
@@ -116,6 +121,29 @@ function isPersonalHostDefaultEnvironment(
 ): environment is PersonalHostDefaultEnvironment {
   return (
     environment.type === "host" && environment.workspace.type === "personal"
+  );
+}
+
+function isReusablePersonalParentEnvironment(
+  environment: ResolveCreateThreadEnvironmentArgs["parentEnvironment"],
+  requestedEnvironment: PersonalHostDefaultEnvironment,
+  projectId: string,
+): boolean {
+  if (
+    environment === null ||
+    environment === undefined ||
+    environment.projectId !== projectId ||
+    environment.workspaceProvisionType !== "personal" ||
+    (requestedEnvironment.hostId !== undefined &&
+      requestedEnvironment.hostId !== environment.hostId)
+  ) {
+    return false;
+  }
+
+  return (
+    environment.status === "provisioning" ||
+    environment.status === "retiring" ||
+    (environment.status === "ready" && Boolean(environment.path))
   );
 }
 
@@ -243,19 +271,23 @@ export function resolveCreateThreadEnvironment(
   args: ResolveCreateThreadEnvironmentArgs,
 ): EnvironmentArgs {
   const parentThread = args.parentThread ?? null;
+  const parentEnvironmentId = parentThread?.environmentId;
   const hasLiveParent = isLiveParentThread({ parentThread });
   if (
     args.projectId === PERSONAL_PROJECT_ID &&
     hasLiveParent &&
     parentThread?.projectId === args.projectId &&
-    isPersonalHostDefaultEnvironment(args.requestedEnvironment)
+    typeof parentEnvironmentId === "string" &&
+    isPersonalHostDefaultEnvironment(args.requestedEnvironment) &&
+    isReusablePersonalParentEnvironment(
+      args.parentEnvironment,
+      args.requestedEnvironment,
+      args.projectId,
+    )
   ) {
-    if (!args.parentThread?.environmentId) {
-      throw new Error("Personal parent thread is missing an environment");
-    }
     return {
       type: "reuse",
-      environmentId: args.parentThread.environmentId,
+      environmentId: parentEnvironmentId,
     };
   }
 

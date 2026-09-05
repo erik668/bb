@@ -1,5 +1,6 @@
 import {
   PERSONAL_PROJECT_ID,
+  type Environment,
   type ProjectExecutionDefaults,
   type Thread,
 } from "@bb/domain";
@@ -30,6 +31,10 @@ type PolicyTestParentThread = Pick<
   | "id"
   | "parentThreadId"
   | "projectId"
+>;
+type PolicyTestParentEnvironment = Pick<
+  Environment,
+  "hostId" | "path" | "projectId" | "status" | "workspaceProvisionType"
 >;
 
 function makeThread(
@@ -67,6 +72,19 @@ function makeParentThread(
     id: "thr-parent-1",
     parentThreadId: null,
     projectId: "proj-1",
+    ...overrides,
+  };
+}
+
+function makeParentEnvironment(
+  overrides: Partial<PolicyTestParentEnvironment> = {},
+): PolicyTestParentEnvironment {
+  return {
+    hostId: "host-1",
+    path: "/tmp/personal-parent",
+    projectId: PERSONAL_PROJECT_ID,
+    status: "ready",
+    workspaceProvisionType: "personal",
     ...overrides,
   };
 }
@@ -257,6 +275,7 @@ describe("resolveCreateThreadEnvironment", () => {
   it("defaults personal child threads to the parent environment", () => {
     expect(
       resolveCreateThreadEnvironment({
+        parentEnvironment: makeParentEnvironment(),
         parentThread: makeParentThread({
           environmentId: "env-personal-parent",
           projectId: PERSONAL_PROJECT_ID,
@@ -270,6 +289,103 @@ describe("resolveCreateThreadEnvironment", () => {
     ).toEqual({
       type: "reuse",
       environmentId: "env-personal-parent",
+    });
+  });
+
+  it("does not synthesize reuse from an unmanaged personal parent", () => {
+    const requestedEnvironment = {
+      type: "host",
+      hostId: "host-1",
+      workspace: { type: "personal" },
+    } as const;
+
+    expect(
+      resolveCreateThreadEnvironment({
+        parentEnvironment: makeParentEnvironment({
+          workspaceProvisionType: "unmanaged",
+        }),
+        parentThread: makeParentThread({ projectId: PERSONAL_PROJECT_ID }),
+        projectId: PERSONAL_PROJECT_ID,
+        requestedEnvironment,
+      }),
+    ).toEqual(requestedEnvironment);
+  });
+
+  it("preserves an explicit personal host that differs from the parent host", () => {
+    const requestedEnvironment = {
+      type: "host",
+      hostId: "host-2",
+      workspace: { type: "personal" },
+    } as const;
+
+    expect(
+      resolveCreateThreadEnvironment({
+        parentEnvironment: makeParentEnvironment({ hostId: "host-1" }),
+        parentThread: makeParentThread({ projectId: PERSONAL_PROJECT_ID }),
+        projectId: PERSONAL_PROJECT_ID,
+        requestedEnvironment,
+      }),
+    ).toEqual(requestedEnvironment);
+  });
+
+  it.each([
+    {
+      parentEnvironment: makeParentEnvironment({ projectId: "proj-other" }),
+      reason: "the environment belongs to another project",
+    },
+    {
+      parentEnvironment: makeParentEnvironment({
+        workspaceProvisionType: "managed-worktree",
+      }),
+      reason: "the environment is not personal",
+    },
+    {
+      parentEnvironment: makeParentEnvironment({ path: "" }),
+      reason: "the ready environment has an empty path",
+    },
+    {
+      parentEnvironment: makeParentEnvironment({ path: null }),
+      reason: "the ready environment has no path",
+    },
+    {
+      parentEnvironment: makeParentEnvironment({ status: "error" }),
+      reason: "the environment is unavailable",
+    },
+  ])("preserves personal creation when $reason", ({ parentEnvironment }) => {
+    const requestedEnvironment = {
+      type: "host",
+      hostId: "host-1",
+      workspace: { type: "personal" },
+    } as const;
+
+    expect(
+      resolveCreateThreadEnvironment({
+        parentEnvironment,
+        parentThread: makeParentThread({ projectId: PERSONAL_PROJECT_ID }),
+        projectId: PERSONAL_PROJECT_ID,
+        requestedEnvironment,
+      }),
+    ).toEqual(requestedEnvironment);
+  });
+
+  it("reuses a compatible provisioning personal parent", () => {
+    expect(
+      resolveCreateThreadEnvironment({
+        parentEnvironment: makeParentEnvironment({
+          path: null,
+          status: "provisioning",
+        }),
+        parentThread: makeParentThread({ projectId: PERSONAL_PROJECT_ID }),
+        projectId: PERSONAL_PROJECT_ID,
+        requestedEnvironment: {
+          type: "host",
+          hostId: "host-1",
+          workspace: { type: "personal" },
+        },
+      }),
+    ).toEqual({
+      type: "reuse",
+      environmentId: "env-parent-1",
     });
   });
 
