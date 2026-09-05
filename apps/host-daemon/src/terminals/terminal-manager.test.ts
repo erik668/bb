@@ -282,12 +282,6 @@ function createFakeWorkspace(path: string): HostWorkspace {
       commitSubject: "commit",
     })),
     reset: vi.fn(async () => undefined),
-    squashMerge: vi.fn(async () => ({
-      commitSha: "commit-1",
-      commitSubject: "commit",
-      merged: true,
-      targetBranch: "main",
-    })),
     runPullRequestAction: vi.fn(async () => undefined),
     destroy: vi.fn(async () => undefined),
   };
@@ -421,6 +415,7 @@ describe("TerminalManager", () => {
       BB_TERMINAL_SESSION_ID: "term-1",
       COLORTERM: "truecolor",
       DISABLE_AUTO_TITLE: "true",
+      FORCE_HYPERLINK: "1",
       PROMPT_EOL_MARK: "",
       TERM: "xterm-256color",
     });

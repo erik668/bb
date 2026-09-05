@@ -96,7 +96,6 @@ interface IdleProviderSessionReaperRuntimeManager {
 interface StartIdleProviderSessionReaperArgs {
   logger: HostDaemonLogger;
   nowMs: () => number;
-  resolveProviderSessionReapingEnabled: () => Promise<boolean>;
   runtimeManager: IdleProviderSessionReaperRuntimeManager;
   setIntervalFn: IdleProviderSessionReaperIntervalFn;
 }
@@ -130,7 +129,7 @@ interface CreateHostDaemonAppOptions {
   fetchFn?: FetchFn;
   createWebSocket?: CreateReconnectingWebSocket;
   closeMachineAuthProxy?: () => Promise<void>;
-  forceExit?: (code: number) => void;
+  exitProcess?: (code: number) => void;
 }
 
 export interface HostDaemonApp {
@@ -160,22 +159,11 @@ export function startIdleProviderSessionReaper(
       return;
     }
     running = true;
-    void args
-      .resolveProviderSessionReapingEnabled()
-      .catch((error) => {
-        args.logger.warn(
-          { ...runtimeErrorLogFields(error) },
-          "Failed to read idle provider session experiment policy",
-        );
-        return false;
+    void args.runtimeManager
+      .reapIdleProviderSessions({
+        idleForMs: IDLE_PROVIDER_SESSION_REAP_AFTER_MS,
+        nowMs: args.nowMs(),
       })
-      .then((providerSessionReapingEnabled) =>
-        args.runtimeManager.reapIdleProviderSessions({
-          idleForMs: IDLE_PROVIDER_SESSION_REAP_AFTER_MS,
-          nowMs: args.nowMs(),
-          providerSessionReapingEnabled,
-        }),
-      )
       .then((result) => {
         if (result.reapedSessions.length === 0) {
           return;
@@ -695,8 +683,6 @@ export async function createHostDaemonApp(
   const idleProviderSessionReaper = startIdleProviderSessionReaper({
     logger: options.logger,
     nowMs: Date.now,
-    resolveProviderSessionReapingEnabled: async () =>
-      (await serverClient.getRuntimePolicy()).providerSessionReaping,
     runtimeManager,
     setIntervalFn: (callback, intervalMs) => {
       const timer = setInterval(callback, intervalMs);
@@ -935,7 +921,7 @@ export async function createHostDaemonApp(
     },
     logger: options.logger,
     releaseLock: options.releaseLock,
-    ...(options.forceExit ? { forceExit: options.forceExit } : {}),
+    ...(options.exitProcess ? { exitProcess: options.exitProcess } : {}),
     flushEvents: async () => {
       await eventSink.flush();
     },
@@ -964,12 +950,12 @@ export async function createHostDaemonApp(
     },
   });
   requestDaemonRestart = () => {
-    void daemon.shutdown("self-update").catch((error) => {
+    void daemon.shutdown("self-update", 0).catch((error) => {
       options.logger.error({ err: error }, "Self-update shutdown failed");
     });
   };
   connection.setSessionCloseHandler((reason) =>
-    daemon.shutdown(`session-close:${reason}`),
+    daemon.shutdown(`session-close:${reason}`, 0),
   );
 
   return {

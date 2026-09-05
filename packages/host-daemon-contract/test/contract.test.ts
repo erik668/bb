@@ -485,11 +485,6 @@ const SETTLED_RESPONSE_RESULT_FIXTURES: SettledResponseResultFixtures = {
     commitSha: "abcdef123456",
     commitSubject: "Checkpoint work",
   },
-  "workspace.squash_merge": {
-    commitSha: "abcdef123456",
-    commitSubject: "Merge feature",
-    merged: true,
-  },
   "workspace.pull_request_action": {},
 };
 
@@ -641,6 +636,8 @@ const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
     "host.write_file may omit mode to preserve existing permissions; when present it only controls newly created files.",
   "hostDaemonOnlineRpcCommandSchema.mergeBaseBranch":
     "workspace.status may omit mergeBaseBranch when the caller only needs working-tree state.",
+  "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.badge":
+    "a tool_use approval's presentation carries a badge only when the bridge has something to flag about how the call will run, such as a command opting out of the session sandbox; absence means the ordinary case, not a blank badge.",
   "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.detail":
     "a tool_use approval's presentation has a detail only when the bridge summarized the call; a missing detail means the label and title are the whole summary, not an empty string.",
   "hostDaemonInteractiveRequestSchema.interaction.payload.subject.presentation.suppress":
@@ -933,9 +930,19 @@ const ACP_BRIDGE_LAUNCH = {
   providerOptions: { acpLaunchSpec: ACP_LAUNCH_SPEC },
 } as const;
 
+const CONTRIBUTED_ENV = [
+  {
+    name: "PLUGIN_API_URL",
+    value: { serverPath: "/plugins/auth-proxy/api" },
+    source: { plugin: "auth-proxy" },
+    reason: "Route provider traffic through the plugin",
+    secret: true,
+  },
+] as const;
+
 describe("host-daemon command schemas", () => {
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(174);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(180);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1687,6 +1694,7 @@ describe("host-daemon command schemas", () => {
         },
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
         requestId: CLIENT_REQUEST_ID,
@@ -1722,6 +1730,7 @@ describe("host-daemon command schemas", () => {
           providerThreadId: "prov_123",
           instructions: "Be concise.",
           dynamicTools: [],
+          contributedEnv: [],
           injectedSkillSources: [],
           instructionMode: "append",
         },
@@ -1779,6 +1788,7 @@ describe("host-daemon command schemas", () => {
             inputSchema: { type: "object" },
           },
         ],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "replace",
       }),
@@ -1844,6 +1854,7 @@ describe("host-daemon command schemas", () => {
         },
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append" as const,
       };
@@ -1906,6 +1917,7 @@ describe("host-daemon command schemas", () => {
           providerThreadId: "provider_123",
           instructions: "Be a helpful coding agent.",
           dynamicTools: [],
+          contributedEnv: [],
           injectedSkillSources: [],
           instructionMode: "append",
         },
@@ -1957,6 +1969,7 @@ describe("host-daemon command schemas", () => {
       },
       instructions: "Be a helpful thread.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [],
       instructionMode: "replace",
     };
@@ -2001,6 +2014,7 @@ describe("host-daemon command schemas", () => {
         providerThreadId: "provider_123",
         instructions: "Be a helpful coding agent.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
       },
@@ -2062,6 +2076,7 @@ describe("host-daemon command schemas", () => {
       },
       instructions: "Be a helpful thread.",
       dynamicTools: [],
+      contributedEnv: CONTRIBUTED_ENV,
       injectedSkillSources: [],
       instructionMode: "append",
     };
@@ -2099,6 +2114,7 @@ describe("host-daemon command schemas", () => {
         providerThreadId: "provider_123",
         instructions: "Be a helpful thread.",
         dynamicTools: [],
+        contributedEnv: CONTRIBUTED_ENV,
         injectedSkillSources: [],
         instructionMode: "append",
       },
@@ -2176,6 +2192,7 @@ describe("host-daemon command schemas", () => {
       },
       instructions: "Be a helpful thread.",
       dynamicTools: [],
+      contributedEnv: [],
       injectedSkillSources: [],
       instructionMode: "append",
     };
@@ -2199,6 +2216,7 @@ describe("host-daemon command schemas", () => {
         bridgeLaunch,
         instructions: "Be a helpful thread.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
       },
@@ -2299,8 +2317,6 @@ describe("host-daemon command schemas", () => {
         contract.hostDaemonSessionOpenResponseSchema,
       workspaceCommitResultSchema:
         contract.hostDaemonCommandResultSchemaByType["workspace.commit"],
-      workspaceSquashMergeResultSchema:
-        contract.hostDaemonCommandResultSchemaByType["workspace.squash_merge"],
     });
 
     expect(optionalFieldPaths).toEqual(
@@ -2343,6 +2359,7 @@ describe("host-daemon command schemas", () => {
           providerThreadId: "provider_123",
           instructions: "Be a helpful coding agent.",
           dynamicTools: [],
+          contributedEnv: [],
           injectedSkillSources: [],
           instructionMode: "append",
         },
@@ -2390,6 +2407,7 @@ describe("host-daemon command schemas", () => {
           providerThreadId: "provider_123",
           instructions: "Be a helpful coding agent.",
           dynamicTools: [],
+          contributedEnv: [],
           injectedSkillSources: [],
           instructionMode: "append",
         },
@@ -2492,6 +2510,7 @@ describe("host-daemon command schemas", () => {
         },
         instructions: "Be concise.",
         dynamicTools: [],
+        contributedEnv: [],
         injectedSkillSources: [],
         instructionMode: "append",
       }),
@@ -2527,6 +2546,7 @@ describe("host-daemon command schemas", () => {
           providerThreadId: "provider_123",
           instructions: "Be a helpful coding agent.",
           dynamicTools: [],
+          contributedEnv: [],
           injectedSkillSources: [],
           instructionMode: "append",
         },
@@ -2629,20 +2649,6 @@ describe("host-daemon command schemas", () => {
           workspaceProvisionType: "unmanaged",
         },
         mergeBaseBranch: "origin/main lock",
-      }).success,
-    ).toBe(false);
-
-    expect(
-      hostDaemonCommandSchema.safeParse({
-        type: "workspace.squash_merge",
-        environmentId: "env_123",
-        environmentStatus: "ready",
-        workspaceContext: {
-          workspacePath: "/tmp/workspace",
-          workspaceProvisionType: "unmanaged",
-        },
-        targetBranch: "main lock",
-        commitMessage: "Merge branch",
       }).success,
     ).toBe(false);
   });
