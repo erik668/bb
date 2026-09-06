@@ -174,4 +174,31 @@ describe("parseStoredThreadEvent", () => {
       reason: "host-daemon-restarted",
     });
   });
+
+  it("requires accepted workflow result provenance for cleanup interruptions", () => {
+    const data = {
+      reason: "workflow-result-cleanup",
+      workflowResult: {
+        acceptance: "accepted",
+        callId: "wfc_1",
+        childThreadId: "thr_child",
+        pluginId: "workflows",
+        resultSha256: "c".repeat(64),
+        runId: "wfr_1",
+      },
+    } as const;
+
+    expect(systemThreadInterruptedEventDataSchema.parse(data)).toEqual(data);
+    expect(() =>
+      systemThreadInterruptedEventDataSchema.parse({
+        reason: "workflow-result-cleanup",
+      }),
+    ).toThrow(/workflowResult is required/u);
+    expect(() =>
+      systemThreadInterruptedEventDataSchema.parse({
+        reason: "manual-stop",
+        workflowResult: data.workflowResult,
+      }),
+    ).toThrow(/workflowResult is only allowed/u);
+  });
 });

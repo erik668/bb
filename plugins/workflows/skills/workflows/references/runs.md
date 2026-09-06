@@ -1,5 +1,10 @@
 # Workflow run lifecycle
 
+A worker interruption ends its active call without accepting fallback output
+or starting a corrective turn. Continuing after a manual stop requires explicit
+user action. Accepted structured results use separate cleanup provenance;
+repeating an old result cannot stop a newly resumed worker turn.
+
 ## Running and resuming
 
 `bb_workflow_run` and `bb workflows validate` accept exactly one source mode:

@@ -165,6 +165,9 @@ describe("parseOperationMessage operation titles", () => {
       expect(interruptedTitle("manual-stop", THREAD_NAME)).toBe(
         "Stopped manually",
       );
+      expect(interruptedTitle("workflow-result-cleanup", THREAD_NAME)).toBe(
+        "Stopped after accepted workflow result",
+      );
       expect(interruptedTitle("host-daemon-restarted", THREAD_NAME)).toBe(
         "Stopped — host daemon restarted",
       );

@@ -230,6 +230,7 @@ const systemThreadInterruptedReasonValues = [
   "manual-stop",
   "host-daemon-restarted",
   "provider-turn-idle",
+  "workflow-result-cleanup",
 ] as const;
 export const systemThreadInterruptedReasonSchema = z.enum(
   systemThreadInterruptedReasonValues,
@@ -238,10 +239,64 @@ export type SystemThreadInterruptedReason = z.infer<
   typeof systemThreadInterruptedReasonSchema
 >;
 
-export const systemThreadInterruptedEventDataSchema = z.object({
-  reason: systemThreadInterruptedReasonSchema,
-  cause: z.literal("host-connection-lost").optional(),
-});
+const workflowResultCleanupAcceptanceValues = [
+  "accepted",
+  "idempotent",
+] as const;
+export const workflowResultCleanupAcceptanceSchema = z.enum(
+  workflowResultCleanupAcceptanceValues,
+);
+export type WorkflowResultCleanupAcceptance = z.infer<
+  typeof workflowResultCleanupAcceptanceSchema
+>;
+
+export const workflowResultCleanupProvenanceSchema = z
+  .object({
+    pluginId: z.string().min(1),
+    runId: z.string().min(1),
+    callId: z.string().min(1),
+    childThreadId: z.string().min(1),
+    resultSha256: z.string().regex(/^[a-f0-9]{64}$/u),
+    acceptance: workflowResultCleanupAcceptanceSchema,
+  })
+  .strict();
+export type WorkflowResultCleanupProvenance = z.infer<
+  typeof workflowResultCleanupProvenanceSchema
+>;
+
+export const systemThreadInterruptedEventDataSchema = z
+  .object({
+    reason: systemThreadInterruptedReasonSchema,
+    cause: z.literal("host-connection-lost").optional(),
+    workflowResult: workflowResultCleanupProvenanceSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (
+      value.reason === "workflow-result-cleanup" &&
+      value.workflowResult === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workflowResult"],
+        message:
+          "workflowResult is required for workflow-result-cleanup interruptions",
+      });
+    }
+    if (
+      value.reason !== "workflow-result-cleanup" &&
+      value.workflowResult !== undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["workflowResult"],
+        message:
+          "workflowResult is only allowed for workflow-result-cleanup interruptions",
+      });
+    }
+  });
+export type SystemThreadInterruptedEventData = z.infer<
+  typeof systemThreadInterruptedEventDataSchema
+>;
 
 export const provisioningTranscriptEntrySchema = z.object({
   type: z.enum(["step", "output"]),

@@ -23,10 +23,14 @@ import {
   seedStoredEvent,
   seedThread,
   seedThreadFixture,
+  seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
-import { stopThreadForCurrentState } from "../../src/services/threads/thread-lifecycle.js";
+import {
+  stopAcceptedWorkflowWorkerForCurrentState,
+  stopThreadForCurrentState,
+} from "../../src/services/threads/thread-lifecycle.js";
 
 describe("thread runtime stop", () => {
   it("releases an idle runtime without changing thread state", async () => {
@@ -146,6 +150,308 @@ describe("thread runtime stop", () => {
           (event) => event.type === "system/thread/interrupted",
         ),
       ).toHaveLength(1);
+    });
+  });
+
+  it("records accepted workflow result cleanup as a distinct interruption", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active", visibility: "hidden" },
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-workflow-cleanup",
+        threadId: thread.id,
+      });
+
+      const stopPromise = stopAcceptedWorkflowWorkerForCurrentState(
+        harness.deps,
+        {
+          acceptance: "accepted",
+          callId: "wfc_accepted",
+          childThreadId: thread.id,
+          pluginId: "workflows",
+          resultSha256: "a".repeat(64),
+          runId: "wfr_accepted",
+        },
+      );
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      expect(stop.command).toMatchObject({ intent: "interrupt" });
+
+      const [interruptedBeforeSettle] = listEvents(harness.db, {
+        threadId: thread.id,
+      }).filter((event) => event.type === "system/thread/interrupted");
+      expect(JSON.parse(interruptedBeforeSettle!.data)).toEqual({
+        reason: "workflow-result-cleanup",
+        workflowResult: {
+          acceptance: "accepted",
+          callId: "wfc_accepted",
+          childThreadId: thread.id,
+          pluginId: "workflows",
+          resultSha256: "a".repeat(64),
+          runId: "wfr_accepted",
+        },
+      });
+
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      await stopPromise;
+
+      expect(getThread(harness.db, thread.id)?.status).toBe("idle");
+      const interruptedEvents = listEvents(harness.db, {
+        threadId: thread.id,
+      }).filter((event) => event.type === "system/thread/interrupted");
+      expect(interruptedEvents).toHaveLength(1);
+      expect(JSON.parse(interruptedEvents[0]!.data).reason).toBe(
+        "workflow-result-cleanup",
+      );
+      expect(isThreadQueueAutoSendPaused(harness.db, thread.id)).toBe(false);
+    });
+  });
+
+  it("lets a manual stop race override accepted workflow cleanup", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active", visibility: "hidden" },
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-workflow-cleanup-race",
+        threadId: thread.id,
+      });
+
+      const cleanupStop = stopAcceptedWorkflowWorkerForCurrentState(
+        harness.deps,
+        {
+          acceptance: "accepted",
+          callId: "wfc_race",
+          childThreadId: thread.id,
+          pluginId: "workflows",
+          resultSha256: "b".repeat(64),
+          runId: "wfr_race",
+        },
+      );
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      const manualStop = await harness.app.request(
+        `/api/v1/threads/${thread.id}/stop`,
+        { method: "POST" },
+      );
+      expect(manualStop.status).toBe(200);
+
+      const interruptedBeforeSettle = listEvents(harness.db, {
+        threadId: thread.id,
+      }).filter((event) => event.type === "system/thread/interrupted");
+      expect(
+        interruptedBeforeSettle.map((event) => JSON.parse(event.data).reason),
+      ).toEqual(["workflow-result-cleanup", "manual-stop"]);
+
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      await cleanupStop;
+
+      const interruptedAfterSettle = listEvents(harness.db, {
+        threadId: thread.id,
+      }).filter((event) => event.type === "system/thread/interrupted");
+      expect(JSON.parse(interruptedAfterSettle.at(-1)!.data).reason).toBe(
+        "manual-stop",
+      );
+      expect(isThreadQueueAutoSendPaused(harness.db, thread.id)).toBe(true);
+    });
+  });
+
+  it("retries the same accepted cleanup after a stop transport failure", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active", visibility: "hidden" },
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-cleanup-retry",
+        threadId: thread.id,
+      });
+      seedStoredEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        sequence: 3,
+        scope: turnScope("turn-retry"),
+        type: "turn/started",
+        data: {},
+      });
+      const provenance = {
+        acceptance: "accepted" as const,
+        callId: "wfc_retry",
+        childThreadId: thread.id,
+        pluginId: "workflows" as const,
+        resultSha256: "f".repeat(64),
+        runId: "wfr_retry",
+      };
+      const first = stopAcceptedWorkflowWorkerForCurrentState(
+        harness.deps,
+        provenance,
+      );
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await reportQueuedCommandError(harness, stop, {
+        errorCode: "canary_transport_failure",
+        errorMessage: "Injected stop transport failure",
+      });
+      await first;
+      const retry = stopAcceptedWorkflowWorkerForCurrentState(harness.deps, {
+        ...provenance,
+        acceptance: "idempotent",
+      });
+      const second = await waitForQueuedCommand(
+        harness,
+        (queued) =>
+          queued !== stop &&
+          queued.command.type === "thread.stop" &&
+          queued.command.threadId === thread.id,
+      );
+      await reportQueuedCommandSuccess(harness, second, {
+        providerCheckpointId: null,
+      });
+      await retry;
+    });
+  });
+
+  it("does not apply an old idempotent result to a newly resumed turn", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active", visibility: "hidden" },
+      });
+      const provenance = {
+        acceptance: "accepted" as const,
+        callId: "wfc_old",
+        childThreadId: thread.id,
+        pluginId: "workflows" as const,
+        resultSha256: "a".repeat(64),
+        runId: "wfr_old",
+      };
+      seedStoredEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        sequence: 1,
+        scope: turnScope("turn-old"),
+        type: "system/thread/interrupted",
+        data: { reason: "workflow-result-cleanup", workflowResult: provenance },
+      });
+      seedStoredEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        sequence: 2,
+        scope: turnScope("turn-new"),
+        type: "turn/started",
+        data: {},
+      });
+      await stopAcceptedWorkflowWorkerForCurrentState(harness.deps, {
+        ...provenance,
+        acceptance: "idempotent",
+      });
+      expect(getThread(harness.db, thread.id)?.status).toBe("active");
+      expect(listQueuedCommands(harness, "thread.stop")).toHaveLength(0);
+      expect(listEvents(harness.db, { threadId: thread.id })).toHaveLength(2);
+    });
+  });
+
+  it("preserves a manual stop requested before accepted result cleanup", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "active", visibility: "hidden" },
+      });
+      seedThreadRuntimeState(harness.deps, {
+        environmentId: environment.id,
+        providerThreadId: "provider-manual-first",
+        threadId: thread.id,
+      });
+      const manualStop = harness.app.request(
+        `/api/v1/threads/${thread.id}/stop`,
+        { method: "POST" },
+      );
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await stopAcceptedWorkflowWorkerForCurrentState(harness.deps, {
+        acceptance: "accepted",
+        callId: "wfc_manual_first",
+        childThreadId: thread.id,
+        pluginId: "workflows",
+        resultSha256: "e".repeat(64),
+        runId: "wfr_manual_first",
+      });
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      expect((await manualStop).status).toBe(200);
+      const interruptions = listEvents(harness.db, {
+        threadId: thread.id,
+      }).filter((event) => event.type === "system/thread/interrupted");
+      expect(
+        interruptions.map((event) => JSON.parse(event.data).reason),
+      ).toEqual(["manual-stop"]);
+      expect(isThreadQueueAutoSendPaused(harness.db, thread.id)).toBe(true);
+    });
+  });
+
+  it("preserves a manual stop after cleanup has already settled", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedThreadFixture(harness, {
+        thread: { status: "idle", visibility: "hidden" },
+      });
+      seedStoredEvent(harness.deps, {
+        threadId: thread.id,
+        environmentId: environment.id,
+        sequence: 1,
+        scope: turnScope("turn-settled-cleanup"),
+        type: "system/thread/interrupted",
+        data: {
+          reason: "workflow-result-cleanup",
+          workflowResult: {
+            acceptance: "accepted",
+            callId: "wfc_settled",
+            childThreadId: thread.id,
+            pluginId: "workflows",
+            resultSha256: "d".repeat(64),
+            runId: "wfr_settled",
+          },
+        },
+      });
+      const response = harness.app.request(
+        `/api/v1/threads/${thread.id}/stop`,
+        {
+          method: "POST",
+        },
+      );
+      const stop = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "thread.stop" && command.threadId === thread.id,
+      );
+      await reportQueuedCommandSuccess(harness, stop, {
+        providerCheckpointId: null,
+      });
+      expect((await response).status).toBe(200);
+      const interruptions = listEvents(harness.db, {
+        threadId: thread.id,
+      }).filter((event) => event.type === "system/thread/interrupted");
+      expect(
+        interruptions.map((event) => JSON.parse(event.data).reason),
+      ).toEqual(["workflow-result-cleanup", "manual-stop"]);
+      expect(isThreadQueueAutoSendPaused(harness.db, thread.id)).toBe(true);
     });
   });
 

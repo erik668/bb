@@ -14,7 +14,7 @@ import {
   environments,
   events,
   getEnvironment,
-  getLatestThreadInterruptedReason,
+  getLatestThreadInterruptedEventData,
   getThread,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
@@ -26,12 +26,14 @@ import {
 import { assertNever } from "@bb/core-ui";
 import {
   type ProvisioningTranscriptEntry,
+  type SystemThreadInterruptedEventData,
   type SystemThreadInterruptedReason,
   type Thread,
   type ThreadEventScope,
   type ThreadEventType,
   type ThreadLifecycleEvent,
   type ThreadStatus,
+  type WorkflowResultCleanupProvenance,
   threadScope,
   turnScope,
 } from "@bb/domain";
@@ -197,6 +199,7 @@ interface HasProviderTurnCompletedEventAtOrAfterArgs {
 }
 
 interface RequestThreadStopArgs extends Omit<ThreadStopCommandArgs, "intent"> {
+  interruptionData?: SystemThreadInterruptedEventData;
   interruptionReason: SystemThreadInterruptedReason;
 }
 
@@ -233,6 +236,7 @@ interface FinalizeStoppedThreadArgs {
 }
 
 interface InterruptActiveTurnForThreadArgs {
+  data?: SystemThreadInterruptedEventData;
   environmentId: string | null;
   providerCheckpointId?: string;
   reason: SystemThreadInterruptedReason;
@@ -324,6 +328,7 @@ function lifecycleEventForInterruptedThread(
 ): ThreadLifecycleEvent {
   switch (reason) {
     case "manual-stop":
+    case "workflow-result-cleanup":
       return { type: "stop.settled" };
     case "host-daemon-restarted":
     case "host-connection-lost":
@@ -341,6 +346,8 @@ function pendingInteractionStopReason(
   switch (reason) {
     case "manual-stop":
       return "Thread stopped by user request";
+    case "workflow-result-cleanup":
+      return "Workflow worker stopped after accepting its structured result";
     case "host-daemon-restarted":
       return "Host daemon restarted while awaiting user interaction";
     case "host-connection-lost":
@@ -357,6 +364,7 @@ function threadCommandFailureMessageForInterruption(
 ): string | null {
   switch (reason) {
     case "manual-stop":
+    case "workflow-result-cleanup":
       return null;
     case "host-daemon-restarted":
       return "Thread interrupted because the host daemon disconnected";
@@ -375,6 +383,8 @@ function threadCommandFailureDetailForInterruption(
   switch (reason) {
     case "manual-stop":
       return "Thread stopped by user request";
+    case "workflow-result-cleanup":
+      return "Workflow worker stopped after accepting its structured result";
     case "host-daemon-restarted":
     case "host-connection-lost":
       return "Please retry the thread to continue.";
@@ -414,6 +424,7 @@ interface FinalizeStoppedThreadTransactionDeps extends ThreadLifecycleTransactio
 
 interface ApplyActiveTurnInterruptionArgs {
   activeTurnId: string;
+  data?: SystemThreadInterruptedEventData;
   environmentId: string | null;
   providerCheckpointId?: string;
   providerThreadId: string | null;
@@ -422,8 +433,13 @@ interface ApplyActiveTurnInterruptionArgs {
 }
 
 interface MarkThreadStopRequestedWithEventArgs {
+  data?: SystemThreadInterruptedEventData;
   reason: SystemThreadInterruptedReason;
   threadId: string;
+}
+
+interface StopThreadForCurrentStateOptions {
+  interruption?: SystemThreadInterruptedEventData;
 }
 
 function hasActiveThreadProvisioningContext(threadId: string): boolean {
@@ -497,6 +513,7 @@ function appendThreadInterruptedEventIfMissingInTransaction(
   appendThreadInterruptedEventInTransaction(deps.db, {
     threadId: args.threadId,
     reason: args.reason,
+    ...(args.data ? { data: args.data } : {}),
   });
   deps.hub.notifyThread(args.threadId, ["events-appended"], {
     eventTypes: ["system/thread/interrupted"],
@@ -519,6 +536,7 @@ function markThreadStoppingWithEventInTransaction(
   appendThreadInterruptedEventInTransaction(deps.db, {
     threadId: args.threadId,
     reason: args.reason,
+    ...(args.data ? { data: args.data } : {}),
   });
   deps.hub.notifyThread(args.threadId, ["events-appended"], {
     eventTypes: ["system/thread/interrupted"],
@@ -1170,6 +1188,7 @@ function markThreadStopRequested(
           hub: notificationBuffer,
         },
         {
+          ...(args.interruptionData ? { data: args.interruptionData } : {}),
           reason: args.interruptionReason,
           threadId: args.threadId,
         },
@@ -1181,6 +1200,30 @@ function markThreadStopRequested(
 
   const currentThread = getThread(deps.db, args.threadId);
   return currentThread?.status === "stopping";
+}
+
+function appendManualStopOverrideIfLatestCleanup(
+  deps: CommandResultSideEffectsDeps,
+  threadId: string,
+): void {
+  const notificationBuffer = new NotificationBuffer();
+  deps.db.transaction(
+    (tx) => {
+      const latest = getLatestThreadInterruptedEventData(tx, { threadId });
+      if (latest?.reason !== "workflow-result-cleanup") {
+        return;
+      }
+      appendThreadInterruptedEventInTransaction(tx, {
+        threadId,
+        reason: "manual-stop",
+      });
+      notificationBuffer.notifyThread(threadId, ["events-appended"], {
+        eventTypes: ["system/thread/interrupted"],
+      });
+    },
+    { behavior: "immediate" },
+  );
+  notificationBuffer.flushInto(deps.hub);
 }
 
 function dispatchThreadStopCommand(
@@ -1347,7 +1390,9 @@ export async function stopThreadForCurrentState(
   deps: RequestThreadStopForCurrentStateDeps,
   thread: RequestThreadStopForCurrentStateThread,
   environment: RequestThreadStopForCurrentStateEnvironment | null,
+  options: StopThreadForCurrentStateOptions = {},
 ): Promise<void> {
+  const interruption = options.interruption ?? { reason: "manual-stop" };
   const hasLiveRuntime =
     thread.status === "active" ||
     hasLiveThreadStartInFlight(thread.id) ||
@@ -1359,10 +1404,14 @@ export async function stopThreadForCurrentState(
     const args: RequestThreadStopArgs = {
       environmentId: environment.id,
       hostId: environment.hostId,
-      interruptionReason: "manual-stop",
+      interruptionData: interruption,
+      interruptionReason: interruption.reason,
       threadId: thread.id,
     };
     if (markThreadStopRequested(deps, args)) {
+      if (interruption.reason === "manual-stop") {
+        appendManualStopOverrideIfLatestCleanup(deps, thread.id);
+      }
       await runAwaitedThreadStopCommand(deps, {
         command: buildThreadStopCommand({ ...args, intent: "interrupt" }),
         hostId: args.hostId,
@@ -1371,6 +1420,9 @@ export async function stopThreadForCurrentState(
       return;
     }
     const settledThread = getThread(deps.db, thread.id);
+    if (interruption.reason === "manual-stop") {
+      appendManualStopOverrideIfLatestCleanup(deps, thread.id);
+    }
     if (
       settledThread === null ||
       (settledThread.status !== "idle" && settledThread.status !== "error")
@@ -1379,6 +1431,10 @@ export async function stopThreadForCurrentState(
     }
     await releaseIdleThreadRuntime(deps, thread.id, environment);
     return;
+  }
+
+  if (interruption.reason === "manual-stop") {
+    appendManualStopOverrideIfLatestCleanup(deps, thread.id);
   }
 
   if (
@@ -1391,6 +1447,50 @@ export async function stopThreadForCurrentState(
   }
 
   await releaseIdleThreadRuntime(deps, thread.id, environment);
+}
+
+export async function stopAcceptedWorkflowWorkerForCurrentState(
+  deps: RequestThreadStopForCurrentStateDeps,
+  provenance: WorkflowResultCleanupProvenance,
+): Promise<void> {
+  if (provenance.pluginId !== "workflows") {
+    throw new Error("Workflow result cleanup requires Workflows provenance");
+  }
+  const thread = getThread(deps.db, provenance.childThreadId);
+  if (thread === null || thread.deletedAt !== null) {
+    return;
+  }
+  if (provenance.acceptance === "idempotent") {
+    const latest = getLatestThreadInterruptedEventData(deps.db, {
+      threadId: thread.id,
+    });
+    if (
+      latest?.reason !== "workflow-result-cleanup" ||
+      latest.workflowResult === undefined ||
+      latest.workflowResult.runId !== provenance.runId ||
+      latest.workflowResult.callId !== provenance.callId ||
+      latest.workflowResult.resultSha256 !== provenance.resultSha256
+    ) {
+      return;
+    }
+  }
+  const environment =
+    thread.environmentId === null
+      ? null
+      : (getEnvironment(deps.db, thread.environmentId) ?? null);
+  await stopThreadForCurrentState(
+    deps,
+    thread,
+    environment === null
+      ? null
+      : { id: environment.id, hostId: environment.hostId },
+    {
+      interruption: {
+        reason: "workflow-result-cleanup",
+        workflowResult: provenance,
+      },
+    },
+  );
 }
 
 async function releaseIdleThreadRuntime(
@@ -1485,6 +1585,7 @@ function interruptActiveTurnForThreadInTransaction(
         : {}),
       providerThreadId,
       reason: args.reason,
+      ...(args.data ? { data: args.data } : {}),
       threadId: args.threadId,
     });
   const eventTypes: ThreadEventType[] = ["turn/completed"];
@@ -1677,10 +1778,10 @@ export function finalizeStoppedThreadInTransaction(
     return;
   }
 
-  const interruptionReason =
-    getLatestThreadInterruptedReason(deps.db, {
-      threadId: currentThread.id,
-    }) ?? "manual-stop";
+  const interruptionData = getLatestThreadInterruptedEventData(deps.db, {
+    threadId: currentThread.id,
+  }) ?? { reason: "manual-stop" };
+  const interruptionReason = interruptionData.reason;
   let appendedThreadInterruptedEvent = false;
   if (
     currentThread.status === "active" ||
@@ -1694,6 +1795,7 @@ export function finalizeStoppedThreadInTransaction(
           ? { providerCheckpointId: args.providerCheckpointId }
           : {}),
         threadId: currentThread.id,
+        data: interruptionData,
         reason: interruptionReason,
       },
     );
@@ -1735,6 +1837,7 @@ export function finalizeStoppedThreadInTransaction(
     ) {
       appendThreadInterruptedEventInTransaction(deps.db, {
         threadId: finalizedThread.id,
+        data: interruptionData,
         reason: interruptionReason,
       });
       deps.hub.notifyThread(finalizedThread.id, ["events-appended"], {

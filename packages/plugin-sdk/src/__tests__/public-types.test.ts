@@ -58,6 +58,8 @@ const EXPECTED_BACKEND_ROOT_TYPE_EXPORTS = [
   "ExperimentalPluginWebSocketContext",
   "ExperimentalPluginWebSocketHandler",
   "ExperimentalPluginWebSocketHandlers",
+  "ExperimentalStopAcceptedWorkflowWorkerArgs",
+  "ExperimentalWorkflowResultCleanupAcceptance",
   "PluginHookHandler",
   "PluginHookName",
   "PluginHookSignatures",

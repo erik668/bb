@@ -36,6 +36,7 @@ import type {
   ThreadEventType,
   ResolvedThreadExecutionOptions,
   SystemErrorEventData,
+  SystemThreadInterruptedEventData,
   SystemThreadInterruptedReason,
   SystemMessageKind,
   SystemMessageSubject,
@@ -153,6 +154,7 @@ interface BuildCwdBranchEntriesArgs {
 }
 
 interface AppendThreadInterruptedEventArgs {
+  data?: SystemThreadInterruptedEventData;
   reason: SystemThreadInterruptedReason;
   threadId: string;
 }
@@ -782,13 +784,12 @@ export function appendThreadInterruptedEventInTransaction(
   db: DbTransaction,
   args: AppendThreadInterruptedEventArgs,
 ): number {
+  const data = args.data ?? { reason: args.reason };
   return appendThreadEventInTransaction(db, {
     threadId: args.threadId,
     type: "system/thread/interrupted",
     scope: threadScope(),
-    data: {
-      reason: args.reason,
-    },
+    data,
   });
 }
 

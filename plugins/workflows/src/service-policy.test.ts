@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
@@ -136,6 +137,7 @@ function setup(
     pluginId: "workflows",
     sdk: {
       threads: {
+        events: { list: async () => [] },
         get: async ({ threadId }) => {
           if (threadId === "origin") {
             if (originDeleted) {
@@ -241,6 +243,18 @@ function setup(
       },
     },
   });
+  const acceptedWorkflowWorkerStops: Parameters<
+    typeof bb.server.experimental_stopAcceptedWorkflowWorker
+  >[0][] = [];
+  Object.defineProperty(bb.server, "experimental_stopAcceptedWorkflowWorker", {
+    value: async (
+      args: Parameters<
+        typeof bb.server.experimental_stopAcceptedWorkflowWorker
+      >[0],
+    ) => {
+      acceptedWorkflowWorkerStops.push(args);
+    },
+  });
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
   const service = createWorkflowService(bb, db, settings);
@@ -273,6 +287,7 @@ function setup(
     workers,
     start,
     archived,
+    acceptedWorkflowWorkerStops,
     failArchive: (threadId: string) => archiveFailures.add(threadId),
     childCount: () => childCount,
     setThread: (
@@ -1077,6 +1092,118 @@ describe("workflow service policy integration", () => {
     }
   });
 
+  it.each(["partial output", '{"answer":42}'])(
+    "does not repair or accept interrupted output: %s",
+    async (output) => {
+      const test = setup();
+      harnesses.push(test.harness);
+      test.harness.sdk.stub("threads.events.list", async () => [
+        {
+          id: "event-manual",
+          threadId: "child-1",
+          seq: 2,
+          createdAt: Date.now(),
+          scope: { kind: "thread" },
+          type: "system/thread/interrupted",
+          data: { reason: "manual-stop" },
+        },
+      ]);
+      const run = await test.start(
+        source(`return await agent("structured", {
+      outputSchema: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } }
+    });`),
+      );
+      const controller = new AbortController();
+      const worker = test.service.runWorker(controller.signal);
+      try {
+        await eventually(() => expect(test.childCount()).toBe(1));
+        test.service.onThreadIdle("child-1", output);
+        await eventually(() =>
+          expect(getRunRequired(test.db, run.id).status).toBe("failed"),
+        );
+        expect(getCall(test.db, run.id, 0)).toMatchObject({
+          status: "failed",
+          repairAttempts: 0,
+          resultJson: null,
+        });
+        expect(
+          test.harness.sdk
+            .callsTo("threads.send")
+            .filter(
+              ([args]) =>
+                typeof args === "object" &&
+                args !== null &&
+                "threadId" in args &&
+                args.threadId === "child-1",
+            ),
+        ).toHaveLength(0);
+        expect(test.acceptedWorkflowWorkerStops).toHaveLength(0);
+      } finally {
+        controller.abort();
+        await worker;
+      }
+    },
+  );
+
+  it("rejects a first structured result after manual stop before idle handling", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    let release: () => void = () => {
+      throw new Error("Boundary not reached");
+    };
+    let reached: () => void = () => {};
+    const boundaryReached = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    test.harness.sdk.stub("threads.events.list", async () => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        reached();
+      });
+      return [
+        {
+          id: "event-manual",
+          threadId: "child-1",
+          seq: 2,
+          createdAt: Date.now(),
+          scope: { kind: "thread" },
+          type: "system/thread/interrupted",
+          data: { reason: "manual-stop" },
+        },
+      ];
+    });
+    const run = await test.start(
+      source(`
+      await agent("structured", { outputSchema: { type: "object" } });
+      return await agent("must not launch");
+    `),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      const submission = test.service.submitStructuredResult("child-1", {
+        answer: 42,
+      });
+      await boundaryReached;
+      expect(getCall(test.db, run.id, 0)?.status).toBe("running");
+      release();
+      await expect(submission).resolves.toMatchObject({
+        ok: false,
+        terminal: true,
+      });
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("failed"),
+      );
+      expect(test.childCount()).toBe(1);
+      expect(getCall(test.db, run.id, 0)?.resultJson).toBeNull();
+      expect(test.acceptedWorkflowWorkerStops).toHaveLength(0);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
   it("accepts structured output while context telemetry remains pending", async () => {
     const test = setup();
     harnesses.push(test.harness);
@@ -1104,6 +1231,76 @@ describe("workflow service policy integration", () => {
         expect(getRunRequired(test.db, run.id).status).toBe("succeeded");
         expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded");
       });
+      const call = getCall(test.db, run.id, 0)!;
+      expect(test.acceptedWorkflowWorkerStops).toEqual([
+        {
+          acceptance: "accepted",
+          callId: call.id,
+          childThreadId: "child-1",
+          resultSha256: createHash("sha256")
+            .update(call.resultJson!)
+            .digest("hex"),
+          runId: run.id,
+        },
+      ]);
+      expect(test.harness.sdk.callsTo("threads.stop")).toHaveLength(0);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("uses cleanup provenance for idempotent structured output resubmission", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(
+      source(`return await agent("structured", {
+        outputSchema: {
+          type: "object",
+          required: ["answer"],
+          properties: { answer: { type: "number" } }
+        }
+      });`),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      await expect(
+        test.service.submitStructuredResult("child-1", { answer: 42 }),
+      ).resolves.toEqual({ ok: true });
+      await expect(
+        test.service.submitStructuredResult("child-1", { answer: 42 }),
+      ).resolves.toEqual({ ok: true });
+      const call = getCall(test.db, run.id, 0)!;
+      const resultSha256 = createHash("sha256")
+        .update(call.resultJson!)
+        .digest("hex");
+      expect(test.acceptedWorkflowWorkerStops).toEqual([
+        {
+          acceptance: "accepted",
+          callId: call.id,
+          childThreadId: "child-1",
+          resultSha256,
+          runId: run.id,
+        },
+        {
+          acceptance: "idempotent",
+          callId: call.id,
+          childThreadId: "child-1",
+          resultSha256,
+          runId: run.id,
+        },
+      ]);
+      expect(
+        await test.service.submitStructuredResult("child-1", { answer: 7 }),
+      ).toEqual({
+        ok: false,
+        terminal: true,
+        error:
+          "A different structured result was already accepted for this workflow call",
+      });
+      expect(test.acceptedWorkflowWorkerStops).toHaveLength(2);
     } finally {
       controller.abort();
       await worker;

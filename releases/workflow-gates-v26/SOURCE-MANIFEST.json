@@ -1,0 +1,129 @@
+{
+  "baseCommit": "b688e8f1764b25ebd4b468eefd0f224641603fdc",
+  "files": [
+    {
+      "path": "apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx",
+      "sha256": "435d999eafed43aaec2e30cdd271d4571a1cc44c088968392afefdb29d29efef"
+    },
+    {
+      "path": "apps/server/package.json",
+      "sha256": "0b4be5e52f4fdbe7a684169285416152b44982d3e59f69e13431a275a090ac04"
+    },
+    {
+      "path": "apps/server/src/server.ts",
+      "sha256": "923df493d55e30f95bc76d75282557609ea9012212323070f7ad05cfefbca5fc"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-api.ts",
+      "sha256": "280fdd0e4c6bc235a9c76bdd53153260adf40cf1ae13f8dfc88c2d36697b8baf"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-runtime.ts",
+      "sha256": "777214c313ed193f5cae1411afa867d752d5eb1b8a6d453569162a2286a158d2"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-service-internal.ts",
+      "sha256": "4ead2923cf27e42951c1b52780849f4f212ec5eaaabbf2d8aa930081e1aab1df"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-foundation.md",
+      "sha256": "abc908969698c4ab534536a87e817c26a94079eac35cbf9cc26cb2022ebe01ea"
+    },
+    {
+      "path": "apps/server/src/services/threads/child-thread-notifications.ts",
+      "sha256": "9960b2c7d3a08ad51702bac269f670cc65a85934e0c1b4748ece71381c7f4d2f"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-events.ts",
+      "sha256": "0d306b7cc3ce90d3c7f47d6398b467c638b9a44bdf0578e0865807c95b4db31a"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-lifecycle.ts",
+      "sha256": "1d29eb6de8a21ccb0a7388b6ce7ed49cc1e76a0044a3f4d239f27e21c164282e"
+    },
+    {
+      "path": "apps/server/test/public/public-thread-stop-runtime.test.ts",
+      "sha256": "554b4cadd4fc4263f70916a2143082afca8bc97e42ffcb97ce20f05fd9f7f76b"
+    },
+    {
+      "path": "apps/server/test/services/plugins/plugin-sdk-alias.test.ts",
+      "sha256": "bd8773f464b4e885582204c8081f8253193437042d60b79228aa11c37a158194"
+    },
+    {
+      "path": "apps/server/test/services/threads/child-thread-notifications.test.ts",
+      "sha256": "4018485d99ada45686b71a5e6cd8fa23a465da73c40b9008d4c91804e902a875"
+    },
+    {
+      "path": "docs/api_to_audit.md",
+      "sha256": "ead922243f238dd174135bb506b9e05a45c5c25007750668eb060f79072d7830"
+    },
+    {
+      "path": "packages/db/src/data/events.ts",
+      "sha256": "b041b0f06c9764198d34f080a90b7e1538437ab01f0018747bd5a1daf21070f9"
+    },
+    {
+      "path": "packages/db/src/data/index.ts",
+      "sha256": "365fe46deeb1b55e87cd6a39bed63f6a1c283e3128db8a56eee77cf34bb65b79"
+    },
+    {
+      "path": "packages/domain/src/thread-events.ts",
+      "sha256": "e76c43a46875d131ff8792a68f2b1f12d1f15d714f61dd95d18c04281dbe0b72"
+    },
+    {
+      "path": "packages/domain/test/stored-thread-event.test.ts",
+      "sha256": "ae1237469778d19accfe3cd343fd75580eff7bf968abffe166e8a3d22cf0e373"
+    },
+    {
+      "path": "packages/host-daemon-contract/src/protocol.ts",
+      "sha256": "d3bc68fc191f82d5a3dc667c3545123747b9b07aeeb5a9ea8fa2c449b971ec66"
+    },
+    {
+      "path": "packages/plugin-api-map/src/surfaces.ts",
+      "sha256": "2bc0b7fa7c878e654866e4ce8aebd413cfa920f098ff941d5d85e809fb90232f"
+    },
+    {
+      "path": "packages/plugin-sdk/src/__tests__/public-types.test.ts",
+      "sha256": "a696e9d9472e64c447eeff35a0773a4a12fb89a1b4ad914857f3d6473d9e8ac1"
+    },
+    {
+      "path": "packages/plugin-sdk/src/backend-contract.ts",
+      "sha256": "0331a6571e55fbbc818c51a4c7a91e34bb8209ef169e669985471494fe744e48"
+    },
+    {
+      "path": "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+      "sha256": "56404867e05814745152a43cadb95980bb3061cf6a3c7e3f9963dd6f41501a26"
+    },
+    {
+      "path": "packages/templates/src/templates/bb-guide-plugins.md",
+      "sha256": "81abc136c96dadbea36fdfc247f8496c6ff2292aca1fe22532810975e8932be3"
+    },
+    {
+      "path": "packages/thread-view/src/parse-operation-message.ts",
+      "sha256": "02eb3f94e70d5b48543ec43d7d45ed78fe8ca92988984c54ce3464921e5d616a"
+    },
+    {
+      "path": "packages/thread-view/test/parse-operation-message.test.ts",
+      "sha256": "77bccfe42dc69aca4aef730638d5af2935692411f960a912e95a879b9aa843d2"
+    },
+    {
+      "path": "plugins/workflows/skills/workflows/references/runs.md",
+      "sha256": "6c34d00c48920cb9485fa15970649c7e0dca69f2717e3117c9f033803df41968"
+    },
+    {
+      "path": "plugins/workflows/src/server-harness.test.ts",
+      "sha256": "fedd231e9d6c193bf1f9c664d463ae4d8f1b21b4fd8a6c3e8ea06572afc4a9d0"
+    },
+    {
+      "path": "plugins/workflows/src/server.ts",
+      "sha256": "72c053f6c166ae5b0092bdcc9504a42e1f7ef93fcafae768c3f740a8999fb5a9"
+    },
+    {
+      "path": "plugins/workflows/src/service-policy.test.ts",
+      "sha256": "90e13d87d501ab34a6bb35731e8673b08d1d44a0120b63f3139e8433d298d3c6"
+    },
+    {
+      "path": "plugins/workflows/src/service.ts",
+      "sha256": "00007e7b310097a42b9ad1bc0189a0dff2a10f271962831d65bd59d0e594d733"
+    }
+  ]
+}

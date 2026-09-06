@@ -9,7 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import type { PromptTextMention, ThreadListEntry } from "@bb/domain";
+import type { PromptTextMention, SystemMessageKind, ThreadListEntry } from "@bb/domain";
 import type { TimelineTitleLink } from "@bb/thread-view";
 import { ConversationMessageContent } from "./ConversationMessageContent";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
@@ -35,7 +35,7 @@ const MARKDOWN_BODY = [
   "- `pnpm test` green",
 ].join("\n");
 
-function renderChildCompleted(text = MARKDOWN_BODY) {
+function renderChildCompleted(text = MARKDOWN_BODY, kind: SystemMessageKind = "child-completed") {
   const token = "@thread:thr_child";
   const start = text.indexOf(token);
   const mentions: readonly PromptTextMention[] =
@@ -63,7 +63,7 @@ function renderChildCompleted(text = MARKDOWN_BODY) {
           senderThreadId={null}
           senderThreadTitle={null}
           resolveSegmentLinkHref={resolveThreadLink}
-          systemMessageKind="child-completed"
+          systemMessageKind={kind}
           systemMessageSubject={{
             kind: "thread",
             threadId: "thr_child",
@@ -84,6 +84,17 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+});
+
+it.each([
+  { kind: "child-completed", verb: "finished", icon: "CircleCheck" },
+  { kind: "child-interrupted", verb: "was interrupted", icon: "AlertCircle" },
+] as const)("renders $kind with its matching header and icon", ({ kind, verb, icon }) => {
+  const { container } = renderChildCompleted("Accepted workflow result cleanup.", kind);
+  expect(screen.getByText(verb)).toBeTruthy();
+  expect(container.querySelector(`[data-icon="${icon}"]`)).not.toBeNull();
+  const otherIcon = icon === "CircleCheck" ? "AlertCircle" : "CircleCheck";
+  expect(container.querySelector(`[data-icon="${otherIcon}"]`)).toBeNull();
 });
 
 const AGENT_BODY = "# notes\nedited path:src/app.ts here";

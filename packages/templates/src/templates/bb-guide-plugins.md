@@ -872,7 +872,10 @@ background workers omitted from sidebar organization and unread/pending
 favicon attention, with other behavior unchanged; a child thread inherits
 its parent's visibility and still notifies that parent; plugins must archive
 finished hidden workers when appropriate and call `threads.stop` in a
-`finally` block to release each agent runtime promptly);
+`finally` block to release each agent runtime promptly; accepted structured
+worker results in the built-in Workflows plugin use
+`bb.server.experimental_stopAcceptedWorkflowWorker` to record cleanup
+provenance);
 bb.events.on (observe thread.created/idle/failed/deleted);
 bb.http.route (routes under /api/v1/plugins/<id>/http/* with
 local/token/none auth); defineRpcContract + bb.rpc.register (Standard

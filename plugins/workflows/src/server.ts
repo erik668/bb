@@ -502,7 +502,7 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
-    service.onThreadIdle(thread.id, lastAssistantText);
+    return service.onThreadIdle(thread.id, lastAssistantText);
   });
   bb.events.on("thread.failed", ({ thread, error }) => {
     service.onThreadFailed(thread.id, error);

@@ -120,6 +120,8 @@ function threadInterruptedTitle(
   switch (reason) {
     case "manual-stop":
       return "Stopped manually";
+    case "workflow-result-cleanup":
+      return "Stopped after accepted workflow result";
     case "host-daemon-restarted":
       return "Stopped — host daemon restarted";
     case "provider-turn-idle":

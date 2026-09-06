@@ -1,9 +1,13 @@
 import type {
   PromptInput,
   SystemMessageSubject,
+  SystemThreadInterruptedReason,
   ThreadEventTurnStatus,
 } from "@bb/domain";
-import { listActiveBackgroundTaskCountsByThreadIds } from "@bb/db";
+import {
+  getLatestThreadInterruptedEventData,
+  listActiveBackgroundTaskCountsByThreadIds,
+} from "@bb/db";
 import { renderTemplate } from "@bb/templates";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import {
@@ -27,6 +31,7 @@ export type ChildThreadNotificationSource = ParentSystemThreadMentionSource;
 export interface ChildThreadTurnNotificationBatchItem {
   activeWorkflowCount: number;
   childThread: ChildThreadNotificationSource;
+  interruptionReason?: SystemThreadInterruptedReason | null;
   terminalOutput: string | null;
   turnStatus: ThreadEventTurnStatus;
 }
@@ -93,7 +98,22 @@ const childThreadTurnNotificationBatches = new Map<
   ChildThreadTurnNotificationBatch
 >();
 
-function childThreadTurnStatusLabel(turnStatus: ThreadEventTurnStatus): string {
+function isWorkflowResultCleanupInterruption(
+  item: ChildThreadTurnNotificationBatchItem,
+): boolean {
+  return (
+    item.turnStatus === "interrupted" &&
+    item.interruptionReason === "workflow-result-cleanup"
+  );
+}
+
+function childThreadTurnStatusLabel(
+  item: ChildThreadTurnNotificationBatchItem,
+): string {
+  if (isWorkflowResultCleanupInterruption(item)) {
+    return "returned workflow result";
+  }
+  const turnStatus = item.turnStatus;
   switch (turnStatus) {
     case "completed":
       return "completed";
@@ -187,10 +207,15 @@ function buildSingleChildThreadTurnStatusSegments(
     case "interrupted":
       return [
         { kind: "mention", mention: line.mention },
-        {
-          kind: "text",
-          text: ` was interrupted.\n\n${CHILD_THREAD_INSPECTION_GUIDANCE}\n\n${CHILD_THREAD_INTERRUPTED_GUIDANCE}`,
-        },
+        isWorkflowResultCleanupInterruption(line.item)
+          ? {
+              kind: "text",
+              text: " returned an accepted workflow result and was stopped for cleanup.",
+            }
+          : {
+              kind: "text",
+              text: ` was interrupted.\n\n${CHILD_THREAD_INSPECTION_GUIDANCE}\n\n${CHILD_THREAD_INTERRUPTED_GUIDANCE}`,
+            },
       ];
     default: {
       const exhaustiveCheck: never = line.item.turnStatus;
@@ -210,7 +235,7 @@ function buildChildThreadBatchStatusLineSegments(
     { kind: "mention", mention: line.mention },
     {
       kind: "text",
-      text: ` ${childThreadTurnStatusLabel(line.item.turnStatus)}${workflowClause}.`,
+      text: ` ${childThreadTurnStatusLabel(line.item)}${workflowClause}.`,
     },
   ];
 }
@@ -250,7 +275,13 @@ function buildChildThreadTurnStatusBatchSegments(
     segments.push({ kind: "text", text: index === 0 ? "\n\n- " : "\n- " });
     segments.push(...buildChildThreadBatchStatusLineSegments({ line }));
   });
-  if (args.lines.some((line) => line.item.turnStatus === "interrupted")) {
+  if (
+    args.lines.some(
+      (line) =>
+        line.item.turnStatus === "interrupted" &&
+        !isWorkflowResultCleanupInterruption(line.item),
+    )
+  ) {
     segments.push({
       kind: "text",
       text: `\n\n${CHILD_THREAD_BATCH_INTERRUPTED_GUIDANCE}`,
@@ -292,7 +323,9 @@ function childThreadTurnStatusBatchTaxonomy(
   const single = items.length === 1 ? items[0] : undefined;
   if (single) {
     return {
-      systemMessageKind: childOutcomeSystemMessageKind(single.turnStatus),
+      systemMessageKind: childOutcomeSystemMessageKind(
+        isWorkflowResultCleanupInterruption(single) ? "completed" : single.turnStatus,
+      ),
       systemMessageSubject: childThreadSubject(single.childThread),
     };
   }
@@ -365,20 +398,32 @@ async function flushChildThreadTurnNotificationBatch(
   }
   childThreadTurnNotificationBatches.delete(parentThreadId);
 
+  const items = batch.items.map((item) =>
+    item.turnStatus === "interrupted"
+      ? {
+          ...item,
+          interruptionReason:
+            getLatestThreadInterruptedEventData(deps.db, {
+              threadId: item.childThread.id,
+            })?.reason ?? null,
+        }
+      : item,
+  );
+
   try {
     await queueParentSystemMessage(deps, {
       input: buildChildThreadTurnStatusBatchInput({
-        items: batch.items,
+        items,
       }),
       parentThreadId,
-      ...childThreadTurnStatusBatchTaxonomy(batch.items),
+      ...childThreadTurnStatusBatchTaxonomy(items),
     });
   } catch (error) {
     deps.logger.error(
       {
         err: error,
         parentThreadId,
-        childThreads: batch.items.map((item) => ({
+        childThreads: items.map((item) => ({
           childThreadId: item.childThread.id,
           turnStatus: item.turnStatus,
         })),
@@ -404,6 +449,12 @@ function queueChildThreadTurnNotificationBatchItem(
   const item: ChildThreadTurnNotificationBatchItem = {
     activeWorkflowCount: getChildThreadActiveWorkflowCount(deps, args),
     childThread: args.childThread,
+    interruptionReason:
+      args.turnStatus === "interrupted"
+        ? (getLatestThreadInterruptedEventData(deps.db, {
+            threadId: args.childThread.id,
+          })?.reason ?? null)
+        : null,
     terminalOutput: getChildThreadCompletionOutput(deps, args),
     turnStatus: args.turnStatus,
   };

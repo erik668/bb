@@ -13,6 +13,7 @@ import {
   PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES,
   PLUGIN_INTERACTION_MAX_TITLE_LENGTH,
   type JsonValue,
+  workflowResultCleanupProvenanceSchema,
 } from "@bb/domain";
 import type {
   BbPluginApi,
@@ -30,6 +31,7 @@ import type {
   PluginHooks,
   PluginHookHandler,
   PluginHookName,
+  ExperimentalStopAcceptedWorkflowWorkerArgs,
   PluginEvents,
   PluginHttp,
   PluginHttpAuthMode,
@@ -412,6 +414,9 @@ export function createPluginApi(options: {
   getSdk: () => BbSdk | undefined;
   getAppUrl: () => string | null;
   getLoopbackBaseUrl: () => string | undefined;
+  stopAcceptedWorkflowWorker: (
+    args: ExperimentalStopAcceptedWorkflowWorkerArgs & { pluginId: string },
+  ) => Promise<void>;
   publishSignal: (channel: string, payload: unknown) => void;
   settingsChanged: () => void;
   reportNeedsConfiguration: (message: string) => void;
@@ -481,6 +486,7 @@ export function createPluginApi(options: {
     getSdk,
     getAppUrl,
     getLoopbackBaseUrl,
+    stopAcceptedWorkflowWorker,
     publishSignal,
     settingsChanged,
     reportNeedsConfiguration,
@@ -1258,6 +1264,17 @@ export function createPluginApi(options: {
     get experimental_dataDir(): string {
       assertLive();
       return dataDir;
+    },
+    async experimental_stopAcceptedWorkflowWorker(args) {
+      assertLive();
+      if (pluginId !== "workflows") {
+        throw new Error(
+          "experimental_stopAcceptedWorkflowWorker is only available to the Workflows plugin",
+        );
+      }
+      await stopAcceptedWorkflowWorker(
+        workflowResultCleanupProvenanceSchema.parse({ ...args, pluginId }),
+      );
     },
   };
 
