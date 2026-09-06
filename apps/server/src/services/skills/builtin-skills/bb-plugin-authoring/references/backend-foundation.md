@@ -157,6 +157,11 @@ or `null` when `BB_APP_URL` is empty. It is not bind-gated.
 `bb.server.experimental_dataDir` gives the exact server data directory for a
 migration from BB-managed files. Do not write plugin state there. Use
 `bb.storage` for plugin-owned state.
+`bb.server.experimental_stopAcceptedWorkflowWorker({ childThreadId, runId,
+callId, resultSha256, acceptance })` is limited to the built-in Workflows plugin.
+It stops a workflow worker after Workflows has accepted and persisted its
+structured result. BB stamps the calling plugin id and receipt into the durable
+interruption event before stopping the thread.
 
 ### bb.hosts
 

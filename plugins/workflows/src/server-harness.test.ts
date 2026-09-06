@@ -163,6 +163,7 @@ describe("workflows plugin", () => {
         agentSkillIds: ["workflows"],
         sdk: {
           threads: {
+            events: { list: async () => [] },
             get: async () =>
               ({
                 id: "thread-test",
@@ -545,7 +546,7 @@ describe("workflows plugin", () => {
           .some(
             ([input]) => (input as { threadId: string }).threadId === "child-1",
           ),
-      ).toBe(true);
+      ).toBe(false);
       await expect(
         harness.callAgentTool(
           "bb_workflow_checkpoint",
@@ -1411,6 +1412,7 @@ describe("workflows plugin", () => {
       agentSkillIds: ["workflows"],
       sdk: {
         threads: {
+          events: { list: async () => [] },
           get: async ({ threadId }) => {
             const parentThreadId =
               threadId === "origin-child"
@@ -1738,6 +1740,7 @@ describe("workflow resume cache integration", () => {
       pluginId: "workflows",
       sdk: {
         threads: {
+          events: { list: async () => [] },
           get: async ({ threadId }) =>
             ({
               id: threadId,

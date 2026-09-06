@@ -21,6 +21,7 @@ import type {
   PromptInput,
   ThreadEvent,
   StoredThreadEventDataForType,
+  SystemThreadInterruptedEventData,
   SystemThreadInterruptedReason,
   ThreadEventItemType,
   ThreadEventScope,
@@ -36,7 +37,7 @@ import {
   clientTurnRequestIdSchema,
   getThreadEventScopeTurnId,
   parseStoredThreadEvent,
-  systemThreadInterruptedReasonSchema,
+  systemThreadInterruptedEventDataSchema,
 } from "@bb/domain";
 import type {
   DbConnection,
@@ -2006,9 +2007,17 @@ export function getLatestThreadInterruptedReason(
   db: DbQueryConnection,
   args: GetLatestThreadInterruptedReasonArgs,
 ): SystemThreadInterruptedReason | null {
+  return getLatestThreadInterruptedEventData(db, args)?.reason ?? null;
+}
+
+export function getLatestThreadInterruptedEventData(
+  db: DbQueryConnection,
+  args: GetLatestThreadInterruptedReasonArgs,
+): SystemThreadInterruptedEventData | null {
   const row = db
     .select({
-      reason: sql<string>`json_extract(${events.data}, '$.reason')`,
+      data: events.data,
+      sequence: events.sequence,
     })
     .from(events)
     .where(
@@ -2023,7 +2032,24 @@ export function getLatestThreadInterruptedReason(
   if (!row) {
     return null;
   }
-  return systemThreadInterruptedReasonSchema.parse(row.reason);
+  const parsed: unknown = JSON.parse(row.data);
+  const data = systemThreadInterruptedEventDataSchema.parse(parsed);
+  if (data.reason === "workflow-result-cleanup") {
+    const laterTurn = db
+      .select({ sequence: events.sequence })
+      .from(events)
+      .where(
+        and(
+          eq(events.threadId, args.threadId),
+          eq(events.type, "turn/started"),
+          gt(events.sequence, row.sequence),
+        ),
+      )
+      .limit(1)
+      .get();
+    if (laterTurn) return null;
+  }
+  return data;
 }
 
 export function listStoredTurnStartedRowsByTurnIdsUpToSequence(

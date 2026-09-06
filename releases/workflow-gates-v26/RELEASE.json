@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "name": "workflow-gates-v26-runtime-beta",
+  "kind": "runtime",
+  "baseCommit": "b688e8f1764b25ebd4b468eefd0f224641603fdc",
+  "sourceManifestSha256": "4c8b16295e6f562c8fb61057d13ed1ef7e7e1aedb1acf6e94cbd05d6e3394f39",
+  "sourceFiles": 31,
+  "protocolVersion": 181,
+  "companion": {
+    "repository": "https://github.com/erik668/claude-harness",
+    "branch": "release/workflow-gates-v26",
+    "sourceManifestSha256": "231f8b67f45a6a3b1450b12910391263c513f26e36cca0235ec21723dddbf151"
+  },
+  "validation": {
+    "runtimeFocusedTestsPassed": 126,
+    "runtimeTypechecksPassed": 2,
+    "isolatedLiveCanaryPassed": true,
+    "activeInstallationChanged": false
+  }
+}

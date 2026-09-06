@@ -768,6 +768,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Reach the same operations the [bb CLI](cli) and the bb UI use",
           "Have the threads it creates attributed back to the plugin",
           "Read the server's loopback URL, public app URL, and data directory when it needs server facts",
+          "Stop an accepted workflow worker with durable cleanup provenance",
         ],
         apiSymbols: ["BbPluginApi", "PluginServerApi"],
         firstParty: [

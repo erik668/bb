@@ -30,6 +30,7 @@ import { setPluginAgentContributions } from "./services/plugins/plugin-agent-con
 import { setPluginThreadEventEmitter } from "./services/plugins/plugin-thread-events.js";
 import { setPluginHookProvider } from "./services/plugins/plugin-hook-registry.js";
 import { requestQueuedMessageDispatch } from "./services/threads/queued-message-dispatch.js";
+import { stopAcceptedWorkflowWorkerForCurrentState } from "./services/threads/thread-lifecycle.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
 import { registerInternalInteractiveRequestRoutes } from "./internal/interactive-requests.js";
@@ -587,6 +588,8 @@ export function createApp(
     requestQueueDrain: () => {
       requestQueuedMessageDispatch(deps, { kind: "plugin-recheck" });
     },
+    stopAcceptedWorkflowWorker: (provenance) =>
+      stopAcceptedWorkflowWorkerForCurrentState(deps, provenance),
     watchBuiltinPluginSources:
       process.env.BB_MANAGED_DEV_BUILTIN_PLUGIN_HOT_RELOAD === "1",
   });

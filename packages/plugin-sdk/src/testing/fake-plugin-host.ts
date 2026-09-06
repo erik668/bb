@@ -1702,6 +1702,9 @@ function createFakePluginHostInternal(
       assertLive();
       return dataDir;
     },
+    async experimental_stopAcceptedWorkflowWorker() {
+      assertLive();
+    },
   };
 
   // --- sdk ---

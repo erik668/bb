@@ -290,6 +290,7 @@ export {
   listStoredTurnCompletedRowsByTurnIds,
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
+  getLatestThreadInterruptedEventData,
   getLatestThreadInterruptedReason,
   getLatestStoredRateLimitsEventForProvider,
   getLatestStoredThreadEventOfTypes,

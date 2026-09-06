@@ -109,7 +109,10 @@ async function hashFile(
 }
 
 export function pluginSdkAliasFor(runtimePath: string): Record<string, string> {
+  const hostRuntimePath = join(dirname(runtimePath), "plugin-sdk-host-runtime.js");
   return {
+    [`${PLUGIN_SDK_SPECIFIER}/host`]: hostRuntimePath,
+    [`${LEGACY_PLUGIN_SDK_SPECIFIER}/host`]: hostRuntimePath,
     [PLUGIN_SDK_SPECIFIER]: runtimePath,
     [LEGACY_PLUGIN_SDK_SPECIFIER]: runtimePath,
   };
@@ -1302,6 +1305,14 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
       getSdk: () => boundSdk,
       getAppUrl: deps.getAppUrl ?? (() => null),
       getLoopbackBaseUrl: () => boundLoopbackBaseUrl,
+      stopAcceptedWorkflowWorker: async ({ pluginId, ...provenance }) => {
+        if (!deps.stopAcceptedWorkflowWorker) {
+          throw new Error(
+            "Workflow worker cleanup is unavailable in this server",
+          );
+        }
+        await deps.stopAcceptedWorkflowWorker({ ...provenance, pluginId });
+      },
       publishSignal: (channel, payload) => {
         deps.hub.notifyPluginSignal(row.id, channel, payload);
       },

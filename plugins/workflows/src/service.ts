@@ -134,6 +134,7 @@ const NOTIFICATION_RETRY_BASE_MS = 1_000;
 const NOTIFICATION_RETRY_MAX_MS = 60 * 60 * 1_000;
 const PROVIDER_RETRY_DELAYS_MS = [1_000, 4_000] as const;
 const RETENTION_SWEEP_RUNS = 20;
+type AcceptedWorkflowResultStop = "accepted" | "idempotent";
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -533,7 +534,7 @@ export interface WorkflowService {
   }): { acceptanceId: string; supersedes: string; newlyApproved: boolean };
   updateSettings(settings: WorkflowSettings): void;
   runWorker(signal: AbortSignal): Promise<void>;
-  onThreadIdle(threadId: string, output: string | null): void;
+  onThreadIdle(threadId: string, output: string | null): Promise<void>;
   onThreadFailed(threadId: string, error: string | null): void;
   onThreadDeleted(threadId: string): void;
   submitStructuredResult(
@@ -658,11 +659,13 @@ export function createWorkflowService(
     if (run !== null) publishRunChanged(run);
   }
 
-  async function stopChild(threadId: string): Promise<void> {
+  async function stopChildWith(
+    threadId: string,
+    stop: () => Promise<unknown>,
+  ): Promise<void> {
     const pending = childStops.get(threadId);
     if (pending !== undefined) return pending;
-    const stopping = bb.sdk.threads
-      .stop({ threadId })
+    const stopping = stop()
       .then(() => undefined)
       .catch((error) => {
         if (!isMissingThread(error)) {
@@ -674,6 +677,39 @@ export function createWorkflowService(
       .finally(() => childStops.delete(threadId));
     childStops.set(threadId, stopping);
     return stopping;
+  }
+
+  async function stopChild(threadId: string): Promise<void> {
+    await stopChildWith(threadId, () => bb.sdk.threads.stop({ threadId }));
+  }
+
+  async function stopChildAfterAcceptedResult(
+    threadId: string,
+    call: WorkflowCallRow,
+    acceptance: AcceptedWorkflowResultStop,
+  ): Promise<void> {
+    const stored = getCallByChildThread(db, threadId);
+    if (
+      stored === null ||
+      stored.id !== call.id ||
+      stored.runId !== call.runId ||
+      stored.resultJson === null
+    ) {
+      await stopChild(threadId);
+      return;
+    }
+    const resultSha256 = createHash("sha256")
+      .update(stored.resultJson)
+      .digest("hex");
+    await stopChildWith(threadId, () =>
+      bb.server.experimental_stopAcceptedWorkflowWorker({
+        acceptance,
+        callId: stored.id,
+        childThreadId: threadId,
+        resultSha256,
+        runId: stored.runId,
+      }),
+    );
   }
 
   async function stopChildren(threadIds: Iterable<string>): Promise<void> {
@@ -1514,12 +1550,29 @@ export function createWorkflowService(
     }
   }
 
+  async function wasWorkerInterrupted(threadId: string): Promise<boolean> {
+    const [latestBoundary] = await bb.sdk.threads.events.list({
+      threadId,
+      types: ["turn/started", "system/thread/interrupted"],
+      order: "desc",
+      limit: "1",
+    });
+    return latestBoundary?.type === "system/thread/interrupted";
+  }
+
   async function handleThreadIdle(
     threadId: string,
     output: string | null,
   ): Promise<void> {
     const call = getCallByChildThread(db, threadId);
     if (call === null || call.status !== "running") return;
+    if (await wasWorkerInterrupted(threadId)) {
+      failThreadCall(
+        threadId,
+        "Workflow worker was interrupted; explicit user action is required to continue",
+      );
+      return;
+    }
     void captureCallContextUsage(threadId, call.id);
     const options = optionsForCall(call);
     if (options.outputSchema !== null) {
@@ -1632,9 +1685,14 @@ export function createWorkflowService(
     wakeCall(call);
   }
 
-  function onThreadIdle(threadId: string, output: string | null): void {
+  function onThreadIdle(
+    threadId: string,
+    output: string | null,
+  ): Promise<void> {
     const call = getCallByChildThread(db, threadId);
-    if (call === null || idleHandlers.has(call.id)) return;
+    if (call === null) return Promise.resolve();
+    if (idleHandlers.has(call.id))
+      return idleHandlerTasks.get(call.id) ?? Promise.resolve();
     idleHandlers.add(call.id);
     const task = handleThreadIdle(threadId, output)
       .catch((error) => {
@@ -1653,6 +1711,7 @@ export function createWorkflowService(
       });
     handlerTasks.add(task);
     idleHandlerTasks.set(call.id, task);
+    return task;
   }
 
   function failThreadCall(threadId: string, error: string): void {
@@ -1679,6 +1738,12 @@ export function createWorkflowService(
         error: "This thread is not an active workflow worker",
       };
     }
+    if (call.status === "running" && (await wasWorkerInterrupted(threadId))) {
+      const error =
+        "Workflow worker was interrupted; explicit user action is required to continue";
+      failThreadCall(threadId, error);
+      return { ok: false, terminal: true, error };
+    }
     void captureCallContextUsage(threadId, call.id);
     const options = optionsForCall(call);
     if (options.outputSchema === null) {
@@ -1700,11 +1765,11 @@ export function createWorkflowService(
           error: null,
         });
         wakeCall(call);
-        await stopChild(threadId);
+        await stopChildAfterAcceptedResult(threadId, call, "accepted");
         return { ok: true };
       }
       if (stored === "idempotent") {
-        await stopChild(threadId);
+        await stopChildAfterAcceptedResult(threadId, call, "idempotent");
         return { ok: true };
       }
       if (stored === "conflict") {

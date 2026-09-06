@@ -1538,6 +1538,27 @@ export interface PluginServerApi {
    * not a place to write.
    */
   readonly experimental_dataDir: string;
+
+  /**
+   * Stop a workflow worker after the workflows plugin has accepted and
+   * persisted that worker's structured result. The server stamps the calling
+   * plugin id into the interruption provenance before it stops the thread.
+   */
+  experimental_stopAcceptedWorkflowWorker(
+    args: ExperimentalStopAcceptedWorkflowWorkerArgs,
+  ): Promise<void>;
+}
+
+export type ExperimentalWorkflowResultCleanupAcceptance =
+  | "accepted"
+  | "idempotent";
+
+export interface ExperimentalStopAcceptedWorkflowWorkerArgs {
+  acceptance: ExperimentalWorkflowResultCleanupAcceptance;
+  callId: string;
+  childThreadId: string;
+  resultSha256: string;
+  runId: string;
 }
 
 // ---------------------------------------------------------------------------

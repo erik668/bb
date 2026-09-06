@@ -760,6 +760,29 @@ value. Plugins can read it before the server starts to listen.
 connect URL should supply this value when `BB_APP_URL` is empty. Confirm that
 one public URL has clear behavior when a server has several access paths.
 
+## `bb.server.experimental_stopAcceptedWorkflowWorker`
+
+**What it does.** Stops a workflow worker thread after the built-in Workflows
+plugin has accepted and persisted that worker's structured result. The plugin
+re-reads the child-owned call row from its DB before calling this API, then
+supplies the run id, call id, child thread id, accepted-result hash, and whether
+the result was newly accepted or idempotent. The server only accepts calls from
+the `workflows` plugin id and stamps that id into the durable
+`system/thread/interrupted` event as `workflow-result-cleanup` provenance before
+it stops the runtime.
+
+An idempotent submission retries cleanup only while the same durable cleanup
+record remains current and matches the run, call and result hash. A later turn
+or manual stop invalidates that retry authority. If the first cleanup request
+never reached the server and wrote no record, an identical result is still
+accepted but cannot authorize a stop; recovery requires explicit intervention.
+
+**Audit before stabilizing.** Decide whether accepted-result cleanup should stay
+workflow-specific or become a generic plugin-owned worker completion API.
+Confirm the receipt identity is enough for support tooling to match a cleanup
+stop back to the persisted workflow result, and that manual-stop overrides
+remain authoritative when user stops race accepted-result cleanup.
+
 ## Bridge record mode (`experimental_recordProviderChildIo` and `experimental_isProviderBridgeRecording`)
 
 **Kept experimental (2026-08-22).** the recording entry shape is now consumed by the public testing kit, so it is a de-facto fixture format that must be frozen together with `experimental_readBridgeRecording` / `replayRecording`; the `{ threadId | null }` scope is untested against a multiplexing bridge.

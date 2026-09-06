@@ -5,6 +5,7 @@ import type {
   PendingInteraction,
   Thread,
   ThreadQueuedMessage,
+  WorkflowResultCleanupProvenance,
 } from "@bb/domain";
 import type {
   HostDaemonConnectTunnelIdentity,
@@ -93,6 +94,9 @@ export interface PluginServiceDeps {
    * drove this signal itself and no app had registered a listener.
    */
   requestQueueDrain?: () => void;
+  stopAcceptedWorkflowWorker?: (
+    provenance: WorkflowResultCleanupProvenance,
+  ) => Promise<void>;
   /** Per-handler hook decision box; tests shrink it to exercise the timeout path. */
   pluginHookTimeoutMs?: number;
   /** Thread DTO assembly for lifecycle events + plugin-signal broadcast +
