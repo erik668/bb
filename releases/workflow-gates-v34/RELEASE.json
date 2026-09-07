@@ -1,0 +1,47 @@
+{
+  "version": 1,
+  "name": "workflow-gates-v34-runtime-beta",
+  "kind": "runtime",
+  "baseCommit": "73060be0419b5535192d3cfabb9217e115bf0df2",
+  "sourceManifestSha256": "0913732a218596d9ef317396799aa870b3cb89a07cf25d684deabfb192063517",
+  "sourceFiles": 104,
+  "protocolVersion": 183,
+  "migrations": [
+    "0113_workflow_supervision_v33",
+    "0114_supervisor_notice_replay_v33",
+    "0115_supervisor_binding_retention_v33"
+  ],
+  "companion": {
+    "repository": "https://github.com/erik668/claude-harness",
+    "branch": "release/workflow-gates-v34",
+    "sourceManifestSha256": "56435ce05f892d1c77071a37f4529a82086e6868942861dfd9d7f861ed3780f4"
+  },
+  "provenance": {
+    "frozenHandoff": "workflow-gates-stabilization-v34",
+    "freezeSha256": "ba9e9f3938e5c60c2ce00b26c1a2a8eaa93f4436e59ef97fa022bbbeee21872a",
+    "sourceBaseCommit": "b688e8f1764b25ebd4b468eefd0f224641603fdc",
+    "frozenSourceBuildManifestSha256": "449540af4954ec15780ee35a62cefcfa65a7df9dde89ec7c427ccb94300386a1",
+    "frozenFullSourceInventorySha256": "e3dbc1a61475c1b6f3d18a4c7f734bbe135b12700da35aceeba3b93dc7c8cf91",
+    "fullSourceFilesVerified": 5842,
+    "retainedBuildFilesVerified": 398
+  },
+  "validation": {
+    "provenance": "Retained frozen V34 changed-scope tests/typechecks/build, reverified against identical source and build bytes during publication; not a fresh full-monorepo run.",
+    "focusedChecksPassed": 86,
+    "typecheckTasksPassed": 11,
+    "buildTasksPassed": 9,
+    "sourceBuildVerifierPassed": true,
+    "typecheckCommand": "pnpm exec turbo run typecheck --continue --filter=@bb/host-daemon --filter=@bb/server --filter=@bb/cli --filter=@bb/sdk --filter=@bb/server-contract --filter=@bb/host-daemon-contract --filter=@bb/plugin-api-map",
+    "buildCommand": "pnpm exec turbo run build --filter=@bb/server --filter=@bb/host-daemon --filter=@bb/cli --filter=@bb/sdk",
+    "qualifiedNativeCampaignComplete": true,
+    "activeInstallationChanged": false
+  },
+  "limits": [
+    "Source publication, not a packaged desktop release or deployment.",
+    "Cross-platform/fleet qualification remains open.",
+    "Cached provider readiness does not prove a real model turn, credentials or TLS connectivity.",
+    "Migrations require backup and a compatible runtime; database downgrade is not assumed safe.",
+    "No matched efficiency or complete cost-attribution claim.",
+    "V35 excluded."
+  ]
+}

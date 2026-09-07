@@ -8,6 +8,8 @@ import {
   getThread,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
+  getSupervisorNoticeByQueuedMessage,
+  getSupervisorNoticeRequestSequence,
   releaseQueuedMessageClaim,
   releaseStaleQueuedMessageClaims,
   type DbQueryConnection,
@@ -630,12 +632,29 @@ async function sendClaimedSystemNotice(
     JSON.parse(lead.systemNotice),
   );
   const queuedMessage = toThreadQueuedMessage(lead);
-  const delivered = await deliverParentSystemMessage(deps, {
-    input: queuedMessage.content,
-    parentThread: args.thread,
-    systemMessageKind: notice.kind,
-    systemMessageSubject: notice.subject,
-  });
+  const supervisorNotice = getSupervisorNoticeByQueuedMessage(deps.db, lead.id);
+  if (
+    supervisorNotice !== undefined &&
+    !args.sendNow &&
+    isThreadQueueAutoSendPaused(deps.db, args.thread.id)
+  ) {
+    releaseQueuedMessageClaims(deps, args.queuedMessages);
+    return queuedMessage;
+  }
+  const alreadyRequested =
+    supervisorNotice !== undefined &&
+    getSupervisorNoticeRequestSequence(deps.db, {
+      managerThreadId: args.thread.id,
+      key: supervisorNotice.key,
+    }) !== null;
+  const delivered =
+    alreadyRequested ||
+    (await deliverParentSystemMessage(deps, {
+      input: queuedMessage.content,
+      parentThread: args.thread,
+      systemMessageKind: notice.kind,
+      systemMessageSubject: notice.subject,
+    }));
   if (!delivered) {
     // The thread changed under the drain. Leave the row claimed-and-released
     // by the caller's error path rather than consuming a notice nobody got.

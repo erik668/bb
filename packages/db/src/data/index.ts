@@ -1,3 +1,4 @@
+export * from "./thread-supervision.js";
 export {
   createProject,
   ensurePersonalProject,

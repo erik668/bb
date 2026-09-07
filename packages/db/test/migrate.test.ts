@@ -704,6 +704,14 @@ function dropMarketplaceStatsColumn(db: DbConnection): void {
  * 0108's, so the replay recreates the table before 0110 drops it again.
  */
 function dropQueueReworkSchema(db: DbConnection): void {
+  for (const table of [
+    "thread_supervisor_inbox",
+    "thread_supervisor_bindings",
+    "thread_supervisors",
+    "thread_source_pins",
+  ]) {
+    db.$client.prepare(`DROP TABLE IF EXISTS ${table}`).run();
+  }
   // Indexes first: SQLite refuses to drop a column an existing index names.
   for (const index of [
     "queued_thread_messages_due_idx",

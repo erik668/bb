@@ -92,7 +92,7 @@ async function createNamedBaseBranchThread(
 }
 
 describe("named managed-worktree base branch", () => {
-  it("preserves a named default branch without inspecting or reinterpreting it", async () => {
+  it("resolves a named default branch to its raw commit without substituting the smart default", async () => {
     await withTestHarness(async (harness) => {
       const onInspectGitSource = vi.fn();
       await expect(
@@ -101,7 +101,7 @@ describe("named managed-worktree base branch", () => {
           defaultBranchRelation: "local-behind",
           onInspectGitSource,
         }),
-      ).resolves.toBe("main");
+      ).resolves.toBe("a".repeat(40));
       expect(onInspectGitSource).not.toHaveBeenCalled();
     });
   });
@@ -113,22 +113,22 @@ describe("named managed-worktree base branch", () => {
           baseBranch: "main",
           defaultBranchRelation: "local-ahead",
         }),
-      ).resolves.toBe("main");
+      ).resolves.toBe("a".repeat(40));
     });
   });
 
-  it("passes a named non-default branch through unchanged", async () => {
+  it("pins a named non-default branch before provisioning", async () => {
     await withTestHarness(async (harness) => {
       await expect(
         createNamedBaseBranchThread(harness, {
           baseBranch: "release/2026-05",
           defaultBranchRelation: "local-behind",
         }),
-      ).resolves.toBe("release/2026-05");
+      ).resolves.toBe("a".repeat(40));
     });
   });
 
-  it("does not inspect an origin-qualified branch before provisioning", async () => {
+  it("pins an origin-qualified branch without changing its discovery meaning", async () => {
     await withTestHarness(async (harness) => {
       const onInspectGitSource = vi.fn();
       await expect(
@@ -137,12 +137,12 @@ describe("named managed-worktree base branch", () => {
           defaultBranchRelation: "local-behind",
           onInspectGitSource,
         }),
-      ).resolves.toBe("origin/main");
+      ).resolves.toBe("a".repeat(40));
       expect(onInspectGitSource).not.toHaveBeenCalled();
     });
   });
 
-  it("passes a fork's explicitly named base branch through unchanged", async () => {
+  it("pins a fork's explicitly named base branch before provisioning", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
       registerTestHostRpcCapture(harness, {
@@ -206,7 +206,7 @@ describe("named managed-worktree base branch", () => {
       expect(
         requireManagedWorktreeEnvironmentProvisionLiveCommand(queued).command
           .baseBranch,
-      ).toBe("main");
+      ).toBe("a".repeat(40));
     });
   });
 });

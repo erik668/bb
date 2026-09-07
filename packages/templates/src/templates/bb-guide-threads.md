@@ -9,6 +9,41 @@ Thread commands
 
 Every command supports --json for machine-readable output.
 
+Pinned source and supervised workers:
+
+  bb thread source-inspect --project <id> --machine <id> --ref <ref> --workflow-path <path> --json
+  bb thread supervisor-register --thread <manager> --campaign <id> --inbox <id> [--token <private-64-hex>] --json
+  bb thread supervisor-inbox --thread <manager> --campaign <id> --inbox <id> [--after-key <key> | --notice-key <caller-key>] [--limit <1-500>] --json
+  bb thread supervisor-notify --binding <credential-json> --key <stable-key> --kind decision|exception --message <text> [--task <id>] --json
+
+  Source inspection returns projectId, hostId, repositoryPath, repositoryIdentity
+  (canonical Git common directory), commit, tree, workflowPath, workflowTree,
+  head and clean. Pin the first eight fields with pathPolicy:
+  {kind:"new-worktree"} or {kind:"exact",path:"/absolute/checkout"}.
+  Optional discoveryRef must still resolve to that raw commit. Pins require clean
+  tracked and untracked files; ignored dependencies are allowed. Exact reuse
+  also requires matching checkout HEAD. Commit owner output and explicitly admit
+  a successor pin before critic reuse. Source errors use source_identity_mismatch
+  with exact source/target facts and an actionable repair.
+
+  Registration returns {managerThreadId,campaignId,inboxId,bindingToken}. Keep the
+  token private; callers can persist a random 64-hex token before registration to
+  replay safely after a lost response. Spawn with --parent-thread <manager> and
+  --supervisor containing that credential plus taskId. Binding is immutable and
+  must precede provider start. Owned normal completion goes only to the durable
+  inbox. Unmanaged completion retains ordinary parent notices; manual stops and
+  exceptions remain visible. Inbox reads recover missing terminal publications.
+  Completion output is an excerpt of at most 16,000 characters; full output
+  remains in child history. --notice-key finds one exact original notice key
+  after a lost response, scoped to this registration; it cannot use --after-key.
+
+  Supervisor notices use stable keys. Replaying different content under one key
+  fails. Delivery inbox means publication only; queued means one queue admission;
+  requested includes requestSequence and means the server recorded its turn
+  request. It does not prove provider acknowledgment. Live recipients use normal
+  steering, with durable queued fallback through interactions or unavailable
+  runtime. A genuine manual stop remains paused until the user resumes it.
+
 Spawning:
 
   bb thread spawn --project <id> --prompt "..." [options]
@@ -24,6 +59,8 @@ Spawning:
     --environment <id-or-path>     Attach to an existing environment (ID or workspace path)
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
     --base-branch <branch>         Exact Git ref for a new managed worktree
+    --source-pin <json>            Immutable source identity and explicit path policy
+    --supervisor <json>            Private supervisor credential plus taskId
     --machine <id-or-name>         Run on a machine (--host is an alias)
     --service-tier <tier>          Service tier: fast, default
     --permission-mode <mode>       Permission mode: accept-edits, auto, or full
@@ -60,6 +97,8 @@ Spawning:
   workspace. It cannot be combined with an existing environment ID because that
   environment already selects its machine. Without the flag, local/primary
   machine resolution is unchanged.
+  Managed worktree refs resolve to raw commits in the target project's repository
+  before thread creation. Missing or dirty sources fail without starting a provider.
   Omit --base-branch for bb's default. Explicit values are exact; use
   origin/<branch> for a remote ref.
 
@@ -364,3 +403,17 @@ Lifecycle:
 
 Read-only commands require a thread ID or --self where supported.
 Mutating thread lifecycle and messaging commands require an explicit ID or --self.
+
+### Observe supervisor receipts without recovery
+
+  bb thread supervisor-peek --thread <manager> --campaign <id> --inbox <id> [--notice-key <key> | --after-key <key>] [--limit <1..500>] --json
+
+Returns `registration: present|missing`, stored items and a nullable `nextKey`.
+Default limit is 100. It performs no recovery, queueing, delivery or
+acknowledgment. `queued` and `requested` do not imply provider acceptance.
+Use bounded JSON thread event logs to join the exact request ID to
+`turn/input/accepted` and subsequent same-turn response evidence.
+
+Each supervisor peek item includes `requestInputText` from the same formatter as
+queue admission. Verify the exact request event input against it;
+`requestSequence` alone is a candidate, not provider acknowledgment.

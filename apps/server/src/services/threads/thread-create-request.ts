@@ -13,6 +13,8 @@ import type {
 
 export interface ThreadCreateServiceRequestInput {
   environment: CreateThreadEnvironmentArgs;
+  experimental_sourcePin?: CreateThreadRequest["experimental_sourcePin"];
+  experimental_supervisor?: CreateThreadRequest["experimental_supervisor"];
   executionInputSources?: CreateThreadRequest["executionInputSources"];
   /**
    * Epoch ms the first message should dispatch at. Present ⇒ the thread is

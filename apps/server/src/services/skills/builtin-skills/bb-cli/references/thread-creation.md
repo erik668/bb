@@ -2,6 +2,40 @@
 
 ## Spawning Threads
 
+- `bb thread source-inspect --project <id> --machine <id> --ref <ref>
+  --workflow-path <relative-path> --json` reads the exact target repository.
+  Its response includes actual project/host IDs, canonical repository path and
+  Git common directory identity, commit/tree/workflow-tree hashes, HEAD and
+  cleanliness. A pin contains projectId, hostId, repositoryPath,
+  repositoryIdentity, commit, tree, workflowPath, workflowTree and pathPolicy.
+  Choose `{kind:"new-worktree"}` or `{kind:"exact",path:"/absolute/checkout"}`.
+  Optional discoveryRef must still resolve to the pinned commit. Pass the pin
+  as `--source-pin <json>`; omit observation-only head and clean fields.
+- Pins require clean tracked and untracked Git state; ignored dependencies are
+  allowed. Reused checkout HEAD must match. Commit owner output and explicitly
+  admit a successor pin before critic reuse. BB rechecks queued starts and
+  provisioned workspaces before provider start. Refusal code is
+  `source_identity_mismatch` with source/target identities and an action.
+- Register ownership with `bb thread supervisor-register --thread <manager>
+  --campaign <id> --inbox <id> [--token <private-64-hex>] --json` before spawning.
+  Persist a random token privately before registration for safe replay after a
+  lost response. Spawn with `--parent-thread <manager> --supervisor <json>`;
+  the JSON is the credential plus taskId. Do not put tokens in prompts or logs.
+- `bb thread supervisor-inbox --thread <manager> --campaign <id> --inbox <id>
+  [--after-key <key> | --notice-key <caller-key>] [--limit <1-500>] --json` returns durable completion,
+  exception, manual-interruption and decision items. Normal owned completion
+  does not wake the manager. Missing publication preserves ordinary notices;
+  unmanaged children retain existing behavior.
+  Completion output is an excerpt of at most 16,000 characters. Use --notice-key
+  for exact caller-key readback after a lost response; do not combine with
+  --after-key. A missing key returns an empty page.
+- `bb thread supervisor-notify --binding <credential-json> --key <stable-key>
+  --kind decision|exception --message <text> [--task <id>] --json` records one
+  inbox item and one manager queue row. A changed payload under the same key
+  fails. Delivery `queued` records admission; `requested` and requestSequence
+  record a server turn request, not provider acknowledgment. Active managers
+  use normal steering behavior; manual stops and interactions remain gates.
+
 - Use `bb thread spawn --project <project-id> --prompt "..."` to create another
   thread. Pass the intended project explicitly; the CLI does not infer it from
   context variables. Omitted execution flags use remembered project defaults;

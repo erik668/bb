@@ -1,5 +1,36 @@
 # Backend SDK
 
+### Experimental source admission and supervisors
+
+`bb.sdk.threads.experimental_inspectSource({projectId,hostId,ref,workflowPath})`
+returns the actual target identity, raw commit/tree/subtree, HEAD and cleanliness.
+Pass an explicit `experimental_sourcePin` to `threads.spawn`: projectId, hostId,
+repositoryPath, repositoryIdentity, commit, tree, workflowPath, workflowTree,
+pathPolicy (`{kind:"new-worktree"}` or `{kind:"exact",path}`), plus optional
+discoveryRef. The server resolves managed bases before any thread is created and
+rechecks pins before queued dispatch and provider start. Clean reuse requires
+matching HEAD; ignored dependencies are permitted. Commit owner output and admit
+the new pin explicitly before critic reuse.
+
+Register with `experimental_registerSupervisor({managerThreadId,campaignId,
+inboxId,bindingToken?})`. Keep the returned credential private; a caller-generated
+random 64-hex token persisted before registration allows safe replay. Spawn with
+`parentThreadId: managerThreadId` and `experimental_supervisor:{...credential,
+taskId}`. Read `experimental_supervisorInbox({managerThreadId,campaignId,inboxId,
+afterKey?,noticeKey?,limit?})` for durable completion, exception, manual-interruption and
+decision items. Owned normal completion suppresses ordinary parent wakes after
+publication succeeds. Binding rejects foreign parents, projects and tokens.
+Completion output is an excerpt of at most 16,000 characters. `noticeKey` looks
+up the original caller notice key within this registration after a lost reply;
+it returns zero or one item and cannot be combined with `afterKey`.
+
+`experimental_notifySupervisor({...credential,key,taskId:null,kind:"decision",
+message})` admits one durable manager notice. `kind:"exception"` is also allowed.
+Replays require identical content. Inbox delivery is `inbox`, `queued`, or
+`requested`; requestSequence identifies a durable server request, not provider
+acknowledgment. Active managers use normal steering. Explicit queues, manual
+stops and interactions preserve their existing meaning.
+
 ### bb.sdk
 
 The full bb SDK bound to this server over loopback — threads, projects,
@@ -172,3 +203,8 @@ path-shaped `baseUrl`. Append individually encoded relative path segments to
 serve browser assets from that confined host root. This is the preferred
 transport for plugin images and sandboxed HTML with sibling-relative assets;
 preview URLs expire and never reveal the host id or absolute root.
+
+Workflow inspection: `threads.experimental_supervisorPeek` reads stored supervisor
+receipts without recovery. `providers.experimental_probe` returns the complete
+native Codex cached capability receipt with one host RPC and zero model/worker
+calls; it is a process-starting probe, not a pure read or execution test.

@@ -112,7 +112,7 @@ trap cleanup EXIT
 [[ ! -e "$backup_bundle" && ! -L "$backup_bundle" ]] || fail "rollback bundle already exists: $backup_bundle"
 [[ ! -e "$failed_bundle" && ! -L "$failed_bundle" ]] || fail "failed-install bundle already exists: $failed_bundle"
 
-if ! open_files="$(/usr/sbin/lsof -Fn)"; then
+if ! open_files="$(/usr/sbin/lsof -nP -Fn)"; then
   fail "could not inspect active file handles before replacing the target bundle"
 fi
 if [[ "$open_files" == "${open_file_prefix}"* || "$open_files" == *$'\n'"${open_file_prefix}"* ]]; then

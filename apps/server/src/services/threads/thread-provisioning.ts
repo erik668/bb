@@ -12,6 +12,8 @@ import {
 import type { StartedOnBehalfOf } from "@bb/server-contract";
 import type { AppDeps } from "../../types.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
+import { validateProvisionedThreadSource } from "./source-provisioning.js";
+import { validatePersistedSupervisorChild } from "./thread-supervision.js";
 import {
   appendClientTurnEvent,
   appendPreparedClientTurnRequestedEventWithNotificationInTransaction,
@@ -146,6 +148,12 @@ async function startThreadIfEnvironmentReady(
     return;
   }
 
+  await validateProvisionedThreadSource(deps, {
+    threadId: args.thread.id,
+    projectId: args.thread.projectId,
+    environmentId: args.environment.id,
+  });
+  validatePersistedSupervisorChild(deps.db, args.thread.id);
   const workspaceReady = ensureWorkspaceReadyEvent(deps, {
     context: args.context,
     threadId: args.thread.id,

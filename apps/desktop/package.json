@@ -25,7 +25,7 @@
     "smoke:packaged": "node scripts/smoke-packaged-app.mjs",
     "start": "pnpm run package && node scripts/run-packaged-app.mjs",
     "start:linux": "pnpm run package:linux && node scripts/run-packaged-app.mjs",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "node --test test/packaged-runtime.test.mjs test/native-artifact-files.test.mjs test/packaged-native-gate.test.mjs && vitest run --config vitest.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

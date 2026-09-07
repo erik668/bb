@@ -164,3 +164,15 @@ The bb user and project roots keep higher precedence than matching shared roots.
 
 OpenCode ACP declares support for the built-in /compact command. Cursor ACP does
 not expose compatible manual compaction through ACP.
+
+## Bounded cached capability probe
+
+  bb provider probe codex --environment <id> --model <model> --reasoning-level <level> --json
+
+Use exactly one `--environment` or `--machine` selector (`--host` aliases
+`--machine`). The full receipt retains raw provider health/catalog and a typed
+blocker. This native Codex-only probe uses existing verified bridge artifacts,
+one host RPC and no retry, download, model fallback or credential substitution.
+It may start bridge/provider processes but makes zero model/worker calls. A
+null blocker proves only cached capability preparation; `execution: unproven`
+always remains. Model names match the catalog's `model` field.

@@ -976,6 +976,64 @@ export const terminalSessions = sqliteTable(
   ],
 );
 
+export const threadSupervisors = sqliteTable("thread_supervisors", {
+  id: text("id").primaryKey(),
+  managerThreadId: text("manager_thread_id")
+    .notNull()
+    .references(() => threads.id, { onDelete: "cascade" }),
+  campaignId: text("campaign_id").notNull(),
+  inboxId: text("inbox_id").notNull(),
+  tokenHash: text("token_hash").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const threadSupervisorBindings = sqliteTable(
+  "thread_supervisor_bindings",
+  {
+    childThreadId: text("child_thread_id")
+      .primaryKey()
+      .references(() => threads.id, { onDelete: "cascade" }),
+    supervisorId: text("supervisor_id").notNull(),
+    taskId: text("task_id").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+);
+
+export const threadSourcePins = sqliteTable("thread_source_pins", {
+  threadId: text("thread_id")
+    .primaryKey()
+    .references(() => threads.id, { onDelete: "cascade" }),
+  pin: text("pin").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+export const threadSupervisorInbox = sqliteTable(
+  "thread_supervisor_inbox",
+  {
+    key: text("key").primaryKey(),
+    supervisorId: text("supervisor_id")
+      .notNull()
+      .references(() => threadSupervisors.id, { onDelete: "cascade" }),
+    childThreadId: text("child_thread_id"),
+    taskId: text("task_id"),
+    turnId: text("turn_id"),
+    kind: text("kind")
+      .$type<"completion" | "exception" | "manual-interruption" | "decision">()
+      .notNull(),
+    output: text("output"),
+    queuedMessageId: text("queued_message_id"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    index("thread_supervisor_inbox_address_created_idx").on(
+      table.supervisorId,
+      table.createdAt,
+      table.key,
+    ),
+    uniqueIndex("thread_supervisor_inbox_queue_idx").on(table.queuedMessageId),
+  ],
+);
+
 export const pendingInteractions = sqliteTable(
   "pending_interactions",
   {

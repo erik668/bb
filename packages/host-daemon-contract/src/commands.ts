@@ -28,6 +28,7 @@ import {
   FILE_LIST_QUERY_MAX_LENGTH,
 } from "@bb/domain";
 import { z } from "zod";
+import { sourceInspectionSchema, workflowSourcePathSchema } from "@bb/domain";
 import {
   pathsExistRequestSchema,
   pathsExistResponseSchema,
@@ -772,6 +773,15 @@ const hostInspectGitSourceCommandSchema = z
   })
   .strict();
 
+const hostResolveSourceCommandSchema = z
+  .object({
+    type: z.literal("host.resolve_source"),
+    path: z.string().min(1),
+    ref: z.string().min(1),
+    workflowPath: workflowSourcePathSchema,
+  })
+  .strict();
+
 const hostListBranchOptionsCommandSchema = z
   .object({
     type: z.literal("host.list_branch_options"),
@@ -789,6 +799,35 @@ const providerListModelsCommandSchema = z.object({
   bridgeLaunch: hostDaemonBridgeLaunchSchema,
   cwd: z.string().min(1).optional(),
 });
+
+const providerProbeCommandSchema = z
+  .object({
+    type: z.literal("provider.probe_cached"),
+    providerId: z.string().min(1),
+    bridgeLaunch: hostDaemonBridgeLaunchSchema,
+    cwd: z.string().min(1).optional(),
+  })
+  .strict();
+export const providerProbeBlockerSchema = z
+  .object({
+    code: z.string().min(1),
+    detail: z.string(),
+  })
+  .strict();
+export const providerProbeResultSchema = z
+  .object({
+    health: providerHealthResultSchema.nullable(),
+    models: z
+      .object({
+        models: z.array(availableModelSchema).max(500),
+        selectedOnlyModels: z.array(availableModelSchema).max(500),
+      })
+      .strict()
+      .nullable(),
+    blocker: providerProbeBlockerSchema.nullable(),
+  })
+  .strict();
+export type ProviderProbeResult = z.infer<typeof providerProbeResultSchema>;
 
 const providerHealthCommandSchema = z
   .object({
@@ -1644,6 +1683,15 @@ export const hostDaemonCommandRegistry = {
     flushEventsBeforeResult: false,
     envLane: null,
   }),
+  "host.resolve_source": defineHostDaemonCommandDescriptor({
+    type: "host.resolve_source",
+    schema: hostResolveSourceCommandSchema,
+    resultSchema: sourceInspectionSchema,
+    transport: "onlineRpc",
+    retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
   "host.list_branch_options": defineHostDaemonCommandDescriptor({
     type: "host.list_branch_options",
     schema: hostListBranchOptionsCommandSchema,
@@ -1695,6 +1743,15 @@ export const hostDaemonCommandRegistry = {
     resultSchema: providerListModelsResultSchema,
     transport: "onlineRpc",
     retryable: true,
+    flushEventsBeforeResult: false,
+    envLane: null,
+  }),
+  "provider.probe_cached": defineHostDaemonCommandDescriptor({
+    type: "provider.probe_cached",
+    schema: providerProbeCommandSchema,
+    resultSchema: providerProbeResultSchema,
+    transport: "onlineRpc",
+    retryable: false,
     flushEventsBeforeResult: false,
     envLane: null,
   }),
@@ -1803,7 +1860,9 @@ type HostDaemonRetryableOnlineRpcCommandSchema =
 type HostDaemonResultSchemaMapForTransport<
   Transport extends HostDaemonCommandTransport,
 > = {
-  [Descriptor in HostDaemonCommandDescriptorForTransport<Transport> as Descriptor["type"]]: Descriptor["resultSchema"];
+  [
+    Descriptor in HostDaemonCommandDescriptorForTransport<Transport> as Descriptor["type"]
+  ]: Descriptor["resultSchema"];
 };
 
 type HostDaemonCommandResultSchemaMap =

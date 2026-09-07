@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { sourcePinSchema } from "@bb/domain";
+import { supervisorBindingSchema } from "./workflow-supervision.js";
 import {
   activeThinkingSchema,
   callerExecutionInputSourceSchema,
@@ -107,6 +109,8 @@ export const createThreadRequestSchema = z
     permissionMode: permissionModeInputSchema.optional(),
     executionInputSources: createExecutionInputSourcesSchema.optional(),
     environment: createThreadEnvironmentArgsSchema,
+    experimental_sourcePin: sourcePinSchema.optional(),
+    experimental_supervisor: supervisorBindingSchema.optional(),
     parentThreadId: z.string().min(1).optional(),
     sectionId: z.string().min(1).nullable().optional(),
     sourceThreadId: z.string().min(1).optional(),

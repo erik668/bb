@@ -173,6 +173,24 @@ const WORKSPACE_DIFF_AVAILABLE_RESULT: JsonObject = {
 };
 
 const ONLINE_RPC_RESPONSE_RESULT_FIXTURES: OnlineRpcResponseResultFixtures = {
+  "provider.probe_cached": {
+    health: null,
+    models: null,
+    blocker: {
+      code: "bridge_cache_unavailable",
+      detail: "Existing cached artifact missing",
+    },
+  },
+  "host.resolve_source": {
+    repositoryPath: "/repo",
+    repositoryIdentity: "/repo/.git",
+    commit: "a".repeat(40),
+    tree: "b".repeat(40),
+    workflowPath: ".",
+    workflowTree: "b".repeat(40),
+    head: "a".repeat(40),
+    clean: true,
+  },
   "plugin.host.call": { output: { ok: true } },
   "plugin.host.cancel": { cancelled: true },
   "plugin.host.dispose": { disposed: true },
@@ -942,7 +960,7 @@ const CONTRIBUTED_ENV = [
 
 describe("host-daemon command schemas", () => {
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(180);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(183);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 

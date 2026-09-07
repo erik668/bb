@@ -50,6 +50,13 @@ import {
   requestActiveRuntimeThreadStopIfNeeded,
 } from "../../services/threads/thread-lifecycle.js";
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
+import { inspectProjectThreadSource } from "../../services/threads/source-provisioning.js";
+import {
+  registerThreadSupervisor,
+  readThreadSupervisorInbox,
+  peekThreadSupervisorInbox,
+  notifyThreadSupervisor,
+} from "../../services/threads/thread-supervision.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
 import {
@@ -215,6 +222,21 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
   const routes = publicApiRoutes.threads;
+  post(routes.inspectSource, async (context, payload) =>
+    context.json(await inspectProjectThreadSource(deps, payload)),
+  );
+  post(routes.registerSupervisor, (context, payload) =>
+    context.json(registerThreadSupervisor(deps, payload)),
+  );
+  post(routes.supervisorPeek, (context, payload) =>
+    context.json(peekThreadSupervisorInbox(deps, payload)),
+  );
+  post(routes.supervisorInbox, async (context, payload) =>
+    context.json(await readThreadSupervisorInbox(deps, payload)),
+  );
+  post(routes.notifySupervisor, async (context, payload) =>
+    context.json(await notifyThreadSupervisor(deps, payload)),
+  );
 
   get(routes.count, (context, query) => {
     if (query.projectId) {

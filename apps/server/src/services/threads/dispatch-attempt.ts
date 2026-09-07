@@ -61,6 +61,8 @@ import {
   threadProvisionEnvironmentIntentSchema,
 } from "./thread-provisioning-context.js";
 import { getActiveThreadProvisionContext } from "./thread-provisioning-active-context.js";
+import { revalidateThreadSource } from "./source-provisioning.js";
+import { validatePersistedSupervisorChild } from "./thread-supervision.js";
 import {
   buildThreadStatusChangeMetadata,
   toThreadResponseFromThread,
@@ -638,6 +640,12 @@ async function admitPendingThread(
       `Thread ${args.thread.id} is pending but has no start context to dispatch`,
     );
   }
+  await revalidateThreadSource(deps, {
+    threadId: args.thread.id,
+    projectId: args.thread.projectId,
+    intent: startContext.environmentIntent,
+  });
+  validatePersistedSupervisorChild(deps.db, args.thread.id);
   const execution = await buildExecutionOptions(deps, args.payload, {
     threadId: args.thread.id,
   });

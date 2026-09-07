@@ -325,7 +325,7 @@ type ExpectedProjectsKey =
 type ExpectedProjectSourcesKey = "add" | "delete" | "update";
 type ExpectedProjectAttachmentsKey = "copy" | "read" | "upload";
 
-type ExpectedProvidersKey = "list" | "models";
+type ExpectedProvidersKey = "list" | "models" | "experimental_probe";
 
 type ExpectedStatusKey = "get";
 
@@ -349,6 +349,11 @@ type ExpectedThemeKey = "catalog" | "get" | "set";
 type ExpectedThreadSectionsKey = "create" | "delete" | "list" | "update";
 
 type ExpectedThreadsKey =
+  | "experimental_inspectSource"
+  | "experimental_registerSupervisor"
+  | "experimental_supervisorInbox"
+  | "experimental_supervisorPeek"
+  | "experimental_notifySupervisor"
   | "archive"
   | "archiveAll"
   | "cancelPlan"

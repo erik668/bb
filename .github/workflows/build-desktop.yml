@@ -138,6 +138,7 @@ jobs:
             apps/desktop/release/*.blockmap
             apps/desktop/release/latest-mac.yml
             apps/desktop/release/desktop-version.json
+            apps/desktop/release/*.native-runtime.json
           if-no-files-found: error
 
   linux:
@@ -208,6 +209,7 @@ jobs:
             apps/desktop/release/*.AppImage
             apps/desktop/release/*.blockmap
             apps/desktop/release/latest-linux.yml
+            apps/desktop/release/*.native-runtime.json
             apps/desktop/release/desktop-version-linux.json
           if-no-files-found: error
 

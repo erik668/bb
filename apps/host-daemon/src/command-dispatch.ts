@@ -9,6 +9,7 @@ import {
   type ProviderCliInstallEvent,
 } from "@bb/host-daemon-contract";
 import semver from "semver";
+import { probeCachedProvider } from "./provider-cached-probe.js";
 import {
   ExpectedCommandDispatchError,
   resolveRuntimeBridgeLaunch,
@@ -65,7 +66,7 @@ import {
   startThread,
   submitTurn,
 } from "./command-handlers/thread.js";
-import { WorkspaceError } from "@bb/host-workspace";
+import { WorkspaceError, inspectImmutableSource } from "@bb/host-workspace";
 import {
   cloneProject,
   inspectProjectPath,
@@ -594,11 +595,17 @@ const onlineRpcHandlers: OnlineRpcHandlerMap = {
   "host.global_skills_status": async (command) =>
     readGlobalSkillsStatus(command, {}),
   "host.inspect_git_source": inspectHostGitSource,
+  "host.resolve_source": (command, options) =>
+    inspectImmutableSource({
+      ...command,
+      ...userExecutableProcessOptions(options.runtimeManager.getShellEnv()),
+    }),
   "host.list_branch_options": listHostBranchOptions,
   "host.file_metadata": readHostFileMetadata,
   "host.read_file": readHostFile,
   "host.read_file_relative": readHostRelativeFile,
   "host.write_file": writeHostFile,
+  "provider.probe_cached": probeCachedProvider,
   "provider.list_models": async (command, options) => {
     const bridgeLaunch = await resolveRuntimeBridgeLaunch(
       command.bridgeLaunch,
