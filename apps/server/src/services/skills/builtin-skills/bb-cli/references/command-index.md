@@ -100,6 +100,10 @@ This index lists every command path that the core CLI registers. Read the task-s
 - `bb thread`
 - `bb thread wait`
 - `bb thread spawn`
+- `bb thread source-inspect`
+- `bb thread supervisor-register`
+- `bb thread supervisor-inbox`
+- `bb thread supervisor-notify`
 - `bb thread fork`
 - `bb thread list`
 - `bb thread show`
@@ -249,3 +253,6 @@ This index lists every command path that the core CLI registers. Read the task-s
 
 - `bb voice`
 - `bb voice transcribe`
+
+- `bb thread supervisor-peek --thread <manager> --campaign <id> --inbox <id> [--notice-key <key> | --after-key <key>] [--limit <1..500>] --json`: pure stored receipt lookup; missing registration is explicit.
+- `bb provider probe codex --environment <id> --model <model> --reasoning-level <level> --json`: one cached-only, non-retried host capability probe; execution remains unproven.

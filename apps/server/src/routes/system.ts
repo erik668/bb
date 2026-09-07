@@ -36,6 +36,7 @@ import {
   listSystemProviderInfos,
   resolveSystemExecutionOptions,
 } from "../services/system/execution-options.js";
+import { probeSystemProvider } from "../services/system/provider-probe.js";
 import { getProviderStates } from "../services/system/provider-states.js";
 import { getProviderUsageLimits } from "../services/system/usage-limits.js";
 import {
@@ -308,6 +309,9 @@ export function registerSystemRoutes(
     context.json(await getProviderUsageLimits(deps, query)),
   );
 
+  post(routes.providerProbe, async (context, payload) =>
+    context.json(await probeSystemProvider(deps, payload)),
+  );
   get(routes.executionOptions, async (context, query) =>
     context.json(await resolveSystemExecutionOptions(deps, query)),
   );

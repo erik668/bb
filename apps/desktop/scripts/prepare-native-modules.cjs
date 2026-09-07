@@ -2,8 +2,10 @@ const { spawn } = require("node:child_process");
 const { chmod, readFile, readdir, writeFile } = require("node:fs/promises");
 const { createRequire } = require("node:module");
 const path = require("node:path");
-
-const desktopPackageRoot = path.resolve(__dirname, "..");
+const {
+  assertContainedMutation,
+  detachSharedNativeFile,
+} = require("./native-artifact-files.cjs");
 
 const NODE_MODULES_DIRECTORY = "node_modules";
 const NODE_PTY_PACKAGE_NAME = "node-pty";
@@ -102,8 +104,9 @@ async function findNativePackageDirectories(rootPath, packageName) {
   );
 }
 
-async function chmodIfPresent(filePath, mode) {
+async function chmodIfPresent(packageDirectory, filePath, mode) {
   try {
+    await detachSharedNativeFile(packageDirectory, filePath);
     await chmod(filePath, mode);
   } catch (error) {
     if (error && error.code === "ENOENT") {
@@ -130,6 +133,7 @@ async function patchNodePtyHelperPath(packageDirectory) {
     );
   }
 
+  await detachSharedNativeFile(packageDirectory, unixTerminalPath);
   await writeFile(
     unixTerminalPath,
     source.replace(
@@ -144,7 +148,11 @@ async function prepareNodePtyPackageDirectory(packageDirectory) {
 
   await Promise.all(
     NODE_PTY_SPAWN_HELPER_RELATIVE_PATHS.map((relativePath) =>
-      chmodIfPresent(path.join(packageDirectory, relativePath), 0o755),
+      chmodIfPresent(
+        packageDirectory,
+        path.join(packageDirectory, relativePath),
+        0o755,
+      ),
     ),
   );
 }
@@ -194,6 +202,14 @@ async function runPrebuildInstall(packageDirectory, prebuildArguments) {
 }
 
 async function prepareBetterSqlite3PackageDirectory(packageDirectory, options) {
+  const binary = path.join(
+    packageDirectory,
+    "build",
+    "Release",
+    "better_sqlite3.node",
+  );
+  await assertContainedMutation(packageDirectory, binary);
+  await detachSharedNativeFile(packageDirectory, binary);
   await runPrebuildInstall(
     packageDirectory,
     resolveBetterSqlite3PrebuildArguments(options),
@@ -244,33 +260,21 @@ async function preparePackagedNativeModules(appOutDir, options = {}) {
   return { betterSqlite3Directories, nodePtyDirectories };
 }
 
-function resolveElectronVersion() {
-  const requireFromDesktop = createRequire(
-    path.join(desktopPackageRoot, "package.json"),
-  );
-  return requireFromDesktop("electron/package.json").version;
-}
-
-function resolveArchName(context) {
-  try {
-    const { Arch } = require("electron-builder");
-    const archName = Arch[context.arch];
-    if (typeof archName === "string") {
-      return archName;
-    }
-  } catch {
-    // electron-builder is only resolvable inside the build process; fall back to
-    // the host architecture, which matches single-arch builds on a native host.
-  }
-  return process.arch;
-}
-
 async function afterPack(context) {
-  await preparePackagedNativeModules(context.appOutDir, {
-    arch: resolveArchName(context),
-    electronVersion: resolveElectronVersion(),
-    platform: context.electronPlatformName ?? process.platform,
-  });
+  const { resolveAfterPackTarget, checkPackagedNativeRuntime } =
+    await import("./packaged-native-gate.mjs");
+  const target = await resolveAfterPackTarget(context);
+  const before = await checkPackagedNativeRuntime(
+    target,
+    "before-preparation",
+    { allowNativeLoadFailure: true },
+  );
+  await preparePackagedNativeModules(
+    target.appOutDir,
+    before.result.passed ? {} : target,
+  );
+  const checked = await checkPackagedNativeRuntime(target, "after-pack");
+  console.log(`Packaged native runtime verified: ${checked.receiptPath}`);
 }
 
 function parseStandaloneArguments(argv) {
@@ -321,6 +325,10 @@ async function main() {
 }
 
 module.exports = afterPack;
+module.exports.PACKAGED_NATIVE_PACKAGE_NAMES = Object.freeze(
+  PACKAGED_NATIVE_PACKAGE_NAMES,
+);
+module.exports.findPackageDirectories = findPackageDirectories;
 module.exports.findNativePackageDirectories = findNativePackageDirectories;
 module.exports.prepareNodePtyPackageDirectory = prepareNodePtyPackageDirectory;
 module.exports.prepareBetterSqlite3PackageDirectory =

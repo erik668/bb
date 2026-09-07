@@ -1,5 +1,6 @@
 import { Command } from "commander";
 import type { AvailableModel } from "@bb/domain";
+import { providerProbeRequestSchema } from "@bb/server-contract";
 import type { SystemProviderInfo } from "@bb/server-contract";
 import { action } from "../action.js";
 import { createCliBbSdk } from "../client.js";
@@ -45,6 +46,38 @@ export function registerProviderCommands(
   const provider = program
     .command("provider")
     .description("Inspect available providers and models");
+
+  addProviderRoutingOptions(provider.command("probe <providerId>"))
+    .description(
+      "Probe one provider using cached bridge artifacts and one host RPC; no model turn",
+    )
+    .requiredOption("--model <model>", "Exact launch model identifier")
+    .requiredOption("--reasoning-level <level>", "Exact reasoning level")
+    .option("--json", "Print the full capability receipt")
+    .action(
+      action(
+        async (
+          providerId: string,
+          opts: ProviderListCommandOptions & {
+            model: string;
+            reasoningLevel: string;
+          },
+        ) => {
+          const serverUrl = getUrl();
+          const request = providerProbeRequestSchema.parse({
+            providerId,
+            model: opts.model,
+            reasoningLevel: opts.reasoningLevel,
+            ...(await resolveMachineEnvironmentRouting(opts, serverUrl)),
+          });
+          const result =
+            await createCliBbSdk(serverUrl).providers.experimental_probe(
+              request,
+            );
+          if (!outputJson(opts, result)) console.log(result);
+        },
+      ),
+    );
 
   addProviderRoutingOptions(provider.command("list"))
     .description("List available providers")

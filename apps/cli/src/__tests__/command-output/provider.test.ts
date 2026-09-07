@@ -177,3 +177,65 @@ describe("bb provider command output", () => {
     );
   });
 });
+
+describe("cached capability probe parser", () => {
+  setupCommandOutputTestEnvironment();
+  const register: CommandRegistrar = (program) =>
+    registerProviderCommands(program, () => "http://server");
+  it("preserves the full receipt and exact selection", async () => {
+    const receipt = {
+      blocker: { code: "provider_models_failed", detail: "raw error" },
+      models: null,
+      modelCalls: 0,
+      workerCalls: 0,
+    };
+    const post = vi.fn(async () => receipt);
+    stubServerApi({ "v1.system.provider-probe.$post": post });
+    await runCommand(
+      [
+        "provider",
+        "probe",
+        "codex",
+        "--environment",
+        "env-1",
+        "--model",
+        "gpt-6-astra",
+        "--reasoning-level",
+        "high",
+        "--json",
+      ],
+      register,
+    );
+    expect(post).toHaveBeenCalledWith({
+      json: {
+        providerId: "codex",
+        environmentId: "env-1",
+        model: "gpt-6-astra",
+        reasoningLevel: "high",
+      },
+    });
+    expect(collectLogPayloads(vi.mocked(console.log))).toEqual([
+      JSON.stringify(receipt, null, 2),
+    ]);
+  });
+  it("rejects missing routing before an RPC", async () => {
+    const post = vi.fn();
+    stubServerApi({ "v1.system.provider-probe.$post": post });
+    await expect(
+      runCommand(
+        [
+          "provider",
+          "probe",
+          "codex",
+          "--model",
+          "gpt-6-astra",
+          "--reasoning-level",
+          "high",
+          "--json",
+        ],
+        register,
+      ),
+    ).rejects.toThrow();
+    expect(post).not.toHaveBeenCalled();
+  });
+});

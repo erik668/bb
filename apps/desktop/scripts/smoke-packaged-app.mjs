@@ -11,6 +11,11 @@ import {
 } from "./desktop-release-channel.mjs";
 import { createPackagedAppLaunchArguments } from "./packaged-app-launch.mjs";
 import { resolvePackagedAppBinary } from "./packaged-app-paths.mjs";
+import {
+  checkPackagedNativeRuntime,
+  configuredDesktopArchitecture,
+  pinnedElectronVersion,
+} from "./packaged-native-gate.mjs";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const desktopPackageRoot = resolve(scriptDirectory, "..");
@@ -347,6 +352,21 @@ async function smokePackagedApp() {
     productName: releaseConfig.applicationName,
     releaseDir,
   });
+  const appOutDir =
+    process.platform === "darwin"
+      ? resolve(appBinary, "../../../..")
+      : dirname(appBinary);
+  const native = await checkPackagedNativeRuntime(
+    {
+      appOutDir,
+      executable: appBinary,
+      platform: process.platform,
+      arch: await configuredDesktopArchitecture(process.platform),
+      electronVersion: await pinnedElectronVersion(),
+    },
+    "smoke",
+  );
+  console.log(`Packaged native runtime verified: ${native.receiptPath}`);
   const smokeRoot = await mkdtemp(join(tmpdir(), "bb-desktop-packaged-smoke-"));
   const dataDir = join(smokeRoot, "data");
   const userDataDir = join(smokeRoot, "user-data");

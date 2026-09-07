@@ -25,6 +25,7 @@ import {
   systemMessageKindForTemplate,
 } from "./system-message-kind.js";
 import { getLastThreadOutput } from "./thread-data.js";
+import { publishSupervisorChildOutcome } from "./thread-supervision.js";
 
 export type ChildThreadNotificationSource = ParentSystemThreadMentionSource;
 
@@ -324,7 +325,9 @@ function childThreadTurnStatusBatchTaxonomy(
   if (single) {
     return {
       systemMessageKind: childOutcomeSystemMessageKind(
-        isWorkflowResultCleanupInterruption(single) ? "completed" : single.turnStatus,
+        isWorkflowResultCleanupInterruption(single)
+          ? "completed"
+          : single.turnStatus,
       ),
       systemMessageSubject: childThreadSubject(single.childThread),
     };
@@ -491,6 +494,21 @@ export async function queueChildThreadTurnNotificationBestEffort(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: QueueChildThreadTurnNotificationArgs,
 ): Promise<void> {
+  try {
+    if (
+      await publishSupervisorChildOutcome(deps, {
+        childThreadId: args.childThread.id,
+        parentThreadId: args.parentThreadId,
+        turnStatus: args.turnStatus,
+      })
+    )
+      return;
+  } catch (error) {
+    deps.logger.error(
+      { err: error, childThreadId: args.childThread.id },
+      "Supervisor inbox publication failed; preserving ordinary parent notification",
+    );
+  }
   try {
     queueChildThreadTurnNotificationBatchItem(deps, args);
   } catch (error) {

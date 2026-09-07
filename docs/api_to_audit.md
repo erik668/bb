@@ -1,5 +1,25 @@
 # APIs To Audit
 
+## Experimental immutable source and supervisor SDK methods
+
+`bb.sdk.threads.experimental_inspectSource`, `experimental_registerSupervisor`,
+`experimental_supervisorInbox`, `experimental_notifySupervisor`, and the
+`threads.spawn` fields `experimental_sourcePin`/`experimental_supervisor` pin
+target project/host/repository/commit/tree/workflow identity before creation and
+bind workers to a durable manager/campaign/task/inbox before first dispatch.
+Host-local inspection remains in the daemon; admission and ownership policy
+remain on the server. Host protocol version 182 covers source inspection.
+
+Audit the canonical-common-directory repository identity across intentional
+transfers, snapshot/restore and linked worktrees; whether stricter ignored-file
+policies are needed for any caller; token rotation/revocation beyond immutable
+campaign registrations; bounded recovery/pagination for large campaigns; and
+whether provider acknowledgment should supplement the current durable server
+request readback. Stable notification keys protect replay after queue admission
+and after request publication. No guarantee equates `queued` or `requested` with
+provider-observed steering. Manual-stop pause, unmanaged completion and accepted
+workflow-result cleanup retain separate semantics.
+
 ## `bb.http.experimental_websocket`
 
 **What it does.** Registers an exact-path WebSocket upgrade in the plugin's
@@ -2366,3 +2386,23 @@ too, after the host has restored the draft. Sole consumer:
    field-by-field instead of forwarding it will drop the schedule silently.
    Confirm that forwarding expectation is documented well enough, or make the
    composer refuse to schedule when it is plugin-hosted.
+
+## Experimental pure supervisor peek and cached provider probe
+
+`bb.sdk.threads.experimental_supervisorPeek` reads persisted inbox and request
+records only. Missing registration is explicit; it never recovers, queues or
+acknowledges. Audit request-text attribution and snapshot consistency across
+separate event reads.
+
+`bb.sdk.providers.experimental_probe` performs one non-retried host RPC for the
+requested native Codex provider. Protocol 183 adds `provider.probe_cached`.
+The daemon verifies existing bridge bytes/data directories without cache writes,
+fetches, cleanup or migration. The probe may start bridge/provider processes;
+health and model catalog evidence do not prove TLS or model execution. Audit
+process startup side effects, artifact replacement races and error retention
+before broadening beyond native Codex. Unknown/missing/error states block;
+there is no fallback model, auth substitution or retry.
+
+Each supervisor peek item includes `requestInputText` from the same formatter as
+queue admission. Verify the exact request event input against it;
+`requestSequence` alone is a candidate, not provider acknowledgment.

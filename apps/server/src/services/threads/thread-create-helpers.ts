@@ -1,5 +1,7 @@
 import {
   createThread,
+  deleteThread,
+  insertThreadSourcePin,
   getThreadSectionById,
   getProjectSourceByHost,
   getProject,
@@ -15,6 +17,7 @@ import { ApiError } from "../../errors.js";
 import { emitPluginThreadCreated } from "../plugins/plugin-thread-events.js";
 import type { ThreadCreateServiceRequest } from "./thread-create-request.js";
 import { sanitizeGeneratedBranchSlug } from "./title-generation.js";
+import { bindSupervisorChild } from "./thread-supervision.js";
 
 export function baseBranchSpecToStoredName(
   spec: BaseBranchSpec,
@@ -179,6 +182,22 @@ export function createThreadRecord(
       // be claiming a thread had been admitted before anything decided so.
       status: "pending",
     });
+    try {
+      if (args.request.experimental_sourcePin !== undefined)
+        insertThreadSourcePin(
+          deps.db,
+          thread.id,
+          args.request.experimental_sourcePin,
+        );
+      if (args.request.experimental_supervisor !== undefined)
+        bindSupervisorChild(deps.db, {
+          childThreadId: thread.id,
+          binding: args.request.experimental_supervisor,
+        });
+    } catch (error) {
+      deleteThread(deps.db, deps.hub, thread.id);
+      throw error;
+    }
     emitPluginThreadCreated(thread);
     return thread;
   } catch (error) {

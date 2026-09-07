@@ -4,6 +4,18 @@ Use this index to check backend, host, AI-service, and test imports.
 Read the detailed backend references for behavior, fields, and examples.
 Read the installed declarations for exact current signatures.
 
+## Experimental methods on `bb.sdk.threads`
+
+- `experimental_inspectSource`
+- `experimental_registerSupervisor`
+- `experimental_supervisorInbox`
+- `experimental_notifySupervisor`
+- Spawn fields `experimental_sourcePin` and `experimental_supervisor`
+
+These SDK capabilities are available through the existing `BbPluginApi.sdk`
+property. See backend-sdk.md for immutable source admission, private binding
+credentials, durable inbox pagination and the queue/request delivery distinction.
+
 ## `@get-bb/plugin-sdk`
 
 - `PLUGIN_CLI_OUTPUT_MAX_BYTES`

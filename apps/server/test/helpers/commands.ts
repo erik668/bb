@@ -3,8 +3,12 @@ import { createHash } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { eq } from "drizzle-orm";
-import { hostDaemonSessions } from "@bb/db";
+import { and, eq } from "drizzle-orm";
+import {
+  environments,
+  getProjectSourceByHost,
+  hostDaemonSessions,
+} from "@bb/db";
 import {
   hostDaemonCommandSchema,
   hostDaemonOnlineRpcResponseMessageSchema,
@@ -138,6 +142,10 @@ interface RegisterTestHostRpcCaptureArgs {
     >,
   ) => void;
   gitSourceInspectionResult?: HostDaemonOnlineRpcResult<"host.inspect_git_source">;
+  sourceInspectionResult?: HostDaemonOnlineRpcResult<"host.resolve_source">;
+  onResolveSource?: (
+    command: Extract<HostDaemonRpcCommand, { type: "host.resolve_source" }>,
+  ) => void;
   onInspectGitSource?: (
     command: Extract<HostDaemonRpcCommand, { type: "host.inspect_git_source" }>,
   ) => void;
@@ -415,6 +423,45 @@ export function registerTestHostRpcCapture(
             result:
               args.gitBranchOptionsResult ??
               buildDefaultGitBranchOptionsResult(command.selectedBranch),
+          }),
+          sessionId: args.sessionId,
+        });
+        return;
+      }
+      if (command.type === "host.resolve_source") {
+        args.onResolveSource?.(command);
+        const environment = deps.db
+          .select()
+          .from(environments)
+          .where(
+            and(
+              eq(environments.hostId, args.hostId),
+              eq(environments.path, command.path),
+            ),
+          )
+          .limit(1)
+          .get();
+        const source = environment
+          ? getProjectSourceByHost(deps.db, environment.projectId, args.hostId)
+          : null;
+        const sourcePath =
+          source?.type === "local_path" ? source.path : command.path;
+        deps.hub.recordHostOnlineRpcResponse({
+          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+            type: "host-rpc.response",
+            requestId: message.requestId,
+            commandType: command.type,
+            ok: true,
+            result: args.sourceInspectionResult ?? {
+              repositoryPath: command.path,
+              repositoryIdentity: `${sourcePath}/.git`,
+              commit: "a".repeat(40),
+              tree: "b".repeat(40),
+              workflowPath: command.workflowPath,
+              workflowTree: "b".repeat(40),
+              head: "a".repeat(40),
+              clean: true,
+            },
           }),
           sessionId: args.sessionId,
         });

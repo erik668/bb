@@ -1,4 +1,24 @@
+import {
+  providerProbeRequestSchema,
+  type ProviderProbeRequest,
+  type ProviderProbeResponse,
+} from "./api/provider-probe.js";
 import type { Hono } from "hono";
+import {
+  inspectThreadSourceRequestSchema,
+  registerSupervisorRequestSchema,
+  supervisorInboxRequestSchema,
+  supervisorNotifyRequestSchema,
+  type InspectThreadSourceRequest,
+  type InspectThreadSourceResponse,
+  type RegisterSupervisorRequest,
+  type SupervisorCredential,
+  type SupervisorInboxRequest,
+  type SupervisorInboxResponse,
+  type SupervisorPeekResponse,
+  type SupervisorNotifyRequest,
+  type SupervisorInboxItem,
+} from "./api/workflow-supervision.js";
 import type {
   AppTheme,
   AppThemeSelection,
@@ -909,6 +929,46 @@ export const publicApiRoutes = {
   },
 
   threads: {
+    inspectSource: defineRoute({
+      path: "/threads/source-inspect",
+      method: "post",
+      request: jsonRequest<EmptyInput, InspectThreadSourceRequest>(
+        inspectThreadSourceRequestSchema,
+      ),
+      response: jsonResponse<InspectThreadSourceResponse>(),
+    }),
+    registerSupervisor: defineRoute({
+      path: "/threads/supervisor-register",
+      method: "post",
+      request: jsonRequest<EmptyInput, RegisterSupervisorRequest>(
+        registerSupervisorRequestSchema,
+      ),
+      response: jsonResponse<SupervisorCredential>(),
+    }),
+    supervisorPeek: defineRoute({
+      path: "/threads/supervisor-peek",
+      method: "post",
+      request: jsonRequest<EmptyInput, SupervisorInboxRequest>(
+        supervisorInboxRequestSchema,
+      ),
+      response: jsonResponse<SupervisorPeekResponse>(),
+    }),
+    supervisorInbox: defineRoute({
+      path: "/threads/supervisor-inbox",
+      method: "post",
+      request: jsonRequest<EmptyInput, SupervisorInboxRequest>(
+        supervisorInboxRequestSchema,
+      ),
+      response: jsonResponse<SupervisorInboxResponse>(),
+    }),
+    notifySupervisor: defineRoute({
+      path: "/threads/supervisor-notify",
+      method: "post",
+      request: jsonRequest<EmptyInput, SupervisorNotifyRequest>(
+        supervisorNotifyRequestSchema,
+      ),
+      response: jsonResponse<SupervisorInboxItem>(),
+    }),
     list: defineRoute({
       path: "/threads",
       method: "get",
@@ -1441,6 +1501,14 @@ export const publicApiRoutes = {
         systemInstallCliSkillsRequestSchema,
       ),
       response: jsonResponse<SystemInstallCliSkillsResponse>(),
+    }),
+    providerProbe: defineRoute({
+      path: "/system/provider-probe",
+      method: "post",
+      request: jsonRequest<EmptyInput, ProviderProbeRequest>(
+        providerProbeRequestSchema,
+      ),
+      response: jsonResponse<ProviderProbeResponse>(),
     }),
     executionOptions: defineRoute({
       path: "/system/execution-options",

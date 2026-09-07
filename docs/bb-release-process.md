@@ -211,6 +211,11 @@ commit, at the same version, for every stable release.
 A failure in either platform job stops the publish job, so no release can ship
 one platform's binaries against the other platform's stale feed.
 
+Both jobs enforce the [packaged native runtime gate](native-runtime-packaging.md)
+before promotion. The gate measures the packaged Electron executable and loads
+its SQLite and terminal bindings; retain the `*.native-runtime.json` receipts
+with the build evidence.
+
 ```bash
 gh workflow run build-desktop.yml \
   --ref main \

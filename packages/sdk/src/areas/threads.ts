@@ -18,6 +18,15 @@ import {
 import type {
   CreateQueuedMessageRequest,
   CreateThreadRequest,
+  InspectThreadSourceRequest,
+  InspectThreadSourceResponse,
+  RegisterSupervisorRequest,
+  SupervisorCredential,
+  SupervisorInboxRequest,
+  SupervisorInboxResponse,
+  SupervisorPeekResponse,
+  SupervisorNotifyRequest,
+  SupervisorInboxItem,
   QueuedMessageListQuery,
   EditMessageRequest,
   EditMessageResponse,
@@ -570,6 +579,21 @@ export interface ThreadsArea {
   search(args: ThreadSearchArgs): Promise<ThreadSearchResult>;
   send(args: ThreadSendArgs): Promise<ThreadSendResult>;
   spawn(args: ThreadSpawnArgs): Promise<ThreadSpawnResult>;
+  experimental_inspectSource(
+    args: InspectThreadSourceRequest,
+  ): Promise<InspectThreadSourceResponse>;
+  experimental_registerSupervisor(
+    args: RegisterSupervisorRequest,
+  ): Promise<SupervisorCredential>;
+  experimental_supervisorPeek(
+    args: Omit<SupervisorInboxRequest, "limit"> & { limit?: number },
+  ): Promise<SupervisorPeekResponse>;
+  experimental_supervisorInbox(
+    args: Omit<SupervisorInboxRequest, "limit"> & { limit?: number },
+  ): Promise<SupervisorInboxResponse>;
+  experimental_notifySupervisor(
+    args: SupervisorNotifyRequest,
+  ): Promise<SupervisorInboxItem>;
   stop(args: ThreadActionArgs): Promise<ThreadStopResult>;
   tabs: ThreadTabsArea;
   timeline(args: ThreadTimelineArgs): Promise<ThreadTimelineResult>;
@@ -1233,6 +1257,35 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
         transport.api.v1.threads.$post({
           json: spawnJson(input),
         }),
+      );
+    },
+    async experimental_inspectSource(input) {
+      return transport.readJson(
+        transport.api.v1.threads["source-inspect"].$post({ json: input }),
+      );
+    },
+    async experimental_registerSupervisor(input) {
+      return transport.readJson(
+        transport.api.v1.threads["supervisor-register"].$post({ json: input }),
+      );
+    },
+    async experimental_supervisorPeek(input) {
+      return transport.readJson(
+        transport.api.v1.threads["supervisor-peek"].$post({
+          json: { ...input, limit: input.limit ?? 100 },
+        }),
+      );
+    },
+    async experimental_supervisorInbox(input) {
+      return transport.readJson(
+        transport.api.v1.threads["supervisor-inbox"].$post({
+          json: { ...input, limit: input.limit ?? 100 },
+        }),
+      );
+    },
+    async experimental_notifySupervisor(input) {
+      return transport.readJson(
+        transport.api.v1.threads["supervisor-notify"].$post({ json: input }),
       );
     },
     async stop(input) {

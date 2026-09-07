@@ -68,6 +68,8 @@ import type { ThreadProvisionEnvironmentIntent } from "./thread-provisioning-con
 import { resolveManagedDefaultBaseBranchSpec } from "../projects/worktree-base-branch.js";
 import { applyLoggedEnvironmentLifecycleEvent } from "../environments/lifecycle-outcome.js";
 import { resolveSystemProviderModels } from "../system/execution-options.js";
+import { admitThreadSource } from "./source-provisioning.js";
+import { validateSupervisorSpawn } from "./thread-supervision.js";
 
 type ThreadCreateDeps = LoggedPendingInteractionWorkSessionDeps;
 
@@ -595,6 +597,13 @@ export async function createThreadFromRequest(
         parentThreadId: hierarchyParentThreadId,
       })
     : null;
+  if (requestInput.experimental_supervisor !== undefined) {
+    validateSupervisorSpawn(deps.db, {
+      binding: requestInput.experimental_supervisor,
+      projectId: requestInput.projectId,
+      parentThreadId: hierarchyParentThreadId,
+    });
+  }
   if (originKind === null && sourceThreadId !== undefined) {
     throw new ApiError(
       400,
@@ -726,16 +735,6 @@ export async function createThreadFromRequest(
   ).dataDir;
   const modelCatalogCwd =
     modelCatalogCwdForResolvedEnvironment(resolvedEnvironment);
-  const resolvedExecutionDefaults = await resolveCatalogExecutionDefaults(
-    deps,
-    {
-      ...(modelCatalogCwd !== undefined ? { cwd: modelCatalogCwd } : {}),
-      executionDefaults,
-      hostId: childHostId,
-      providerId,
-      requestedModel,
-    },
-  );
 
   /**
    * Resolves where a thread will run: the workspace-path claim checks, the
@@ -836,11 +835,13 @@ export async function createThreadFromRequest(
           type: "direct-managed",
           hostId,
           sourcePath: managedSource.path,
-          baseBranch: await resolveManagedBaseBranchForCreate(deps, {
-            baseBranch: workspace.baseBranch,
-            hostId,
-            sourcePath: managedSource.path,
-          }),
+          baseBranch: request.experimental_sourcePin
+            ? { kind: "named", name: request.experimental_sourcePin.commit }
+            : await resolveManagedBaseBranchForCreate(deps, {
+                baseBranch: workspace.baseBranch,
+                hostId,
+                sourcePath: managedSource.path,
+              }),
           workspaceProvisionType: workspace.type,
         };
         break;
@@ -857,8 +858,24 @@ export async function createThreadFromRequest(
     return { environmentId, environmentIntent };
   }
 
-  const { environmentId, environmentIntent } =
+  const { environmentId, environmentIntent: requestedEnvironmentIntent } =
     await resolveEnvironmentPlacement(request.environment);
+  const { intent: environmentIntent, pin } = await admitThreadSource(deps, {
+    projectId: request.projectId,
+    intent: requestedEnvironmentIntent,
+    pin: request.experimental_sourcePin,
+  });
+  if (pin !== null) request.experimental_sourcePin = pin;
+  const resolvedExecutionDefaults = await resolveCatalogExecutionDefaults(
+    deps,
+    {
+      ...(modelCatalogCwd !== undefined ? { cwd: modelCatalogCwd } : {}),
+      executionDefaults,
+      hostId: childHostId,
+      providerId,
+      requestedModel,
+    },
+  );
 
   const fork = resolveForkPoint(deps, {
     originKind: request.originKind ?? null,

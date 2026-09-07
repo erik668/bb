@@ -1,4 +1,5 @@
 export * from "./active-thinking.js";
+export * from "./source-pin.js";
 export * from "./acp-cli.js";
 export * from "./native-roots.js";
 export * from "./app-settings.js";

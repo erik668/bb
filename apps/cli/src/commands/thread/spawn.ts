@@ -1,10 +1,12 @@
 import { Command } from "commander";
 import {
   PERSONAL_PROJECT_ID,
+  sourcePinSchema,
   threadVisibilitySchema,
   type Thread,
 } from "@bb/domain";
 import type { BaseBranchSpec, EnvironmentArgs } from "@bb/server-contract";
+import { supervisorBindingSchema } from "@bb/server-contract";
 import { action } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
 import {
@@ -60,6 +62,8 @@ interface ThreadSpawnCommandOptions {
   sourceSeqEnd?: string;
   visibility?: string;
   sendAt?: string;
+  sourcePin?: string;
+  supervisor?: string;
 }
 
 export function looksLikePath(value: string): boolean {
@@ -234,6 +238,14 @@ export function registerSpawnCommand(
       "Thread visibility: visible or hidden (a child inherits its parent)",
     )
     .option("--send-at <when>", SEND_AT_HELP)
+    .option(
+      "--source-pin <json>",
+      "Immutable source identity and explicit reuse/new-worktree path policy",
+    )
+    .option(
+      "--supervisor <json>",
+      "Private supervisor credential plus taskId; binds ownership before provider start",
+    )
     .option("--origin-kind <kind>", "Thread origin: fork")
     .option("--source-thread <id>", "Source thread for a fork")
     .option(
@@ -315,6 +327,20 @@ export function registerSpawnCommand(
         try {
           const sdk = createCliBbSdk(getUrl());
           thread = await sdk.threads.spawn({
+            ...(opts.sourcePin === undefined
+              ? {}
+              : {
+                  experimental_sourcePin: sourcePinSchema.parse(
+                    JSON.parse(opts.sourcePin),
+                  ),
+                }),
+            ...(opts.supervisor === undefined
+              ? {}
+              : {
+                  experimental_supervisor: supervisorBindingSchema.parse(
+                    JSON.parse(opts.supervisor),
+                  ),
+                }),
             origin: "cli",
             projectId,
             ...(providerId ? { providerId } : {}),

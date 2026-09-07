@@ -8,6 +8,12 @@ description: Use this when controlling bb. The bb CLI inspects and manages threa
 Use bb for BB state and actions. Inspect the current context before you choose
 IDs, machines, workspaces, providers, or models.
 
+For pinned workflow campaigns, inspect the target with `bb thread source-inspect`,
+then spawn with `--source-pin` and `--supervisor`. Register and retain a private
+supervisor token first; use `supervisor-inbox` for outcomes and `supervisor-notify`
+for stable decision or exception wakes. See `bb guide threads` and
+references/thread-creation.md for the exact contracts and delivery states.
+
 ## Start with context
 
 ```sh
@@ -127,7 +133,6 @@ bb skill list --environment "$BB_ENVIRONMENT_ID" --json
 Confirm the command result and any affected thread, environment, plugin, or
 remote service. Report the stable ID or URL that the user needs next.
 
-
 ## Plugin configuration
 
 Use `bb plugin config <id>` to inspect the plugin’s configuration and
@@ -135,3 +140,21 @@ Use `bb plugin config <id>` to inspect the plugin’s configuration and
 guidance for its delivery commands and supported clients. A server-side
 notification switch does not grant browser or operating system permission;
 that permission is granted from the target client’s settings.
+
+## Workflow observations
+
+Use `bb thread supervisor-peek --thread <manager> --campaign <id> --inbox <id>
+--json` for a pure receipt read. `--notice-key` selects the original notice key;
+`--after-key` pages instead; `--limit` is 1–500 (default 100). Missing registration
+is explicit. `supervisor-inbox` remains an effectful recovery command.
+
+Use `bb provider probe codex --environment <id> --model <model>
+--reasoning-level <level> --json` for a bounded cached capability probe.
+`--machine`/`--host` can replace `--environment`. It performs one host RPC and
+may start provider processes, but never downloads bridge artifacts, retries,
+synthesizes fallback models or starts model turns/workers. Retain the full
+receipt and blocker; execution and TLS remain unproven.
+
+Each supervisor peek item includes `requestInputText` from the same formatter as
+queue admission. Verify the exact request event input against it;
+`requestSequence` alone is a candidate, not provider acknowledgment.
