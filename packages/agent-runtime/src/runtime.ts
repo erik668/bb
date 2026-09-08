@@ -14,6 +14,7 @@ import {
   providerUsageResultSchema,
   ThreadEventGrammar,
   threadIdentityResultSchema,
+  experimental_threadStopIfCurrentTurnResultSchema,
 } from "@bb/provider-bridge-protocol";
 import {
   JsonRpcResponseError,
@@ -59,6 +60,7 @@ import type {
   AgentRuntimeExecutionOptions,
   AgentRuntimeOptions,
   ReapedIdleProviderSession,
+  StopThreadResult,
 } from "./types.js";
 import {
   resolveThreadEnvironment,
@@ -66,6 +68,7 @@ import {
   type ResolvedThreadEnvironmentEntry,
 } from "./thread-shell-environment.js";
 import { bridgeLaunchProcessKey } from "./bridge-launch-process-key.js";
+import { stopCurrentProviderTurn } from "./runtime-conditional-thread-stop.js";
 
 interface RecordThreadExecutionOptionsArgs {
   options: AgentRuntimeExecutionOptions;
@@ -287,6 +290,11 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   }, options.turnStartWatchdog?.intervalMs ?? 15_000);
   turnStartWatchdogTimer.unref?.();
   const threadOperationCounts = new Map<string, number>();
+  const conditionalThreadStops = new Map<
+    string,
+    { expectedTurnId: string; replaced: boolean }
+  >();
+  const conditionallyRetainedThreadIds = new Set<string>();
   const stagedThreadRewinds = new Map<string, StagedThreadRewind>();
   const suppressedThreadEventIds = new Set<string>();
   const threadGoalState = new RuntimeThreadGoalState();
@@ -694,6 +702,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   }
 
   function clearThreadRuntimeConfig(threadId: string): void {
+    conditionallyRetainedThreadIds.delete(threadId);
     threadsAwaitingBridgeRestart.delete(threadId);
     threadsRetryingBridgeRestartOnIdle.delete(threadId);
     idleProviderSessionSinceMsByThreadId.delete(threadId);
@@ -755,7 +764,16 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
     }
   }
 
+  function assertThreadHasNoConditionalStop(threadId: string): void {
+    if (conditionalThreadStops.has(threadId)) {
+      throw new Error(
+        `Refusing to start work for thread "${threadId}" while a conditional stop is in progress`,
+      );
+    }
+  }
+
   function assertThreadCanStartTurn(threadId: string): void {
+    assertThreadHasNoConditionalStop(threadId);
     if (
       turnState.getActiveTurnId(threadId) !== null ||
       pendingTurnStarts.has(threadId)
@@ -833,6 +851,7 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
   ): ReapIdleProviderSessionCandidate | null {
     if (
       threadHasInFlightOperation(args.threadId) ||
+      conditionallyRetainedThreadIds.has(args.threadId) ||
       pendingTurnStarts.has(args.threadId) ||
       turnState.getActiveTurnId(args.threadId) !== null
     ) {
@@ -953,6 +972,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       processKey: currentConfig.processKey,
       providerId: currentConfig.providerId,
     });
+    if (
+      [...proc.identity.threadIds].some((threadId) =>
+        conditionallyRetainedThreadIds.has(threadId),
+      )
+    ) {
+      return;
+    }
     const hostedThreadIds = [...proc.identity.threadIds].filter(
       (threadId) => threadId !== args.threadId,
     );
@@ -1243,6 +1269,18 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
 
       const normalizedEvent = normalizeProviderThreadNameEvent(stampedEvent);
       turnState.observe(normalizedEvent);
+      if (
+        normalizedEvent.type === "turn/started" &&
+        !normalizedEvent.parentToolCallId
+      ) {
+        const stop = conditionalThreadStops.get(targetThreadId);
+        if (
+          stop &&
+          turnState.getActiveTurnId(targetThreadId) !== stop.expectedTurnId
+        ) {
+          stop.replaced = true;
+        }
+      }
       backgroundWorkState.observe(normalizedEvent);
       observeProviderSessionIdleState(normalizedEvent);
       options.onEvent(normalizedEvent);
@@ -1482,11 +1520,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       return runThreadOperation({
         threadId,
         work: async () => {
+          assertThreadHasNoConditionalStop(threadId);
           const processKey = resolveProviderProcessKey({
             bridgeLaunch,
             providerId,
           });
           await runtime.ensureProvider({ providerId, bridgeLaunch });
+          assertThreadHasNoConditionalStop(threadId);
 
           const proc = providerProcesses.requireProviderProcess({
             processKey,
@@ -1807,11 +1847,13 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       return runThreadOperation({
         threadId,
         work: async () => {
+          assertThreadHasNoConditionalStop(threadId);
           const processKey = resolveProviderProcessKey({
             bridgeLaunch,
             providerId,
           });
           await runtime.ensureProvider({ providerId, bridgeLaunch });
+          assertThreadHasNoConditionalStop(threadId);
 
           const proc = providerProcesses.requireProviderProcess({
             processKey,
@@ -2152,43 +2194,108 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       });
     },
 
-    async stopThread({ threadId }) {
-      return runThreadOperation({
+    async stopThread({ threadId, expectedTurnId }) {
+      return runThreadOperation<StopThreadResult>({
         threadId,
         work: async () => {
-          const pid = threadIdentityRegistry.resolveProviderForThread(threadId);
-          const proc = requireProviderProcessForThread(threadId);
-          const providerThreadId = requireProviderThreadId(threadId);
           const activeTurnId = turnState.getActiveTurnId(threadId);
-          const adapterCommand: AdapterCommand = {
-            type: "thread/stop",
-            threadId,
-            providerThreadId,
-            activeTurnId,
-          };
-          const cmd = proc.adapter.buildCommandPlan(adapterCommand);
-
-          if (cmd.kind === "noop") {
-            if (activeTurnId) {
-              throw new Error(
-                `Adapter "${pid}" returned no provider request for thread/stop with active turn: ${cmd.reason}`,
-              );
+          if (expectedTurnId !== undefined) {
+            if (activeTurnId !== expectedTurnId) {
+              return {
+                providerCheckpointId: null,
+                condition: {
+                  status: "refused",
+                  expectedTurnId,
+                  reason:
+                    activeTurnId === null ? "no-active-turn" : "turn-mismatch",
+                  activeTurnId,
+                },
+              };
             }
+            if (
+              conditionalThreadStops.has(threadId) ||
+              (threadOperationCounts.get(threadId) ?? 0) > 1
+            ) {
+              return {
+                providerCheckpointId: null,
+                condition: {
+                  status: "refused",
+                  expectedTurnId,
+                  reason: "unproven",
+                  activeTurnId,
+                },
+              };
+            }
+            conditionalThreadStops.set(threadId, {
+              expectedTurnId,
+              replaced: false,
+            });
+          }
+          try {
+            const pid =
+              threadIdentityRegistry.resolveProviderForThread(threadId);
+            const proc = requireProviderProcessForThread(threadId);
+            const providerThreadId = requireProviderThreadId(threadId);
+            if (expectedTurnId !== undefined) {
+              return await stopCurrentProviderTurn({
+                threadId,
+                providerThreadId,
+                expectedTurnId,
+                adapter: proc.adapter,
+                readState: () => ({
+                  activeTurnId: turnState.getActiveTurnId(threadId),
+                  replaced:
+                    conditionalThreadStops.get(threadId)?.replaced === true,
+                  owned:
+                    proc.identity.threadIds.has(threadId) &&
+                    threadIdentityRegistry.getProviderThreadId(threadId) ===
+                      providerThreadId,
+                }),
+                send: (message) => {
+                  conditionallyRetainedThreadIds.add(threadId);
+                  return sendCommand({
+                    proc,
+                    message,
+                    resultSchema:
+                      experimental_threadStopIfCurrentTurnResultSchema,
+                  });
+                },
+              });
+            }
+            const adapterCommand: AdapterCommand = {
+              type: "thread/stop",
+              threadId,
+              providerThreadId,
+              activeTurnId,
+            };
+            const cmd = proc.adapter.buildCommandPlan(adapterCommand);
+
+            if (cmd.kind === "noop") {
+              if (activeTurnId) {
+                throw new Error(
+                  `Adapter "${pid}" returned no provider request for thread/stop with active turn: ${cmd.reason}`,
+                );
+              }
+              forgetThreadRuntimeStateForProviderState(proc.identity, threadId);
+              await releaseIdleProviderProcess(proc);
+              return { providerCheckpointId: null };
+            }
+
+            const result = await sendCommand({
+              proc,
+              message: cmd,
+              resultSchema: providerThreadStopResultSchema,
+            });
             forgetThreadRuntimeStateForProviderState(proc.identity, threadId);
             await releaseIdleProviderProcess(proc);
-            return { providerCheckpointId: null };
+            return {
+              providerCheckpointId: result.providerCheckpointId ?? null,
+            };
+          } finally {
+            if (expectedTurnId !== undefined) {
+              conditionalThreadStops.delete(threadId);
+            }
           }
-
-          const result = await sendCommand({
-            proc,
-            message: cmd,
-            resultSchema: providerThreadStopResultSchema,
-          });
-          forgetThreadRuntimeStateForProviderState(proc.identity, threadId);
-          await releaseIdleProviderProcess(proc);
-          return {
-            providerCheckpointId: result.providerCheckpointId ?? null,
-          };
         },
       });
     },
@@ -2518,6 +2625,8 @@ export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
       idleProviderSessionSinceMsByThreadId.clear();
       pendingTurnStarts.clear();
       threadOperationCounts.clear();
+      conditionalThreadStops.clear();
+      conditionallyRetainedThreadIds.clear();
       threadGoalState.clear();
       turnState.clear();
       backgroundWorkState.clear();

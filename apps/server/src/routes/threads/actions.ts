@@ -58,7 +58,10 @@ import {
   prepareTurnSubmitCommandPayload,
 } from "../../services/threads/thread-commands.js";
 import { getLastProviderThreadId } from "../../services/threads/thread-events.js";
-import { stopThreadForCurrentState } from "../../services/threads/thread-lifecycle.js";
+import {
+  stopThreadForCurrentState,
+  stopThreadIfCurrentTurn,
+} from "../../services/threads/thread-lifecycle.js";
 import {
   getThreadPromptBannerActivity,
   toThreadListEntryResponses,
@@ -371,6 +374,20 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     });
     await stopThreadForCurrentState(deps, thread, environment);
     return context.json({ ok: true });
+  });
+
+  post(routes.stopIfCurrent, async (context, query) => {
+    const thread = requirePublicThread(deps.db, context.req.param("id"));
+    const environment = resolveThreadHostCommandEnvironment({
+      db: deps.db,
+      thread,
+    });
+    const condition = await stopThreadIfCurrentTurn(deps, {
+      thread,
+      environment,
+      expectedTurnId: query.expectedTurnId,
+    });
+    return context.json({ ok: true, condition });
   });
 
   post(routes.compact, async (context) => {

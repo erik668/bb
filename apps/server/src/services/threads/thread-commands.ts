@@ -49,6 +49,7 @@ type ExecutionOptionsRequest = ExistingThreadExecutionInputRequest;
 
 export interface ThreadStopCommandArgs {
   environmentId: string;
+  expectedTurnId?: string;
   hostId: string;
   intent: ThreadStopIntent;
   threadId: string;
@@ -597,6 +598,9 @@ export function buildThreadStopCommand(
   return {
     type: "thread.stop",
     environmentId: args.environmentId,
+    ...(args.expectedTurnId !== undefined
+      ? { expectedTurnId: args.expectedTurnId }
+      : {}),
     intent: args.intent,
     threadId: args.threadId,
   };

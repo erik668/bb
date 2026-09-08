@@ -155,6 +155,23 @@ may start provider processes, but never downloads bridge artifacts, retries,
 synthesizes fallback models or starts model turns/workers. Retain the full
 receipt and blocker; execution and TLS remain unproven.
 
+Use `bb plugin cache-inspect --base-dir <plugins-directory> --json` to obtain
+this build's compiler cache contract and availability without a download or
+server. For isolated Codex no-install runs, start the host with
+`BB_CODEX_MAINTENANCE_POLICY=cache-only`; local health/version checks remain,
+registry/usage refreshes and install/update actions are disabled. Invalid values
+fail closed; the default is `standard`. This does not replace execution guards.
+
+Use `bb thread stop <thread> --expected-turn <turn> --json` when cleanup is
+authorized only for a recorded original turn. The conditional response reports
+`condition.status` as `stopped` or `refused`; verify its exact `expectedTurnId`.
+Missing or uncertain proof is refusal. Stale cleanup preserves a replacement
+turn. Conditional calls use the separate `/stop-if-current` endpoint; older
+servers reject it without an unconditional fallback. Omitting the option
+retains the existing unconditional stop behavior. A proven conditional stop
+retains its provider session. Providers without turn-specific stop support
+return `unproven`.
+
 Each supervisor peek item includes `requestInputText` from the same formatter as
 queue admission. Verify the exact request event input against it;
 `requestSequence` alone is a candidate, not provider acknowledgment.

@@ -212,6 +212,8 @@ import type {
   ThreadResponse,
   ThreadSearchQuery,
   ThreadSearchResponse,
+  ConditionalThreadStopQuery,
+  ConditionalThreadStopResponse,
   ThreadStorageContentQuery,
   ThreadStorageFileListResponse,
   ThreadStorageFilesQuery,
@@ -316,6 +318,7 @@ import {
   threadOpenRequestSchema,
   threadPaneActionRequestSchema,
   threadSearchQuerySchema,
+  conditionalThreadStopQuerySchema,
   threadStorageContentQuerySchema,
   threadStorageFilesQuerySchema,
   threadStoragePathsQuerySchema,
@@ -1163,6 +1166,14 @@ export const publicApiRoutes = {
       method: "post",
       request: noRequest<PathId>(),
       response: jsonResponse<{ ok: true }>(),
+    }),
+    stopIfCurrent: defineRoute({
+      path: "/threads/:id/stop-if-current",
+      method: "post",
+      request: queryRequest<PathId, ConditionalThreadStopQuery>(
+        conditionalThreadStopQuerySchema,
+      ),
+      response: jsonResponse<ConditionalThreadStopResponse>(),
     }),
     compact: defineRoute({
       path: "/threads/:id/compact",

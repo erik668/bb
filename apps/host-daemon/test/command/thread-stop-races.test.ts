@@ -23,6 +23,7 @@ import type {
   HostDaemonOnlineRpcResponseMessage,
 } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferredPromise } from "@bb/test-helpers";
 import { dispatchCommand } from "../../src/command-dispatch.js";
 import {
   noopEventSink,
@@ -74,6 +75,7 @@ let nextRpcRequestIdValue = 1;
 
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   await Promise.all(managers.splice(0).map((manager) => manager.shutdownAll()));
   await cleanupTempDirs();
 });
@@ -296,8 +298,25 @@ function threadStopCommand(threadId: string): CommandOf<"thread.stop"> {
 function recordedThreadStops(harness: RaceHarness): Record<string, unknown>[] {
   return harness.record
     .read()
-    .filter((request) => request.method === "thread/stop")
+    .filter(
+      (request) =>
+        request.method === "thread/stop" ||
+        request.method === "thread/stop-if-current-turn",
+    )
     .map((request) => request.params ?? {});
+}
+
+async function requireActiveTurnId(
+  runtime: AgentRuntime,
+  threadId: string,
+): Promise<string> {
+  await vi.waitFor(() =>
+    expect(runtime.getActiveTurnId(threadId)).not.toBeNull(),
+  );
+  const turnId = runtime.getActiveTurnId(threadId);
+  if (turnId === null)
+    throw new Error("Active turn disappeared before observation");
+  return turnId;
 }
 
 function routerStop(
@@ -314,6 +333,199 @@ function routerStop(
 }
 
 describe("thread.stop race semantics", () => {
+  it("proves cancellation only for the matching active turn", async () => {
+    const harness = await createRaceHarness();
+    await dispatchCommand(
+      threadStartCommand(harness, {
+        threadId: "t-conditional",
+        inputText: "delay:60000",
+      }),
+      harness.dispatchOptions,
+    );
+    const runtime = harness.requireRuntime();
+    const expectedTurnId = await requireActiveTurnId(runtime, "t-conditional");
+    const result = await dispatchCommand(
+      {
+        ...threadStopCommand("t-conditional"),
+        expectedTurnId,
+      },
+      harness.dispatchOptions,
+    );
+    expect(result).toEqual({
+      providerCheckpointId: null,
+      condition: { status: "stopped", expectedTurnId },
+    });
+    expect(recordedThreadStops(harness)).toEqual([
+      expect.objectContaining({
+        threadId: "t-conditional",
+        expectedTurnId: "turn-1",
+      }),
+    ]);
+    expect(
+      harness.record
+        .read()
+        .filter((request) => request.method === "thread/stop"),
+    ).toHaveLength(0);
+    expect(harness.events).toContainEqual(
+      expect.objectContaining({
+        type: "turn/completed",
+        threadId: "t-conditional",
+        status: "interrupted",
+      }),
+    );
+    expect(runtime.hasThread("t-conditional")).toBe(true);
+  });
+
+  it("refuses a stale turn and a different environment without releasing runtime owners", async () => {
+    const harness = await createRaceHarness();
+    await dispatchCommand(
+      threadStartCommand(harness, {
+        threadId: "t-preserved",
+        inputText: "delay:60000",
+      }),
+      harness.dispatchOptions,
+    );
+    const runtime = harness.requireRuntime();
+    const activeTurnId = await requireActiveTurnId(runtime, "t-preserved");
+    const eventsBefore = [...harness.events];
+    const releaseOther = vi.spyOn(
+      harness.manager,
+      "releaseThreadFromOtherEnvironments",
+    );
+    await expect(
+      dispatchCommand(
+        {
+          ...threadStopCommand("t-preserved"),
+          expectedTurnId: "turn-old",
+        },
+        harness.dispatchOptions,
+      ),
+    ).resolves.toEqual({
+      providerCheckpointId: null,
+      condition: {
+        status: "refused",
+        expectedTurnId: "turn-old",
+        reason: "turn-mismatch",
+        activeTurnId,
+      },
+    });
+    await expect(
+      dispatchCommand(
+        {
+          ...threadStopCommand("t-preserved"),
+          environmentId: "env-missing",
+          expectedTurnId: activeTurnId,
+        },
+        harness.dispatchOptions,
+      ),
+    ).resolves.toEqual({
+      providerCheckpointId: null,
+      condition: {
+        status: "refused",
+        expectedTurnId: activeTurnId,
+        reason: "runtime-missing",
+        activeTurnId: null,
+      },
+    });
+    expect(releaseOther).not.toHaveBeenCalled();
+    expect(recordedThreadStops(harness)).toHaveLength(0);
+    expect(harness.events).toEqual(eventsBefore);
+    expect(runtime.hasThread("t-preserved")).toBe(true);
+    expect(runtime.getActiveTurnId("t-preserved")).toBe(activeTurnId);
+  });
+
+  it("refuses an idle target without waiting for or releasing a later turn", async () => {
+    const harness = await createRaceHarness();
+    await dispatchCommand(
+      threadStartCommand(harness, { threadId: "t-idle-condition" }),
+      harness.dispatchOptions,
+    );
+    const runtime = harness.requireRuntime();
+    const waitForTurn = vi.spyOn(runtime, "waitForActiveTurn");
+    const before = [...harness.events];
+    await expect(
+      dispatchCommand(
+        {
+          ...threadStopCommand("t-idle-condition"),
+          expectedTurnId: "turn-old",
+        },
+        harness.dispatchOptions,
+      ),
+    ).resolves.toEqual({
+      providerCheckpointId: null,
+      condition: {
+        status: "refused",
+        expectedTurnId: "turn-old",
+        reason: "no-active-turn",
+        activeTurnId: null,
+      },
+    });
+    expect(waitForTurn).not.toHaveBeenCalled();
+    expect(recordedThreadStops(harness)).toHaveLength(0);
+    expect(harness.events).toEqual(before);
+    expect(runtime.hasThread("t-idle-condition")).toBe(true);
+  });
+
+  it("rechecks the host turn after delayed transport and preserves its replacement", async () => {
+    const harness = await createRaceHarness();
+    await dispatchCommand(
+      threadStartCommand(harness, {
+        threadId: "t-delayed",
+        inputText: "delay:500",
+      }),
+      harness.dispatchOptions,
+    );
+    const runtime = harness.requireRuntime();
+    const expectedTurnId = await requireActiveTurnId(runtime, "t-delayed");
+    const entry = await harness.manager.getOrAwait(ENVIRONMENT_ID);
+    const entered = createDeferredPromise<void>();
+    const deliver = createDeferredPromise<void>();
+    vi.spyOn(harness.manager, "getOrAwait").mockImplementationOnce(async () => {
+      entered.resolve(undefined);
+      await deliver.promise;
+      return entry;
+    });
+    const stop = dispatchCommand(
+      {
+        ...threadStopCommand("t-delayed"),
+        expectedTurnId,
+      },
+      harness.dispatchOptions,
+    );
+    await entered.promise;
+    try {
+      await vi.waitFor(() =>
+        expect(runtime.getActiveTurnId("t-delayed")).toBeNull(),
+      );
+      await dispatchCommand(
+        turnSubmitCommand(harness, {
+          threadId: "t-delayed",
+          inputText: "delay:60000",
+        }),
+        harness.dispatchOptions,
+      );
+      const activeTurnId = await requireActiveTurnId(runtime, "t-delayed");
+      expect(activeTurnId).not.toBe(expectedTurnId);
+      const before = [...harness.events];
+      deliver.resolve(undefined);
+      await expect(stop).resolves.toEqual({
+        providerCheckpointId: null,
+        condition: {
+          status: "refused",
+          expectedTurnId,
+          reason: "turn-mismatch",
+          activeTurnId,
+        },
+      });
+      expect(recordedThreadStops(harness)).toHaveLength(0);
+      expect(harness.events).toEqual(before);
+      expect(runtime.getActiveTurnId("t-delayed")).toBe(activeTurnId);
+    } finally {
+      deliver.resolve(undefined);
+      await stop;
+    }
+  });
+
   it("resolves a stop dispatched before turn/started event-driven and stops the right turn", async () => {
     const harness = await createRaceHarness();
     await dispatchCommand(

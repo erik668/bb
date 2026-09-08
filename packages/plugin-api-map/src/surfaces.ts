@@ -399,6 +399,7 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "Supply a small icon that appears next to its name",
           "Receive every message in a thread started with it, through a bridge process the plugin ships",
           "Contribute validated environment variables to any provider for each session and turn",
+          "Opt into stopping one exact active turn with matching proof or refusal while retaining its provider session",
         ],
         apiSymbols: [
           "PluginProviderDeclaration",
@@ -407,6 +408,11 @@ export const SURFACE_GROUPS: SurfaceGroup[] = [
           "ExperimentalPluginProviderEnvEntry",
           "ExperimentalPluginProviderEnvHealthContext",
           "ExperimentalPluginProviderEnvHealth",
+          "BridgeCapabilities",
+          "experimental_threadStopIfCurrentTurnParamsSchema",
+          "ExperimentalThreadStopIfCurrentTurnParams",
+          "experimental_threadStopIfCurrentTurnResultSchema",
+          "ExperimentalThreadStopIfCurrentTurnResult",
         ],
         firstParty: [
           "ACP providers",

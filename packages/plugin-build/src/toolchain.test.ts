@@ -3,6 +3,8 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -12,6 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildPluginApp } from "./build-plugin-app.js";
 import {
   PLUGIN_TOOLCHAIN_PINS,
+  pluginBuildCacheContract,
+  inspectCachedPluginBuildToolchain,
   resolvePluginBuildToolchain,
   toolchainCacheDir,
 } from "./toolchain.js";
@@ -35,6 +39,31 @@ describe("plugin build toolchain", () => {
     expect(dir.startsWith("/data/")).toBe(true);
   });
 
+  it("exports the resolver-owned cache contract and refuses missing or malformed cache without creating it", async () => {
+    const contract = pluginBuildCacheContract(baseDir);
+    expect(contract.cacheDir).toBe(toolchainCacheDir(baseDir));
+    expect(contract.pins).toEqual(PLUGIN_TOOLCHAIN_PINS);
+    expect(contract.marker.pins).toBe(
+      Object.entries(contract.pins)
+        .map(([name, version]) => `${name}@${version}`)
+        .sort()
+        .join(","),
+    );
+    await expect(
+      inspectCachedPluginBuildToolchain(baseDir),
+    ).resolves.toBeNull();
+    await expect(readFile(contract.cacheDir)).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await mkdir(contract.cacheDir, { recursive: true });
+    const marker = join(contract.cacheDir, ".bb-toolchain.json");
+    await writeFile(marker, "{bad");
+    await expect(
+      inspectCachedPluginBuildToolchain(baseDir),
+    ).resolves.toBeNull();
+    expect(await readFile(marker, "utf8")).toBe("{bad");
+  });
+
   it("prefers a locally resolvable toolchain over fetching", async () => {
     const toolchain = await resolvePluginBuildToolchain(baseDir, {
       onFetchStart: () => {
@@ -52,6 +81,37 @@ describe("plugin build toolchain", () => {
         () => false,
       ),
     ).toBe(false);
+  });
+
+  it("does not mistake ancestor dependencies for a populated cache and accepts the same files inside the cache", async () => {
+    const modules = join(baseDir, "node_modules");
+    for (const [name, version] of Object.entries(PLUGIN_TOOLCHAIN_PINS)) {
+      const directory = join(modules, name);
+      await mkdir(directory, { recursive: true });
+      await writeFile(
+        join(directory, "package.json"),
+        JSON.stringify({ name, version, main: "index.cjs" }),
+      );
+      await writeFile(join(directory, "index.cjs"), "module.exports = {};\n");
+    }
+    const cacheBase = join(baseDir, "caches"),
+      contract = pluginBuildCacheContract(cacheBase);
+    await mkdir(contract.cacheDir, { recursive: true });
+    await writeFile(
+      join(contract.cacheDir, ".bb-toolchain.json"),
+      JSON.stringify(contract.marker),
+    );
+    await expect(
+      inspectCachedPluginBuildToolchain(cacheBase),
+    ).resolves.toBeNull();
+    await rename(modules, join(contract.cacheDir, "node_modules"));
+    await expect(
+      inspectCachedPluginBuildToolchain(cacheBase),
+    ).resolves.toMatchObject({
+      tailwindCssDir: await realpath(
+        join(contract.cacheDir, "node_modules/tailwindcss"),
+      ),
+    });
   });
 
   it("returns importable module specifiers", async () => {

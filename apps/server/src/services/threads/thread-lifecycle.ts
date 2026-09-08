@@ -1,6 +1,7 @@
 import {
   and,
   eq,
+  gt,
   gte,
   inArray,
   isNotNull,
@@ -13,6 +14,7 @@ import {
   deleteThread,
   environments,
   events,
+  findLastRootStoredTurnStarted,
   getEnvironment,
   getLatestThreadInterruptedEventData,
   getThread,
@@ -25,6 +27,7 @@ import {
 } from "@bb/db";
 import { assertNever } from "@bb/core-ui";
 import {
+  type ConditionalThreadStopOutcome,
   type ProvisioningTranscriptEntry,
   type SystemThreadInterruptedEventData,
   type SystemThreadInterruptedReason,
@@ -963,9 +966,72 @@ export async function prepareReadyThreadTurnCommand(
   };
 }
 
+function isCurrentConditionalStopTarget(
+  db: DbQueryConnection,
+  args: { threadId: string; expectedTurnId: string },
+): boolean {
+  const started = findLastRootStoredTurnStarted(db, {
+    threadId: args.threadId,
+  });
+  if (started?.turnId !== args.expectedTurnId) {
+    return false;
+  }
+  const laterRequest = db
+    .select({ sequence: events.sequence })
+    .from(events)
+    .where(
+      and(
+        eq(events.threadId, args.threadId),
+        gt(events.sequence, started.sequence),
+        or(
+          and(
+            eq(events.type, "client/turn/requested"),
+            sql`coalesce(json_extract(${events.data}, '$.target.kind'), 'new-turn') IN ('thread-start', 'new-turn', 'auto')`,
+            sql`NOT EXISTS (
+            SELECT 1 FROM ${events} AS accepted
+            WHERE accepted.thread_id = ${events.threadId}
+              AND accepted.type = 'turn/input/accepted'
+              AND accepted.turn_id = ${args.expectedTurnId}
+              AND json_extract(accepted.data, '$.clientRequestId') = json_extract(${events.data}, '$.requestId')
+          )`,
+          ),
+          and(
+            inArray(events.type, ["client/thread/start", "client/turn/start"]),
+            sql`json_type(${events.data}, '$.input') IS NOT NULL`,
+          ),
+        ),
+      ),
+    )
+    .limit(1)
+    .get();
+  return laterRequest === undefined;
+}
+
 export function settleThreadStopCommandResult(
   args: SettleThreadStopCommandResultArgs,
 ): CommandResultSideEffectsResult {
+  if (args.command.expectedTurnId !== undefined) {
+    if (
+      !args.report.ok ||
+      args.report.result.condition?.status !== "stopped" ||
+      args.report.result.condition.expectedTurnId !==
+        args.command.expectedTurnId ||
+      !isCurrentConditionalStopTarget(args.deps.db, {
+        threadId: args.command.threadId,
+        expectedTurnId: args.command.expectedTurnId,
+      })
+    ) {
+      return emptyCommandResultSideEffects();
+    }
+    markThreadStoppingWithEventInTransaction(args.deps, {
+      threadId: args.command.threadId,
+      reason: "manual-stop",
+    });
+    appendManualStopOverrideIfLatestCleanupInTransaction(
+      args.deps,
+      args.command.threadId,
+    );
+  }
   if (args.report.ok) {
     settleDanglingBackgroundTasksForStoppedThreadInTransaction(args.deps, {
       threadId: args.command.threadId,
@@ -1208,22 +1274,31 @@ function appendManualStopOverrideIfLatestCleanup(
 ): void {
   const notificationBuffer = new NotificationBuffer();
   deps.db.transaction(
-    (tx) => {
-      const latest = getLatestThreadInterruptedEventData(tx, { threadId });
-      if (latest?.reason !== "workflow-result-cleanup") {
-        return;
-      }
-      appendThreadInterruptedEventInTransaction(tx, {
+    (tx) =>
+      appendManualStopOverrideIfLatestCleanupInTransaction(
+        { db: tx, hub: notificationBuffer },
         threadId,
-        reason: "manual-stop",
-      });
-      notificationBuffer.notifyThread(threadId, ["events-appended"], {
-        eventTypes: ["system/thread/interrupted"],
-      });
-    },
+      ),
     { behavior: "immediate" },
   );
   notificationBuffer.flushInto(deps.hub);
+}
+
+function appendManualStopOverrideIfLatestCleanupInTransaction(
+  deps: Pick<ThreadLifecycleTransactionDeps, "db" | "hub">,
+  threadId: string,
+): void {
+  const latest = getLatestThreadInterruptedEventData(deps.db, { threadId });
+  if (latest?.reason !== "workflow-result-cleanup") {
+    return;
+  }
+  appendThreadInterruptedEventInTransaction(deps.db, {
+    threadId,
+    reason: "manual-stop",
+  });
+  deps.hub.notifyThread(threadId, ["events-appended"], {
+    eventTypes: ["system/thread/interrupted"],
+  });
 }
 
 function dispatchThreadStopCommand(
@@ -1384,6 +1459,86 @@ export function requestThreadStopForCurrentState(
   ) {
     requestPreStartThreadStop(deps, thread);
   }
+}
+
+export async function stopThreadIfCurrentTurn(
+  deps: RequestThreadStopForCurrentStateDeps,
+  args: {
+    thread: RequestThreadStopForCurrentStateThread;
+    environment: RequestThreadStopForCurrentStateEnvironment | null;
+    expectedTurnId: string;
+  },
+): Promise<ConditionalThreadStopOutcome> {
+  const { thread, environment, expectedTurnId } = args;
+  const activeTurnId = getActiveTurnId(deps, thread.id);
+  if (thread.status !== "active" && thread.status !== "stopping") {
+    return {
+      status: "refused",
+      expectedTurnId,
+      reason: "thread-not-active",
+      activeTurnId,
+    };
+  }
+  if (activeTurnId !== expectedTurnId) {
+    return {
+      status: "refused",
+      expectedTurnId,
+      reason: activeTurnId === null ? "no-active-turn" : "turn-mismatch",
+      activeTurnId,
+    };
+  }
+  if (environment === null) {
+    return {
+      status: "refused",
+      expectedTurnId,
+      reason: "runtime-missing",
+      activeTurnId,
+    };
+  }
+  try {
+    const result = await runLiveHostCommand(deps, {
+      command: buildThreadStopCommand({
+        environmentId: environment.id,
+        hostId: environment.hostId,
+        intent: "interrupt",
+        threadId: thread.id,
+        expectedTurnId,
+      }),
+      hostId: environment.hostId,
+      timeoutMs: AWAITED_THREAD_STOP_TIMEOUT_MS,
+    });
+    if (result.condition?.expectedTurnId === expectedTurnId) {
+      if (result.condition.status === "refused") {
+        return result.condition;
+      }
+      if (
+        getThread(deps.db, thread.id) !== null &&
+        isCurrentConditionalStopTarget(deps.db, {
+          threadId: thread.id,
+          expectedTurnId,
+        })
+      ) {
+        return result.condition;
+      }
+      return {
+        status: "refused",
+        expectedTurnId,
+        reason: "turn-mismatch",
+        activeTurnId: getActiveTurnId(deps, thread.id),
+      };
+    }
+  } catch (error) {
+    deps.logger.warn(
+      { err: error, threadId: thread.id, expectedTurnId },
+      "Conditional thread stop could not be proven",
+    );
+  }
+  return {
+    status: "refused",
+    expectedTurnId,
+    reason: "unproven",
+    activeTurnId: getActiveTurnId(deps, thread.id),
+  };
 }
 
 export async function stopThreadForCurrentState(

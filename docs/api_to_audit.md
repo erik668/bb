@@ -1292,6 +1292,33 @@ bridge as provider-scoped static options. Core does not interpret its keys.
    installed-only provider, and that targeted requests may continue resolving
    a registered provider even while discovery says it is absent.
 
+## Conditional provider turn stop (`@get-bb/plugin-sdk/provider-bridge`)
+
+`BridgeCapabilities.experimental_conditionalThreadStop` defaults to `false`.
+A bridge may enable it only when it implements the separate
+`thread/stop-if-current-turn` request using the exact native turn ID.
+`experimental_threadStopIfCurrentTurnParamsSchema` and
+`ExperimentalThreadStopIfCurrentTurnParams` define the required thread,
+provider-session, and expected-turn identities.
+`experimental_threadStopIfCurrentTurnResultSchema` and
+`ExperimentalThreadStopIfCurrentTurnResult` require typed matching proof or a
+refusal. The request has no release intent, no fallback to ordinary stop, and
+no success synthesized from a timeout. Missing support or a missing native
+turn mapping refuses before dispatch.
+
+Conditional stop preserves the provider session. Automatic idle reaping and
+shared-process restarts leave a retained session intact because they cannot
+prove that a successor turn is absent. Explicit release and shutdown remain
+available.
+
+**Audit before stabilizing.** Confirm which native providers can prove exact
+turn settlement and successor identity; define a compatibility window for
+independently updated bridges and daemons; and decide whether providers can
+supply enough authority to permit automatic session reclamation after a
+conditional stop. Verify refusal, malformed proof, delayed completion,
+replacement generations, and transport timeouts without broad cancellation or
+session destruction.
+
 ## `@get-bb/plugin-sdk/provider-bridge` (the provider-bridge authoring surface)
 
 **Kept experimental (2026-08-22).** `experimental_defineProviderBridge` / `experimental_apiVersion` are an artifact↔daemon contract (the bootstrap refuses anything but version 1 by name), and the deprecation window between independently-updating artifacts and daemons (item 4) is undecided.

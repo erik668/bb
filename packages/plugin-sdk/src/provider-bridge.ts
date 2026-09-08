@@ -115,12 +115,16 @@ export {
   threadResumeParamsSchema,
   threadStartParamsSchema,
   threadStopParamsSchema,
+  experimental_threadStopIfCurrentTurnParamsSchema,
+  experimental_threadStopIfCurrentTurnResultSchema,
   threadUnarchiveParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
 } from "@bb/provider-bridge-protocol";
 export type {
   BridgeCapabilities,
+  ExperimentalThreadStopIfCurrentTurnParams,
+  ExperimentalThreadStopIfCurrentTurnResult,
   BridgeExecutionOptions,
   BridgeGrammarVersions,
   BridgeSteerMode,

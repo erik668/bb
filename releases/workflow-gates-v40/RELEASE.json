@@ -1,0 +1,81 @@
+{
+  "version": 1,
+  "name": "workflow-gates-v40-runtime-beta",
+  "kind": "runtime",
+  "baseCommit": "e407f35854b25307310e948d173d5bd0e1722bfb",
+  "sourceManifestSha256": "3ea5c7c7a2e2d1fe5a25f83c58f8cfa213c2be913cfbb40e1d2dde345438286f",
+  "sourceFiles": 144,
+  "changedSincePublishedV34": 55,
+  "protocolVersion": 184,
+  "migrations": [
+    "0113_workflow_supervision_v33",
+    "0114_supervisor_notice_replay_v33",
+    "0115_supervisor_binding_retention_v33"
+  ],
+  "newMigrationsSinceV34": 0,
+  "companion": {
+    "repository": "https://github.com/erik668/claude-harness",
+    "branch": "release/workflow-gates-v40",
+    "sourceManifestSha256": "0c244eaf46bb0c43741a258eae9b9fe8f9294dd8e6a964ba9e61e159e00a0c9d"
+  },
+  "provenance": {
+    "frozenHandoff": "workflow-gates-stabilization-v40",
+    "freezeSha256": "9dac73b1bd285a63bb14e5cca6e1b90311dbbbbefcd6deaf5340d67826915b05",
+    "sourceBaseCommit": "b688e8f1764b25ebd4b468eefd0f224641603fdc",
+    "frozenSourceBuildManifestSha256": "95b716f60b8262609e7e7f658431160712b45cc310430bd56f3beaab737fd54e",
+    "frozenFullSourceInventorySha256": "e90bd577478ea236dc086da75f24df9dfe333951cde1d2c3e5bc37901115c60e",
+    "qualifiedAttempt": "repair-01",
+    "fullSourceFilesVerified": 5855,
+    "retainedBuildFilesVerified": 398,
+    "builtEntrypointsVerified": 7
+  },
+  "validation": {
+    "provenance": "Retained frozen final V40 affected tests/typechecks/build, independently reverified against identical source and build bytes. Not a fresh monorepo or desktop run.",
+    "sourceBuildVerifierPassed": true,
+    "typecheckScope": "16 affected packages across retained scoped passes; later two-package policy scope passed",
+    "conditionalStopControls": "SDK/CLI/server/host/runtime/API-map and provider controls; 20 native identity/retention controls and final 13 class/real bridge-fixture checks; overlapping counts are not summed",
+    "finalPolicyRepairControls": 24,
+    "finalPropagationControls": 4,
+    "buildCommand": "pnpm exec turbo run build --filter=@bb/server --filter=@bb/host-daemon --filter=@bb/cli --filter=@bb/sdk",
+    "buildTasksPassed": 9,
+    "buildTasksCached": 6,
+    "buildElapsedMs": 35008,
+    "buildDependencyInstalls": 0,
+    "finalBuildReceiptSha256": "6284e7a86325f2158ca604b1deff1eb5c73bf302bbd673d6d9c558832b7a2251",
+    "qualifiedNativeCampaignComplete": true,
+    "conditionalLifecyclePassed": true,
+    "staleStopDisposition": "refused/turn-mismatch; replacement completed normally",
+    "runtimeRollout": false
+  },
+  "bootstrap": {
+    "initial": {
+      "smokePassed": true,
+      "smokeMs": 8304,
+      "strictQualificationPassed": false,
+      "deniedNpmMetadataCalls": 3
+    },
+    "final": {
+      "smokePassed": true,
+      "smokeMs": 8605,
+      "strictQualificationPassed": true,
+      "packageManagerAttempts": 0,
+      "scope": "Owned PATH through repaired campaign, lifecycle control and shutdown"
+    },
+    "repair": "Codex provider environment declaration now propagates cache-only policy and launch phase; final snapshot includes the propagation regression",
+    "limits": [
+      "Absolute package-manager paths outside the guarded PATH are not covered",
+      "Launch phase is a bridge-launch snapshot, not dynamic later-request attribution",
+      "Credentials, TLS, exact dependencies and provider execution must be qualified on each destination"
+    ]
+  },
+  "limits": [
+    "Source publication only, not an installed-app replacement or fleet rollout.",
+    "Server, daemon, SDKs, CLI, Workflows and provider bridges must be updated as a compatible protocol-184 set.",
+    "Conditional stop refuses unsupported servers/providers; retained provider sessions need explicit release or shutdown.",
+    "Final campaign settlement was offline reconciliation of recorded live evidence with native effects disabled, not a fresh native observation.",
+    "No rendered UI, cross-machine Electron, Linux, signing or full packaged-BB qualification.",
+    "No causal efficiency or complete billing claim.",
+    "Exact seven-path active-BB Connect/Vite ambient exception remains ownership-unconfirmed and excluded.",
+    "V41 excluded."
+  ]
+}

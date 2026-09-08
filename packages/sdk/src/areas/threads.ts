@@ -13,6 +13,7 @@ import {
 } from "@bb/domain";
 import {
   DEFAULT_TURN_RETRY_REASON,
+  threadStopResponseSchema,
   threadTabsResponseSchema,
 } from "@bb/server-contract";
 import type {
@@ -52,6 +53,7 @@ import type {
   ThreadStorageFileListResponse,
   ThreadStorageLocationResponse,
   ThreadStoragePathListResponse,
+  ThreadStopResponse,
   ThreadTabsResponse,
   ThreadTimelineResponse,
   ThreadWithIncludesResponse,
@@ -187,7 +189,7 @@ export type ThreadDeleteResult = { ok: true };
 export type ThreadSendResult = SendMessageResponse;
 export type ThreadRetryResult = RetryTurnResponse;
 export type ThreadEditMessageResult = EditMessageResponse;
-export type ThreadStopResult = { ok: true };
+export type ThreadStopResult = ThreadStopResponse;
 export type ThreadCompactResult = { ok: true };
 export type ThreadBannerActionResult = { ok: true };
 export type ThreadUnarchiveResult = { ok: true };
@@ -279,6 +281,10 @@ export interface ThreadRetryArgs {
 
 export interface ThreadActionArgs {
   threadId: string;
+}
+
+export interface ThreadStopArgs extends ThreadActionArgs {
+  expectedTurnId?: string;
 }
 
 export interface ThreadStatusArgs extends ThreadActionArgs {
@@ -594,7 +600,7 @@ export interface ThreadsArea {
   experimental_notifySupervisor(
     args: SupervisorNotifyRequest,
   ): Promise<SupervisorInboxItem>;
-  stop(args: ThreadActionArgs): Promise<ThreadStopResult>;
+  stop(args: ThreadStopArgs): Promise<ThreadStopResult>;
   tabs: ThreadTabsArea;
   timeline(args: ThreadTimelineArgs): Promise<ThreadTimelineResult>;
   timelineTurnSummaryDetails(
@@ -1289,6 +1295,28 @@ export function createThreadsArea(args: CreateSdkAreaArgs): ThreadsArea {
       );
     },
     async stop(input) {
+      if (input.expectedTurnId !== undefined) {
+        const result = threadStopResponseSchema.parse(
+          await transport.readJson(
+            transport.api.v1.threads[":id"]["stop-if-current"].$post({
+              param: { id: input.threadId },
+              query: { expectedTurnId: input.expectedTurnId },
+            }),
+          ),
+        );
+        if (result.condition?.expectedTurnId === input.expectedTurnId) {
+          return result;
+        }
+        return {
+          ok: true,
+          condition: {
+            status: "refused",
+            expectedTurnId: input.expectedTurnId,
+            reason: "unproven",
+            activeTurnId: null,
+          },
+        };
+      }
       await transport.readVoid(
         transport.api.v1.threads[":id"].stop.$post({
           param: { id: input.threadId },

@@ -18,6 +18,8 @@ import {
   workspaceStatusSchema,
   gitHostPullRequestSchema,
   clientTurnRequestIdSchema,
+  conditionalThreadStopOutcomeSchema,
+  threadStopExpectedTurnIdSchema,
   gitBranchNameSchema,
   jsonObjectSchema,
   jsonValueSchema,
@@ -354,8 +356,14 @@ export const threadStopCommandSchema = hostDaemonThreadTargetSchema
   .extend({
     type: z.literal("thread.stop"),
     intent: threadStopIntentSchema,
+    expectedTurnId: threadStopExpectedTurnIdSchema.optional(),
   })
-  .strict();
+  .strict()
+  .refine(
+    (command) =>
+      command.expectedTurnId === undefined || command.intent === "interrupt",
+    { message: "A conditional stop requires interrupt intent" },
+  );
 
 const threadGoalClearCommandSchema = hostDaemonThreadTargetSchema
   .extend({
@@ -1241,6 +1249,7 @@ const turnSubmitResultSchema = z.object({
 const threadStopResultSchema = z
   .object({
     providerCheckpointId: z.string().min(1).nullable(),
+    condition: conditionalThreadStopOutcomeSchema.optional(),
   })
   .strict();
 const emptyCommandResultSchema = z.object({});

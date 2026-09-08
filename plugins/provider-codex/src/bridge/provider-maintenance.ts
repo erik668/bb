@@ -19,6 +19,7 @@ import {
   experimental_versionFrom as versionFrom,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { z } from "zod";
+import { codexMaintenancePolicy } from "./maintenance-policy.js";
 import { fetchChatGpt } from "../ai/chatgpt-fetch.js";
 import {
   readCodexAuthFile,
@@ -85,14 +86,17 @@ function codexUpdateCommand(): {
 export async function getCodexProviderInstallationStatus(
   requirement?: "thread_rewind",
 ): Promise<ProviderInstallationStatus> {
+  const cacheOnly = codexMaintenancePolicy() === "cache-only";
   const minimumSupportedVersion =
     minimumSupportedVersionForRequirement(requirement);
   const [resolvedExecutable, versionOutput, latestVersion, npmGlobal] =
     await Promise.all([
       resolveExecutablePath("codex"),
       commandOutput("codex", ["--version"]),
-      npmLatestVersion(CODEX_NPM_PACKAGE),
-      probeNpmGlobalPackage(CODEX_NPM_PACKAGE),
+      cacheOnly ? null : npmLatestVersion(CODEX_NPM_PACKAGE),
+      cacheOnly
+        ? { npmBin: null, npmGlobalPackageVersion: null }
+        : probeNpmGlobalPackage(CODEX_NPM_PACKAGE),
     ]);
   const installed = resolvedExecutable !== null || versionOutput !== null;
   const currentVersion = versionFrom(versionOutput);
@@ -104,13 +108,15 @@ export async function getCodexProviderInstallationStatus(
   const versionUnsupported =
     installed &&
     (currentVersion === null
-      ? requirement === "thread_rewind"
+      ? cacheOnly || requirement === "thread_rewind"
       : compareVersions(currentVersion, minimumSupportedVersion) < 0);
-  const actionKind = !installed
-    ? "install"
-    : needsUpdate || versionUnsupported
-      ? "update"
-      : null;
+  const actionKind = cacheOnly
+    ? null
+    : !installed
+      ? "install"
+      : needsUpdate || versionUnsupported
+        ? "update"
+        : null;
 
   return {
     executableName: "codex",
@@ -145,6 +151,13 @@ export async function getCodexProviderInstallationStatus(
 export async function getCodexProviderInstallationRun(
   action: "install" | "update",
 ): Promise<ProviderInstallationRunResult> {
+  if (codexMaintenancePolicy() === "cache-only") {
+    return {
+      available: false,
+      message:
+        "Codex installation changes are disabled by the cache-only maintenance policy.",
+    };
+  }
   const status = await getCodexProviderInstallationStatus();
   return buildCodexProviderInstallationRun(status, action);
 }
@@ -192,18 +205,26 @@ function healthResult(
       planLabel: null,
       installedVersion: args.installedVersion ?? null,
       minimumSupportedVersion: CODEX_MINIMUM_SUPPORTED_VERSION,
-      canInstall: true,
-      canUpdate: status !== "not_installed",
+      canInstall: codexMaintenancePolicy() === "standard",
+      canUpdate:
+        codexMaintenancePolicy() === "standard" && status !== "not_installed",
       loginCommand: "codex login",
     },
   };
 }
 
 export async function getCodexProviderHealth(): Promise<ProviderHealthResult> {
+  const cacheOnly = codexMaintenancePolicy() === "cache-only";
   if ((await resolveExecutablePath("codex")) === null) {
     return healthResult("not_installed");
   }
   const version = await readCliVersion("codex");
+  if (cacheOnly && version === null) {
+    return healthResult("unknown", {
+      statusMessage:
+        "The installed Codex version could not be verified under cache-only maintenance.",
+    });
+  }
   if (
     version !== null &&
     compareVersions(version, CODEX_MINIMUM_SUPPORTED_VERSION) < 0
@@ -305,6 +326,7 @@ function normalizeUsage(raw: unknown, email: string | null): ProviderUsage {
 }
 
 export async function getCodexProviderUsage(): Promise<ProviderUsageResult> {
+  if (codexMaintenancePolicy() === "cache-only") return { supported: false };
   if ((await resolveExecutablePath("codex")) === null) {
     return { supported: true, usage: { status: "not_installed" } };
   }

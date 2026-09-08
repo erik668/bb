@@ -11,6 +11,8 @@ export { buildPluginHost } from "./build-plugin-host.js";
 export * from "./plugin-dev-loop.js";
 export {
   PLUGIN_TOOLCHAIN_PINS,
+  pluginBuildCacheContract,
+  inspectCachedPluginBuildToolchain,
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
 } from "./toolchain.js";

@@ -101,6 +101,12 @@ export type AdapterCommand =
       options: ProviderExecutionContext;
     }
   | {
+      type: "thread/stop-if-current-turn";
+      threadId: string;
+      providerThreadId: string;
+      expectedTurnId: string;
+    }
+  | {
       type: "thread/stop";
       threadId: string;
       providerThreadId: string;
