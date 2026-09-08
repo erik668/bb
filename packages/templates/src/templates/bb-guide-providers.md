@@ -167,6 +167,15 @@ not expose compatible manual compaction through ACP.
 
 ## Bounded cached capability probe
 
+For an isolated no-install Codex run, start its host with
+`BB_CODEX_MAINTENANCE_POLICY=cache-only`. This keeps local executable/version
+and credential health checks, disables registry and usage refreshes, and makes
+install/update actions unavailable. Latest/global npm versions are unknown in
+this mode; an existing executable is reported as external because npm ownership
+is not probed. `standard` is the default. Invalid policy values fail closed.
+The policy controls Codex maintenance; it does not disable model execution or
+replace a PATH denial guard or network sandbox.
+
   bb provider probe codex --environment <id> --model <model> --reasoning-level <level> --json
 
 Use exactly one `--environment` or `--machine` selector (`--host` aliases

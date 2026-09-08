@@ -275,6 +275,7 @@ Messaging:
   `input` to `threads.spawn` or `threads.send`.
 
   bb thread stop [id]                      Stop work and release the agent runtime
+    --expected-turn <id>                   Stop only this active turn; refuse a stale target
   bb thread compact [id]                   Request compaction of an idle or errored thread's context
   bb thread clear [id]                     Clear model context for an idle or failed thread
   bb thread cancel-plan [id]               Exit the provider's active Plan mode
@@ -394,6 +395,24 @@ Lifecycle:
   worker first, then stop it to release memory promptly. A stop that only
   releases an idle runtime adds no interruption: it leaves the timeline and any
   pending interaction of that thread untouched.
+
+  For cleanup tied to an observed turn, use `bb thread stop <id>
+  --expected-turn <turn-id> --json` or SDK
+  `threads.stop({ threadId, expectedTurnId })`. The public route accepts
+  `POST /api/v1/threads/:id/stop-if-current?expectedTurnId=<turn-id>` and requires
+  the condition. Older servers reject this endpoint; the client never falls
+  back to unconditional stop. The server, host, and provider check the turn.
+  Providers without turn-specific stop support return `unproven`.
+  Only `condition.status: "stopped"` with the requested
+  `condition.expectedTurnId` proves that stop. A refusal returns
+  `condition.status: "refused"`, the expected ID, a nullable `activeTurnId`, and
+  a reason: `turn-mismatch`, `no-active-turn`, `thread-not-active`,
+  `runtime-missing`, or `unproven`. `unproven` means matching stop proof was
+  unavailable; read the current state before deciding what to do next.
+  A stale condition leaves replacement work and queue state unchanged. An
+  accepted conditional stop retains manual-stop authority and pauses queued
+  work. Its provider session remains loaded. Omitting the condition retains
+  the ordinary manual stop above and its `{ "ok": true }` API result.
 
   bb thread unarchive [id]                 Unarchive a thread
     --self                                 Unarchive current thread

@@ -391,6 +391,24 @@ export function createBridgeProtocolAdapter(
               ),
             },
           };
+        case "thread/stop-if-current-turn": {
+          const providerTurnId = deltaAssembler.getProviderTurnId(
+            command.threadId,
+            command.expectedTurnId,
+          );
+          if (providerTurnId === undefined) {
+            return { kind: "noop", reason: "Native turn identity is unproven" };
+          }
+          return gate("experimental_conditionalThreadStop", {
+            kind: "request",
+            method: BRIDGE_REQUEST_METHODS.experimental_threadStopIfCurrentTurn,
+            params: {
+              threadId: command.threadId,
+              providerThreadId: command.providerThreadId,
+              expectedTurnId: providerTurnId,
+            },
+          });
+        }
         case "thread/stop":
           return {
             kind: "request",

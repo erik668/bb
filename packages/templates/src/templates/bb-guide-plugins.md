@@ -382,6 +382,10 @@ added/updated/unchanged counts.
                                  the prompt (required when stdin is not a
                                  terminal). The old layout keeps working, so
                                  nothing migrates unless you ask
+  bb plugin cache-inspect [--base-dir <path>] [--json]
+                                Read this build's compiler pins, cache path,
+                                marker and availability; never downloads or
+                                contacts a server. Use before no-install runs.
   bb plugin build [path]         Compile the plugin into dist/ — the backend
                                  bundle (server.js, server.meta.json); when
                                  bb.app is declared, the minified frontend

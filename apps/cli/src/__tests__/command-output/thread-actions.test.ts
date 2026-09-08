@@ -386,6 +386,81 @@ describe("bb thread action command output", () => {
     });
   });
 
+  it("bb thread stop forwards the expected turn and prints a refusal", async () => {
+    const condition = {
+      status: "refused",
+      expectedTurnId: "turn-original",
+      reason: "turn-mismatch",
+      activeTurnId: "turn-replacement",
+    };
+    const stopPost = vi.fn(async () => ({ ok: true, condition }));
+    stubServerApi({ "v1.threads.:id.stop-if-current.$post": stopPost });
+
+    await runCommand(
+      [
+        "thread",
+        "stop",
+        "thread-conditional",
+        "--expected-turn",
+        "turn-original",
+      ],
+      register,
+    );
+
+    expect(stopPost).toHaveBeenCalledExactlyOnceWith({
+      param: { id: "thread-conditional" },
+      query: { expectedTurnId: "turn-original" },
+    });
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([
+      "Thread thread-conditional stop refused: turn-mismatch",
+    ]);
+  });
+
+  it("bb thread stop emits typed proof in JSON", async () => {
+    const condition = { status: "stopped", expectedTurnId: "turn-original" };
+    const stopPost = vi.fn(async () => ({ ok: true, condition }));
+    stubServerApi({ "v1.threads.:id.stop-if-current.$post": stopPost });
+
+    await runCommand(
+      [
+        "thread",
+        "stop",
+        "thread-conditional",
+        "--expected-turn",
+        "turn-original",
+        "--json",
+      ],
+      register,
+    );
+
+    expect(
+      JSON.parse(collectLogLines(vi.mocked(console.log)).join("\n")),
+    ).toEqual({
+      ok: true,
+      threadId: "thread-conditional",
+      condition,
+    });
+  });
+
+  it("bb thread stop reports missing condition proof as unproven", async () => {
+    stubServerApi({
+      "v1.threads.:id.stop-if-current.$post": vi.fn(async () => ({ ok: true })),
+    });
+    await runCommand(
+      [
+        "thread",
+        "stop",
+        "thread-conditional",
+        "--expected-turn",
+        "turn-original",
+      ],
+      register,
+    );
+    expect(collectLogLines(vi.mocked(console.log))).toEqual([
+      "Thread thread-conditional stop refused: unproven",
+    ]);
+  });
+
   it("bb thread stop lets the server no-op when the thread is already idle", async () => {
     const get = vi.fn(async () =>
       fixtures.makeThread({

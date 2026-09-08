@@ -86,6 +86,19 @@
   <thread-id>`. `--json` reports `delivery` as `sent` or `queued`. If the thread
   fails while the message is queued (its provider exited), the message waits
   until somebody retries the thread.
+- For cleanup of a specific observed turn, run `bb thread stop <thread-id>
+  --expected-turn <turn-id> --json`. The server, host, and provider compare the turn;
+  `condition.status: "stopped"` with the same `expectedTurnId` is the stop proof.
+  `condition.status: "refused"` includes `reason` and nullable `activeTurnId`.
+  Reasons are `turn-mismatch`, `no-active-turn`, `thread-not-active`,
+  `runtime-missing`, and `unproven`. A refused stale condition preserves newer
+  work and queues; `unproven` requires a fresh state check. SDK equivalent:
+  `bb.sdk.threads.stop({ threadId, expectedTurnId })`. A proven stop retains
+  manual-stop queue pausing; omitting the condition keeps ordinary manual stop
+  behavior. Conditional transport uses `POST /api/v1/threads/:id/stop-if-current`
+  with required `expectedTurnId` query input. Older servers reject that endpoint;
+  there is no unconditional fallback. A proven conditional stop retains its
+  provider session. Providers without turn-specific stop support return `unproven`.
 
 ## Inspecting Results
 

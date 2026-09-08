@@ -22,6 +22,8 @@ import {
   threadResumeParamsSchema,
   threadStartParamsSchema,
   threadStopParamsSchema,
+  experimental_threadStopIfCurrentTurnParamsSchema,
+  type ExperimentalThreadStopIfCurrentTurnResult,
   threadUnarchiveParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
@@ -42,6 +44,7 @@ const scriptedMethodSchema = z.enum([
   "turn/start",
   "turn/steer",
   "thread/stop",
+  "thread/stop-if-current-turn",
   "thread/discard",
   "thread/archive",
   "thread/unarchive",
@@ -863,6 +866,10 @@ const handlers: Record<string, RequestHandler> = {
         threadArchive: true,
         threadRename: true,
         threadGoalClear: true,
+        experimental_conditionalThreadStop:
+          !processOptions.unsupportedMethods?.includes(
+            "thread/stop-if-current-turn",
+          ),
         fork: "checkpoint",
         approvalEnforcedBy: processOptions.approvalEnforcedBy ?? "runtime",
         grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
@@ -1082,6 +1089,53 @@ const handlers: Record<string, RequestHandler> = {
       },
     ]);
     io.sendResult(id, {});
+  },
+
+  [BRIDGE_REQUEST_METHODS.experimental_threadStopIfCurrentTurn]: (
+    id,
+    params,
+  ) => {
+    const parsed =
+      experimental_threadStopIfCurrentTurnParamsSchema.safeParse(params);
+    if (!parsed.success) {
+      invalidParams(
+        id,
+        BRIDGE_REQUEST_METHODS.experimental_threadStopIfCurrentTurn,
+        parsed.error.issues,
+      );
+      return;
+    }
+    const { threadId, providerThreadId, expectedTurnId } = parsed.data;
+    const session = sessions.get(threadId);
+    const activeTurnId = session?.activeTurn?.providerTurnId ?? null;
+    const refuse = (
+      reason: Extract<
+        ExperimentalThreadStopIfCurrentTurnResult["condition"],
+        { status: "refused" }
+      >["reason"],
+    ): void => {
+      const result: ExperimentalThreadStopIfCurrentTurnResult = {
+        condition: { status: "refused", expectedTurnId, reason, activeTurnId },
+      };
+      io.sendResult(id, result);
+    };
+    if (!session || session.providerThreadId !== providerThreadId) {
+      refuse("runtime-missing");
+      return;
+    }
+    if (activeTurnId !== expectedTurnId) {
+      refuse(activeTurnId === null ? "no-active-turn" : "turn-mismatch");
+      return;
+    }
+    if (session.options.failStopForThreadIds?.includes(threadId)) {
+      refuse("unproven");
+      return;
+    }
+    completeTurn(session, "interrupted", "");
+    const result: ExperimentalThreadStopIfCurrentTurnResult = {
+      condition: { status: "stopped", expectedTurnId },
+    };
+    io.sendResult(id, result);
   },
 
   [BRIDGE_REQUEST_METHODS.threadStop]: (id, params) => {

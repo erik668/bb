@@ -644,6 +644,8 @@ function terminalDataBase64(byteLength: number): string {
 }
 
 const INTENTIONAL_OPTIONAL_HOST_DAEMON_FIELDS: Record<string, string> = {
+  "hostDaemonCommandSchema.expectedTurnId":
+    "thread.stop omits the turn condition only for an unconditional manual stop; a supplied ID requires matching host proof.",
   "hostDaemonCommandSchema.checkout":
     "environment.provision only includes checkout instructions for unmanaged workspaces that requested a branch mutation.",
   "hostDaemonCommandSchema.targetPath":
@@ -960,7 +962,7 @@ const CONTRIBUTED_ENV = [
 
 describe("host-daemon command schemas", () => {
   it("uses the current host-daemon protocol version", () => {
-    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(183);
+    expect(HOST_DAEMON_PROTOCOL_VERSION).toBe(184);
     expect(HOST_ARTIFACT_MAX_BYTES).toBe(256 * 1024 * 1024);
   });
 
@@ -1042,6 +1044,60 @@ describe("host-daemon command schemas", () => {
       hostDaemonCommandResultSchemaByType["thread.plan.cancel"].safeParse({})
         .success,
     ).toBe(false);
+  });
+
+  it("preserves explicit stop conditions and rejects malformed proof", () => {
+    const command = {
+      type: "thread.stop",
+      environmentId: "env_1",
+      threadId: "thr_1",
+      intent: "interrupt",
+      expectedTurnId: "turn-original",
+    };
+    expect(hostDaemonCommandSchema.parse(command)).toEqual(command);
+    for (const expectedTurnId of ["", " ", " turn-original", null, 7]) {
+      expect(
+        threadStopCommandSchema.safeParse({ ...command, expectedTurnId })
+          .success,
+      ).toBe(false);
+    }
+    expect(
+      threadStopCommandSchema.safeParse({ ...command, intent: "release" })
+        .success,
+    ).toBe(false);
+    const schema = hostDaemonCommandResultSchemaByType["thread.stop"];
+    for (const condition of [
+      { status: "stopped", expectedTurnId: "turn-original" },
+      {
+        status: "refused",
+        expectedTurnId: "turn-original",
+        reason: "turn-mismatch",
+        activeTurnId: "turn-replacement",
+      },
+      {
+        status: "refused",
+        expectedTurnId: "turn-original",
+        reason: "runtime-missing",
+        activeTurnId: null,
+      },
+    ]) {
+      const result = { providerCheckpointId: null, condition };
+      expect(schema.parse(result)).toEqual(result);
+    }
+    for (const condition of [
+      { status: "stopped" },
+      { status: "refused", expectedTurnId: "turn-original" },
+      {
+        status: "refused",
+        expectedTurnId: "turn-original",
+        reason: "already-stopped",
+        activeTurnId: null,
+      },
+    ]) {
+      expect(
+        schema.safeParse({ providerCheckpointId: null, condition }).success,
+      ).toBe(false);
+    }
   });
 
   it("preserves optional USD spend amounts on usage windows", () => {

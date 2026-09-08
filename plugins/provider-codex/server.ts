@@ -39,6 +39,9 @@ export default function plugin(bb: BbPluginApi) {
     models: { scope: "host" },
     ...CODEX_NATIVE_ROOTS_DECLARATION,
     maintenance: { health: true, usage: true, installation: true },
+    env: {
+      passthrough: ["BB_CODEX_MAINTENANCE_POLICY", "BB_BOOTSTRAP_PHASE"],
+    },
     capabilities: {
       supportsServiceTier: true,
       supportsNativeUserQuestion: false,

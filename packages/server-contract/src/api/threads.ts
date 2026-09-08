@@ -4,6 +4,7 @@ import { supervisorBindingSchema } from "./workflow-supervision.js";
 import {
   activeThinkingSchema,
   callerExecutionInputSourceSchema,
+  conditionalThreadStopOutcomeSchema,
   environmentSchema,
   hostSchema,
   jsonValueSchema,
@@ -23,6 +24,7 @@ import {
   threadQueuedMessageSchema,
   threadSearchSourceKindSchema,
   threadStatusSchema,
+  threadStopExpectedTurnIdSchema,
   threadTimelineActivePromptModeSchema,
   threadTimelineGoalSchema,
   threadTimelineModelFallbackSchema,
@@ -54,6 +56,27 @@ export const sendMessageModeSchema = z.enum([
   "start",
   "steer",
 ]);
+
+export const conditionalThreadStopQuerySchema = z
+  .object({ expectedTurnId: threadStopExpectedTurnIdSchema })
+  .strict();
+export type ConditionalThreadStopQuery = z.infer<
+  typeof conditionalThreadStopQuerySchema
+>;
+
+export const threadStopResponseSchema = z
+  .object({
+    ok: z.literal(true),
+    condition: conditionalThreadStopOutcomeSchema.optional(),
+  })
+  .strict();
+export type ThreadStopResponse = z.infer<typeof threadStopResponseSchema>;
+
+export const conditionalThreadStopResponseSchema =
+  threadStopResponseSchema.required({ condition: true });
+export type ConditionalThreadStopResponse = z.infer<
+  typeof conditionalThreadStopResponseSchema
+>;
 
 export const threadCreateOriginSchema = z.enum(["app", "cli", "sdk", "plugin"]);
 export type ThreadCreateOrigin = z.infer<typeof threadCreateOriginSchema>;

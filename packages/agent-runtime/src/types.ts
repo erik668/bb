@@ -2,6 +2,7 @@ import type {
   PermissionMode,
   AvailableModel,
   ClientTurnRequestId,
+  ConditionalThreadStopOutcome,
   DynamicTool,
   InstructionMode,
   JsonObject,
@@ -218,10 +219,12 @@ export type SteerTurnResult = SteerTurnAppliedResult | SteerTurnStaleResult;
 
 export interface StopThreadArgs {
   threadId: string;
+  expectedTurnId?: string;
 }
 
 export interface StopThreadResult {
   providerCheckpointId: string | null;
+  condition?: ConditionalThreadStopOutcome;
 }
 
 export interface AgentRuntimeProviderSession {

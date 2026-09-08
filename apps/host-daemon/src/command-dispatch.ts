@@ -342,6 +342,39 @@ const commandHandlers: CommandHandlerMap = {
     }
   },
   "thread.stop": async (command, options) => {
+    if (command.expectedTurnId !== undefined) {
+      const release =
+        await options.runtimeManager.retainEnvironmentForThreadCommand(
+          command.environmentId,
+          command.threadId,
+        );
+      try {
+        const entry = await options.runtimeManager.getOrAwait(
+          command.environmentId,
+        );
+        if (!entry?.runtime.hasThread(command.threadId)) {
+          return {
+            providerCheckpointId: null,
+            condition: {
+              status: "refused",
+              expectedTurnId: command.expectedTurnId,
+              reason: "runtime-missing",
+              activeTurnId: null,
+            },
+          };
+        }
+        const result = await entry.runtime.stopThread({
+          threadId: command.threadId,
+          expectedTurnId: command.expectedTurnId,
+        });
+        if (result.condition?.status === "stopped") {
+          await options.eventSink.flush();
+        }
+        return result;
+      } finally {
+        release();
+      }
+    }
     const released =
       await options.runtimeManager.releaseThreadFromOtherEnvironments({
         activeTurn: "interrupt",

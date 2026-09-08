@@ -84,6 +84,10 @@ interface ThreadActionOptions {
   json?: boolean;
 }
 
+interface ThreadStopOptions extends ThreadActionOptions {
+  expectedTurn?: string;
+}
+
 interface ThreadRetryCommandOptions {
   self?: boolean;
   json?: boolean;
@@ -522,13 +526,28 @@ export function registerActionsCommands(
     .command("stop [id]")
     .description("Stop work and release the loaded agent runtime")
     .option("--self", "Target the current thread (from BB_THREAD_ID)")
+    .option(
+      "--expected-turn <id>",
+      "Interrupt only this active turn and retain its provider session",
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
-      action(async (id: string | undefined, opts: ThreadActionOptions) => {
+      action(async (id: string | undefined, opts: ThreadStopOptions) => {
         const threadId = requireThreadIdOrSelf(id, opts);
         const sdk = createCliBbSdk(getUrl());
-        await sdk.threads.stop({ threadId });
-        if (outputJson(opts, { ok: true, threadId })) return;
+        const result = await sdk.threads.stop({
+          threadId,
+          ...(opts.expectedTurn !== undefined
+            ? { expectedTurnId: opts.expectedTurn }
+            : {}),
+        });
+        if (outputJson(opts, { ...result, threadId })) return;
+        if (result.condition?.status === "refused") {
+          console.log(
+            `Thread ${threadId} stop refused: ${result.condition.reason}`,
+          );
+          return;
+        }
         console.log(`Thread ${threadId} stopped`);
       }),
     );

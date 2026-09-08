@@ -34,6 +34,8 @@ import {
   buildPluginHost,
   buildPluginServer,
   createPluginDevLoop,
+  inspectCachedPluginBuildToolchain,
+  pluginBuildCacheContract,
   PLUGIN_TOOLCHAIN_PINS,
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
@@ -1374,6 +1376,38 @@ export function registerPluginCommands(
         console.log(
           "Run `npm install` in the plugin directory to install the pinned declarations.",
         );
+      }),
+    );
+
+  plugin
+    .command("cache-inspect")
+    .description(
+      "Read the pinned plugin compiler cache contract and availability without downloads or a server",
+    )
+    .option(
+      "--base-dir <path>",
+      "Plugin cache base directory (default: the selected BB data directory's plugins folder)",
+    )
+    .option("--json", "Output JSON")
+    .action(
+      action(async (opts: JsonOutputOptions & { baseDir?: string }) => {
+        const baseDir =
+          opts.baseDir === undefined
+            ? toolchainBaseDir()
+            : resolve(opts.baseDir);
+        const contract = pluginBuildCacheContract(baseDir);
+        const toolchain = await inspectCachedPluginBuildToolchain(baseDir);
+        const result = {
+          ...contract,
+          available: toolchain !== null,
+          toolchain,
+          fetchAttempts: 0,
+        };
+        if (opts.json) outputJson(opts, result);
+        else
+          console.log(
+            `${result.available ? "Available" : "Unavailable"}: ${result.cacheDir}`,
+          );
       }),
     );
 

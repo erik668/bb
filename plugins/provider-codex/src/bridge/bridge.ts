@@ -28,6 +28,8 @@ import {
   threadResumeParamsSchema,
   threadStartParamsSchema,
   threadStopParamsSchema,
+  experimental_threadStopIfCurrentTurnParamsSchema,
+  type ExperimentalThreadStopIfCurrentTurnParams,
   threadUnarchiveParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
@@ -89,6 +91,7 @@ import {
   getCodexProviderInstallationStatus,
   getCodexProviderUsage,
 } from "./provider-maintenance.js";
+import { CodexConditionalTurnState } from "./conditional-thread-stop.js";
 
 type BbThreadResumeParams = ThreadResumeParams & { excludeTurns: boolean };
 
@@ -131,6 +134,10 @@ const codexBridgeCommandSchema = z.discriminatedUnion("method", [
   z.object({
     method: z.literal("thread/stop"),
     params: threadStopParamsSchema,
+  }),
+  z.object({
+    method: z.literal("thread/stop-if-current-turn"),
+    params: experimental_threadStopIfCurrentTurnParamsSchema,
   }),
   z.object({
     method: z.literal("thread/discard"),
@@ -417,6 +424,7 @@ interface CodexBridgeSession {
   construction: CodexSessionConstruction;
   constructionSignature: string;
   openCodexTurnIds: Set<string>;
+  conditionalTurns: CodexConditionalTurnState;
   turnSettledWaiters: Map<string, Array<() => void>>;
   awaitingReplayedUsage: boolean;
   identityAnnounced: boolean;
@@ -631,6 +639,11 @@ function handleChildNotification(
       announceSessionIdentity(session, parsed.data.thread.id);
     }
   }
+  session.conditionalTurns.observe({
+    method,
+    params,
+    providerThreadId: session.codexThreadId,
+  });
   const deltas = session.translator.translateEvent(
     toProviderRuntimeEvent(method, params),
   );
@@ -952,6 +965,7 @@ async function constructThreadSession(
       decoded.sessionOptions,
     ),
     openCodexTurnIds: new Set(),
+    conditionalTurns: new CodexConditionalTurnState(),
     turnSettledWaiters: new Map(),
     awaitingReplayedUsage: args.request.kind !== "start",
     identityAnnounced: false,
@@ -1110,6 +1124,7 @@ function registerResumableSession(session: CodexBridgeSession): void {
     construction: session.construction,
     constructionSignature: session.constructionSignature,
     openCodexTurnIds: new Set(),
+    conditionalTurns: new CodexConditionalTurnState(),
     turnSettledWaiters: new Map(),
     awaitingReplayedUsage: true,
     identityAnnounced: session.identityAnnounced,
@@ -1266,6 +1281,7 @@ function handleInitialize(id: string | number): void {
       threadArchive: true,
       threadRename: true,
       threadGoalClear: true,
+      experimental_conditionalThreadStop: true,
       fork: "checkpoint",
       approvalEnforcedBy: "runtime",
       grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
@@ -1538,6 +1554,42 @@ async function handleTurnSteer(
   } catch (error) {
     rejectWithCodexError(id, error);
   }
+}
+
+async function handleThreadStopIfCurrentTurn(
+  id: string | number,
+  params: ExperimentalThreadStopIfCurrentTurnParams,
+): Promise<void> {
+  const session = sessionsByBbThreadId.get(params.threadId);
+  const connection = session?.connection;
+  if (
+    !session ||
+    !connection ||
+    session.codexThreadId !== params.providerThreadId
+  ) {
+    sendResult(id, {
+      condition: {
+        status: "refused",
+        expectedTurnId: params.expectedTurnId,
+        reason: "runtime-missing",
+        activeTurnId: null,
+      },
+    });
+    return;
+  }
+  const result = await session.conditionalTurns.stop({
+    providerThreadId: params.providerThreadId,
+    expectedTurnId: params.expectedTurnId,
+    connection,
+    isCurrent: () =>
+      currentSession(params.threadId, session.serial) === session &&
+      session.connection === connection &&
+      !connection.exited &&
+      session.codexThreadId === params.providerThreadId,
+    requestTimeoutMs: CHILD_REQUEST_TIMEOUT_MS,
+    settlementTimeoutMs: INTERRUPT_SETTLEMENT_TIMEOUT_MS,
+  });
+  sendResult(id, result);
 }
 
 async function handleThreadStop(
@@ -1813,6 +1865,9 @@ async function handleRequest(
       break;
     case "thread/stop":
       await handleThreadStop(request.id, request.params);
+      break;
+    case "thread/stop-if-current-turn":
+      await handleThreadStopIfCurrentTurn(request.id, request.params);
       break;
     case "thread/discard":
       await handleThreadMaintenance(

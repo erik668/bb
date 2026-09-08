@@ -1,10 +1,17 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readFile,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, isAbsolute, join, relative } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { omitNpmScriptPolicyEnv } from "@bb/process-utils";
 
@@ -43,6 +50,26 @@ function pinKey(): string {
 export function toolchainCacheDir(baseDir: string): string {
   const key = Object.values(PLUGIN_TOOLCHAIN_PINS).join("-");
   return join(baseDir, `toolchain-${key}`);
+}
+
+export function pluginBuildCacheContract(baseDir: string): {
+  version: 1;
+  pins: typeof PLUGIN_TOOLCHAIN_PINS;
+  cacheDir: string;
+  marker: { pins: string };
+} {
+  return {
+    version: 1,
+    pins: { ...PLUGIN_TOOLCHAIN_PINS },
+    cacheDir: toolchainCacheDir(baseDir),
+    marker: { pins: pinKey() },
+  };
+}
+
+export async function inspectCachedPluginBuildToolchain(
+  baseDir: string,
+): Promise<PluginBuildToolchain | null> {
+  return readCachedToolchain(toolchainCacheDir(baseDir));
 }
 
 function packageDir(require: NodeRequire, name: string): string | null {
@@ -114,7 +141,9 @@ function resolveLocalToolchain(): PluginBuildToolchain | null {
   return toolchainFrom(createRequire(import.meta.url));
 }
 
-async function isInstalled(dir: string): Promise<boolean> {
+async function readCachedToolchain(
+  dir: string,
+): Promise<PluginBuildToolchain | null> {
   try {
     const raw = await readFile(join(dir, ".bb-toolchain.json"), "utf8");
     const parsed: unknown = JSON.parse(raw);
@@ -123,12 +152,36 @@ async function isInstalled(dir: string): Promise<boolean> {
       parsed === null ||
       (parsed as { pins?: unknown }).pins !== pinKey()
     ) {
-      return false;
+      return null;
     }
+    const root = await realpath(dir);
+    for (const name of Object.keys(PLUGIN_TOOLCHAIN_PINS)) {
+      if (!(await isContainedRealPath(root, join(dir, "node_modules", name))))
+        return null;
+    }
+    const toolchain = toolchainFrom(createRequire(join(dir, "noop.js")));
+    if (toolchain === null) return null;
+    for (const [key, value] of Object.entries(toolchain)) {
+      const path = key === "tailwindCssDir" ? value : fileURLToPath(value);
+      if (!(await isContainedRealPath(root, path))) return null;
+    }
+    return toolchain;
   } catch {
-    return false;
+    return null;
   }
-  return toolchainFrom(createRequire(join(dir, "noop.js"))) !== null;
+}
+
+async function isContainedRealPath(
+  root: string,
+  path: string,
+): Promise<boolean> {
+  const within = relative(root, await realpath(path));
+  return (
+    within !== ".." &&
+    !within.startsWith("../") &&
+    !within.startsWith("..\\") &&
+    !isAbsolute(within)
+  );
 }
 
 export async function resolvePluginBuildToolchain(
@@ -145,10 +198,8 @@ export async function resolvePluginBuildToolchain(
   }
 
   const dir = toolchainCacheDir(baseDir);
-  if (await isInstalled(dir)) {
-    const cached = toolchainFrom(createRequire(join(dir, "noop.js")));
-    if (cached !== null) return cached;
-  }
+  const cached = await inspectCachedPluginBuildToolchain(baseDir);
+  if (cached !== null) return cached;
 
   options?.onFetchStart?.();
   const startedAt = Date.now();
@@ -192,7 +243,8 @@ export async function resolvePluginBuildToolchain(
     try {
       await rename(staging, dir);
     } catch {
-      if (!(await isInstalled(dir))) throw new Error(errorPromoting(dir));
+      if ((await readCachedToolchain(dir)) === null)
+        throw new Error(errorPromoting(dir));
     }
   } finally {
     await rm(staging, { recursive: true, force: true });

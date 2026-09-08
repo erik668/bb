@@ -1,5 +1,19 @@
 # Configuration
 
+Isolated host runs may set `BB_CODEX_MAINTENANCE_POLICY=cache-only` to restrict
+Codex maintenance to local executable/version and credential inspection.
+Registry and usage refreshes are skipped and installation actions are disabled;
+the default is `standard`, and invalid values are rejected. Set it on the host
+process before starting a provider bridge. It is a process environment policy,
+not a live `bb-app config` key, and does not restrict model execution or other
+providers. Unknown npm ownership is reported as external with null npm/latest
+versions. Inspect the plugin compiler cache separately with
+`bb plugin cache-inspect --base-dir <plugins-directory> --json` (read-only).
+Availability requires the pinned packages and resolved entrypoints inside the
+physical cache root; ancestor dependencies do not establish cache readiness.
+Under cache-only policy an unreadable Codex version is unknown health and cannot
+pass a readiness probe. The default standard maintenance policy is unchanged.
+
 The packaged `npx bb-app` flow stores persistent package settings under
 `~/.bb/config.json`, provider environment values under `~/.bb/env.json`, and
 client SSH target mappings under `~/.bb/client.json`.
