@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "at": "2026-09-11T02:51:41.329Z",
+  "passed": true,
+  "results": [
+    {
+      "repository": "claude-harness-release-v46",
+      "cases": [
+        {
+          "name": "exact relocated source",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"harness\",\"sourceFiles\":409,\"helperFiles\":399,\"runtimeFiles\":null,\"installedPackage\":null,\"publicationFiles\":25,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        },
+        {
+          "name": "altered source rejected",
+          "expectedPass": false,
+          "exitCode": 1,
+          "stdout": "",
+          "diagnostic": [
+            "AssertionError [ERR_ASSERTION]: Identity mismatch: skills/workflow-gates/lib/campaign-watchdog.mjs"
+          ]
+        },
+        {
+          "name": "source restoration",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"harness\",\"sourceFiles\":409,\"helperFiles\":399,\"runtimeFiles\":null,\"installedPackage\":null,\"publicationFiles\":25,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        },
+        {
+          "name": "extra helper file rejected",
+          "expectedPass": false,
+          "exitCode": 1,
+          "stdout": "",
+          "diagnostic": [
+            "AssertionError [ERR_ASSERTION]: Expected values to be strictly deep-equal:"
+          ]
+        },
+        {
+          "name": "exact inventory restoration",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"harness\",\"sourceFiles\":409,\"helperFiles\":399,\"runtimeFiles\":null,\"installedPackage\":null,\"publicationFiles\":25,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        },
+        {
+          "name": "changed evidence rejected",
+          "expectedPass": false,
+          "exitCode": 1,
+          "stdout": "",
+          "diagnostic": [
+            "AssertionError [ERR_ASSERTION]: Identity mismatch: VALIDATION.json"
+          ]
+        },
+        {
+          "name": "evidence restoration",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"harness\",\"sourceFiles\":409,\"helperFiles\":399,\"runtimeFiles\":null,\"installedPackage\":null,\"publicationFiles\":25,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        }
+      ],
+      "passed": true
+    },
+    {
+      "repository": "bb-release-v46",
+      "cases": [
+        {
+          "name": "exact relocated source",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"runtime\",\"sourceFiles\":156,\"helperFiles\":null,\"runtimeFiles\":5859,\"installedPackage\":null,\"publicationFiles\":8,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        },
+        {
+          "name": "altered source rejected",
+          "expectedPass": false,
+          "exitCode": 1,
+          "stdout": "",
+          "diagnostic": [
+            "AssertionError [ERR_ASSERTION]: Identity mismatch: apps/server/src/services/threads/native-retry-admission.ts"
+          ]
+        },
+        {
+          "name": "source restoration",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"runtime\",\"sourceFiles\":156,\"helperFiles\":null,\"runtimeFiles\":5859,\"installedPackage\":null,\"publicationFiles\":8,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        },
+        {
+          "name": "changed evidence rejected",
+          "expectedPass": false,
+          "exitCode": 1,
+          "stdout": "",
+          "diagnostic": [
+            "AssertionError [ERR_ASSERTION]: Identity mismatch: VALIDATION.json"
+          ]
+        },
+        {
+          "name": "evidence restoration",
+          "expectedPass": true,
+          "exitCode": 0,
+          "stdout": "{\"verified\":true,\"release\":\"workflow-gates-v46\",\"kind\":\"runtime\",\"sourceFiles\":156,\"helperFiles\":null,\"runtimeFiles\":5859,\"installedPackage\":null,\"publicationFiles\":8,\"nativeCalls\":0,\"checksExecuted\":0,\"qualification\":\"Exact source and compact retained evidence; not installation, live replay, broker promotion or fleet qualification.\"}\n",
+          "diagnostic": []
+        }
+      ],
+      "passed": true
+    }
+  ],
+  "nativeCalls": 0,
+  "sourceOriginalsChanged": false
+}

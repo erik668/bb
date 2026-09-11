@@ -162,7 +162,7 @@ describe("bb-official marketplace generator", () => {
       cwd: root,
       env: {
         ...process.env,
-        GIT_AUTHOR_DATE: "2026-01-02T03:04:05Z",
+        GIT_AUTHOR_DATE: "2025-01-02T03:04:05Z",
         GIT_COMMITTER_DATE: "2026-01-02T03:04:05Z",
       },
     });
@@ -171,7 +171,7 @@ describe("bb-official marketplace generator", () => {
       cwd: root,
       env: {
         ...process.env,
-        GIT_AUTHOR_DATE: "2026-02-03T04:05:06Z",
+        GIT_AUTHOR_DATE: "2025-02-03T04:05:06Z",
         GIT_COMMITTER_DATE: "2026-02-03T04:05:06Z",
       },
     });
@@ -184,10 +184,13 @@ describe("bb-official marketplace generator", () => {
       },
     });
 
-    expect(dates.get("sample")).toEqual({
-      publishedAt: "2026-01-02T03:04:05Z",
-      updatedAt: "2026-02-03T04:05:06Z",
-    });
+    const sampleDates = dates.get("sample");
+    expect(Date.parse(sampleDates?.publishedAt ?? "")).toBe(
+      Date.parse("2026-01-02T03:04:05Z"),
+    );
+    expect(Date.parse(sampleDates?.updatedAt ?? "")).toBe(
+      Date.parse("2026-02-03T04:05:06Z"),
+    );
   });
 
   it("omits dates and prints one warning in a shallow repository", async () => {

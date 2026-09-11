@@ -9,6 +9,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `definePluginApp`
 - `ThreadChat`
 - `Markdown`
+- `experimental_ArtifactReview`
 - `experimental_FileLink`
 - `UrlLink`
 - `experimental_NewThreadComposer`
@@ -149,6 +150,10 @@ Read the installed SDK declarations for the exact current signatures.
 - `PluginComposerApi`
 - `ThreadChatMessageAction`
 - `ThreadChatProps`
+- `ExperimentalArtifactReviewSelection`
+- `ExperimentalArtifactReviewFeedbackRequest`
+- `ExperimentalArtifactReviewAnnotation`
+- `ExperimentalArtifactReviewProps`
 - `ExperimentalProviderModelPickerValue`
 - `ExperimentalProviderModelPickerRouting`
 - `ExperimentalProviderModelPickerProps`

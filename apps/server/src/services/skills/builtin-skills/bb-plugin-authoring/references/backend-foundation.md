@@ -162,6 +162,10 @@ callId, resultSha256, acceptance })` is limited to the built-in Workflows plugin
 It stops a workflow worker after Workflows has accepted and persisted its
 structured result. BB stamps the calling plugin id and receipt into the durable
 interruption event before stopping the thread.
+Its argument type is `ExperimentalStopAcceptedWorkflowWorkerArgs`.
+`ExperimentalWorkflowResultCleanupAcceptance` is `"accepted" | "idempotent"`;
+retain the exact child, run, call and result digest from the persisted receipt.
+These fields describe accepted workflow-result cleanup, not a general stop API.
 
 ### bb.hosts
 

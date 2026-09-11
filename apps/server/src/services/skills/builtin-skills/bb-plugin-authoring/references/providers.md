@@ -254,10 +254,21 @@ keys, parent refs); the runtime's delta assembler — never the bridge —
 mints every bb turn and item id and constructs the canonical timeline
 events.
 
+The experimental `thread/stop-if-current-turn` request is guarded by an exact
+expected turn identity. `ExperimentalThreadStopIfCurrentTurnParams` contains
+`{ threadId, providerThreadId, expectedTurnId }`; validate it with
+`experimental_threadStopIfCurrentTurnParamsSchema`. Return
+`ExperimentalThreadStopIfCurrentTurnResult`, validated by
+`experimental_threadStopIfCurrentTurnResultSchema`, with a `condition` that
+reports `stopped` or `refused` and echoes `expectedTurnId`. Refusals include
+the reason and observed `activeTurnId`. Do not interrupt a replacement turn
+or turn an unsupported method into an unconditional stop. The runtime checks
+the response proof and its current ownership before accepting cleanup.
+
 The runtime can send these requests: `initialize`, `model/list`,
 `provider/health`, `provider/usage`, `provider/installation/status`,
 `provider/installation/run`, `thread/start`, `thread/resume`, `thread/fork`,
-`thread/stop`, `thread/discard`, `thread/name/set`, `thread/archive`,
+`thread/stop`, `thread/stop-if-current-turn`, `thread/discard`, `thread/name/set`, `thread/archive`,
 `thread/unarchive`, `thread/goal/clear`, `turn/start`, `turn/steer`, and
 `skills/configure`. A bridge can call `item/tool/call` and
 `interaction/request` on the runtime. Bridge notifications are

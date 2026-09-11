@@ -23,6 +23,7 @@ import type { TelemetryService } from "../system/telemetry.js";
 import type { NotificationHub } from "../../ws/hub.js";
 import type { BundledPluginRegistration } from "./builtin-registry.js";
 import type { PluginManifest } from "./manifest.js";
+import type { BuiltinPluginSourceWatch } from "./builtin-source-watch.js";
 import type {
   PluginApiHandle,
   PluginBackgroundServiceRecord,
@@ -118,6 +119,7 @@ export interface PluginServiceDeps {
   appVersion: string;
   bundledPlugins?: readonly BundledPluginRegistration[];
   watchBuiltinPluginSources?: boolean;
+  watchBuiltinPluginSource?: BuiltinPluginSourceWatch;
   loadTimeoutMs?: number;
   serviceStopTimeoutMs?: number;
   serviceRestartBaseMs?: number;
