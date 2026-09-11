@@ -20,8 +20,9 @@ export function admitRequiredNativeRetries(db: DbTransaction, events: readonly A
     if (!binding) continue;
     const protocolId = (value: unknown): value is string =>
       typeof value === "string" && /^[A-Za-z0-9_.:-]{1,256}$/.test(value);
+    const retryAttempt = data.retryAttempt;
     if (!protocolId(data.requestId) || !protocolId(data.retryOfRequestId)
-      || !Number.isSafeInteger(data.retryAttempt) || Number(data.retryAttempt) < 2
+      || typeof retryAttempt !== "number" || !Number.isSafeInteger(retryAttempt) || retryAttempt < 2
       || !protocolId(event.environmentId)) {
       throw new Error("Malformed required retry protocol metadata");
     }
@@ -44,7 +45,11 @@ export function admitRequiredNativeRetries(db: DbTransaction, events: readonly A
       || latest.environmentId !== event.environmentId) {
       throw new Error("Required retry environment or original identity changed");
     }
-    if ((previous.retryOfRequestId ?? previous.requestId) !== data.retryOfRequestId || (previous.retryAttempt ?? 1) + 1 !== data.retryAttempt) {
+    const previousRetryAttempt = previous.retryAttempt ?? 1;
+    if ((previous.retryOfRequestId ?? previous.requestId) !== data.retryOfRequestId
+      || typeof previousRetryAttempt !== "number"
+      || !Number.isSafeInteger(previousRetryAttempt)
+      || previousRetryAttempt + 1 !== retryAttempt) {
       throw new Error("Required retry displaced by a later request or attempt");
     }
     if (db.get(sql`select id from events where thread_id=${event.threadId} and sequence>${original.sequence} and type='system/thread/interrupted' and json_extract(data,'$.reason')='manual-stop' limit 1`)) {
@@ -67,7 +72,7 @@ export function admitRequiredNativeRetries(db: DbTransaction, events: readonly A
     const result = spawnSync(runner.path, [controller.path, "--admit-runtime-retry"], {
       input: JSON.stringify({ authorityPath: binding.authority_path, authoritySha256: binding.authority_sha256,
         threadId: event.threadId, projectId: thread.projectId, environmentId: event.environmentId,
-        requestId: data.requestId, retryOfRequestId: data.retryOfRequestId, retryAttempt: data.retryAttempt }),
+        requestId: data.requestId, retryOfRequestId: data.retryOfRequestId, retryAttempt }),
       encoding: "utf8", timeout: 5000, maxBuffer: 65536,
     });
     if (result.error || result.status !== 0) throw new Error("Required native retry admission denied: " + (result.stderr || result.error?.message || "runner failed"));

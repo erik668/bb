@@ -140,6 +140,17 @@ it("later original request displaces the queued retry before reservation or host
     expect(requests(h,f.thread.id)).toHaveLength(2);expect(commands(h).length).toBe(before);expect(readFileSync(f.ledgerPath)).toEqual(saved);
   });
 });
+it("malformed previous retry attempt is rejected before reservation or host dispatch",async()=>{
+  await withTestHarness(async h=>{
+    const f=fixture(h), before=commands(h).length,saved=readFileSync(f.ledgerPath);
+    await queue(h,f);
+    const original=requests(h,f.thread.id)[0]!,data=readEvent(original);
+    h.db.run(sql\`update events set data=\${JSON.stringify({...data,retryAttempt:"1"})} where id=\${original.id}\`);
+    await sweep(h);
+    expect(requests(h,f.thread.id)).toHaveLength(1);expect(commands(h).length).toBe(before);
+    expect(readFileSync(f.ledgerPath)).toEqual(saved);
+  });
+});
 it("changed original environment denies the required retry before ledger reservation or host dispatch",async()=>{
   await withTestHarness(async h=>{
     const f=fixture(h), before=commands(h).length,saved=readFileSync(f.ledgerPath);
