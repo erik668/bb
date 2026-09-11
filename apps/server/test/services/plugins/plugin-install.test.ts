@@ -1700,12 +1700,14 @@ describe("plugin install flows", () => {
         const previousCache = process.env.npm_config_cache;
         const previousPackageLock = process.env.npm_config_package_lock;
         const previousUserConfig = process.env.NPM_CONFIG_USERCONFIG;
+        const previousLowerUserConfig = process.env.npm_config_userconfig;
         const userConfig = join(workDir, "npmrc");
         await writeFile(
           userConfig,
           `@acme:registry=http://127.0.0.1:${port}\nregistry=https://registry.npmjs.org\n`,
         );
         process.env.NPM_CONFIG_USERCONFIG = userConfig;
+        process.env.npm_config_userconfig = userConfig;
         process.env.npm_config_cache = join(workDir, "npm-cache");
         process.env.npm_config_package_lock = "false";
         try {
@@ -1770,6 +1772,11 @@ describe("plugin install flows", () => {
             delete process.env.NPM_CONFIG_USERCONFIG;
           } else {
             process.env.NPM_CONFIG_USERCONFIG = previousUserConfig;
+          }
+          if (previousLowerUserConfig === undefined) {
+            delete process.env.npm_config_userconfig;
+          } else {
+            process.env.npm_config_userconfig = previousLowerUserConfig;
           }
           await new Promise<void>((resolvePromise) =>
             registry.close(() => resolvePromise()),

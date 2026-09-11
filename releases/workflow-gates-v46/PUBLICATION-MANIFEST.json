@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "releases/workflow-gates-v46/CHANGED-SINCE-V40.json",
+      "sha256": "d0bf59778d389712889031c3502ac8cc8518cbbf8e0dbfa9f33927c8d376d6f5"
+    },
+    {
+      "path": "releases/workflow-gates-v46/PUBLICATION-SMOKE.json",
+      "sha256": "41c47ea06b4842edecf5b29b2bbe0ebef3e0a5180edae2f697135342fdb0d808"
+    },
+    {
+      "path": "releases/workflow-gates-v46/README.md",
+      "sha256": "ef9bc6ec68291fe03513f8dcf1ab606a3d256804e3922dd5ab19d18ef34e31df"
+    },
+    {
+      "path": "releases/workflow-gates-v46/RELEASE.json",
+      "sha256": "cf74ea6baa58c737550f9f328d164eff2a7e357e84ab140ab3a765ac8cf56e80"
+    },
+    {
+      "path": "releases/workflow-gates-v46/RUNTIME-SOURCE-MANIFEST.json",
+      "sha256": "f350d4b81fe7fbd569d2df5c75afb6c1d37f82e39e7f25c047dd79866fbaa374"
+    },
+    {
+      "path": "releases/workflow-gates-v46/SOURCE-MANIFEST.json",
+      "sha256": "26330147df2dfcc55e641356156695440cde199c3eab545d20c76208dd2b6d6a"
+    },
+    {
+      "path": "releases/workflow-gates-v46/VALIDATION.json",
+      "sha256": "c6186c69fd10492931b7eda1cc9b647420e990d858d6557385d7c4482d879534"
+    },
+    {
+      "path": "releases/workflow-gates-v46/VERIFIER-CONTROLS.json",
+      "sha256": "ce496ec87fea711adf83283983219376c12d61beb56c0741400fa66cb4b2e270"
+    },
+    {
+      "path": "releases/workflow-gates-v46/verify.mjs",
+      "sha256": "520af789363f235191373e8c14f973ccfbac938dede5a2f6dc136fc09c1fa61b"
+    }
+  ],
+  "qualification": "Release metadata and compact evidence; this manifest excludes itself. Source manifests separately pin qualified source."
+}

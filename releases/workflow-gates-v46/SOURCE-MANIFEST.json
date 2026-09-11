@@ -1,0 +1,629 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": ".github/workflows/build-desktop.yml",
+      "sha256": "cadbeae5ca0269e49a302d5b98334213366a8272ef7bb12396cff1f1c8433218"
+    },
+    {
+      "path": "apps/app/src/components/thread/timeline/GeneratedConversationMessage.test.tsx",
+      "sha256": "435d999eafed43aaec2e30cdd271d4571a1cc44c088968392afefdb29d29efef"
+    },
+    {
+      "path": "apps/cli/src/__tests__/command-output/provider.test.ts",
+      "sha256": "1dd387793c8a3a2849eb8f6c70fd6569ef50591869a863d47278194ae44b11bc"
+    },
+    {
+      "path": "apps/cli/src/__tests__/command-output/thread-actions.test.ts",
+      "sha256": "135c65f6d0448202bde951208708ba9d06b6cc9ae70363e54bc98db2825ddaa6"
+    },
+    {
+      "path": "apps/cli/src/__tests__/command-output/thread-supervision.test.ts",
+      "sha256": "7f5b656a8645588383b81fb880b559537f38fb5dfbc6cb5c99e2f79d9abad6fb"
+    },
+    {
+      "path": "apps/cli/src/commands/plugin.ts",
+      "sha256": "5eaa36cb18896fd6e029f85291539b4434a0083674b6a6f929fe67e2bc2b2715"
+    },
+    {
+      "path": "apps/cli/src/commands/provider.ts",
+      "sha256": "ff1968f06b0e2ee0ed4479fbb754e91dd059d5db82b025df9f6d5b00b6edda4f"
+    },
+    {
+      "path": "apps/cli/src/commands/thread/actions.ts",
+      "sha256": "3d644542d4876ef1c158e5c4c318d258fe0c26f314adc6a6750c41a718be3251"
+    },
+    {
+      "path": "apps/cli/src/commands/thread/index.ts",
+      "sha256": "e6aa15e5356d40375b76d3da29638d17c52196ceb43c7ad5eb029b0519d31bc5"
+    },
+    {
+      "path": "apps/cli/src/commands/thread/spawn.ts",
+      "sha256": "fb4b42da59bef8b5c84a62e05bede351fbd8d71984ca7b95d659743e351d1eff"
+    },
+    {
+      "path": "apps/cli/src/commands/thread/supervision.ts",
+      "sha256": "2380890dd6615c7630d7201bac8fad25641b8e4729442e2958837a866054eab0"
+    },
+    {
+      "path": "apps/desktop/package.json",
+      "sha256": "42da84f9974b2502ba5e2aeee7456c7a1234cb74e480cc244c15316b2927e1ed"
+    },
+    {
+      "path": "apps/desktop/scripts/native-artifact-files.cjs",
+      "sha256": "1629c1e10fe93bd0ba154c46e8e51d2ab4221d9c9c9be6b13d2b3d2024813ab8"
+    },
+    {
+      "path": "apps/desktop/scripts/packaged-native-gate.mjs",
+      "sha256": "da2863924a6621489a07d7a8738ed3042de9bb718448659497330d27da037f86"
+    },
+    {
+      "path": "apps/desktop/scripts/packaged-runtime-preflight.mjs",
+      "sha256": "bdc4df2c207a7b6521cecd41e9e78ac0e1ab32385942ac909ab4a75d0e951a1f"
+    },
+    {
+      "path": "apps/desktop/scripts/packaged-runtime-probe.mjs",
+      "sha256": "a7c0035188dd054afae4313f5e69f5c00f12afb4282ff2e1669b707de8ab3bfc"
+    },
+    {
+      "path": "apps/desktop/scripts/prepare-native-modules.cjs",
+      "sha256": "ad59564e59d21cc2490e0840ad36972749f9101cff3da460e8591e8dfddef9f9"
+    },
+    {
+      "path": "apps/desktop/scripts/safe-install-macos-bundle.zsh",
+      "sha256": "5779e70470d8f50816365d281cf5ffb5a4eaafef4704cb021cccee69fc16293e"
+    },
+    {
+      "path": "apps/desktop/scripts/smoke-packaged-app.mjs",
+      "sha256": "f3a6b6bbb2eee9e458694448565da205760f320faeacb85c5853f857685b414e"
+    },
+    {
+      "path": "apps/desktop/test/native-artifact-files.test.mjs",
+      "sha256": "6d267263ba03bffec293b18ccf1c16363ef95cede680e354796f76a5278afa89"
+    },
+    {
+      "path": "apps/desktop/test/packaged-native-gate.test.mjs",
+      "sha256": "7e4eb9b679672d000c10bf9ff5b71c3d6a408522f96aa48e0033aa7ec7afad22"
+    },
+    {
+      "path": "apps/desktop/test/packaged-runtime.test.mjs",
+      "sha256": "35c2e5e5f06484adb5edf250dbedb184d1dbbdb5d0af3b2c867baa118cf79559"
+    },
+    {
+      "path": "apps/host-daemon/src/command-dispatch.ts",
+      "sha256": "06a30918127b874878c0b5d0b1f997540daa932a37932713d9e1d6c428bdffac"
+    },
+    {
+      "path": "apps/host-daemon/src/provider-cached-probe.test.ts",
+      "sha256": "1d8d17680849b588abf1055e8c1c7ea49f211d4cee80ffad3305e8aa028e2832"
+    },
+    {
+      "path": "apps/host-daemon/src/provider-cached-probe.ts",
+      "sha256": "3434e49946f30572dfebdf864ccc65001ffb610f85cbe911f6beb4d1a05fc588"
+    },
+    {
+      "path": "apps/host-daemon/test/command/thread-stop-races.test.ts",
+      "sha256": "0b053254e01ef1c09c7aa5131eec83505533659fdb034eae8d9384dbb6ae52f2"
+    },
+    {
+      "path": "apps/server/package.json",
+      "sha256": "0b4be5e52f4fdbe7a684169285416152b44982d3e59f69e13431a275a090ac04"
+    },
+    {
+      "path": "apps/server/src/routes/system.ts",
+      "sha256": "260aee58c71e375de4dff391464a9215bc19292d706e8fca09e172a8543cfc71"
+    },
+    {
+      "path": "apps/server/src/routes/threads/actions.ts",
+      "sha256": "60730baf2ea76c4e4c1129d95ac786dab578de52930ac90a5791b782d792dc71"
+    },
+    {
+      "path": "apps/server/src/routes/threads/base.ts",
+      "sha256": "94da26b07cf5cd553bbe54315cd534d6921473c9d5cf631f9d36ca840eed784d"
+    },
+    {
+      "path": "apps/server/src/server.ts",
+      "sha256": "923df493d55e30f95bc76d75282557609ea9012212323070f7ad05cfefbca5fc"
+    },
+    {
+      "path": "apps/server/src/services/plugins/builtin-source-watch.ts",
+      "sha256": "e06f1f564342d2c7f419ebe12731dd19cf0eeac33c306590ab6e4a9444962d59"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-api.ts",
+      "sha256": "280fdd0e4c6bc235a9c76bdd53153260adf40cf1ae13f8dfc88c2d36697b8baf"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-runtime.ts",
+      "sha256": "777214c313ed193f5cae1411afa867d752d5eb1b8a6d453569162a2286a158d2"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-service-internal.ts",
+      "sha256": "bf8cb31391366c7417cf283cc31ff3f21df25efaa451407543763c12433c2518"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-service.ts",
+      "sha256": "3ad0e1978ca7ccfc9e85b0563e15e69152ddb187f7de41300dd6019bee464102"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-cli/references/command-index.md",
+      "sha256": "7e7eb021187cafe7305fbf64de1ba6c399da72e3527c16bcf45a198a70e6fb8f"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-cli/references/thread-creation.md",
+      "sha256": "220f8e1b91c101cfd71f3a68acce80579960b00cc0d9acf08937ffb69bfcd7a1"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-cli/references/thread-operation.md",
+      "sha256": "761786efd5c6a234bfe2352b75dd6affcf0b0d0b6998b82670102347da1099bc"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md",
+      "sha256": "66944880792ec6bdcba5f3c4f5eb91fc5cab759f2185a227aac91307b603b122"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-api-index.md",
+      "sha256": "1b91a867609f6d031dcdfd900781d818070fd9cec1f4a32d82300caf9a8698d0"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-foundation.md",
+      "sha256": "37badc20d25a90cf81b91cf2e5ede32382184b96e939059e9e7b3020273fbad6"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-sdk.md",
+      "sha256": "06eeded2d8b24a24ca416c7882ea27fc2e462738c6288f5e24b5a4fe8d78aaa2"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/frontend-api-index.md",
+      "sha256": "14f70ebd417c6bcffca69503806ecb8c70fb93ea4f05808f87f97d555edd2d67"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/frontend-components.md",
+      "sha256": "fe07aea0e79451cff771be39c1f84c138d993bd4d8b683edc5546350ad2435d0"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/provider-bridge-api-index.md",
+      "sha256": "75a0300dbd6574e37763cf04e8a9095908bc66d239e1c563794fa7662c24a288"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/providers.md",
+      "sha256": "a8e86d0741481d815dce44792cc3018de2bc3e400c7e92aa238df615458baa98"
+    },
+    {
+      "path": "apps/server/src/services/system/provider-probe.ts",
+      "sha256": "741cb5b8e4e903f46cb735616d418baaea4688a2e659b8290d717ec8475279d3"
+    },
+    {
+      "path": "apps/server/src/services/threads/child-thread-notifications.ts",
+      "sha256": "a752eb29ae7c3afcf6a1a020e26d7f28225f59be8bca2f74e89fd72e4cf814f9"
+    },
+    {
+      "path": "apps/server/src/services/threads/dispatch-attempt.ts",
+      "sha256": "c40b0dac3be92e9296aea4ed415eacaddccfd4a3b6eef5f8cf01093913ff941f"
+    },
+    {
+      "path": "apps/server/src/services/threads/native-retry-admission.ts",
+      "sha256": "caa3cae0e72b2328c3b65601aea381844c97c4bcd77e0fc2a3394779223a71dd"
+    },
+    {
+      "path": "apps/server/src/services/threads/queued-messages.ts",
+      "sha256": "8dd4c1340501c78a07575ee8ba7f6fe86c4620d612f6ec0f9ff9b2863ad42f2d"
+    },
+    {
+      "path": "apps/server/src/services/threads/source-provisioning.ts",
+      "sha256": "a1ff7d15f4e71697a795d122de121d277ff1c9cc930cd086c6a6dfa9a2d6da1a"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-commands.ts",
+      "sha256": "065f031a2fb5d85f1d2fc362a5711044ff38de56c93fc36d6988a19c0ca0ea99"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-create-helpers.ts",
+      "sha256": "468c25477c2610a1cb4c4c7b1174b307af2682dae9b018d11725134745fddd9d"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-create-request.ts",
+      "sha256": "9f68b4b9a3d870633a7416d9f80c39be693422f4721085501fa4895162caeb61"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-create.ts",
+      "sha256": "f59bacc49c30da0374842cb4e715ea1dc551a43f07c606902d4046b6483810ab"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-events.ts",
+      "sha256": "06aecc7c3c49706fbef632b2ff59d9c599ffbae0ff7247b3d7e64a873c50e595"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-lifecycle.ts",
+      "sha256": "eefd528f58269044c2de2f37fc43e94bfd113e3b7b017d09b81c5fad4d0921fe"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-provisioning.ts",
+      "sha256": "82196f177c769e98e6e8f00fcee93e73ab6b85bf66c03c01a2353029e3577cd6"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-supervision.ts",
+      "sha256": "5fe42a4bb4cf32f0e416bb51a63e59157236875688ab77f257b088b6e3c9591d"
+    },
+    {
+      "path": "apps/server/test/helpers/builtin-source-watch.ts",
+      "sha256": "53d8113283c5ff54df2af84effd94995fff786c46a18522b92cd47f042274d56"
+    },
+    {
+      "path": "apps/server/test/helpers/commands.ts",
+      "sha256": "31ed5e35f4c904476402466703ba0df0596b3afd5e732e5a61dcdbd41928d673"
+    },
+    {
+      "path": "apps/server/test/public/public-conditional-thread-stop.test.ts",
+      "sha256": "d7b67c3a8074d5a3053fff0ceb8840dfbcbd0030ebac4b686648d44bf6056468"
+    },
+    {
+      "path": "apps/server/test/public/public-thread-source-pin.test.ts",
+      "sha256": "65b4d0033b9a06e9f4ac259b46b6fcc8bf8b91db0f97f02d65dbff4e20343b73"
+    },
+    {
+      "path": "apps/server/test/public/public-thread-stop-runtime.test.ts",
+      "sha256": "554b4cadd4fc4263f70916a2143082afca8bc97e42ffcb97ce20f05fd9f7f76b"
+    },
+    {
+      "path": "apps/server/test/public/public-threads.named-base-branch.test.ts",
+      "sha256": "0ecd9fb23e3ded15c9a8dd206ba86d498d0fd30842796fda90a779604c51981c"
+    },
+    {
+      "path": "apps/server/test/services/plugin-catalog/bb-official-generator.test.ts",
+      "sha256": "0e7fda452b865dd177f9f837ee5d8e8e1512dfc0d1684026ad6f6484f9b335f0"
+    },
+    {
+      "path": "apps/server/test/services/plugins/builtin-plugins.test.ts",
+      "sha256": "7e27a475b9c96c6aa30e7e35bb8a1463bb2acc78a1534754e301c2fd26446381"
+    },
+    {
+      "path": "apps/server/test/services/plugins/plugin-install.test.ts",
+      "sha256": "a6d377cb6a7afe09c6d8bdb09b72153bcd95af4ab384682ccc5334d3967d13a4"
+    },
+    {
+      "path": "apps/server/test/services/plugins/plugin-sdk-alias.test.ts",
+      "sha256": "bd8773f464b4e885582204c8081f8253193437042d60b79228aa11c37a158194"
+    },
+    {
+      "path": "apps/server/test/services/threads/child-thread-notifications.test.ts",
+      "sha256": "4018485d99ada45686b71a5e6cd8fa23a465da73c40b9008d4c91804e902a875"
+    },
+    {
+      "path": "apps/server/test/services/threads/thread-supervision.test.ts",
+      "sha256": "f049d978fb13859c5e0a2542d3e240eb57e10a1501ce90f9b3e096125541a237"
+    },
+    {
+      "path": "apps/server/test/system/provider-probe.test.ts",
+      "sha256": "84aeacc9db3bddee2de31b64b38a23a48b6980d14fe007656f2da15bff3fa4f2"
+    },
+    {
+      "path": "apps/server/test/threads/native-retry-admission.test.ts",
+      "sha256": "ef94de325fd94e6fb73d6f81f85f64901ccd787e0096688e47af7d893d3c4d28"
+    },
+    {
+      "path": "docs/api_to_audit.md",
+      "sha256": "b3bcfaec6c22dca70f322f4a6cd51062382cd691d191a2b32242a14d641d0868"
+    },
+    {
+      "path": "docs/bb-release-process.md",
+      "sha256": "93de78d7fd1a36cdcb732dc4ad54bbfb84c66e685f82dda02211f581f69289e0"
+    },
+    {
+      "path": "docs/configuration.md",
+      "sha256": "dfecbacbf454a5abc85b7e4847796f26dd83a608192048364282c6685c63131f"
+    },
+    {
+      "path": "docs/native-runtime-packaging.md",
+      "sha256": "8dd713172969942ee5c2c2c333ccfc6cef1f0accbcfdde70f9decb1aa4e30ac2"
+    },
+    {
+      "path": "packages/agent-runtime/src/bridge-protocol-adapter.conditional-stop.test.ts",
+      "sha256": "42dbf0c94e5ff3b28c92107f561ea893995d925c0304b52f1f0dcc07f77fe8be"
+    },
+    {
+      "path": "packages/agent-runtime/src/bridge-protocol-adapter.ts",
+      "sha256": "7ff8acd7ddf37eb1a7d08a9a879b1645069cc0106e1c91074ab3991662718710"
+    },
+    {
+      "path": "packages/agent-runtime/src/provider-adapter.ts",
+      "sha256": "a13dc88b077415efd460b1fea2dcae4e838be294e340f6d3afc7bfb8d5a9d44f"
+    },
+    {
+      "path": "packages/agent-runtime/src/provider-registry.codex-maintenance.test.ts",
+      "sha256": "16ddfa34891ad9457b3ae396e30ce8c1d50a405153f8bd2725bbb5eab012a751"
+    },
+    {
+      "path": "packages/agent-runtime/src/runtime-conditional-thread-stop.ts",
+      "sha256": "2e9f68116c4de3d9b5376bcb74dcc6ac4ec92989caf9ce001dff0c65bf72a04c"
+    },
+    {
+      "path": "packages/agent-runtime/src/runtime.conditional-stop-retention.test.ts",
+      "sha256": "01e84cf56248c687462644379eea629ab7aa1eca7d2d8e6dab69d8138e0b1409"
+    },
+    {
+      "path": "packages/agent-runtime/src/runtime.conditional-thread-stop.test.ts",
+      "sha256": "b002af2a715050fe4d26fbb88949e830302dd29d4beb6ab681e8a955def183f8"
+    },
+    {
+      "path": "packages/agent-runtime/src/runtime.ts",
+      "sha256": "5cba057b3475b4c91bea85eb77d8456940cb8481f797929fea7a85c0b91774ba"
+    },
+    {
+      "path": "packages/agent-runtime/src/types.ts",
+      "sha256": "caf207bb5179a7ce749db1eeb0976686627c8579cc0f4e8318afb6c8c06f1415"
+    },
+    {
+      "path": "packages/db/drizzle/0113_workflow_supervision_v33.sql",
+      "sha256": "12fc3337869416d5893b76cc0d3cc2f80659ca7f0d3f464b0aa4278c248a4b04"
+    },
+    {
+      "path": "packages/db/drizzle/0114_supervisor_notice_replay_v33.sql",
+      "sha256": "eca37b28bedc2649770bd34f7a1ae44d3e88e0800df8210c68dc7e6b58b603ef"
+    },
+    {
+      "path": "packages/db/drizzle/0115_supervisor_binding_retention_v33.sql",
+      "sha256": "60eff5586bba692d548d889d48a7dd8134cd7883e37669fea987e107de89155c"
+    },
+    {
+      "path": "packages/db/drizzle/meta/_journal.json",
+      "sha256": "d8ec92582dd1e2b18e05ddaa0ca52f072f5b87f6b8b3d6ff4a552e411dbf20d4"
+    },
+    {
+      "path": "packages/db/drizzle/meta/0113_snapshot.json",
+      "sha256": "9ee9c78022a6299804d3f70038aa945c48d3198ed4a5ba48043842fd9762744a"
+    },
+    {
+      "path": "packages/db/drizzle/meta/0114_snapshot.json",
+      "sha256": "258a170aaed5b66176d5d564efa122376e0da563c03be7dee6c5b52d2b7526e9"
+    },
+    {
+      "path": "packages/db/drizzle/meta/0115_snapshot.json",
+      "sha256": "85c22be8443c34eff3fa2353b003b3b1735556033aeed7831a2f5888144a25e4"
+    },
+    {
+      "path": "packages/db/src/data/events.ts",
+      "sha256": "b041b0f06c9764198d34f080a90b7e1538437ab01f0018747bd5a1daf21070f9"
+    },
+    {
+      "path": "packages/db/src/data/index.ts",
+      "sha256": "5c1541a548fffaa13ac042514000a68d7042e75c8226549cb7d001c9f34bbe1d"
+    },
+    {
+      "path": "packages/db/src/data/thread-supervision.ts",
+      "sha256": "6923b93350742f8fd0a6975d4342203a5ad78b476d639396e8539620478f905d"
+    },
+    {
+      "path": "packages/db/src/schema.ts",
+      "sha256": "6374a7238c8d495be2ba09c75845265c1aa7e0eb5b0b1c3074cb712b0592d36e"
+    },
+    {
+      "path": "packages/db/test/migrate.test.ts",
+      "sha256": "c1278a2e5cd32c6a19a1ba6572d26d9c3993f5bb09ac67755964d546e74d4c39"
+    },
+    {
+      "path": "packages/domain/src/conditional-thread-stop.ts",
+      "sha256": "40721e7f18ab92f34e2614504b3fc8d9eac2d6465c56ceb19ff1792517e8efc5"
+    },
+    {
+      "path": "packages/domain/src/index.ts",
+      "sha256": "2a2f7c7e2b278f0b46b5dd9a19bed2fc58aca420e2563fd2a2bafa805af5bca2"
+    },
+    {
+      "path": "packages/domain/src/source-pin.ts",
+      "sha256": "c8661b946706ea106cdb65da3bbcec2c3a30f3b5f54bb395f96fe0c1b6e4ab6c"
+    },
+    {
+      "path": "packages/domain/src/thread-events.ts",
+      "sha256": "e76c43a46875d131ff8792a68f2b1f12d1f15d714f61dd95d18c04281dbe0b72"
+    },
+    {
+      "path": "packages/domain/test/stored-thread-event.test.ts",
+      "sha256": "ae1237469778d19accfe3cd343fd75580eff7bf968abffe166e8a3d22cf0e373"
+    },
+    {
+      "path": "packages/host-daemon-contract/src/commands.ts",
+      "sha256": "7483368f00993dfc19bba1848f0517b82ee840d2ef42f8bcc935237058e1d749"
+    },
+    {
+      "path": "packages/host-daemon-contract/src/protocol.ts",
+      "sha256": "736b6f3797a637b89f57c11cb48c329c5259cfbc4d6d00ee656c8f72ef42cd4c"
+    },
+    {
+      "path": "packages/host-daemon-contract/src/session.ts",
+      "sha256": "afc1cf10f0c86cf4b0d2408636e3d91217ec23b2a79dc3724cd5736701f927ce"
+    },
+    {
+      "path": "packages/host-daemon-contract/test/contract.test.ts",
+      "sha256": "66ad375e19c19dd82d1e7117d063d9e139dcce6f233ac259630577fa8b4bb7f5"
+    },
+    {
+      "path": "packages/host-workspace/src/index.ts",
+      "sha256": "aee0a64ef1a984657fe564d34916b925406c1b9960638f6a57ad2f0cb869db7f"
+    },
+    {
+      "path": "packages/host-workspace/src/source-inspection.ts",
+      "sha256": "0592d8d4995c0a8b6900857d7674dfdb6ebf37a8eab6ac2a1c4a467fa426b55e"
+    },
+    {
+      "path": "packages/host-workspace/test/source-inspection.test.ts",
+      "sha256": "6ee7ac7eb6725d43ecd9f8af7db261ac07a5e864d1ff2dda77a4aa320d74715a"
+    },
+    {
+      "path": "packages/plugin-api-map/src/surfaces.ts",
+      "sha256": "8ba6c11479b3b63d48a390efed13230155d997cac7534a5cb58bb98c468c299b"
+    },
+    {
+      "path": "packages/plugin-build/package.json",
+      "sha256": "595c8b41f0dc471280c0ba79a68a983f812715a4d8ed2ab6dfc2cd3d4804499b"
+    },
+    {
+      "path": "packages/plugin-build/src/cache-contract.ts",
+      "sha256": "00d97109de48b8a7fce2c547941b690ae17762da8b5e650ef0b220320b8e9e52"
+    },
+    {
+      "path": "packages/plugin-build/src/index.ts",
+      "sha256": "668a0f3287c6fdcedae5d87b862ba85a7cec9416830cc9d6ba0ff9b190149e6f"
+    },
+    {
+      "path": "packages/plugin-build/src/toolchain.test.ts",
+      "sha256": "c4fdc7e57d5454d0a092d2e3d478ea81f260cd074122c35c76b3bdead8766a65"
+    },
+    {
+      "path": "packages/plugin-build/src/toolchain.ts",
+      "sha256": "59d3d7edbc133df78ac36e4bdd4cdf79a22625b14c856506e669476a47dfc3ce"
+    },
+    {
+      "path": "packages/plugin-sdk/src/__tests__/public-types.test.ts",
+      "sha256": "a696e9d9472e64c447eeff35a0773a4a12fb89a1b4ad914857f3d6473d9e8ac1"
+    },
+    {
+      "path": "packages/plugin-sdk/src/backend-contract.ts",
+      "sha256": "0331a6571e55fbbc818c51a4c7a91e34bb8209ef169e669985471494fe744e48"
+    },
+    {
+      "path": "packages/plugin-sdk/src/provider-bridge.ts",
+      "sha256": "05642f26acd8332020bac370e1a193ca3b14616fae7a159cc26f512604f52c16"
+    },
+    {
+      "path": "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+      "sha256": "56404867e05814745152a43cadb95980bb3061cf6a3c7e3f9963dd6f41501a26"
+    },
+    {
+      "path": "packages/provider-bridge-acp/src/bridge/bridge.ts",
+      "sha256": "a028c52a3e16de920ead25b5cb4739626d75648ea2ff156012b584ffc36fc4f9"
+    },
+    {
+      "path": "packages/provider-bridge-protocol/src/handshake.ts",
+      "sha256": "54e4af81a472e2eac1b154ddbee6f97e0a8aa47cf3e7a1a18e50bd1290c9f46a"
+    },
+    {
+      "path": "packages/provider-bridge-protocol/src/requests.ts",
+      "sha256": "65d34da4c6f297e7a3dd090b92eb0159a1d2b3e9c015167e0a04f244da01d41e"
+    },
+    {
+      "path": "packages/sdk/src/areas/providers.ts",
+      "sha256": "95e400d63159c82165dec3c94c767afc1f1b8f493986eb89159dc36d9430347d"
+    },
+    {
+      "path": "packages/sdk/src/areas/threads.ts",
+      "sha256": "56093b1cde314b74bd22137adf796299ec47ec52c2d353adcaae6a9cbcbce0e1"
+    },
+    {
+      "path": "packages/sdk/test/conditional-thread-stop.test.ts",
+      "sha256": "b5c869fc072b81fcabca6433e67b5839f0dd959eb549d069472a70f80c7d8d65"
+    },
+    {
+      "path": "packages/sdk/test/public-types.test.ts",
+      "sha256": "23d41ac1e230330559aa46e44a99435016339016e3358eff7a23981a1ec05464"
+    },
+    {
+      "path": "packages/server-contract/src/api/provider-probe.ts",
+      "sha256": "30c76171d24f5e306a382c1c4028f8790b0602ee07292741a7e6a84960a442d5"
+    },
+    {
+      "path": "packages/server-contract/src/api/threads.ts",
+      "sha256": "a832a43fa77b2159d9f74cb71e827278529b67b5a1f0c8cbfcf1a365e6f9219d"
+    },
+    {
+      "path": "packages/server-contract/src/api/workflow-supervision.ts",
+      "sha256": "23b0b33ec3ffd2b9bb2f74b92e0a1dfb23b664da334245f7a1196e9855b58f24"
+    },
+    {
+      "path": "packages/server-contract/src/errors.ts",
+      "sha256": "2188368792a30a451fb09a69077ca1ca7c7ff51037cea8d6e54724af63cc00ef"
+    },
+    {
+      "path": "packages/server-contract/src/index.ts",
+      "sha256": "8f6947b8be3f8ec35ed5dba6ee6bc88b87925085225df215311f40884da69a35"
+    },
+    {
+      "path": "packages/server-contract/src/public-api.ts",
+      "sha256": "32180970eca8605755e77a2f53216fd40522288011c343773580124f75aa14f4"
+    },
+    {
+      "path": "packages/templates/src/templates/bb-guide-plugins.md",
+      "sha256": "1f5b6f9eb36ee58ed5509adb692fe7e2aa42c0b17e7567e3e3f1b4e36ca1fa41"
+    },
+    {
+      "path": "packages/templates/src/templates/bb-guide-providers.md",
+      "sha256": "3c9d82fa4b1e96f2e90dd72a619783d1d9554ae4ce6e9aabc29d037abfce7f5c"
+    },
+    {
+      "path": "packages/templates/src/templates/bb-guide-threads.md",
+      "sha256": "ec306bd169893ee4958bf4120f0a6cb6a7effca05daf55e0521332925891ce42"
+    },
+    {
+      "path": "packages/thread-view/src/parse-operation-message.ts",
+      "sha256": "02eb3f94e70d5b48543ec43d7d45ed78fe8ca92988984c54ce3464921e5d616a"
+    },
+    {
+      "path": "packages/thread-view/test/parse-operation-message.test.ts",
+      "sha256": "77bccfe42dc69aca4aef730638d5af2935692411f960a912e95a879b9aa843d2"
+    },
+    {
+      "path": "plugins/provider-claude-code/src/bridge/bridge.ts",
+      "sha256": "eaeef862340f6873a3daabfdf03cd7f1a36ec23dbccbf35e959cb9a13c603d4d"
+    },
+    {
+      "path": "plugins/provider-codex/server.ts",
+      "sha256": "9151556d3019c6815be0db320b715824e39c5447641f0f343fd4b57833be0111"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/bridge.conditional-thread-stop.test.ts",
+      "sha256": "a070bbfd3d76e0bf0599be168a7275ef35c1cb07711824b4ba468ad64dc54bab"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/bridge.ts",
+      "sha256": "056bd747f585bf965f82bc03dc8125260b20e55ae9284eac0e73f834583ccaf1"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/conditional-thread-stop.test.ts",
+      "sha256": "ab805fdd1709447edd96c5e5a78bf1ad5fe1afd607a8cda75f60e070f24588d7"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/conditional-thread-stop.ts",
+      "sha256": "47cd64f9da968efe7dd2b39f12b478ebf230965c8c297c13bba9603aa29d2369"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/maintenance-policy.ts",
+      "sha256": "34e87c7dbf3110786ee29d6ae6012691e6204c98a806d8759d871e71bd4e5867"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/provider-maintenance.test.ts",
+      "sha256": "9f589996196fa78fa9cb5a0968785d8b0c9419f7a01b7bbb87a183340be5893e"
+    },
+    {
+      "path": "plugins/provider-codex/src/bridge/provider-maintenance.ts",
+      "sha256": "a30b76002d7030b20d1511145b68b66728c503f17c11b65a4b70f127d3d1c827"
+    },
+    {
+      "path": "plugins/provider-pi/src/bridge/bridge.ts",
+      "sha256": "42dac6c4a66b413cdb327ac8b75ef2d025db5816f16837e6af8a7d9741d55ee9"
+    },
+    {
+      "path": "plugins/workflows/skills/workflows/references/runs.md",
+      "sha256": "6c34d00c48920cb9485fa15970649c7e0dca69f2717e3117c9f033803df41968"
+    },
+    {
+      "path": "plugins/workflows/src/server-harness.test.ts",
+      "sha256": "fedd231e9d6c193bf1f9c664d463ae4d8f1b21b4fd8a6c3e8ea06572afc4a9d0"
+    },
+    {
+      "path": "plugins/workflows/src/server.ts",
+      "sha256": "72c053f6c166ae5b0092bdcc9504a42e1f7ef93fcafae768c3f740a8999fb5a9"
+    },
+    {
+      "path": "plugins/workflows/src/service-policy.test.ts",
+      "sha256": "90e13d87d501ab34a6bb35731e8673b08d1d44a0120b63f3139e8433d298d3c6"
+    },
+    {
+      "path": "plugins/workflows/src/service.ts",
+      "sha256": "00007e7b310097a42b9ad1bc0189a0dff2a10f271962831d65bd59d0e594d733"
+    },
+    {
+      "path": "tests/scripted-echo-provider/src/provider-bridge.ts",
+      "sha256": "de2ea1006c679849c69a369fbbf42907c4ca9abddebe6dd6cbf92e0700708879"
+    }
+  ]
+}

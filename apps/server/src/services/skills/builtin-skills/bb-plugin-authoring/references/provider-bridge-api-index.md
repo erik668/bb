@@ -6,6 +6,10 @@ Read the installed declarations for exact current signatures.
 
 ## `@get-bb/plugin-sdk/provider-bridge`
 
+- `ExperimentalThreadStopIfCurrentTurnParams`
+- `ExperimentalThreadStopIfCurrentTurnResult`
+- `experimental_threadStopIfCurrentTurnParamsSchema`
+- `experimental_threadStopIfCurrentTurnResultSchema`
 - `BRIDGE_INBOUND_REQUEST_METHODS`
 - `BRIDGE_JSON_RPC_ERRORS`
 - `BRIDGE_NOTIFICATION_METHODS`

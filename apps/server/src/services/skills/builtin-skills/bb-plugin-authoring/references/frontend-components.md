@@ -135,6 +135,29 @@ className? }` —
   message content (e.g. a reply header) so it reads like the rest of the
   chat instead of a differently-styled bundled renderer. Renderer options
   beyond content/className stay host-internal.
+- `experimental_ArtifactReview` — bb's selection-aware Markdown artifact
+  renderer. Alias it as `ArtifactReview` when importing from
+  `@get-bb/plugin-sdk/app`. `ExperimentalArtifactReviewProps` accepts
+  `{ content, annotations, onSelectionChange, onFeedbackRequest?, className? }`.
+  The host renders Markdown and maps selections to canonical source anchors;
+  the plugin owns persistence, revision identity and review policy.
+
+  `onSelectionChange` receives an `ExperimentalArtifactReviewSelection` or
+  `null`. A selection contains `blockId`, UTF-16 source offsets `start` and
+  `end`, `exactQuote`, `prefix` and `suffix`; retain it with the immutable
+  revision it came from. `ExperimentalArtifactReviewAnnotation` contains
+  `{ id, kind: "highlight" | "comment", exactQuote,
+  status: "open" | "resolved" | "orphaned" }` for saved review context.
+  The optional feedback callback receives an
+  `ExperimentalArtifactReviewFeedbackRequest` with the selection and viewport
+  `{ x, y }` from the context menu, so the plugin can open its feedback composer
+  beside the reviewed text.
+
+  The frontend testing runtime renders `bb-artifact-review`, exposes the
+  annotation count, and provides `bb-artifact-review-select` and
+  `bb-artifact-review-feedback` controls. They use a deterministic selection
+  from the first 12 source characters; use them to test the plugin callbacks,
+  not browser selection accuracy. The real host owns browser-to-source mapping.
 - `UrlLink` — a real anchor whose ordinary HTTP(S) activation
   follows the current client's in-app/external-browser preference. It keeps
   internal BB routes in SPA history, preserves modifier clicks, copying,

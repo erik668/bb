@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "at": "2026-09-11T02:50:45.315Z",
+  "passed": true,
+  "sourceStable": true,
+  "sourceFiles": 5859,
+  "exactFrozenRuntimeSourceMatches": true,
+  "syntaxTranspiled": [
+    "apps/server/src/services/plugins/builtin-source-watch.ts",
+    "apps/server/src/services/plugins/plugin-service-internal.ts",
+    "apps/server/src/services/plugins/plugin-service.ts",
+    "apps/server/src/services/threads/native-retry-admission.ts",
+    "apps/server/src/services/threads/thread-events.ts",
+    "apps/server/test/helpers/builtin-source-watch.ts",
+    "apps/server/test/public/public-conditional-thread-stop.test.ts",
+    "apps/server/test/services/plugin-catalog/bb-official-generator.test.ts",
+    "apps/server/test/services/plugins/builtin-plugins.test.ts",
+    "apps/server/test/services/plugins/plugin-install.test.ts",
+    "apps/server/test/threads/native-retry-admission.test.ts"
+  ],
+  "typescript": "6.0.3",
+  "originalBuild": {
+    "sha256": "cd1bb3c46d3c59cff98b82fd8073e4a66fe8c1898be9a857d14547605a43db06",
+    "passed": true,
+    "commands": [
+      {
+        "args": [
+          "bin/node",
+          "../../scripts/build-node-entry.mjs",
+          "src/index.ts",
+          "dist/index.js",
+          "--clean-dist",
+          "--external",
+          "./start-server.js",
+          "--copy-dir",
+          "../../packages/db/drizzle",
+          "dist/drizzle",
+          "--copy-dir",
+          "src/assets",
+          "dist/assets"
+        ],
+        "exitCode": 0,
+        "elapsedMs": 513
+      },
+      {
+        "args": [
+          "bin/node",
+          "--import",
+          "tsx",
+          "scripts/copy-builtin-skills.ts"
+        ],
+        "exitCode": 0,
+        "elapsedMs": 506
+      },
+      {
+        "args": [
+          "bin/node",
+          "../../scripts/build-node-entry.mjs",
+          "src/start-server.ts",
+          "dist/start-server.js"
+        ],
+        "exitCode": 0,
+        "elapsedMs": 1012
+      },
+      {
+        "args": [
+          "bin/node",
+          "../../scripts/build-node-entry.mjs",
+          "../../packages/plugin-sdk/src/index.ts",
+          "dist/plugin-sdk-runtime.js"
+        ],
+        "exitCode": 0,
+        "elapsedMs": 507
+      },
+      {
+        "args": [
+          "bin/node",
+          "../../scripts/build-node-entry.mjs",
+          "../../packages/plugin-sdk/src/host.ts",
+          "dist/plugin-sdk-host-runtime.js"
+        ],
+        "exitCode": 0,
+        "elapsedMs": 511
+      }
+    ]
+  },
+  "nativeCalls": 0,
+  "installs": 0,
+  "newRuntimeBuild": false,
+  "newTypecheck": false,
+  "newRuntimeTests": false,
+  "qualification": "Fresh syntax-only transpilation plus exact frozen source projection; original build/native qualification retained. No new typecheck, runtime test, desktop or fleet claim."
+}

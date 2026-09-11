@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "path": "apps/server/src/services/plugins/builtin-source-watch.ts",
+      "sha256": "e06f1f564342d2c7f419ebe12731dd19cf0eeac33c306590ab6e4a9444962d59"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-service-internal.ts",
+      "sha256": "bf8cb31391366c7417cf283cc31ff3f21df25efaa451407543763c12433c2518"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-service.ts",
+      "sha256": "3ad0e1978ca7ccfc9e85b0563e15e69152ddb187f7de41300dd6019bee464102"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-api-index.md",
+      "sha256": "1b91a867609f6d031dcdfd900781d818070fd9cec1f4a32d82300caf9a8698d0"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/backend-foundation.md",
+      "sha256": "37badc20d25a90cf81b91cf2e5ede32382184b96e939059e9e7b3020273fbad6"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/frontend-api-index.md",
+      "sha256": "14f70ebd417c6bcffca69503806ecb8c70fb93ea4f05808f87f97d555edd2d67"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/frontend-components.md",
+      "sha256": "fe07aea0e79451cff771be39c1f84c138d993bd4d8b683edc5546350ad2435d0"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/provider-bridge-api-index.md",
+      "sha256": "75a0300dbd6574e37763cf04e8a9095908bc66d239e1c563794fa7662c24a288"
+    },
+    {
+      "path": "apps/server/src/services/skills/builtin-skills/bb-plugin-authoring/references/providers.md",
+      "sha256": "a8e86d0741481d815dce44792cc3018de2bc3e400c7e92aa238df615458baa98"
+    },
+    {
+      "path": "apps/server/src/services/threads/native-retry-admission.ts",
+      "sha256": "caa3cae0e72b2328c3b65601aea381844c97c4bcd77e0fc2a3394779223a71dd"
+    },
+    {
+      "path": "apps/server/src/services/threads/thread-events.ts",
+      "sha256": "06aecc7c3c49706fbef632b2ff59d9c599ffbae0ff7247b3d7e64a873c50e595"
+    },
+    {
+      "path": "apps/server/test/helpers/builtin-source-watch.ts",
+      "sha256": "53d8113283c5ff54df2af84effd94995fff786c46a18522b92cd47f042274d56"
+    },
+    {
+      "path": "apps/server/test/public/public-conditional-thread-stop.test.ts",
+      "sha256": "d7b67c3a8074d5a3053fff0ceb8840dfbcbd0030ebac4b686648d44bf6056468"
+    },
+    {
+      "path": "apps/server/test/services/plugin-catalog/bb-official-generator.test.ts",
+      "sha256": "0e7fda452b865dd177f9f837ee5d8e8e1512dfc0d1684026ad6f6484f9b335f0"
+    },
+    {
+      "path": "apps/server/test/services/plugins/builtin-plugins.test.ts",
+      "sha256": "7e27a475b9c96c6aa30e7e35bb8a1463bb2acc78a1534754e301c2fd26446381"
+    },
+    {
+      "path": "apps/server/test/services/plugins/plugin-install.test.ts",
+      "sha256": "a6d377cb6a7afe09c6d8bdb09b72153bcd95af4ab384682ccc5334d3967d13a4"
+    },
+    {
+      "path": "apps/server/test/threads/native-retry-admission.test.ts",
+      "sha256": "ef94de325fd94e6fb73d6f81f85f64901ccd787e0096688e47af7d893d3c4d28"
+    }
+  ]
+}

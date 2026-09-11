@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "release": "workflow-gates-v46",
+  "publication": "source-only; no installed runtime or fleet changes",
+  "provenance": {
+    "productSha256": "bf1195c72d549ce2c394b4df79980f81332442328e1c67fe40e5672c4d34ad8b",
+    "helperSha256": "53a3a817192ff13bcc4317b9addd15e90fcbd6c20ac8dc5c18a4d4650abbd1ef",
+    "live04FreezeSha256": "3a48e4e3dcb345115b86951481ba142fa7048ac7808257e1d7dc46fb789eb1c3",
+    "live04ResultSha256": "9a2aa9a81115af5959b6215368d55bd6b005e8e666f09404dffbd18a74b189c8",
+    "runtimeManifestSha256": "0c6fa12c2917a5eeb5f309969df1e03cdebfd62ff59cc01deddad8d008b454ef"
+  },
+  "qualification": {
+    "fullHelper": {
+      "node": "v24.20.0",
+      "tests": 1139,
+      "pass": 1138,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 1,
+      "todo": 0,
+      "testFileConcurrency": 1,
+      "sourceStable": true,
+      "reusedOriginal": true
+    },
+    "realInstalledBuildAndIndependentReview": true,
+    "realFinalConsumer": true,
+    "finalConsumerRoleChecks": [
+      9,
+      9
+    ],
+    "busyManagerApplication": true,
+    "publicSettlement": true,
+    "freshFinalNativeTurns": 4,
+    "controllerProfile": "codex/gpt-5.6-sol/high",
+    "historicalFailuresPreserved": true,
+    "generalFleetOrDesktopQualification": false,
+    "brokerMode": "shadow",
+    "brokerPromotion": false,
+    "originalV44AllAttemptAdoption": 0.5,
+    "overallEfficiencyEstablished": false
+  },
+  "limits": [
+    "Destination installation and toolchain/provider qualification are separate.",
+    "Host-bound controller and manager wrappers are exact reference implementations, not a generic portable launcher.",
+    "Current helper inventory retains qualification fixtures for source identity; do not use their historical state paths as fresh campaign authority.",
+    "All original failed campaigns remain retained locally; publication does not rewrite their disposition."
+  ],
+  "kind": "runtime",
+  "baseCommit": "a4d3ce6656726158e447f590efcbb58cdd8c17a4",
+  "sourceFiles": 5859,
+  "deltaFilesSinceV40": 17,
+  "hostDaemonProtocolVersion": 184,
+  "wireChangeSinceV40": false,
+  "includes": "V41 builtin source watcher and qualified docs/tests plus V46 project-scoped native retry admission; no unrelated active-worktree delta.",
+  "sourceManifestSha256": "26330147df2dfcc55e641356156695440cde199c3eab545d20c76208dd2b6d6a",
+  "runtimeSourceManifestSha256": "f350d4b81fe7fbd569d2df5c75afb6c1d37f82e39e7f25c047dd79866fbaa374",
+  "companionRepository": "https://github.com/erik668/claude-harness",
+  "companionBranch": "release/workflow-gates-v46",
+  "evidence": [
+    {
+      "path": "CHANGED-SINCE-V40.json",
+      "sha256": "d0bf59778d389712889031c3502ac8cc8518cbbf8e0dbfa9f33927c8d376d6f5"
+    },
+    {
+      "path": "VALIDATION.json",
+      "sha256": "c6186c69fd10492931b7eda1cc9b647420e990d858d6557385d7c4482d879534"
+    }
+  ]
+}

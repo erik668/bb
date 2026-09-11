@@ -1,4 +1,3 @@
-import { watch } from "node:fs";
 import { readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -97,6 +96,7 @@ import {
   recoverInterruptedGitPluginPromotion,
 } from "./install-sources.js";
 import { readPluginManifest, type PluginManifest } from "./manifest.js";
+import { watchBuiltinPluginSource } from "./builtin-source-watch.js";
 import { listBundledPluginRegistrations } from "./builtin-registry.js";
 import {
   type BbPluginApi,
@@ -857,6 +857,7 @@ const GENERIC_AGENT_TOOL_GLYPH = "Toolbox";
 
 export function createPluginService(deps: PluginServiceDeps): PluginService {
   const logger = deps.logger;
+  const watchSource = deps.watchBuiltinPluginSource ?? watchBuiltinPluginSource;
   const bundledPlugins =
     deps.bundledPlugins ?? listBundledPluginRegistrations();
   const mentionSearchTimeoutMs =
@@ -1675,14 +1676,26 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             },
             log: (message) => logger.info(`plugin ${row.id}: ${message}`),
           });
-          const watcher = watch(
-            bundled.rootDir,
-            { recursive: true },
-            (_event, filename) => {
-              dispatchPluginSourceWatchChange(loop.handleChange, filename);
-            },
-          );
-          watcher.on("close", () => loop.dispose());
+          const watcher = watchSource(bundled.rootDir, (filename) => {
+            dispatchPluginSourceWatchChange(loop.handleChange, filename);
+          });
+          watcher.on("error", (error) => {
+            logger.error(
+              { err: error, pluginId: row.id },
+              "builtin plugin source watcher failed",
+            );
+            loop.dispose();
+            const index = builtinSourceWatchers.indexOf(watcher);
+            if (index !== -1) {
+              builtinSourceWatchers.splice(index, 1);
+              watcher.close();
+            }
+          });
+          watcher.once("close", () => {
+            const index = builtinSourceWatchers.indexOf(watcher);
+            if (index !== -1) builtinSourceWatchers.splice(index, 1);
+            loop.dispose();
+          });
           builtinSourceWatchers.push(watcher);
         }
       }

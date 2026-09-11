@@ -1,5 +1,9 @@
 # Backend API symbol index
 
+Workflow cleanup types: `ExperimentalStopAcceptedWorkflowWorkerArgs` and
+`ExperimentalWorkflowResultCleanupAcceptance`; see `backend-foundation.md`
+for the built-in Workflows-only server operation and receipt ownership.
+
 Use this index to check backend, host, AI-service, and test imports.
 Read the detailed backend references for behavior, fields, and examples.
 Read the installed declarations for exact current signatures.

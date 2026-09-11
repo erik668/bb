@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "release": "workflow-gates-v46",
+  "publication": "source-only; no installed runtime or fleet changes",
+  "provenance": {
+    "productSha256": "bf1195c72d549ce2c394b4df79980f81332442328e1c67fe40e5672c4d34ad8b",
+    "helperSha256": "53a3a817192ff13bcc4317b9addd15e90fcbd6c20ac8dc5c18a4d4650abbd1ef",
+    "live04FreezeSha256": "3a48e4e3dcb345115b86951481ba142fa7048ac7808257e1d7dc46fb789eb1c3",
+    "live04ResultSha256": "9a2aa9a81115af5959b6215368d55bd6b005e8e666f09404dffbd18a74b189c8",
+    "runtimeManifestSha256": "0c6fa12c2917a5eeb5f309969df1e03cdebfd62ff59cc01deddad8d008b454ef"
+  },
+  "qualification": {
+    "fullHelper": {
+      "node": "v24.20.0",
+      "tests": 1139,
+      "pass": 1138,
+      "fail": 0,
+      "cancelled": 0,
+      "skipped": 1,
+      "todo": 0,
+      "testFileConcurrency": 1,
+      "sourceStable": true,
+      "reusedOriginal": true
+    },
+    "realInstalledBuildAndIndependentReview": true,
+    "realFinalConsumer": true,
+    "finalConsumerRoleChecks": [
+      9,
+      9
+    ],
+    "busyManagerApplication": true,
+    "publicSettlement": true,
+    "freshFinalNativeTurns": 4,
+    "controllerProfile": "codex/gpt-5.6-sol/high",
+    "historicalFailuresPreserved": true,
+    "generalFleetOrDesktopQualification": false,
+    "brokerMode": "shadow",
+    "brokerPromotion": false,
+    "originalV44AllAttemptAdoption": 0.5,
+    "overallEfficiencyEstablished": false
+  },
+  "limits": [
+    "Destination installation and toolchain/provider qualification are separate.",
+    "Host-bound controller and manager wrappers are exact reference implementations, not a generic portable launcher.",
+    "Current helper inventory retains qualification fixtures for source identity; do not use their historical state paths as fresh campaign authority.",
+    "All original failed campaigns remain retained locally; publication does not rewrite their disposition."
+  ],
+  "sourceQualification": "Exact source projection of the frozen built runtime. Source-only publication; retained original runtime build/native controls, not a new full BB suite or desktop build."
+}

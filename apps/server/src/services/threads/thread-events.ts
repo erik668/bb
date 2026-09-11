@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { admitRequiredNativeRetries } from "./native-retry-admission.js";
 import {
   appendStoredThreadEventsInTransaction,
   createEventId,
@@ -380,6 +381,7 @@ function appendThreadEventsInTransactionWithAttention(
   args: readonly AppendThreadEventArgs[],
 ): AppendThreadEventsTransactionResult {
   assertStoredTurnStartedForEvents(db, args);
+  admitRequiredNativeRetries(db, args);
   const sequences = appendStoredThreadEventsInTransaction(db, args);
   const readStateUpdates = args
     .map((eventArgs) => applyUserTurnReadForEvent(db, eventArgs))

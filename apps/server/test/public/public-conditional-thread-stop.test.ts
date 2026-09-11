@@ -108,26 +108,29 @@ describe("public conditional thread stop", () => {
       turnId: "turn-original",
       reason: "thread-not-active",
     },
-  ])("refuses $reason before any host call or mutation", async (testCase) => {
-    await withTestHarness(async (harness) => {
-      const { thread } = seedTarget(harness, testCase);
-      seedCleanup(harness, thread.id, 4);
-      const before = snapshot(harness, thread.id);
-      const response = await requestStop(harness, thread.id);
-      expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toEqual({
-        ok: true,
-        condition: {
-          status: "refused",
-          expectedTurnId: "turn-original",
-          reason: testCase.reason,
-          activeTurnId: testCase.turnId,
-        },
+  ])(
+    "refuses $reason for $status with turn $turnId before any host call or mutation",
+    async (testCase) => {
+      await withTestHarness(async (harness) => {
+        const { thread } = seedTarget(harness, testCase);
+        seedCleanup(harness, thread.id, 4);
+        const before = snapshot(harness, thread.id);
+        const response = await requestStop(harness, thread.id);
+        expect(response.status).toBe(200);
+        await expect(readJson(response)).resolves.toEqual({
+          ok: true,
+          condition: {
+            status: "refused",
+            expectedTurnId: "turn-original",
+            reason: testCase.reason,
+            activeTurnId: testCase.turnId,
+          },
+        });
+        expect(snapshot(harness, thread.id)).toEqual(before);
+        expect(listQueuedCommands(harness, "thread.stop")).toHaveLength(0);
       });
-      expect(snapshot(harness, thread.id)).toEqual(before);
-      expect(listQueuedCommands(harness, "thread.stop")).toHaveLength(0);
-    });
-  });
+    },
+  );
 
   it.each([undefined, "", " ", " turn-original"])(
     "rejects malformed turn ID %j without mutation",
