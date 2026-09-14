@@ -171,16 +171,6 @@ function toEscalationApprovalPolicy(
   return escalation === "deny" ? "never" : "on-request";
 }
 
-function toWorkspaceApprovalPolicy(options: {
-  approvalReviewer: "automatic" | "user";
-  permissionEscalation: PermissionEscalation;
-}): AskForApproval {
-  if (options.approvalReviewer === "automatic") {
-    return "on-request";
-  }
-  return toEscalationApprovalPolicy(options.permissionEscalation);
-}
-
 function readTextFileIfPresent(filePath: string): string | null {
   try {
     return fs.readFileSync(filePath, "utf8");
@@ -512,7 +502,9 @@ export function toCodexThreadPermissionSettings(
   switch (permissionPolicy.permissionScope) {
     case "workspace":
       return {
-        approvalPolicy: toWorkspaceApprovalPolicy(permissionPolicy),
+        approvalPolicy: toEscalationApprovalPolicy(
+          permissionPolicy.permissionEscalation,
+        ),
         approvalsReviewer: toCodexApprovalsReviewer(options),
         sandbox: "workspace-write",
       };
@@ -532,7 +524,9 @@ export function toCodexPermissionSettings(
   switch (permissionPolicy.permissionScope) {
     case "workspace":
       return {
-        approvalPolicy: toWorkspaceApprovalPolicy(permissionPolicy),
+        approvalPolicy: toEscalationApprovalPolicy(
+          permissionPolicy.permissionEscalation,
+        ),
         approvalsReviewer: toCodexApprovalsReviewer(args.options),
         sandbox: "workspace-write",
         sandboxPolicy: toWorkspaceWriteCodexSandboxPolicy(
