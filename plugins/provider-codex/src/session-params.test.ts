@@ -523,48 +523,54 @@ describe("codex permission settings", () => {
     ).toEqual({});
   });
 
-  it("maps accept-edits to user-reviewed workspace approvals", () => {
-    expect(toCodexThreadPermissionSettings(WORKSPACE_ASK_OPTIONS)).toEqual({
+  it.each([
+    {
+      label: "user review with ask escalation",
+      options: WORKSPACE_ASK_OPTIONS,
       approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandbox: "workspace-write",
-    });
-  });
-
-  it("keeps automatic review on-request under deny escalation", () => {
-    expect(toCodexThreadPermissionSettings(AUTO_DENY_OPTIONS)).toMatchObject({
-      approvalPolicy: "on-request",
-      approvalsReviewer: "auto_review",
-    });
-    expect(permissionSettings(AUTO_DENY_OPTIONS)).toMatchObject({
-      approvalPolicy: "on-request",
-      approvalsReviewer: "auto_review",
-    });
-  });
-
-  it("maps deny escalation to no approval prompts while staying workspace-write", () => {
-    expect(
-      toCodexThreadPermissionSettings(WORKSPACE_DENY_OPTIONS),
-    ).toMatchObject({
+    },
+    {
+      label: "user review with deny escalation",
+      options: WORKSPACE_DENY_OPTIONS,
       approvalPolicy: "never",
-      sandbox: "workspace-write",
-    });
-  });
-
-  it("maps workspace-write to the full workspaceWrite sandbox policy", () => {
-    expect(permissionSettings(WORKSPACE_ASK_OPTIONS)).toEqual({
-      approvalPolicy: "on-request",
       approvalsReviewer: "user",
-      sandbox: "workspace-write",
-      sandboxPolicy: {
-        type: "workspaceWrite",
-        writableRoots: [],
-        networkAccess: true,
-        excludeTmpdirEnvVar: false,
-        excludeSlashTmp: false,
-      },
-    });
-  });
+    },
+    {
+      label: "automatic review with ask escalation",
+      options: AUTO_ASK_OPTIONS,
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+    },
+    {
+      label: "automatic review with deny escalation",
+      options: AUTO_DENY_OPTIONS,
+      approvalPolicy: "never",
+      approvalsReviewer: "auto_review",
+    },
+  ])(
+    "maps $label consistently for threads and turns",
+    ({ options, approvalPolicy, approvalsReviewer }) => {
+      const expectedThreadSettings = {
+        approvalPolicy,
+        approvalsReviewer,
+        sandbox: "workspace-write",
+      };
+      expect(toCodexThreadPermissionSettings(options)).toEqual(
+        expectedThreadSettings,
+      );
+      expect(permissionSettings(options)).toEqual({
+        ...expectedThreadSettings,
+        sandboxPolicy: {
+          type: "workspaceWrite",
+          writableRoots: [],
+          networkAccess: true,
+          excludeTmpdirEnvVar: false,
+          excludeSlashTmp: false,
+        },
+      });
+    },
+  );
 
   it("passes additional workspace-write roots through in order", () => {
     expect(
@@ -582,17 +588,6 @@ describe("codex permission settings", () => {
         "/repo/.git/refs",
         "/repo/.git/logs",
       ],
-    });
-  });
-
-  it("maps auto to automatic workspace review", () => {
-    expect(permissionSettings(AUTO_ASK_OPTIONS)).toMatchObject({
-      approvalPolicy: "on-request",
-      approvalsReviewer: "auto_review",
-      sandboxPolicy: {
-        type: "workspaceWrite",
-        networkAccess: true,
-      },
     });
   });
 });
