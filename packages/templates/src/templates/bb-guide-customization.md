@@ -56,7 +56,7 @@ must also publish the port to the host.
 
 Server helper completions use `BB_INFERENCE` first, then
 `BB_INFERENCE_FALLBACK` after a transient timeout, rate limit, or
-service-unavailable failure. Their defaults are `codex/gpt-5.6-luna` and
+service-unavailable failure. Their defaults are `codex/gpt-6-luna` and
 `codex/gpt-5.4-mini`, respectively.
 
   bb-app config set BB_INFERENCE <provider/model>
