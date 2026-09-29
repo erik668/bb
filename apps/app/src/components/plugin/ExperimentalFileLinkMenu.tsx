@@ -91,6 +91,22 @@ export function ExperimentalFileLinkMenu({
         Open externally
       </ContextMenuItem>
       {resolved.status === "available" &&
+      resolved.openContext.kind === "local" &&
+      localTargets.fileOpenTargets.some((target) => target.id === "finder") ? (
+        <ContextMenuItem
+          onSelect={() => {
+            void localTargets.openPathInFileTarget({
+              lineNumber: null,
+              path: resolved.absolutePath,
+              rememberTarget: false,
+              targetId: "finder",
+            });
+          }}
+        >
+          Reveal in Finder
+        </ContextMenuItem>
+      ) : null}
+      {resolved.status === "available" &&
       localTargets.fileOpenTargets.length > 0 ? (
         <ContextMenuSub>
           <ContextMenuSubTrigger>Open in</ContextMenuSubTrigger>

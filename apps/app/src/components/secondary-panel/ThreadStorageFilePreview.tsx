@@ -32,6 +32,7 @@ interface FilePreviewBaseProps {
   markdownLinkRouting?: MarkdownLinkRouting;
   onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   onRefresh?: () => void;
 }
 
@@ -98,6 +99,7 @@ export function SecondaryPanelFilePreview({
   markdownLinkRouting,
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   onRefresh,
   statusLabel = null,
 }: SecondaryPanelFilePreviewProps) {
@@ -109,6 +111,7 @@ export function SecondaryPanelFilePreview({
         copyPath={copyPath}
         onSelectionAddToChat={onSelectionAddToChat}
         onOpenInEditor={onOpenInEditor}
+        onRevealInFinder={onRevealInFinder}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         statusLabel={statusLabel}
@@ -124,6 +127,7 @@ export function SecondaryPanelFilePreview({
         copyPath={copyPath}
         onSelectionAddToChat={onSelectionAddToChat}
         onOpenInEditor={onOpenInEditor}
+        onRevealInFinder={onRevealInFinder}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         statusLabel={statusLabel}
@@ -140,6 +144,7 @@ export function SecondaryPanelFilePreview({
           copyPath={copyPath}
           onSelectionAddToChat={onSelectionAddToChat}
           onOpenInEditor={onOpenInEditor}
+          onRevealInFinder={onRevealInFinder}
           onRefresh={onRefresh}
           isRefreshing={isRefreshing}
           statusLabel={statusLabel}
@@ -159,6 +164,7 @@ export function SecondaryPanelFilePreview({
         copyPath={copyPath}
         onSelectionAddToChat={onSelectionAddToChat}
         onOpenInEditor={onOpenInEditor}
+        onRevealInFinder={onRevealInFinder}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         statusLabel={statusLabel}
@@ -184,6 +190,7 @@ export function SecondaryPanelFilePreview({
           copyPath={copyPath}
           onSelectionAddToChat={onSelectionAddToChat}
           onOpenInEditor={onOpenInEditor}
+          onRevealInFinder={onRevealInFinder}
           onRefresh={onRefresh}
           isRefreshing={isRefreshing}
           statusLabel={statusLabel}
@@ -197,6 +204,7 @@ export function SecondaryPanelFilePreview({
         copyPath={copyPath}
         onSelectionAddToChat={onSelectionAddToChat}
         onOpenInEditor={onOpenInEditor}
+        onRevealInFinder={onRevealInFinder}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         markdownLinkRouting={markdownLinkRouting}
@@ -218,6 +226,7 @@ export function SecondaryPanelFilePreview({
         copyPath={copyPath}
         onSelectionAddToChat={onSelectionAddToChat}
         onOpenInEditor={onOpenInEditor}
+        onRevealInFinder={onRevealInFinder}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         statusLabel={statusLabel}
@@ -233,6 +242,7 @@ export function SecondaryPanelFilePreview({
         copyPath={copyPath}
         onSelectionAddToChat={onSelectionAddToChat}
         onOpenInEditor={onOpenInEditor}
+        onRevealInFinder={onRevealInFinder}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         statusLabel={statusLabel}
@@ -247,6 +257,7 @@ export function SecondaryPanelFilePreview({
       copyPath={copyPath}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={onRefresh}
       isRefreshing={isRefreshing}
       statusLabel={statusLabel}
@@ -269,6 +280,7 @@ export function ThreadStorageFilePreview({
   markdownLinkRouting,
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   onRefresh,
   threadId,
 }: ThreadStorageFilePreviewProps) {
@@ -285,6 +297,7 @@ export function ThreadStorageFilePreview({
       markdownLinkRouting={markdownLinkRouting}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={onRefresh}
     />
   );

@@ -60,6 +60,7 @@ interface WorkspaceFilePreviewTabContentProps {
   markdownLinkRouting?: MarkdownLinkRouting;
   onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   source: EnvironmentFilePreviewSource | null;
   statusLabel: WorkspaceFilePreviewStatusLabel | null;
   threadId?: string | null;
@@ -74,6 +75,7 @@ interface ProjectFilePreviewTabContentProps {
   lineRange: FilePreviewLineRange | null;
   onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   projectId: string;
 }
 
@@ -86,6 +88,7 @@ interface HostFilePreviewTabContentProps {
   markdownLinkRouting?: MarkdownLinkRouting;
   onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   threadId: string;
 }
 
@@ -95,6 +98,7 @@ interface HostScopedFilePreviewTabContentProps {
   isPanelOpen: boolean;
   lineRange: FilePreviewLineRange | null;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
 }
 
 interface ThreadStorageFilePreviewTabContentProps {
@@ -105,6 +109,7 @@ interface ThreadStorageFilePreviewTabContentProps {
   markdownLinkRouting?: MarkdownLinkRouting;
   onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   threadId: string;
 }
 
@@ -305,6 +310,7 @@ export function WorkspaceFilePreviewTabContent({
   markdownLinkRouting,
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   source,
   statusLabel,
   threadId,
@@ -336,6 +342,7 @@ export function WorkspaceFilePreviewTabContent({
       markdownLinkRouting={markdownLinkRouting}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={() => void refetchWorkspaceFilePreview()}
       statusLabel={statusLabel}
     />
@@ -351,6 +358,7 @@ export function ProjectFilePreviewTabContent({
   lineRange,
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   projectId,
 }: ProjectFilePreviewTabContentProps) {
   const {
@@ -377,6 +385,7 @@ export function ProjectFilePreviewTabContent({
       lineRange={lineRange}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={() => void refetchProjectFilePreview()}
       statusLabel={null}
     />
@@ -392,6 +401,7 @@ export function HostFilePreviewTabContent({
   markdownLinkRouting,
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   threadId,
 }: HostFilePreviewTabContentProps) {
   const {
@@ -417,6 +427,7 @@ export function HostFilePreviewTabContent({
       markdownLinkRouting={markdownLinkRouting}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={() => void refetchHostFilePreview()}
       statusLabel={null}
     />
@@ -429,6 +440,7 @@ export function HostScopedFilePreviewTabContent({
   isPanelOpen,
   lineRange,
   onOpenInEditor,
+  onRevealInFinder,
 }: HostScopedFilePreviewTabContentProps) {
   const {
     data: hostFilePreview,
@@ -448,6 +460,7 @@ export function HostScopedFilePreviewTabContent({
       isRefreshing={isFetching}
       lineRange={lineRange}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={() => void refetch()}
       statusLabel={null}
     />
@@ -462,6 +475,7 @@ export function ThreadStorageFilePreviewTabContent({
   markdownLinkRouting,
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   threadId,
 }: ThreadStorageFilePreviewTabContentProps) {
   const {
@@ -486,6 +500,7 @@ export function ThreadStorageFilePreviewTabContent({
       markdownLinkRouting={markdownLinkRouting}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
+      onRevealInFinder={onRevealInFinder}
       onRefresh={() => void refetchThreadStorageFilePreview()}
       threadId={threadId}
     />

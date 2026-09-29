@@ -1878,6 +1878,19 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
     enabled: threadOpenContext !== null,
     ...(threadOpenContext ? { openContext: threadOpenContext } : {}),
   });
+  const canRevealInFinder =
+    threadOpenContext?.kind === "local" &&
+    fileOpenTargets.some((target) => target.id === "finder");
+  const revealInFinder = canRevealInFinder
+    ? (path: string) => {
+        void openPathInFileTarget({
+          lineNumber: null,
+          path,
+          rememberTarget: false,
+          targetId: "finder",
+        });
+      }
+    : undefined;
   const parentThreadSection: ThreadPromptParentThreadSection | null =
     useMemo(() => {
       const relatedThreadId =
@@ -2239,6 +2252,20 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
         },
       }));
       const items: MarkdownLocalFileContextMenuItem[] = [];
+      if (canRevealInFinder) {
+        items.push({
+          id: "reveal-in-finder",
+          label: "Reveal in Finder",
+          onSelect: () => {
+            void openPathInFileTarget({
+              lineNumber: null,
+              path: link.path,
+              rememberTarget: false,
+              targetId: "finder",
+            });
+          },
+        });
+      }
       if (openTargetItems.length > 0) {
         items.push({
           id: "open-in",
@@ -2298,6 +2325,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
       return items;
     },
     [
+      canRevealInFinder,
       fileOpenTargets,
       handleOpenTimelineLocalFileLink,
       openPathInFileTarget,
@@ -2609,6 +2637,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
               rootPath: workspacePreviewRootPath,
             })}
             onOpenInEditor={handleOpenFileInEditor}
+            onRevealInFinder={revealInFinder}
             onSelectionAddToChat={handleSelectionAddToChat}
             source={tab.source}
             statusLabel={tab.statusLabel}
@@ -2636,6 +2665,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
               }),
             })}
             onOpenInEditor={handleOpenHostFileInEditor}
+            onRevealInFinder={revealInFinder}
             onSelectionAddToChat={handleSelectionAddToChat}
             threadId={thread.id}
           />
@@ -2661,6 +2691,7 @@ function ThreadDetailViewInternal(props: ThreadRoutePathArgs) {
               rootPath: threadStorageRootPath,
             })}
             onOpenInEditor={handleOpenStorageFileInEditor}
+            onRevealInFinder={revealInFinder}
             onSelectionAddToChat={handleSelectionAddToChat}
             threadId={thread.id}
           />

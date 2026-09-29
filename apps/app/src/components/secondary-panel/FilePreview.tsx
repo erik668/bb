@@ -83,6 +83,7 @@ interface FilePreviewProps {
   headerMode?: FilePreviewHeaderMode;
   onSelectionAddToChat?: (text: string) => void;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   onRefresh?: () => void;
   isRefreshing?: boolean;
   markdownLinkRouting?: MarkdownLinkRouting;
@@ -111,6 +112,7 @@ interface FilePreviewHeaderProps {
   rawContents: string | null;
   externalUrl: string | null;
   onOpenInEditor?: (path: string) => void;
+  onRevealInFinder?: (path: string) => void;
   onRefresh?: () => void;
   isRefreshing: boolean;
   statusLabel: WorkspaceFilePreviewStatusLabel | null;
@@ -426,6 +428,7 @@ export function FilePreview({
   headerMode = "file",
   onSelectionAddToChat,
   onOpenInEditor,
+  onRevealInFinder,
   onRefresh,
   isRefreshing = false,
   markdownLinkRouting,
@@ -490,6 +493,7 @@ export function FilePreview({
           rawContents={rawContents}
           externalUrl={externalUrl}
           onOpenInEditor={onOpenInEditor}
+          onRevealInFinder={onRevealInFinder}
           onRefresh={onRefresh}
           isRefreshing={isRefreshing}
           statusLabel={statusLabel}
@@ -598,6 +602,7 @@ function FilePreviewHeader({
   rawContents,
   externalUrl,
   onOpenInEditor,
+  onRevealInFinder,
   onRefresh,
   isRefreshing,
   statusLabel,
@@ -705,6 +710,26 @@ function FilePreviewHeader({
                 </TooltipContent>
               </Tooltip>
             )}
+            {onRevealInFinder && copyPath ? (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                      "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
+                    )}
+                    onClick={() => onRevealInFinder(copyPath)}
+                    aria-label="Reveal in Finder"
+                  >
+                    <Icon name="Folder" aria-hidden />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="bottom">Reveal in Finder</TooltipContent>
+              </Tooltip>
+            ) : null}
             {onOpenInEditor ? (
               <>
                 <Tooltip>
