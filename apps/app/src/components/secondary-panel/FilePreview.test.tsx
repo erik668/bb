@@ -223,6 +223,32 @@ describe("FilePreview", () => {
     expect(onRefresh).toHaveBeenCalledOnce();
   });
 
+  it("reveals the absolute preview path in Finder when available", () => {
+    const onRevealInFinder = vi.fn();
+    const { rerender } = render(
+      <FilePreview
+        path="src/example.ts"
+        copyPath="/workspace/src/example.ts"
+        onRevealInFinder={onRevealInFinder}
+        state={{ kind: "loading" }}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Reveal in Finder" }));
+    expect(onRevealInFinder).toHaveBeenCalledWith("/workspace/src/example.ts");
+
+    rerender(
+      <FilePreview
+        path="src/example.ts"
+        onRevealInFinder={onRevealInFinder}
+        state={{ kind: "loading" }}
+      />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "Reveal in Finder" }),
+    ).toBeNull();
+  });
+
   it("disables the manual refresh action while a refresh is running", () => {
     render(
       <FilePreview

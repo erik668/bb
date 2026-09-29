@@ -364,11 +364,27 @@ function RootComposeFilePreviewTabContent({
     tab.kind === "workspace-file-preview" && tab.environmentId === null
       ? projectOpenContext
       : environmentOpenContext;
-  const { canOpenPreferredFileTarget, openPathInPreferredFileTarget } =
-    useLocalOpenTargets({
-      enabled: openContext !== null,
-      ...(openContext ? { openContext } : {}),
-    });
+  const {
+    canOpenPreferredFileTarget,
+    fileOpenTargets,
+    openPathInFileTarget,
+    openPathInPreferredFileTarget,
+  } = useLocalOpenTargets({
+    enabled: openContext !== null,
+    ...(openContext ? { openContext } : {}),
+  });
+  const onRevealInFinder =
+    openContext?.kind === "local" &&
+    fileOpenTargets.some((target) => target.id === "finder")
+      ? (path: string) => {
+          void openPathInFileTarget({
+            lineNumber: null,
+            path,
+            rememberTarget: false,
+            targetId: "finder",
+          });
+        }
+      : undefined;
   const workspaceRootPath = environment?.path ?? null;
   const relativeFileRootPath =
     tab.kind === "workspace-file-preview"
@@ -433,6 +449,7 @@ function RootComposeFilePreviewTabContent({
             isPanelOpen={isPanelOpen}
             lineRange={tab.lineRange}
             onOpenInEditor={onOpenInEditor}
+            onRevealInFinder={onRevealInFinder}
             onSelectionAddToChat={onSelectionAddToChat}
             source={tab.source}
             statusLabel={tab.statusLabel}
@@ -447,6 +464,7 @@ function RootComposeFilePreviewTabContent({
             isPanelOpen={isPanelOpen}
             lineRange={tab.lineRange}
             onOpenInEditor={onOpenInEditor}
+            onRevealInFinder={onRevealInFinder}
             onSelectionAddToChat={onSelectionAddToChat}
             projectId={projectPreviewId}
           />
@@ -455,6 +473,7 @@ function RootComposeFilePreviewTabContent({
             path={tab.path}
             copyPath={copyPath}
             onOpenInEditor={onOpenInEditor}
+            onRevealInFinder={onRevealInFinder}
             state={{ kind: "loading" }}
           />
         );
@@ -474,6 +493,7 @@ function RootComposeFilePreviewTabContent({
             isPanelOpen={isPanelOpen}
             lineRange={tab.lineRange}
             onOpenInEditor={onOpenInEditor}
+            onRevealInFinder={onRevealInFinder}
             onSelectionAddToChat={onSelectionAddToChat}
             threadId={threadId}
           />
@@ -482,6 +502,7 @@ function RootComposeFilePreviewTabContent({
             path={tab.path}
             copyPath={tab.path}
             onOpenInEditor={onOpenInEditor}
+            onRevealInFinder={onRevealInFinder}
             state={{ kind: "loading" }}
           />
         );
@@ -499,6 +520,7 @@ function RootComposeFilePreviewTabContent({
           isPanelOpen={isPanelOpen}
           lineRange={tab.lineRange}
           onOpenInEditor={onOpenInEditor}
+          onRevealInFinder={onRevealInFinder}
           onSelectionAddToChat={onSelectionAddToChat}
           threadId={storageThreadId}
         />
@@ -507,6 +529,7 @@ function RootComposeFilePreviewTabContent({
           path={tab.path}
           copyPath={copyPath}
           onOpenInEditor={onOpenInEditor}
+          onRevealInFinder={onRevealInFinder}
           state={{ kind: "loading" }}
         />
       );
