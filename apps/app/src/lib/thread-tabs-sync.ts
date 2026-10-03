@@ -23,6 +23,7 @@ interface ThreadTabsSyncArgs {
 }
 
 interface PersistThreadTabsArgs extends ThreadTabsSyncArgs {
+  previousTabs: readonly FixedPanelTab[];
   tabs: readonly FixedPanelTab[];
 }
 
@@ -46,6 +47,34 @@ function persistedThreadTabs(
     (tab): tab is PersistedThreadFixedPanelTab =>
       tab.kind !== "side-chat" && tab.kind !== "plugin-page-fixed",
   );
+}
+
+export function mergeThreadTabChanges(
+  previousTabs: readonly FixedPanelTab[],
+  nextTabs: readonly FixedPanelTab[],
+  serverTabs: readonly ThreadTab[],
+): readonly PersistedThreadFixedPanelTab[] {
+  const previous = new Map(
+    persistedThreadTabs(previousTabs).map((tab) => [tab.id, tab]),
+  );
+  const next = persistedThreadTabs(nextTabs);
+  const server = persistedThreadTabs(serverTabs);
+  const remote = new Map(server.map((tab) => [tab.id, tab]));
+  const nextIds = new Set(next.map((tab) => tab.id));
+  const merged: PersistedThreadFixedPanelTab[] = [];
+  for (const tab of next) {
+    const before = previous.get(tab.id);
+    const saved = remote.get(tab.id);
+    if (before === undefined) {
+      merged.push(saved ?? tab);
+    } else if (saved !== undefined) {
+      merged.push(areFixedPanelTabsEquivalent(before, tab) ? saved : tab);
+    }
+  }
+  for (const tab of server) {
+    if (!previous.has(tab.id) && !nextIds.has(tab.id)) merged.push(tab);
+  }
+  return merged;
 }
 
 export function areThreadTabListsEquivalent(
@@ -142,12 +171,16 @@ function isThreadTabsConflict(error: unknown): boolean {
 }
 
 async function persistThreadTabs({
+  previousTabs,
   tabs,
   queryClient,
   threadId,
 }: PersistThreadTabsArgs): Promise<void> {
   const current = await readCurrentThreadTabs({ queryClient, threadId });
-  const tabsToPersist = persistedThreadTabs(tabs);
+  const tabsToPersist =
+    current.revision === 0
+      ? persistedThreadTabs(tabs)
+      : mergeThreadTabChanges(previousTabs, tabs, current.tabs);
   if (areThreadTabListsEquivalent(current.tabs, tabsToPersist)) {
     return;
   }

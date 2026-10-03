@@ -434,3 +434,78 @@ describe("empty-fork sweep", () => {
     expect(archive).not.toHaveBeenCalled();
   });
 });
+
+describe("promoteSideChat rpc", () => {
+  it.each(["hidden", "visible"] as const)(
+    "promotes an existing %s fork without replacing its conversation or source",
+    async (visibility) => {
+      const thread = makeThreadResponse({
+        id: "thr_side",
+        originKind: "fork",
+        originPluginId: PLUGIN_ID,
+        sourceThreadId: "thr_source",
+        visibility,
+        title: "Related topic",
+      });
+      const update = vi.fn(async () => ({ ok: true }));
+      const { harness } = await loadPlugin({ get: async () => thread, update });
+      expect(
+        await harness.behavior.callRpc("promoteSideChat", {
+          threadId: thread.id,
+        }),
+      ).toEqual({ threadId: thread.id });
+      expect(update).toHaveBeenCalledWith({
+        threadId: thread.id,
+        visibility: "visible",
+        parentThreadId: null,
+      });
+      expect(harness.inspection.sdk.callsTo("threads.fork")).toHaveLength(0);
+    },
+  );
+
+  it.each([
+    { originPluginId: "another-plugin" },
+    { originKind: null },
+    { sourceThreadId: null },
+    { archivedAt: 123 },
+    { deletedAt: 123 },
+  ])("rejects a non-live side chat: %j", async (overrides) => {
+    const update = vi.fn();
+    const thread = makeThreadResponse({
+      id: "thr_side",
+      originKind: "fork",
+      originPluginId: PLUGIN_ID,
+      sourceThreadId: "thr_source",
+      visibility: "hidden",
+      ...overrides,
+    });
+    const { harness } = await loadPlugin({ get: async () => thread, update });
+    await expect(
+      harness.behavior.callRpc("promoteSideChat", { threadId: thread.id }),
+    ).rejects.toThrow("Only an unarchived side chat");
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("gives untitled chats a sidebar label and propagates save failures", async () => {
+    const thread = makeThreadResponse({
+      id: "thr_side",
+      originKind: "fork",
+      originPluginId: PLUGIN_ID,
+      sourceThreadId: "thr_source",
+      visibility: "hidden",
+      title: null,
+      titleFallback: null,
+    });
+    const update = vi.fn().mockRejectedValue(new Error("Offline"));
+    const { harness } = await loadPlugin({ get: async () => thread, update });
+    await expect(
+      harness.behavior.callRpc("promoteSideChat", { threadId: thread.id }),
+    ).rejects.toThrow("Offline");
+    expect(update).toHaveBeenCalledWith({
+      threadId: thread.id,
+      visibility: "visible",
+      parentThreadId: null,
+      title: "Side chat",
+    });
+  });
+});

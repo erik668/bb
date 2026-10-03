@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createBrowserFixedPanelTab,
   createEmptyFixedPanelTabsState,
+  createPluginPanelFixedPanelTab,
   createThreadInfoFixedPanelTab,
   FIXED_PANEL_TABS_IDLE_EXPIRY_MS,
   getFixedPanelTabsStateStorageKey,
@@ -17,6 +18,7 @@ import {
   resetFixedPanelTabsStateForTest,
   resetFixedPanelTabsStorageMaintenanceForTest,
   useFixedPanelTabsState,
+  useReconciledFixedPanelTabsState,
   useFixedPanelTabsStorageMaintenance,
   useSetFixedSecondaryPanelTab,
   useUpdateFixedPanelTabsState,
@@ -68,6 +70,110 @@ afterEach(() => {
 });
 
 describe("fixed panel tab server sync", () => {
+  it("preserves saved side chats when a fresh device initializes before tabs load", async () => {
+    const threadId = "sync-fresh-device";
+    const info = createThreadInfoFixedPanelTab();
+    const sideChat = createPluginPanelFixedPanelTab({
+      pluginId: "side-chat",
+      actionId: "side-chat",
+      title: "Side chat",
+      paramsJson: JSON.stringify({
+        threadId: "thr_side",
+        sourceThreadId: threadId,
+      }),
+    });
+    let resolveTabs!: (value: {
+      revision: number;
+      tabs: (typeof sideChat)[];
+    }) => void;
+    const savedTabs = new Promise<{
+      revision: number;
+      tabs: (typeof sideChat)[];
+    }>((resolve) => {
+      resolveTabs = resolve;
+    });
+    apiMocks.getThreadTabs.mockReturnValue(savedTabs);
+    apiMocks.updateThreadTabs.mockImplementation(
+      async ({ tabs, expectedRevision }) => ({
+        revision: expectedRevision + 1,
+        tabs,
+      }),
+    );
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(
+      () =>
+        useReconciledFixedPanelTabsState({
+          fixedTabs: [info],
+          panelStateId: threadId,
+          syncThreadId: threadId,
+        }),
+      { wrapper: createQueryWrapper(queryClient) },
+    );
+
+    await act(async () => resolveTabs({ revision: 7, tabs: [sideChat] }));
+
+    await waitFor(() => {
+      expect(result.current.secondary.tabs).toEqual([info, sideChat]);
+    });
+    expect(apiMocks.updateThreadTabs).toHaveBeenCalledWith({
+      threadId,
+      expectedRevision: 7,
+      tabs: [info, sideChat],
+    });
+  });
+
+  it("keeps existing local side chats when initialization races the first migration", async () => {
+    const threadId = "sync-initialize-migration";
+    const info = createThreadInfoFixedPanelTab();
+    const sideChat = createPluginPanelFixedPanelTab({
+      pluginId: "side-chat",
+      actionId: "side-chat",
+      title: "Side chat",
+      paramsJson: JSON.stringify({
+        threadId: "thr_local",
+        sourceThreadId: threadId,
+      }),
+    });
+    window.localStorage.setItem(
+      getFixedPanelTabsStateStorageKey({ threadId }),
+      serializeFixedPanelTabsState({
+        state: createEmptyFixedPanelTabsState({
+          lastUsedAt: Date.now(),
+          secondary: {
+            activeTabId: sideChat.id,
+            isOpen: true,
+            tabs: [sideChat],
+          },
+        }),
+      }),
+    );
+    apiMocks.getThreadTabs.mockResolvedValue({ revision: 0, tabs: [] });
+    apiMocks.updateThreadTabs.mockImplementation(
+      async ({ tabs, expectedRevision }) => ({
+        revision: expectedRevision + 1,
+        tabs,
+      }),
+    );
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(
+      () =>
+        useReconciledFixedPanelTabsState({
+          fixedTabs: [info],
+          panelStateId: threadId,
+          syncThreadId: threadId,
+        }),
+      { wrapper: createQueryWrapper(queryClient) },
+    );
+    await waitFor(() =>
+      expect(apiMocks.updateThreadTabs).toHaveBeenCalledWith({
+        threadId,
+        expectedRevision: 0,
+        tabs: [info, sideChat],
+      }),
+    );
+    expect(result.current.secondary.tabs).toEqual([info, sideChat]);
+  });
+
   it("keeps non-thread panel tabs local", () => {
     const panelStateId = "root-compose";
     const localTab = createThreadInfoFixedPanelTab();

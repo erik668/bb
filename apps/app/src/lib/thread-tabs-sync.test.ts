@@ -4,6 +4,7 @@ import { createEmptyFixedPanelTabsState } from "./fixed-panel-tabs-state";
 import { createPluginPageFixedPanelTab } from "./fixed-panel-tabs-state";
 import {
   areThreadTabListsEquivalent,
+  mergeThreadTabChanges,
   reconcileFixedPanelTabsState,
 } from "./thread-tabs-sync";
 
@@ -78,5 +79,33 @@ describe("thread tab synchronization", () => {
     });
 
     expect(areThreadTabListsEquivalent([pageTab], [])).toBe(true);
+  });
+});
+
+describe("merging tab changes from partially loaded clients", () => {
+  it("preserves unseen tabs while applying explicit additions, removals, edits, and reordering", () => {
+    const first = browserTab("first", "First");
+    const second = browserTab("second", "Second");
+    const third = browserTab("third", "Third");
+    const unseen = browserTab("unseen", "Unseen");
+    const added = browserTab("added", "Added");
+    const renamed = { ...third, title: "Renamed" };
+    expect(
+      mergeThreadTabChanges(
+        [first, second, third],
+        [renamed, first, added],
+        [first, second, third, unseen],
+      ),
+    ).toEqual([renamed, first, added, unseen]);
+  });
+
+  it("does not resurrect remotely closed tabs or overwrite remote edits to untouched tabs", () => {
+    const first = browserTab("first", "First");
+    const closed = browserTab("closed", "Closed");
+    const renamed = { ...first, title: "Renamed elsewhere" };
+    const added = browserTab("added", "Added");
+    expect(
+      mergeThreadTabChanges([first, closed], [first, closed, added], [renamed]),
+    ).toEqual([renamed, added]);
   });
 });

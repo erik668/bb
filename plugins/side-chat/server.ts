@@ -66,6 +66,10 @@ function isOwnLiveHiddenFork(
 }
 
 export const sideChatRpcContract = defineRpcContract({
+  promoteSideChat: {
+    input: z.object({ threadId: z.string().trim().min(1) }).strict(),
+    output: z.object({ threadId: z.string() }).strict(),
+  },
   createSideChat: {
     input: z
       .object({
@@ -90,6 +94,27 @@ export const sideChatRpcContract = defineRpcContract({
 
 export default async function plugin(bb: BbPluginApi) {
   bb.rpc.register(sideChatRpcContract, {
+    async promoteSideChat({ threadId }) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      if (
+        thread.originKind !== "fork" ||
+        thread.originPluginId !== bb.pluginId ||
+        thread.sourceThreadId === null ||
+        thread.archivedAt !== null ||
+        thread.deletedAt !== null
+      ) {
+        throw new Error("Only an unarchived side chat can be promoted.");
+      }
+      await bb.sdk.threads.update({
+        threadId,
+        visibility: "visible",
+        parentThreadId: null,
+        ...(!thread.title && !thread.titleFallback
+          ? { title: "Side chat" }
+          : {}),
+      });
+      return { threadId };
+    },
     async createSideChat({ sourceThreadId, sourceSeqEnd, anchorText }) {
       const seedText = resolveReplySeedText(anchorText);
       const forkArgs = {

@@ -1,11 +1,13 @@
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
+import { Button } from "@bb/shared-ui/button";
 import { Icon } from "@bb/shared-ui/icon";
 import {
   definePluginApp,
   Markdown,
   ThreadChat,
   useRpc,
+  useBbNavigate,
   type PluginMessageActionContext,
   type PluginThreadPanelActionContext,
   type PluginThreadPanelProps,
@@ -216,9 +218,33 @@ function ReplyingTo({ anchorText }: { anchorText: string }) {
 
 function SideChatPanel({ params }: PluginThreadPanelProps) {
   const rpc = useRpc<typeof sideChatRpcContract>();
+  const navigate = useBbNavigate();
+  const [isPromoting, setIsPromoting] = useState(false);
+  const [promotionError, setPromotionError] = useState<string | null>(null);
   const parsed = parsePanelParams(params);
   const sideChatThreadId = parsed?.threadId ?? null;
   const sourceThreadId = parsed?.sourceThreadId ?? null;
+
+  const promote = async () => {
+    if (sideChatThreadId === null || isPromoting) return;
+    setIsPromoting(true);
+    setPromotionError(null);
+    try {
+      const promoted = await rpc.call("promoteSideChat", {
+        threadId: sideChatThreadId,
+      });
+      toast.success("Side chat added to the sidebar");
+      navigate.toThread(promoted.threadId);
+    } catch (error) {
+      setPromotionError(
+        error instanceof Error
+          ? error.message
+          : "Could not promote this side chat. Please try again.",
+      );
+    } finally {
+      setIsPromoting(false);
+    }
+  };
 
   const sendToMain = useCallback(
     async (message: { text: string; threadId: string }) => {
@@ -261,6 +287,28 @@ function SideChatPanel({ params }: PluginThreadPanelProps) {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b p-2">
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => navigate.toThread(parsed.sourceThreadId)}
+        >
+          Original chat
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={isPromoting}
+          onClick={promote}
+        >
+          {isPromoting ? "Promoting…" : "Promote to primary chat"}
+        </Button>
+      </div>
+      {promotionError !== null && (
+        <p role="alert" className="px-3 py-2 text-sm text-destructive">
+          {promotionError}
+        </p>
+      )}
       <ThreadChat
         threadId={parsed.threadId}
         variant="compact"

@@ -332,6 +332,7 @@ export function useUpdateFixedPanelTabsState(
         )
       ) {
         scheduleThreadTabsPersistence({
+          previousTabs: current.secondary.tabs,
           tabs: touched.secondary.tabs,
           queryClient,
           threadId: syncThreadId,
@@ -544,8 +545,7 @@ export function useRemoveFixedRightTerminalTab(
       let didCloseLastTab = false;
       updateState((current) => {
         const next = removeFixedRightTerminalTabInState(current, terminalId);
-        didCloseLastTab =
-          next !== current && next.secondary.tabs.length === 0;
+        didCloseLastTab = next !== current && next.secondary.tabs.length === 0;
         return next;
       });
       if (didCloseLastTab) onCloseLastTab?.();

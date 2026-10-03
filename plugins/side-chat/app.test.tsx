@@ -235,6 +235,65 @@ describe("SideChatPanel", () => {
     });
   });
 
+  it("promotes the existing conversation and opens it as a primary chat", async () => {
+    let resolvePromotion!: (value: { threadId: string }) => void;
+    const promoteSideChat = vi.fn(
+      () =>
+        new Promise<{ threadId: string }>((resolve) => {
+          resolvePromotion = resolve;
+        }),
+    );
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_src", params },
+      { rpc: { promoteSideChat } },
+    );
+    const button = slot.getByRole("button", {
+      name: "Promote to primary chat",
+    });
+    fireEvent.click(button);
+    await waitFor(() => expect(promoteSideChat).toHaveBeenCalled());
+    expect(
+      slot.getByRole("button", { name: "Promoting…" }).hasAttribute("disabled"),
+    ).toBe(true);
+    expect(slot.inspection.navigateCalls).toEqual([]);
+    resolvePromotion({ threadId: "thr_fork" });
+    await waitFor(() =>
+      expect(slot.inspection.navigateCalls).toEqual([
+        { method: "toThread", threadId: "thr_fork" },
+      ]),
+    );
+    expect(slot.inspection.rpcCalls).toEqual([
+      { method: "promoteSideChat", input: { threadId: "thr_fork" } },
+    ]);
+  });
+
+  it("keeps the side chat usable and allows retry when promotion fails", async () => {
+    const promoteSideChat = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("Connection lost"))
+      .mockResolvedValue({ threadId: "thr_fork" });
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_src", params },
+      { rpc: { promoteSideChat } },
+    );
+    fireEvent.click(
+      slot.getByRole("button", { name: "Promote to primary chat" }),
+    );
+    expect((await slot.findByRole("alert")).textContent).toContain(
+      "Connection lost",
+    );
+    expect(slot.inspection.navigateCalls).toEqual([]);
+    expect(
+      slot.getByTestId("bb-thread-chat").getAttribute("data-thread-id"),
+    ).toBe("thr_fork");
+    fireEvent.click(
+      slot.getByRole("button", { name: "Promote to primary chat" }),
+    );
+    await waitFor(() => expect(slot.inspection.navigateCalls).toHaveLength(1));
+  });
+
   it("reports a missing thread reference for malformed params", () => {
     const slot = renderSlot(
       app.threadPanelActions[0]!,
