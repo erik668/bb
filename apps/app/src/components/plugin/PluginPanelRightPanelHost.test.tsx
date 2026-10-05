@@ -1,6 +1,11 @@
 // @vitest-environment jsdom
 
 import {
+  setPluginLogoUrls,
+  resetPluginLogoStoreForTest,
+} from "@/lib/plugin-logos";
+import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,7 +14,15 @@ import {
 } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import type { ReactNode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { resetFixedPanelTabsStateForTest } from "@/lib/fixed-panel-tabs";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, useLocation } from "react-router-dom";
@@ -21,7 +34,9 @@ import {
   getFixedPanelTabsStateStorageKey,
   serializeFixedPanelTabsState,
 } from "@/lib/fixed-panel-tabs-state";
+import * as panelSplits from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import { PluginPanelRightPanelHost } from "./PluginPanelRightPanelHost";
+import { openPluginDetailsInWorkspace } from "./plugin-detail-opener";
 import { getPluginPagePanelStateId } from "./plugin-page-panel-state";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import {
@@ -70,7 +85,6 @@ const browserState = vi.hoisted(() => ({ available: false }));
 const viewportState = vi.hoisted(() => ({ isCompactViewport: false }));
 const createTerminal = vi.hoisted(() => vi.fn());
 const catalogQueryState = vi.hoisted(() => ({ queries: [] as string[] }));
-const openPaneContentInSplit = vi.hoisted(() => vi.fn());
 const threadTabsApi = vi.hoisted(() => ({
   get: vi.fn(),
   update: vi.fn(),
@@ -165,7 +179,7 @@ vi.mock("@/hooks/queries/plugin-catalog-queries", () => ({
 }));
 
 vi.mock("@/lib/split-layout/openPaneContentInSplit", () => ({
-  openPaneContentInSplit,
+  openPaneContentInSplit: vi.fn(),
 }));
 
 vi.mock("@/hooks/queries/plugin-settings-queries", () => ({
@@ -358,6 +372,7 @@ vi.mock("@/components/secondary-panel/ThreadSecondaryPanel", () => ({
     fixedTabs: Array<{
       tab: { id: string };
       title: string;
+      leadingVisual?: ReactNode;
       onSelect: () => void;
       contentFillsRegion?: boolean;
       renderContent?: (pane: {
@@ -412,9 +427,20 @@ vi.mock("@/components/secondary-panel/ThreadSecondaryPanel", () => ({
         ))}
         {fixedTabs.map((tab) => (
           <button key={tab.tab.id} type="button" onClick={tab.onSelect}>
+            {tab.leadingVisual}
             {tab.title}
           </button>
         ))}
+        <button
+          type="button"
+          onClick={() => {
+            for (const tab of tabs) {
+              tab.onClose();
+            }
+          }}
+        >
+          Close all tabs
+        </button>
         <button type="button" onClick={onOpenNewTab}>
           Add tab
         </button>
@@ -505,6 +531,8 @@ vi.mock("@/components/thread/terminal/ThreadTerminalPanel", async () => {
 });
 
 vi.mock("@/components/secondary-panel/ThreadSecondaryPanelTabContent", () => ({
+  HostFilePreviewTabContent: () => null,
+  ProjectFilePreviewTabContent: () => null,
   WorkspaceFilePreviewTabContent: ({
     activePath,
     environmentId,
@@ -632,8 +660,8 @@ function PluginDetailNavigationLink() {
   const onRouteAnchorClick = useRouteAnchorDelegate();
   return (
     <div onClick={onRouteAnchorClick}>
-      <a href="/extensions/plugins/secrets">Open Secrets plugin</a>
-      <a href="/extensions/plugins/automations">Open Automations plugin</a>
+      <a href="/plugins/secrets">Open Secrets plugin</a>
+      <a href="/plugins/automations">Open Automations plugin</a>
     </div>
   );
 }
@@ -642,12 +670,7 @@ function CurrentPath() {
   return <output data-testid="current-path">{useLocation().pathname}</output>;
 }
 
-function renderHost(
-  panelPath = "board",
-  subPath = "",
-  store = createStore(),
-  pluginDetailTabsEnabled = false,
-) {
+function renderHost(panelPath = "board", subPath = "", store = createStore()) {
   const panelStateId = getPluginPagePanelStateId({
     panelPath,
     pluginId: "demo",
@@ -667,7 +690,6 @@ function renderHost(
                 panelPath={panelPath}
                 pluginId="demo"
                 subPath={subPath}
-                pluginDetailTabsEnabled={pluginDetailTabsEnabled}
               >
                 <div>Plugin page</div>
                 <PluginDetailNavigationLink />
@@ -682,6 +704,17 @@ function renderHost(
 }
 
 describe("PluginPanelRightPanelHost", () => {
+  beforeAll(async () => {
+    for (const split of [
+      panelSplits.LazyWorkspaceFilePreviewTabContent,
+      panelSplits.LazyHostFilePreviewTabContent,
+      panelSplits.LazyHostScopedFilePreviewTabContent,
+      panelSplits.LazyProjectFilePreviewTabContent,
+      panelSplits.LazyThreadStorageFilePreviewTabContent,
+    ])
+      await split.preload();
+  });
+
   beforeEach(() => {
     browserState.available = false;
     viewportState.isCompactViewport = false;
@@ -696,7 +729,6 @@ describe("PluginPanelRightPanelHost", () => {
     fixedTabState.fileOpeners = [];
     fixedTabState.newThreadPanelActions = [];
     catalogQueryState.queries = [];
-    openPaneContentInSplit.mockReset();
     secondaryPanelState.collapseEnabled = false;
     secondaryPanelState.fixedTabs = [];
     secondaryPanelState.splitPanelStateId = undefined;
@@ -708,34 +740,30 @@ describe("PluginPanelRightPanelHost", () => {
 
   afterEach(() => {
     cleanup();
+    resetPluginLogoStoreForTest();
   });
 
-  it("shows the side-panel glyph on the trigger for a compact viewport", async () => {
-    viewportState.isCompactViewport = true;
-    renderHost();
+  it.each([
+    ["compact", true],
+    ["wide", false],
+  ])(
+    "shows the side-panel glyph on the trigger for a %s viewport",
+    async (_label, isCompactViewport) => {
+      viewportState.isCompactViewport = isCompactViewport;
+      renderHost();
 
-    const showButton = await screen.findByRole("button", {
-      name: "Show right panel",
-    });
-    expect(showButton.querySelector('[data-icon="PanelRight"]')).toBeTruthy();
-  });
+      const showButton = await screen.findByRole("button", {
+        name: "Show right panel",
+      });
+      expect(showButton.querySelector('[data-icon="PanelRight"]')).toBeTruthy();
+    },
+  );
 
-  it("shows the side-panel glyph on the trigger for a wide viewport", async () => {
-    renderHost();
-
-    const showButton = await screen.findByRole("button", {
-      name: "Show right panel",
-    });
-    expect(showButton.querySelector('[data-icon="PanelRight"]')).toBeTruthy();
-  });
-
-  it("keeps one panel toggle and mounts the collapsed panel before opening", async () => {
+  it("keeps one panel toggle and retains the panel after its first opening", async () => {
     renderHost();
 
     expect(screen.getByTestId("shared-secondary-panel-layout")).toBeTruthy();
-    const collapsedPanel = await screen.findByTestId(
-      "shared-thread-secondary-panel",
-    );
+    expect(screen.queryByTestId("shared-thread-secondary-panel")).toBeNull();
     await waitFor(() =>
       expect(
         screen
@@ -749,8 +777,8 @@ describe("PluginPanelRightPanelHost", () => {
     });
     fireEvent.click(showButton);
 
-    expect(screen.getByTestId("shared-thread-secondary-panel")).toBe(
-      collapsedPanel,
+    const realizedPanel = await screen.findByTestId(
+      "shared-thread-secondary-panel",
     );
     expect(
       screen
@@ -773,6 +801,9 @@ describe("PluginPanelRightPanelHost", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Show right panel" }));
     expect(await screen.findByTestId("plugin-page-new-tab")).toBeTruthy();
+    expect(screen.getByTestId("shared-thread-secondary-panel")).toBe(
+      realizedPanel,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Hide right panel" }));
     expect(
       await screen.findByRole("button", { name: "Show right panel" }),
@@ -780,7 +811,7 @@ describe("PluginPanelRightPanelHost", () => {
   });
 
   it("opens plugin detail links in a header-controlled tab without leaving the plugin page", async () => {
-    renderHost("board", "", createStore(), true);
+    renderHost();
 
     fireEvent.click(screen.getByRole("link", { name: "Open Secrets plugin" }));
 
@@ -805,8 +836,23 @@ describe("PluginPanelRightPanelHost", () => {
     );
   });
 
+  it("accepts sidebar detail requests before the plugin panel registers", async () => {
+    fixedTabState.panelRegistered = false;
+    renderHost();
+    act(() => {
+      expect(
+        openPluginDetailsInWorkspace({ pluginId: "secrets", title: "Secrets" }),
+      ).toBe(true);
+    });
+    expect(await screen.findByText("Details for secrets")).toBeTruthy();
+    expect(screen.getByTestId("current-path").textContent).toBe(
+      "/plugins/demo/board",
+    );
+    expect(screen.getByText("Plugin page")).toBeTruthy();
+  });
+
   it("observes only the selected detail tab while retaining inactive tab metadata", async () => {
-    renderHost("board", "", createStore(), true);
+    renderHost();
 
     fireEvent.click(screen.getByRole("link", { name: "Open Secrets plugin" }));
     expect(await screen.findByText("Details for secrets")).toBeTruthy();
@@ -824,22 +870,25 @@ describe("PluginPanelRightPanelHost", () => {
     expect(catalogQueryState.queries).toEqual(["secrets"]);
   });
 
-  it("keeps split navigation for plugin-detail links outside the Plugin Guide", () => {
+  it("closes every plugin detail tab when several close in one event", async () => {
     renderHost();
 
     fireEvent.click(screen.getByRole("link", { name: "Open Secrets plugin" }));
+    expect(await screen.findByText("Details for secrets")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("link", { name: "Open Automations plugin" }),
+    );
+    expect(await screen.findByText("Details for automations")).toBeTruthy();
 
-    expect(openPaneContentInSplit).toHaveBeenCalledTimes(1);
-    expect(openPaneContentInSplit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        content: { kind: "plugin-detail", pluginId: "secrets" },
-        route: "/extensions/plugins/secrets",
-      }),
+    fireEvent.click(screen.getByRole("button", { name: "Close all tabs" }));
+
+    await waitFor(() =>
+      expect(secondaryPanelState.tabKinds).not.toContain(
+        "marketplace-plugin-detail",
+      ),
     );
-    expect(screen.queryByTestId("marketplace-plugin-detail")).toBeNull();
-    expect(secondaryPanelState.tabKinds).not.toContain(
-      "marketplace-plugin-detail",
-    );
+    expect(screen.queryByRole("button", { name: "Secrets" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Automations" })).toBeNull();
   });
 
   it("closes the compact drawer when its remaining tab closes", async () => {
@@ -859,7 +908,22 @@ describe("PluginPanelRightPanelHost", () => {
     expect(screen.queryByText("This panel view is unavailable.")).toBeNull();
   });
 
-  it("uses the shared panel state and chrome for plugin fixed tabs", async () => {
+  it("uses the shared panel state and explicit icons for plugin fixed tabs", async () => {
+    setPluginLogoUrls(
+      new Map([
+        [
+          "demo",
+          {
+            displayName: "Demo",
+            icon: "Check",
+            compactIconUrl: "/demo.svg",
+            logoUrl: null,
+            logoDarkUrl: null,
+            icons: new Map(),
+          },
+        ],
+      ]),
+    );
     function Navigation({ subPath }: { subPath: string }) {
       return <div>Navigation for {subPath}</div>;
     }
@@ -907,6 +971,11 @@ describe("PluginPanelRightPanelHost", () => {
         .hasAttribute("hidden"),
     ).toBe(false);
     expect(await screen.findByText("Navigation for task/123")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("button", { name: "Navigation" })
+        .querySelector('[data-icon="PanelRight"]'),
+    ).not.toBeNull();
     expect(screen.queryByText("Details for task/123")).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Hide right panel" }));
@@ -921,7 +990,7 @@ describe("PluginPanelRightPanelHost", () => {
     fireEvent.click(screen.getByText("Add tab"));
     expect(await screen.findByTestId("plugin-page-new-tab")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Close New tab" }));
-    expect(screen.getByText("Navigation for task/123")).toBeTruthy();
+    expect(await screen.findByText("Details for task/123")).toBeTruthy();
     expect(
       screen
         .getByTestId("shared-secondary-panel-region")

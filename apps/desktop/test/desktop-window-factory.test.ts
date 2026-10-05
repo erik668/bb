@@ -50,8 +50,6 @@ class FakeDesktopWindowWebContents implements DesktopWindowWebContents {
   public devToolsOpenCount = 0;
   public id: number;
   public readonly addedDictionaryWords: string[] = [];
-  public readonly sentMessages: Array<{ channel: string; payload: unknown }> =
-    [];
   public readonly spellCheckerEnabledValues: boolean[] = [];
   public readonly session: DesktopContextMenuWebContents["session"] = {
     addWordToSpellCheckerDictionary: (word) => {
@@ -79,10 +77,6 @@ class FakeDesktopWindowWebContents implements DesktopWindowWebContents {
     }
   }
 
-  send(channel: string, payload: unknown): void {
-    this.sentMessages.push({ channel, payload });
-  }
-
   on(...args: Parameters<DesktopContextMenuWebContents["on"]>): void {
     const [eventName, listener] = args;
     if (eventName === "context-menu") {
@@ -108,7 +102,6 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
   public readonly loadedUrls: string[] = [];
   public readonly options: BrowserWindowConstructorOptions;
   public readonly webContents: FakeDesktopWindowWebContents;
-  public focused = false;
   public fullScreen = false;
   public maximized = false;
   public minimized = false;
@@ -148,9 +141,7 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
     this.readyToShowListener?.();
   }
 
-  focus(): void {
-    this.focused = true;
-  }
+  focus(): void {}
 
   getBounds(): WindowBounds {
     return this.bounds;
@@ -162,10 +153,6 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
 
   isFullScreen(): boolean {
     return this.fullScreen;
-  }
-
-  isFocused(): boolean {
-    return this.focused;
   }
 
   isMaximized(): boolean {
@@ -212,45 +199,55 @@ class FakeDesktopWindow implements DesktopBrowserWindow {
   }
 }
 
-describe("desktop window factory", () => {
-  it("creates distinct windows against the existing runtime URL", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const generatedStateKeys: WindowStateKey[] = ["window-second"];
-    let runtimeSupervisorInvocations = 0;
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return generatedStateKeys.shift() ?? "window-fallback";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: true,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
+interface FactoryHarness {
+  createdWindows: FakeDesktopWindow[];
+  factory: ReturnType<typeof createDesktopWindowFactory>;
+  userDataPath: string;
+}
 
-    runtimeSupervisorInvocations += 1;
+async function createFactoryHarness(
+  overrides: Partial<Parameters<typeof createDesktopWindowFactory>[0]> = {},
+): Promise<FactoryHarness> {
+  const tempDir = await createTempDir();
+  const createdWindows: FakeDesktopWindow[] = [];
+  const browserWindowCreator: DesktopBrowserWindowCreator = {
+    create(options) {
+      const browserWindow = new FakeDesktopWindow({ options });
+      createdWindows.push(browserWindow);
+      return browserWindow;
+    },
+  };
+  const factory = createDesktopWindowFactory({
+    browserWindowCreator,
+    createWindowStateKey() {
+      return "window-fallback";
+    },
+    displayWorkAreas: [{ height: 900, width: 1440, x: 0, y: 0 }],
+    icon: undefined,
+    isMac: true,
+    isLinuxTransparent: false,
+    isLinuxFrameless: false,
+    isQuitting() {
+      return false;
+    },
+    openExternalUrl() {},
+    preloadPath: "/tmp/preload.cjs",
+    userDataPath: tempDir.path,
+    ...overrides,
+  });
+  return { createdWindows, factory, userDataPath: tempDir.path };
+}
+
+describe("desktop window factory", () => {
+  it("creates distinct windows that load the same URL", async () => {
+    const generatedStateKeys: WindowStateKey[] = ["window-second"];
+    const { createdWindows, factory, userDataPath } =
+      await createFactoryHarness({
+        createWindowStateKey() {
+          return generatedStateKeys.shift() ?? "window-fallback";
+        },
+      });
+
     const firstWindow = await factory.createWindow({
       initialUrl: "http://127.0.0.1:38886",
       stateKey: null,
@@ -278,11 +275,10 @@ describe("desktop window factory", () => {
     expect(createdWindows[1]?.loadedUrls).toEqual(["http://127.0.0.1:38886"]);
     expect(createdWindows[0]?.webContents.zoomFactors).toEqual([1]);
     expect(createdWindows[1]?.webContents.zoomFactors).toEqual([1]);
-    expect(runtimeSupervisorInvocations).toBe(1);
 
     await factory.persistOpenWindows();
     await expect(
-      readPersistedWindowStateEntries({ userDataPath: tempDir.path }),
+      readPersistedWindowStateEntries({ userDataPath }),
     ).resolves.toEqual([
       {
         bounds: {
@@ -310,40 +306,13 @@ describe("desktop window factory", () => {
   });
 
   it("allocates distinct state keys for concurrent implicit windows", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
     const generatedStateKeys: WindowStateKey[] = ["window-concurrent"];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return generatedStateKeys.shift() ?? "window-fallback";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
+    const { createdWindows, factory, userDataPath } =
+      await createFactoryHarness({
+        createWindowStateKey() {
+          return generatedStateKeys.shift() ?? "window-fallback";
         },
-      ],
-      icon: undefined,
-      isMac: true,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
+      });
 
     const [firstWindow, secondWindow] = await Promise.all([
       factory.createWindow({
@@ -361,7 +330,7 @@ describe("desktop window factory", () => {
 
     await factory.persistOpenWindows();
     const persistedEntries = await readPersistedWindowStateEntries({
-      userDataPath: tempDir.path,
+      userDataPath,
     });
     const stateKeys = persistedEntries.map((entry) => entry.stateKey);
 
@@ -369,42 +338,12 @@ describe("desktop window factory", () => {
     expect(new Set(stateKeys).size).toBe(2);
   });
 
-  it("opens renderer blank-target links externally and denies the popup", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
+  it("opens only policy-approved blank-target links externally and denies every popup", async () => {
     const openedExternalUrls: string[] = [];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return "window-link-test";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: true,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
+    const { createdWindows, factory } = await createFactoryHarness({
       openExternalUrl({ url }) {
         openedExternalUrls.push(url);
       },
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
     });
 
     await factory.createWindow({
@@ -420,314 +359,62 @@ describe("desktop window factory", () => {
       throw new Error("Expected window open handler");
     }
 
-    const result = handler({ url: "https://example.com/from-markdown" });
+    const results = [
+      "https://example.com/from-markdown",
+      "devin://file/Users/me/.bb/artifacts/thr_1/review.diff",
+      "javascript:alert(1)",
+      "file:///System/Applications/Chess.app",
+      "http://127.0.0.1:38886/threads/thr_1",
+    ].map((url) => handler({ url }));
 
     expect(createdWindows).toHaveLength(1);
-    expect(openedExternalUrls).toEqual(["https://example.com/from-markdown"]);
-    expect(result).toEqual({ action: "deny" });
-  });
-
-  it("loads and focuses an existing first window when navigating by URL", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return "window-navigation-test";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: true,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
-    const initialUrl = "http://127.0.0.1:38886";
-    const threadUrl = "http://127.0.0.1:38886/projects/proj_a/threads/thr_a";
-
-    expect(await factory.loadUrlInFirstWindow({ url: threadUrl })).toBe(false);
-
-    await factory.createWindow({
-      initialUrl,
-      stateKey: null,
-    });
-    const browserWindow = createdWindows[0];
-    if (browserWindow === undefined) {
-      throw new Error("Expected desktop window");
-    }
-    browserWindow.minimized = true;
-
-    await expect(
-      factory.loadUrlInFirstWindow({ url: threadUrl }),
-    ).resolves.toBe(true);
-
-    expect(browserWindow.loadedUrls).toEqual([initialUrl, threadUrl]);
-    expect(browserWindow.minimized).toBe(false);
-    expect(browserWindow.focused).toBe(true);
-    expect(createdWindows).toHaveLength(1);
-  });
-
-  it("sends a renderer message to the first open window without reloading it", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return "window-send-test";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: true,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
-
-    expect(
-      factory.sendToFirstWindow("bb:test", { path: "/threads/thr_a" }),
-    ).toBe(false);
-
-    await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
-    });
-    const browserWindow = createdWindows[0];
-    if (browserWindow === undefined) {
-      throw new Error("Expected desktop window");
-    }
-
-    expect(
-      factory.sendToFirstWindow("bb:test", { path: "/threads/thr_a" }),
-    ).toBe(true);
-    expect(browserWindow.webContents.sentMessages).toEqual([
-      { channel: "bb:test", payload: { path: "/threads/thr_a" } },
+    expect(openedExternalUrls).toEqual([
+      "https://example.com/from-markdown",
+      "http://127.0.0.1:38886/threads/thr_1",
     ]);
-    expect(browserWindow.loadedUrls).toEqual(["http://127.0.0.1:38886"]);
-    expect(browserWindow.focused).toBe(true);
-  });
-
-  it("sends a renderer message to the focused window when available", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const generatedStateKeys: WindowStateKey[] = [
-      "focused-window-first",
-      "focused-window-second",
-    ];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return generatedStateKeys.shift() ?? "focused-window-fallback";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: true,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
-
-    await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
-    });
-    await factory.createWindow({
-      initialUrl: "http://127.0.0.1:38886",
-      stateKey: null,
-    });
-    const firstWindow = createdWindows[0];
-    const secondWindow = createdWindows[1];
-    if (firstWindow === undefined || secondWindow === undefined) {
-      throw new Error("Expected desktop windows");
-    }
-    secondWindow.focused = true;
-
-    expect(factory.sendToFocusedWindow("bb:test", { action: "new-tab" })).toBe(
-      true,
-    );
-
-    expect(firstWindow.webContents.sentMessages).toEqual([]);
-    expect(secondWindow.webContents.sentMessages).toEqual([
-      { channel: "bb:test", payload: { action: "new-tab" } },
-    ]);
-  });
-
-  it("uses the native window frame on Linux", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return "linux-window";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: false,
-      isLinuxTransparent: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
-
-    await factory.createWindow({ initialUrl: null, stateKey: null });
-
-    expect(createdWindows[0]?.options).not.toHaveProperty("frame");
-    expect(createdWindows[0]?.options).not.toHaveProperty("titleBarStyle");
-    expect(createdWindows[0]?.options).not.toHaveProperty(
-      "trafficLightPosition",
+    expect(new Set(results.map((result) => result.action))).toEqual(
+      new Set(["deny"]),
     );
   });
 
-  it("enables transparent Linux windows when requested", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return "transparent-linux-window";
-      },
-      displayWorkAreas: [{ height: 900, width: 1440, x: 0, y: 0 }],
-      icon: undefined,
+  it.each([
+    {
+      name: "keeps the native frame",
+      isLinuxFrameless: false,
+      isLinuxTransparent: false,
+      present: {},
+      absent: ["frame", "titleBarStyle", "trafficLightPosition"],
+    },
+    {
+      name: "enables transparency when requested",
+      isLinuxFrameless: false,
       isLinuxTransparent: true,
-      isMac: false,
-      isLinuxFrameless: false,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
-
-    await factory.createWindow({ initialUrl: null, stateKey: null });
-
-    expect(createdWindows[0]?.options.transparent).toBe(true);
-    expect(createdWindows[0]?.options.backgroundColor).toBe("#00000000");
-    expect(createdWindows[0]?.options).not.toHaveProperty("frame");
-  });
-
-  it("removes the native window frame when requested on Linux", async () => {
-    const tempDir = await createTempDir();
-    const createdWindows: FakeDesktopWindow[] = [];
-    const browserWindowCreator: DesktopBrowserWindowCreator = {
-      create(options) {
-        const browserWindow = new FakeDesktopWindow({ options });
-        createdWindows.push(browserWindow);
-        return browserWindow;
-      },
-    };
-    const factory = createDesktopWindowFactory({
-      browserWindowCreator,
-      createWindowStateKey() {
-        return "frameless-linux-window";
-      },
-      displayWorkAreas: [
-        {
-          height: 900,
-          width: 1440,
-          x: 0,
-          y: 0,
-        },
-      ],
-      icon: undefined,
-      isMac: false,
-      isLinuxTransparent: false,
+      present: { transparent: true, backgroundColor: "#00000000" },
+      absent: ["frame"],
+    },
+    {
+      name: "removes the native frame when requested",
       isLinuxFrameless: true,
-      isQuitting() {
-        return false;
-      },
-      openExternalUrl() {},
-      preloadPath: "/tmp/preload.cjs",
-      userDataPath: tempDir.path,
-    });
+      isLinuxTransparent: false,
+      present: { frame: false },
+      absent: ["titleBarStyle", "trafficLightPosition"],
+    },
+  ])(
+    "$name for Linux windows",
+    async ({ isLinuxFrameless, isLinuxTransparent, present, absent }) => {
+      const { createdWindows, factory } = await createFactoryHarness({
+        isMac: false,
+        isLinuxTransparent,
+        isLinuxFrameless,
+      });
 
-    await factory.createWindow({ initialUrl: null, stateKey: null });
+      await factory.createWindow({ initialUrl: null, stateKey: null });
 
-    expect(createdWindows[0]?.options.frame).toBe(false);
-    expect(createdWindows[0]?.options).not.toHaveProperty("titleBarStyle");
-    expect(createdWindows[0]?.options).not.toHaveProperty(
-      "trafficLightPosition",
-    );
-  });
+      const options = createdWindows[0]?.options;
+      expect(options).toMatchObject(present);
+      for (const key of absent) {
+        expect(options).not.toHaveProperty(key);
+      }
+    },
+  );
 });

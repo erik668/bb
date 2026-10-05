@@ -100,7 +100,6 @@ describe("provider-native memory host boundary", () => {
     });
     expect(scanned).toMatchObject({
       kind: "ok",
-      // The host names the layout it matched; the server never assumes one.
       layout: "claude-memory-dir",
       sources: [
         {

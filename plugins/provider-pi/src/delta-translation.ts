@@ -74,21 +74,9 @@ const piAssistantUsageSchema = z
   .object({
     input: z.number().optional(),
     output: z.number().optional(),
-    cacheRead: z.number().optional(),
-    cacheWrite: z.number().optional(),
+    cacheRead: z.number().nonnegative().optional().catch(undefined),
+    cacheWrite: z.number().nonnegative().optional().catch(undefined),
     totalTokens: z.number().optional(),
-  })
-  .passthrough();
-
-const piAssistantMessageSchema = z
-  .object({
-    role: z.literal("assistant"),
-    content: z.array(piMessageContentBlockSchema),
-    stopReason: z.string().optional(),
-    errorMessage: z.string().optional(),
-    provider: z.string().optional(),
-    model: z.string().optional(),
-    usage: piAssistantUsageSchema.optional(),
   })
   .passthrough();
 
@@ -105,6 +93,11 @@ const piConversationMessageSchema = z
     usage: piAssistantUsageSchema.optional(),
   })
   .passthrough();
+
+const piAssistantMessageSchema = piConversationMessageSchema.extend({
+  role: z.literal("assistant"),
+  content: z.array(piMessageContentBlockSchema),
+});
 
 const piCustomMessageBoundaryEventSchema = z
   .object({
@@ -201,8 +194,16 @@ const piFileEditArgsSchema = z
     oldText: z.string().optional(),
     newText: z.string().optional(),
     content: z.string().optional(),
+    edits: z.unknown().optional(),
   })
   .passthrough();
+
+const piFileEditBatchSchema = z.array(
+  z.object({
+    oldText: z.string(),
+    newText: z.string(),
+  }),
+);
 
 type PiAssistantMessage = z.infer<typeof piAssistantMessageSchema>;
 type PiAssistantErrorMessage = PiAssistantMessage & {
@@ -251,13 +252,32 @@ function classifyPiToolUse(
     if (!parsed.data.path) {
       return { type: "tool", tool: toolName, args: parsed.data };
     }
+    const path = parsed.data.path;
+    const parsedEdits = piFileEditBatchSchema.safeParse(parsed.data.edits);
+    if (
+      parsedEdits.success && parsedEdits.data.length > 0
+    ) {
+      return {
+        type: "fileChange",
+        changes: parsedEdits.data.map((edit) => ({
+          path,
+          kind: "update",
+          oldText: edit.oldText,
+          newText: edit.newText,
+        })),
+      };
+    }
+
     const newText = parsed.data.newText ?? parsed.data.content;
     return {
       type: "fileChange",
       changes: [
         {
-          path: parsed.data.path,
-          kind: parsed.data.oldText === undefined ? "add" : "update",
+          path,
+          kind:
+            toolName === "edit" || parsed.data.oldText !== undefined
+              ? "update"
+              : "add",
           ...(parsed.data.oldText === undefined
             ? {}
             : { oldText: parsed.data.oldText }),
@@ -520,10 +540,7 @@ export function createPiDeltaTranslator(
             typeof used === "number" && Number.isFinite(used) && used >= 0
               ? used
               : null,
-          size:
-            typeof size === "number" && Number.isFinite(size) && size > 0
-              ? size
-              : null,
+          size: toPositiveNumber(size) ?? null,
           estimated: contextWindowUsage.estimated,
           attach: "currentOrLast",
         },
@@ -691,7 +708,13 @@ export function createPiDeltaTranslator(
               kind: "provider.error",
               message: "Provider error",
               detail: lastAssistant.errorMessage,
-              settlesTurn: true,
+            },
+            {
+              kind: "turn.boundary",
+              status: "failed",
+              ...(piEvent.data.providerCheckpointId !== undefined
+                ? { providerCheckpointId: piEvent.data.providerCheckpointId }
+                : {}),
             },
           ];
         }
@@ -988,6 +1011,12 @@ function toAssistantUsageBreakdown(
         : inputTokens + outputTokens + cachedInputTokens,
     inputTokens,
     cachedInputTokens,
+    ...(typedUsage.cacheRead === undefined
+      ? {}
+      : { cacheReadInputTokens: typedUsage.cacheRead }),
+    ...(typedUsage.cacheWrite === undefined
+      ? {}
+      : { cacheWriteInputTokens: typedUsage.cacheWrite }),
     outputTokens,
     reasoningOutputTokens: 0,
   };

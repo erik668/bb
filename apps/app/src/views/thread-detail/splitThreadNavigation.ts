@@ -5,6 +5,7 @@ import {
   findPane,
   findPaneByContent,
   findPaneByThread,
+  isSamePaneContent,
   MAX_PANES,
   replacePaneContent,
   setFocus,
@@ -19,8 +20,8 @@ import {
   getPluginPanelRoutePath,
   getRootComposeRoutePath,
   getThreadRoutePath,
+  PLUGIN_DETAIL_ROUTE_PATH,
   PLUGIN_PANEL_ROUTE_PATH,
-  TOOLS_PLUGIN_DETAIL_ROUTE_PATH,
 } from "@/lib/route-paths";
 
 const FIRST_PANE_ID = "pane-1";
@@ -86,7 +87,7 @@ export function paneContentForPathname(pathname: string): PaneContent | null {
       threadId: thread.params.threadId,
     };
   }
-  const detail = matchPath(TOOLS_PLUGIN_DETAIL_ROUTE_PATH, pathname);
+  const detail = matchPath(PLUGIN_DETAIL_ROUTE_PATH, pathname);
   if (detail?.params.pluginId) {
     return { kind: "plugin-detail", pluginId: detail.params.pluginId };
   }
@@ -122,6 +123,22 @@ export function reconcileLayoutForContent(
       : setFocus(withRouteState, existing.paneId);
   }
   return replacePaneContent(layout, layout.focusedPaneId, content);
+}
+
+export function replaceOriginPaneContent(
+  layout: SplitLayout,
+  paneId: string,
+  originContent: PaneContent,
+  content: PaneContent,
+): SplitLayout | null {
+  const pane = findPane(layout.root, paneId);
+  if (pane === null || !isSamePaneContent(pane.content, originContent)) {
+    return null;
+  }
+  return {
+    ...replacePaneContent(layout, paneId, content),
+    focusedPaneId: layout.focusedPaneId,
+  };
 }
 
 export function focusedPaneRoute(layout: SplitLayout): string | null {

@@ -10,6 +10,7 @@ import type { TimelineTitle, TimelineTitleSegment } from "@bb/thread-view";
 import { type IconName } from "@bb/shared-ui/icon";
 import { MarkdownPreview } from "@/components/ui/markdown-preview.js";
 import type { MarkdownLinkRouting } from "@/components/ui/markdown-link-routing.js";
+import { buildMarkdownMessageLinkRouting } from "@/components/ui/markdown-message-link-routing";
 import { cn } from "@bb/shared-ui/lib/utils";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
 import {
@@ -23,10 +24,7 @@ import {
 } from "./ConversationMessageMentions.js";
 import { ExpandableTimelineRow } from "./ExpandableTimelineRow.js";
 import { NESTED_TIMELINE_GROUP_LINE_CLASS_NAME } from "./timeline-nested-group-line.js";
-import type {
-  TimelineTitleActionResolver,
-  TimelineTitleLinkResolver,
-} from "./TimelineTitleView.js";
+import type { TimelineTitleActionResolver } from "./TimelineTitleView.js";
 import type {
   ThreadTimelineLinkHandler,
   ThreadTimelineLocalFileLinkHandler,
@@ -36,7 +34,6 @@ import { TurnRequestLabel } from "./TurnRequestLabel.js";
 import { useOverflowMeasurement } from "./conversation-message-overflow.js";
 import { PromptMentionPill } from "./ConversationMessageMentions.js";
 import { useThreadTitleDisplayText } from "@/components/thread/ThreadTitleMentions.js";
-import { getThreadRoutePath } from "@/lib/route-paths";
 import {
   boundedMarkdownPreview,
   closeUnterminatedMarkdownCodeSpan,
@@ -52,7 +49,6 @@ interface GeneratedConversationMessageProps {
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
   projectId?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
-  resolveSegmentLinkHref?: TimelineTitleLinkResolver;
   onTitleAction?: TimelineTitleActionResolver;
   sourceKind: GeneratedConversationSourceKind;
   sourceName: string;
@@ -62,7 +58,9 @@ interface GeneratedConversationMessageProps {
   systemMessageKind: SystemMessageKind;
   systemMessageSubject: SystemMessageSubject | null;
   text: string;
+  threadId?: string;
   turnRequest: TimelineUserConversationRow["turnRequest"];
+  workspaceRootPath?: string;
 }
 
 type GeneratedConversationSourceKind = "agent" | "system";
@@ -234,6 +232,14 @@ function systemMessageTitleSegments(
       return subject !== null && subject.kind === "thread-batch"
         ? [verbSegment(`${subject.count} threads updated`)]
         : SYSTEM_MESSAGE_FALLBACK_SEGMENTS;
+    case "tool-result-delivered":
+      return subject !== null && subject.kind === "tool-call"
+        ? [
+            verbSegment("Delivered"),
+            subjectSegment(subject.toolName, null),
+            verbSegment("result"),
+          ]
+        : SYSTEM_MESSAGE_FALLBACK_SEGMENTS;
     case "unlabeled":
       return SYSTEM_MESSAGE_FALLBACK_SEGMENTS;
   }
@@ -319,6 +325,8 @@ function systemMessageIconName(systemMessageKind: SystemMessageKind): IconName {
       return "AlertCircle";
     case "child-outcome-batch":
       return "ListTodo";
+    case "tool-result-delivered":
+      return "Toolbox";
     case "unlabeled":
       return "Info";
   }
@@ -342,7 +350,6 @@ function generatedConversationIconName(
 
 interface GeneratedAgentSourceTitleProps {
   onTitleAction?: TimelineTitleActionResolver;
-  resolveSegmentLinkHref?: TimelineTitleLinkResolver;
   sourceIsPluginSideChat: boolean;
   sourceName: string;
   sourceProjectId: string | null;
@@ -352,7 +359,6 @@ interface GeneratedAgentSourceTitleProps {
 
 function GeneratedAgentSourceTitle({
   onTitleAction,
-  resolveSegmentLinkHref,
   sourceIsPluginSideChat,
   sourceName,
   sourceProjectId,
@@ -362,18 +368,6 @@ function GeneratedAgentSourceTitle({
   const sourceDisplayName = useThreadTitleDisplayText(sourceName);
   const sourceTitleAction =
     title.action && onTitleAction ? onTitleAction(title.action) : null;
-  const sourceLinkHref =
-    sourceThreadId !== null && !sourceIsPluginSideChat
-      ? sourceProjectId !== null
-        ? getThreadRoutePath({
-            projectId: sourceProjectId,
-            threadId: sourceThreadId,
-          })
-        : (resolveSegmentLinkHref?.({
-            kind: "thread",
-            threadId: sourceThreadId,
-          }) ?? null)
-      : null;
   const leadIn = title.segments[0]?.text ?? "Message from";
 
   return (
@@ -397,7 +391,7 @@ function GeneratedAgentSourceTitle({
             label: sourceDisplayName,
           }}
           serializedText={`@thread:${sourceThreadId}`}
-          linkHref={sourceLinkHref ?? undefined}
+          interactive={!sourceIsPluginSideChat || sourceTitleAction !== null}
           onActivate={sourceTitleAction ?? undefined}
         />
       )}
@@ -437,7 +431,6 @@ export const GeneratedConversationMessage = memo(
     onOpenLocalFileLink,
     projectId,
     resolveMentionLink,
-    resolveSegmentLinkHref,
     onTitleAction,
     sourceKind,
     sourceName,
@@ -447,7 +440,9 @@ export const GeneratedConversationMessage = memo(
     systemMessageKind,
     systemMessageSubject,
     text,
+    threadId,
     turnRequest,
+    workspaceRootPath,
   }: GeneratedConversationMessageProps) {
     const trimStartLength = text.length - text.trimStart().length;
     const messageText = text.trim();
@@ -461,9 +456,16 @@ export const GeneratedConversationMessage = memo(
       [mentions, messageText.length, trimStartLength],
     );
     const requestLabel = turnRequestLabel(turnRequest);
-    const linkRouting = useMemo<MarkdownLinkRouting | undefined>(() => {
-      return onOpenLink === undefined ? undefined : { onOpenLink };
-    }, [onOpenLink]);
+    const linkRouting = useMemo<MarkdownLinkRouting | undefined>(
+      () =>
+        buildMarkdownMessageLinkRouting({
+          onOpenLink,
+          onOpenLocalFileLink,
+          threadId,
+          workspaceRootPath,
+        }),
+      [onOpenLink, onOpenLocalFileLink, threadId, workspaceRootPath],
+    );
     const title = useMemo(
       () =>
         generatedConversationTitle({
@@ -489,7 +491,6 @@ export const GeneratedConversationMessage = memo(
       sourceKind === "agent" ? (
         <GeneratedAgentSourceTitle
           onTitleAction={onTitleAction}
-          resolveSegmentLinkHref={resolveSegmentLinkHref}
           sourceIsPluginSideChat={sourceIsPluginSideChat}
           sourceName={sourceName}
           sourceProjectId={sourceProjectId}
@@ -527,7 +528,6 @@ export const GeneratedConversationMessage = memo(
         collapsedPreviewSource.hasAdditionalBodyLines ||
         collapsedPreviewSource.wasCapped ||
         collapsedPreviewOverflowMeasurement === "overflowing");
-    const renderManualContinuation = expandable;
     const hideManualContinuation =
       collapsedPreviewOverflowMeasurement === "overflowing";
     const collapsedPreviewBody = clipMentionTextToVisibleRange({
@@ -548,10 +548,10 @@ export const GeneratedConversationMessage = memo(
           className={`${NESTED_TIMELINE_GROUP_LINE_CLASS_NAME} max-w-full min-w-0`}
         >
           <div className="flex min-w-0 items-baseline truncate pl-2 text-sm leading-relaxed text-foreground">
-            {}
             <div ref={setCollapsedPreviewTextRef} className="min-w-0 truncate">
               {collapsedPreviewSource.parseAsMarkdown ? (
                 <MarkdownPreview
+                  allowHtml
                   content={collapsedPreviewMarkdown}
                   imagePolicy={
                     suppressGeneratedAgentImages ? "alt-text" : "render"
@@ -559,13 +559,11 @@ export const GeneratedConversationMessage = memo(
                   linkRouting={linkRouting}
                   promptMentions={{
                     mentions: collapsedPreviewBody.mentions,
-                    resolveLinkHref: resolveSegmentLinkHref,
                     resolveMentionLink,
                   }}
                   threadMentions={{
                     mentions: collapsedPreviewBody.mentions,
                     preserveSoftBreaks: true,
-                    resolveLinkHref: resolveSegmentLinkHref,
                   }}
                   className={COLLAPSED_MARKDOWN_PREVIEW_CLASS}
                 />
@@ -573,7 +571,7 @@ export const GeneratedConversationMessage = memo(
                 <span>{collapsedPreviewBody.text}</span>
               )}
             </div>
-            {renderManualContinuation ? (
+            {expandable ? (
               <span
                 className={cn(
                   "shrink-0 text-muted-foreground",
@@ -592,6 +590,7 @@ export const GeneratedConversationMessage = memo(
           <div className="pl-2 text-sm leading-relaxed text-foreground">
             {messageText ? (
               <MarkdownPreview
+                allowHtml
                 content={messageText}
                 imagePolicy={
                   suppressGeneratedAgentImages ? "alt-text" : "render"
@@ -599,13 +598,11 @@ export const GeneratedConversationMessage = memo(
                 linkRouting={linkRouting}
                 promptMentions={{
                   mentions: messageMentions,
-                  resolveLinkHref: resolveSegmentLinkHref,
                   resolveMentionLink,
                 }}
                 threadMentions={{
                   mentions: messageMentions,
                   preserveSoftBreaks: true,
-                  resolveLinkHref: resolveSegmentLinkHref,
                 }}
               />
             ) : (
@@ -636,7 +633,6 @@ export const GeneratedConversationMessage = memo(
         messageMentions,
         onOpenLocalFileLink,
         projectId,
-        resolveSegmentLinkHref,
         resolveMentionLink,
         sourceKind,
         suppressGeneratedAgentImages,
@@ -652,7 +648,6 @@ export const GeneratedConversationMessage = memo(
         collapsedPreview={collapsedPreview}
         expandable={expandable}
         leadingIcon={leadingIcon}
-        resolveSegmentLinkHref={resolveSegmentLinkHref}
         onTitleAction={onTitleAction}
         renderBody={renderBody}
       />

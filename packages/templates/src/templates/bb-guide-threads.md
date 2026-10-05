@@ -9,67 +9,52 @@ Thread commands
 
 Every command supports --json for machine-readable output.
 
-Pinned source and supervised workers:
-
-  bb thread source-inspect --project <id> --machine <id> --ref <ref> --workflow-path <path> --json
-  bb thread supervisor-register --thread <manager> --campaign <id> --inbox <id> [--token <private-64-hex>] --json
-  bb thread supervisor-inbox --thread <manager> --campaign <id> --inbox <id> [--after-key <key> | --notice-key <caller-key>] [--limit <1-500>] --json
-  bb thread supervisor-notify --binding <credential-json> --key <stable-key> --kind decision|exception --message <text> [--task <id>] --json
-
-  Source inspection returns projectId, hostId, repositoryPath, repositoryIdentity
-  (canonical Git common directory), commit, tree, workflowPath, workflowTree,
-  head and clean. Pin the first eight fields with pathPolicy:
-  {kind:"new-worktree"} or {kind:"exact",path:"/absolute/checkout"}.
-  Optional discoveryRef must still resolve to that raw commit. Pins require clean
-  tracked and untracked files; ignored dependencies are allowed. Exact reuse
-  also requires matching checkout HEAD. Commit owner output and explicitly admit
-  a successor pin before critic reuse. Source errors use source_identity_mismatch
-  with exact source/target facts and an actionable repair.
-
-  Registration returns {managerThreadId,campaignId,inboxId,bindingToken}. Keep the
-  token private; callers can persist a random 64-hex token before registration to
-  replay safely after a lost response. Spawn with --parent-thread <manager> and
-  --supervisor containing that credential plus taskId. Binding is immutable and
-  must precede provider start. Owned normal completion goes only to the durable
-  inbox. Unmanaged completion retains ordinary parent notices; manual stops and
-  exceptions remain visible. Inbox reads recover missing terminal publications.
-  Completion output is an excerpt of at most 16,000 characters; full output
-  remains in child history. --notice-key finds one exact original notice key
-  after a lost response, scoped to this registration; it cannot use --after-key.
-
-  Supervisor notices use stable keys. Replaying different content under one key
-  fails. Delivery inbox means publication only; queued means one queue admission;
-  requested includes requestSequence and means the server recorded its turn
-  request. It does not prove provider acknowledgment. Live recipients use normal
-  steering, with durable queued fallback through interactions or unavailable
-  runtime. A genuine manual stop remains paused until the user resumes it.
-
 Spawning:
 
   bb thread spawn --project <id> --prompt "..." [options]
+  bb thread spawn --project <id> --prompt-file <path> [options]
 
-    --prompt <prompt>              Initial prompt (required)
+    --prompt <prompt>              Initial prompt (one of --prompt or --prompt-file is required)
+    --prompt-file <path>           Read the prompt from a file; `-` reads stdin. Use this for
+                                   multi-line or Markdown prompts: inside double quotes the shell
+                                   runs `backticks` and $(...) before bb sees them
     --title <title>                Thread title
-    --project <id>                 Project (required)
+    --project <id>                 Project (required; when omitted the error prints this thread's project ID to add)
     --parent-thread <id>           Parent thread (may be in another project)
     --parent-self                  Parent to the current thread (BB_THREAD_ID)
+    --lifecycle-owner-thread <id>  Archive/delete with this owner
     --provider <id>                Provider override
     --model <model>                Model override
     --reasoning-level <level>      Reasoning level: low, medium, high, xhigh, max (provider-dependent)
     --environment <id-or-path>     Attach to an existing environment (ID or workspace path)
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
     --base-branch <branch>         Exact Git ref for a new managed worktree
-    --source-pin <json>            Immutable source identity and explicit path policy
-    --supervisor <json>            Private supervisor credential plus taskId
+                                   (--new-environment worktree only)
+    --environment-provider <id>    Run on an environment provider by id (list them with
+                                   `bb environment providers`). The provider
+                                   provisions where the thread runs; its steps show in the
+                                   thread's workspace-setup block. Its `requires` names the
+                                   facts it consumes: `host` takes --machine (the local
+                                   machine by default); `gitCheckout` needs this project's
+                                   checkout on that machine to be a Git repository with
+                                   commits; `gitRemote` needs a project remote;
+                                   `projectless` serves only threads with no project.
+    --environment-inputs <json>    JSON value for an --environment-provider that declares
+                                   inputs; `bb environment providers --json` prints each
+                                   provider's inputs as JSON Schema (null when it takes
+                                   none). Required when the provider declares inputs,
+                                   refused when it does not
     --machine <id-or-name>         Run on a machine (--host is an alias)
-    --service-tier <tier>          Service tier: fast, default
+    --service-tier <tier>          Service tier id the provider lists for the model, such as
+                                   default or fast (see `bb provider models`)
     --permission-mode <mode>       Permission mode: accept-edits, auto, or full
     --plan                         Send the prompt as the provider's /plan action (plan first, execute after approval)
     --section <id>                 Create the thread in a section
+    --pinned                       Create the thread in Pinned
     --visibility <visibility>      visible or hidden; a child inherits its parent by default
     --send-at <when>               Dispatch the first message at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
-    --file <path>                  Host-readable absolute or uploaded file path
-    --image <path>                 Host-readable absolute or uploaded image path
+    --file <path>                  CLI-local absolute path, file: URL, or uploaded file path
+    --image <path>                 CLI-local absolute path, file: URL, or uploaded image path
     --origin-kind <kind>           Create a fork thread
     --source-thread <id>           Source thread for a fork
     --source-seq-end <seq>         Fork after the source turn containing this event sequence
@@ -82,7 +67,7 @@ Spawning:
   accept-edits uses workspace sandboxing with user-reviewed escalation. auto uses
   the same workspace sandbox with provider-native automatic review. full is the
   explicit sandbox and approval bypass. Plan mode is separate from permissions.
-  Subagents inherit the parent's permission mode by default, and the parent's mode is a hard ceiling: a child's requested mode can lower it but never exceed it, so a sandboxed parent cannot spawn a full-access child.
+  Subagents inherit the parent's permission mode by default, adapted to the child provider's supported modes. Explicit requests and a thread's recorded mode take precedence; nesting a thread does not cap its permissions. The host permission ceiling still applies.
   Parenting is opt-in. Inside a thread, pass --parent-self to parent the new thread to the current thread.
   Hidden threads are for plugin/background workers. They remain addressable by
   ID while staying out of sidebar organization and unread/pending favicon
@@ -95,28 +80,42 @@ Spawning:
   A machine selector accepts an exact ID or an unambiguous name. It works with
   an unmanaged --environment path, --new-environment worktree, or the personal
   workspace. It cannot be combined with an existing environment ID because that
-  environment already selects its machine. Without the flag, local/primary
+  environment already selects its machine. Without the flag, local/server
   machine resolution is unchanged.
-  Managed worktree refs resolve to raw commits in the target project's repository
-  before thread creation. Missing or dirty sources fail without starting a provider.
   Omit --base-branch for bb's default. Explicit values are exact; use
   origin/<branch> for a remote ref.
+  Before selecting a provider, run `bb environment providers --project <id>
+  --machine <id-or-name>` to see whether it is available, needs setup, or is
+  unavailable and why. The first-party providers are Project checkout,
+  Worktree, and Personal workspace.
+
+Handoff:
+  In the follow-up model picker, Handoff to new thread starts a new-thread
+  draft with a reference to the source thread. Choose any model, including
+  one from the current provider. Exit handoff restores the original execution
+  settings and keeps draft edits, removing the automatic source reference.
+  Closing the picker keeps handoff active; the composer also has Exit handoff.
+  CLI callers can use bb thread spawn with --provider, --model, --environment
+  and --prompt 'Continue from @thread:THREAD_ID ...'. SDK callers use
+  threads.spawn with the corresponding execution, environment and input fields.
 
 Forking:
 
   bb thread fork <source-thread-id> [options]
 
     --prompt <prompt>              Optional first prompt; omit for an idle fork
+    --prompt-file <path>           Read the first prompt from a file; `-` reads stdin
+    --lifecycle-owner-thread <id>  Archive/delete with this owner
     --source-seq-end <seq>         Fork after the source turn containing this event sequence (tip by default)
     --environment <id-or-path>     Existing environment ID or unmanaged workspace path
     --new-environment <kind>       Create a fresh personal workspace or managed worktree
     --base-branch <branch>         Exact Git ref for a new worktree; omit for the project default
-    --title <title>                Thread title
+    --title <title>                Thread title (idle forks default to "(1) <source title>")
     --permission-mode <mode>       Inherit source by default; accepts accept-edits, auto, full
     --visibility <visibility>      visible (default) or hidden
     --agent-context-seed <text>    Persist agent-only context without a first run
-    --file <path>                  Host-readable absolute or uploaded file path
-    --image <path>                 Host-readable absolute or uploaded image path
+    --file <path>                  CLI-local absolute path, file: URL, or uploaded file path
+    --image <path>                 CLI-local absolute path, file: URL, or uploaded image path
 
   Forks clone the source provider session on the same machine and inherit the
   source conversation in their timeline. --source-seq-end anchors the fork on
@@ -130,9 +129,11 @@ Forking:
   source machine; --environment can select another environment or unmanaged
   path on that machine. A different machine is rejected because the source
   provider session lives on its original machine. Omit --prompt to create an
-  idle fork.
+  idle fork. A visible idle fork without --title is named after its source with
+  a numbered prefix: "foo" becomes "(1) foo" and "(1) foo" becomes "(2) foo".
+  Forks created with a first prompt get a title from that prompt.
 
-Editing a sent message (requires the default-on `editMessages` experiment):
+Editing a sent message:
 
   bb thread edit-message <id> --message "Replacement text"
     --self                              Target the current thread (BB_THREAD_ID)
@@ -144,13 +145,21 @@ Editing a sent message (requires the default-on `editMessages` experiment):
   Failed and incomplete turns are eligible. If the thread is running,
   submission stops the current turn and waits for it to settle. It then
   replaces the selected turn and every later turn while retaining workspace
-  changes. From an agent thread, the command carries `BB_THREAD_ID` so the
-  replacement runs under agent permission policy.
+  changes. Unsent queued messages remain in the queue and dispatch after the
+  replacement turn when their waits clear. An already-sending queued message
+  must finish before the edit can start. Retries of turns replaced by the edit
+  are removed from the queue. From an agent thread, the command
+  carries `BB_THREAD_ID` so the replacement runs under agent permission policy.
+  An edit is refused if removing its history would erase ownership evidence
+  shared with another thread. Use bb thread clear <id> to start a new session
+  while keeping the history and its ownership evidence.
 
 Listing:
 
   bb thread list                           List threads
     --project <id>                         Filter by project
+    --environment <id>                     Filter by environment
+    --machine <id-or-name>                 Filter by the machine the environment is on (alias --host)
     --parent-thread <id>                   Filter by parent thread
     --archived                             Show only archived threads
     --section <id>                         Filter by section
@@ -189,6 +198,7 @@ Sections:
 
 Inspecting:
 
+  bb thread context [id]                   Show recorded context usage and available breakdown (--self, --json)
   bb thread show [id]                      Show thread details and pull request status
     --self                                 Target current thread
     --work-status                          Include git working-tree status
@@ -208,7 +218,9 @@ Inspecting:
     --all                                  Print the whole thread, paging through every entry
 
   Human formats end with a notice when older history was omitted; --json warns
-  on stderr when more events exist beyond the printed page.
+  on stderr when more events exist beyond the printed page. Human-format --all
+  walks a consistent history snapshot and joins paginated group contents.
+  Appends stay outside that walk; rerun the command if a history edit invalidates it.
 
   bb thread output [id]                    Get the final output of a thread
     --self                                 Target current thread
@@ -216,10 +228,13 @@ Inspecting:
   bb thread wait <id>                      Wait for a thread status or event (defaults to --status idle)
     --status <status>                      Wait for this status
     --event <type>                         Wait for this event type
-    --timeout <seconds>                    Timeout in seconds (default: 1200 / 20 min)
-    --poll-interval <ms>                   Polling interval in milliseconds
+    --timeout <duration>                   Seconds, or a duration with a unit: 90s, 20m, 4h (default: 1200s / 20 min)
+    --poll-interval <duration>             Milliseconds, or a duration with a unit
 
 Opening threads and files in the app:
+
+  In chat, reference a thread as @thread:thr_abc123, substituting its actual ID.
+  BB renders the correct project-aware link; do not construct thread URLs manually.
 
   bb thread open <path>                    Open a file in the current BB thread panel
   bb thread open <thread-id> [path]        Open a thread, optionally with a panel file
@@ -228,9 +243,8 @@ Opening threads and files in the app:
   bb thread pane <action> [thread-id]      Maximize, restore, toggle, spotlight, or clear spotlight
 
   Inside a BB thread, BB_THREAD_ID selects the current thread automatically and
-  the thread ID argument is omitted for file-only opens. Pass an explicit thread
-  ID with --split to open another thread. Outside a BB thread, pass the thread ID
-  as the first argument. A thread already open in a pane is focused instead of
+  the thread ID argument is omitted for file-only opens. Outside a BB thread,
+  pass the thread ID as the first argument. A thread already open in a pane is focused instead of
   duplicated. Edge placement creates panes through the eighth pane; at eight
   panes, it replaces the focused pane.
   Pane actions broadcast to connected BB app windows and affect the matching
@@ -244,13 +258,17 @@ Opening threads and files in the app:
 Messaging:
 
   bb thread tell <id> <message>            Send a follow-up message
+  bb thread tell <id> --message-file <path>
+                                           Read the message from a file; `-` reads stdin. Use this for
+                                           multi-line or Markdown messages: inside double quotes the
+                                           shell runs `backticks` and $(...) before bb sees them
     --mode <mode>                          Message mode: steer (default), queue, or auto
     --model <model>                        Model override for this turn
     --reasoning-level <level>              Reasoning level override
     --plan                                 Send the message as the provider's /plan action
     --send-at <when>                       Dispatch at an ISO 8601 timestamp or a duration from now (30s, 10m, 2h, 7d)
-    --file <path>                          Host-readable absolute or uploaded file path
-    --image <path>                         Host-readable absolute or uploaded image path
+    --file <path>                          CLI-local absolute path, file: URL, or uploaded file path
+    --image <path>                         CLI-local absolute path, file: URL, or uploaded image path
 
   Tell steers by default, delivering the message immediately into the active
   turn. Use --mode queue for non-urgent follow-ups that can wait until the agent
@@ -275,7 +293,6 @@ Messaging:
   `input` to `threads.spawn` or `threads.send`.
 
   bb thread stop [id]                      Stop work and release the agent runtime
-    --expected-turn <id>                   Stop only this active turn; refuse a stale target
   bb thread compact [id]                   Request compaction of an idle or errored thread's context
   bb thread clear [id]                     Clear model context for an idle or failed thread
   bb thread cancel-plan [id]               Exit the provider's active Plan mode
@@ -301,6 +318,10 @@ Ownership:
     --model <model>                        Set the sticky model for the next and later turns
     --reasoning-level <level>              Set the sticky reasoning level (provider-dependent)
     --visibility <visibility>              Set visible or hidden
+
+  Clearing a parent inherits the former parent's section unless --section or
+  --clear-section is also supplied. Children released by environment archiving
+  also inherit their former parent's section.
 
   Model and reasoning updates stay within the thread's current provider. BB
   validates them against that provider's current model catalog, applies them on
@@ -335,12 +356,15 @@ Interactions:
 Queued messages:
 
   bb thread queue list [<thread-id>] [--wait-holder plugin:<plugin-id>]
-  bb thread queue create <thread-id> <message>
+  bb thread queue create <thread-id> <message> [--file <path>] [--image <path>]
   bb thread queue update <thread-id> <message-id> <message> [--file <path>] [--image <path>]
   bb thread queue send <thread-id> <message-id> [--mode auto|steer]
   bb thread queue reorder <thread-id> <message-id> [--after <id>] [--before <id>]
   bb thread queue group <thread-id> <boundary-id> --prefix <comma-separated-ids>
   bb thread queue delete <thread-id> <message-id>
+
+  The `Sender` column identifies agent threads and system notices; user messages
+  leave it blank. The SDK and `--json` include `initiator` and `senderThreadId`.
 
   A queued message is one that could not dispatch yet. Every one carries a
   typed reason in its `Waiting on` column: waiting for the current turn to
@@ -348,6 +372,11 @@ Queued messages:
   or for a plugin that has queued it. `queue list` with no thread id lists every
   queued row in the workspace; `--wait-holder plugin:<plugin-id>` narrows it to
   the rows one plugin is holding.
+
+  Failed rows show their failure reason instead of their previous wait, followed
+  by a recovery command: `bb thread queue send <thread-id> <message-id>`.
+  Use it to retry immediately, including after automatic retries are exhausted.
+  Editing the message does not clear its failure or trigger a retry.
 
   `queue send` dispatches a row now, bypassing every plugin wait and its own
   schedule — the invariants (a running turn, an unfinished workspace, an
@@ -394,45 +423,54 @@ Lifecycle:
   The command succeeds when no runtime is loaded. Archive a finished hidden
   worker first, then stop it to release memory promptly. A stop that only
   releases an idle runtime adds no interruption: it leaves the timeline and any
-  pending interaction of that thread untouched.
-
-  For cleanup tied to an observed turn, use `bb thread stop <id>
-  --expected-turn <turn-id> --json` or SDK
-  `threads.stop({ threadId, expectedTurnId })`. The public route accepts
-  `POST /api/v1/threads/:id/stop-if-current?expectedTurnId=<turn-id>` and requires
-  the condition. Older servers reject this endpoint; the client never falls
-  back to unconditional stop. The server, host, and provider check the turn.
-  Providers without turn-specific stop support return `unproven`.
-  Only `condition.status: "stopped"` with the requested
-  `condition.expectedTurnId` proves that stop. A refusal returns
-  `condition.status: "refused"`, the expected ID, a nullable `activeTurnId`, and
-  a reason: `turn-mismatch`, `no-active-turn`, `thread-not-active`,
-  `runtime-missing`, or `unproven`. `unproven` means matching stop proof was
-  unavailable; read the current state before deciding what to do next.
-  A stale condition leaves replacement work and queue state unchanged. An
-  accepted conditional stop retains manual-stop authority and pauses queued
-  work. Its provider session remains loaded. Omitting the condition retains
-  the ordinary manual stop above and its `{ "ok": true }` API result.
+  pending interaction of that thread untouched. An explicit stop wins over work
+  that is still running: when the machine still runs a turn for a thread the app
+  shows as idle or failed, or a turn starts while the stop is being delivered,
+  the stop interrupts that turn and waits for the attempt. If the interrupt
+  fails, the thread remains stopping; check `bb thread show <id> --json` before
+  treating the stop as confirmed.
 
   bb thread unarchive [id]                 Unarchive a thread
     --self                                 Unarchive current thread
 
+  bb thread restore-environment [id]       Restore a destroyed workspace
+    --self                                 Restore current thread
+
+  Archiving a thread retires its environment, and a managed workspace is removed
+  from disk once the provider's grace window passes. Sending to a thread whose
+  workspace is gone fails; `restore-environment` asks the environment provider
+  to build it again and attaches it, leaving the conversation where it was.
+  Each provider decides what that means: a worktree is re-created on the branch
+  it held, a project checkout switches back to that branch, and a personal
+  workspace cannot be restored. It starts no turn — the thread settles back to
+  idle with a live workspace (check `canRestoreEnvironment` on `bb thread show
+  --json`). Unarchive the thread first; the command is refused while the thread
+  is archived, while its workspace is still there, and when the provider does
+  not restore, is gone, or its machine is gone. Uncommitted changes in the
+  removed workspace are not recoverable.
+
   bb thread delete <id>                    Delete permanently
     --yes                                  Skip confirmation
+
+  Deleting a thread removes its record immediately, but provider-owned
+  environment cleanup is asynchronous. Use `bb environment show <id>` to
+  inspect teardown until the lifecycle reaches destroyed.
 
 Read-only commands require a thread ID or --self where supported.
 Mutating thread lifecycle and messaging commands require an explicit ID or --self.
 
-### Observe supervisor receipts without recovery
+`bb thread context [id]` reads the latest stored context measurement without
+starting a provider request. Use `--self` for the current thread and `--json` for
+`{ usage: ... }` (`null` when unavailable). Claude Code refreshes the estimated
+breakdown after turns and compaction when its SDK supports context inspection.
+A later aggregate-only measurement replaces any older breakdown. Other providers
+continue to expose their available totals.
 
-  bb thread supervisor-peek --thread <manager> --campaign <id> --inbox <id> [--notice-key <key> | --after-key <key>] [--limit <1..500>] --json
-
-Returns `registration: present|missing`, stored items and a nullable `nextKey`.
-Default limit is 100. It performs no recovery, queueing, delivery or
-acknowledgment. `queued` and `requested` do not imply provider acceptance.
-Use bounded JSON thread event logs to join the exact request ID to
-`turn/input/accepted` and subsequent same-turn response evidence.
-
-Each supervisor peek item includes `requestInputText` from the same formatter as
-queue admission. Verify the exact request event input against it;
-`requestSequence` alone is a candidate, not provider acknowledgment.
+Lifecycle ownership:
+  spawn and fork accept --lifecycle-owner-thread <id>. SDK arguments use
+  lifecycleOwnerThreadId, also returned in thread responses (null if independent).
+  The owner must be live; projects, hosts and environments may differ.
+  Ownership is immutable. Archive recursively archives/stops dependents; delete
+  recursively deletes them after runtime/storage cleanup. Failed cleanup retries
+  durably. Unarchive the owner before explicitly restoring a dependent. Stop does
+  not cascade. Sidebar parents and ordinary forks retain their existing policies.

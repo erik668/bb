@@ -12,6 +12,7 @@ import type {
   ProviderComposerAction,
   ProviderInfo,
   ProviderModelCatalogScope,
+  ProviderOptionDescriptor,
   ReasoningLevel,
   ServiceTier,
 } from "@bb/domain";
@@ -22,17 +23,26 @@ import type {
   SystemExecutionOptionsModelLoadError,
   SystemProvidersQuery,
 } from "@bb/server-contract";
+import {
+  PROJECT_CHECKOUT_ENVIRONMENT_PROVIDER_ID,
+  GIT_WORKTREE_ENVIRONMENT_PROVIDER_ID,
+} from "@bb/client-core";
 import type { PickerOption } from "@/components/pickers/OptionPicker";
 import type { ModelPickerOption } from "@/components/pickers/model-picker-option";
 import type { ProviderPickerOption } from "@/components/pickers/model-brand-prefix";
-import { parseEnvironmentValue } from "@/components/pickers/environment-picker-value";
+import {
+  encodeProviderValue,
+  parseEnvironmentValue,
+} from "@/components/pickers/environment-picker-value";
 import { PERMISSION_MODE_OPTIONS } from "@/lib/permission-mode-options";
 import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
 import { getProviderIconInfo } from "@/lib/provider-icon";
-import { fastServiceTierLabel } from "@/lib/reasoning-labels";
 import {
+  DEFAULT_SERVICE_TIER,
   permissionModeRank,
   providerModelCatalogDependsOnWorkspace,
+  reconcileServiceTier,
+  resolveServiceTierOptions,
 } from "@bb/domain";
 import { selectPrimaryHost, useHosts } from "./queries/host-queries";
 import {
@@ -69,10 +79,11 @@ import {
   resolveModelReasoningLevel,
 } from "./thread-creation-options/model-catalog-selection";
 
-export { formatModelLabel, resolvePermissionModeSelection };
+export { formatModelLabel };
 
 const EMPTY_PROVIDERS: ProviderInfo[] = [];
 const EMPTY_COMPOSER_ACTIONS: ProviderComposerAction[] = [];
+const EMPTY_SERVICE_TIER_OPTIONS: readonly ProviderOptionDescriptor[] = [];
 
 const DEFAULT_SUPPORTED_PERMISSION_MODES: readonly PermissionMode[] = ["full"];
 
@@ -103,6 +114,7 @@ interface UseThreadCreationOptionsResult<TExecutionInputSources> {
   selectedProviderId: string;
   setSelectedProviderId: StringSelectionSetter;
   setProviderModelReasoning: ProviderModelReasoningSelectionSetter;
+  providers: readonly ProviderInfo[];
   providerOptions: ProviderPickerOption[];
   hasMultipleProviders: boolean;
   selectedProviderDisplayName: string;
@@ -125,13 +137,14 @@ interface UseThreadCreationOptionsResult<TExecutionInputSources> {
   modelLoadFailed: boolean;
   modelLoadError: SystemExecutionOptionsModelLoadError | null;
   modelCatalogIsVerified: boolean;
+  modelCatalogIsSettled: boolean;
   reasoningOptions: PickerOption<ReasoningLevel>[];
   permissionModeOptions: PickerOption<PermissionMode>[];
   supportsPermissionModeSelection: boolean;
   permissionModeIsVerified: boolean;
   supportsServiceTier: boolean;
   serviceTierSupportByProvider: Record<string, boolean>;
-  serviceTierFastLabel: string;
+  serviceTierOptions: readonly ProviderOptionDescriptor[];
   executionInputSources: TExecutionInputSources;
 }
 
@@ -163,9 +176,6 @@ function resolveThreadCreationProviderRouting({
     return { environmentId };
   }
   const parsed = parseEnvironmentValue(environmentSelectionValue);
-  if (parsed?.type === "host") {
-    return { hostId: parsed.hostId };
-  }
   if (parsed?.type === "reuse" && parsed.environmentId !== null) {
     return { environmentId: parsed.environmentId };
   }
@@ -178,11 +188,25 @@ type InitialReadyProviderResolution =
   | { status: "unresolved" }
   | { status: "resolved"; providerId: string | null };
 
-function sanitizeStoredEnvironmentValue(stored: string): string {
-  if (!stored) return "";
-  const parsed = parseEnvironmentValue(stored);
-  if (parsed?.type === "reuse") return "";
+const LEGACY_MANAGED_WORKTREE_VALUE = /^host:[^:]+:worktree$/;
+const LEGACY_HOST_LOCAL_VALUE = /^host:[^:]+:local$/;
+
+function migrateLegacyStoredEnvironmentValue(stored: string): string {
+  if (LEGACY_MANAGED_WORKTREE_VALUE.test(stored)) {
+    return encodeProviderValue(GIT_WORKTREE_ENVIRONMENT_PROVIDER_ID);
+  }
+  if (LEGACY_HOST_LOCAL_VALUE.test(stored)) {
+    return encodeProviderValue(PROJECT_CHECKOUT_ENVIRONMENT_PROVIDER_ID);
+  }
   return stored;
+}
+
+export function sanitizeStoredEnvironmentValue(stored: string): string {
+  if (!stored) return "";
+  const migrated = migrateLegacyStoredEnvironmentValue(stored);
+  const parsed = parseEnvironmentValue(migrated);
+  if (parsed?.type === "reuse") return "";
+  return migrated;
 }
 
 export function useThreadCreationOptions(
@@ -384,6 +408,11 @@ export function useThreadCreationOptions(
     !executionOptionsQuery.isPlaceholderData &&
     !executionOptionsQuery.isError &&
     modelLoadError === null;
+  const modelCatalogIsSettled =
+    !executionOptionsQueryEnabled ||
+    executionOptionsQuery.isError ||
+    (executionOptionsQuery.data !== undefined &&
+      !executionOptionsQuery.isPlaceholderData);
   const permissionModeIsVerified =
     executionOptionsQuery.data !== undefined &&
     !executionOptionsQuery.isPlaceholderData &&
@@ -433,7 +462,7 @@ export function useThreadCreationOptions(
       providers.map((p) => ({
         value: p.id,
         label: p.displayName,
-        icon: getProviderIconInfo(p.id, p)?.icon,
+        icon: getProviderIconInfo("agent", p.id, p)?.icon,
         ...(p.strings?.brandPrefix === undefined
           ? {}
           : { brandPrefix: p.strings.brandPrefix }),
@@ -451,8 +480,11 @@ export function useThreadCreationOptions(
   const selectedProviderComposerActions =
     selectedProviderInfo?.composerActions ?? EMPTY_COMPOSER_ACTIONS;
 
+  const allowFastServiceTier =
+    systemConfig.data?.generalSettings?.allowFastServiceTier ?? true;
   const supportsServiceTier =
-    activeProviderCapabilities?.supportsServiceTier ?? false;
+    allowFastServiceTier &&
+    (activeProviderCapabilities?.supportsServiceTier ?? false);
   const permissionModes: readonly PermissionMode[] =
     activeProviderCapabilities?.permissionModes ??
     DEFAULT_SUPPORTED_PERMISSION_MODES;
@@ -506,11 +538,10 @@ export function useThreadCreationOptions(
     const supportByProvider: Record<string, boolean> = {};
     for (const provider of providers) {
       supportByProvider[provider.id] =
-        provider.capabilities.supportsServiceTier;
+        allowFastServiceTier && provider.capabilities.supportsServiceTier;
     }
     return supportByProvider;
-  }, [providers]);
-  const serviceTierFastLabel = fastServiceTierLabel(selectedProviderInfo);
+  }, [allowFastServiceTier, providers]);
 
   const {
     selectedModel,
@@ -541,10 +572,31 @@ export function useThreadCreationOptions(
       selectedProviderInfo,
     ],
   );
-  const serviceTier = useMemo(
-    () => (supportsServiceTier ? rawServiceTier : undefined),
-    [rawServiceTier, supportsServiceTier],
+  const serviceTierOptions = useMemo(
+    () =>
+      allowFastServiceTier
+        ? resolveServiceTierOptions({
+            provider: selectedProviderInfo,
+            model: activeModel,
+          })
+        : EMPTY_SERVICE_TIER_OPTIONS,
+    [activeModel, allowFastServiceTier, selectedProviderInfo],
   );
+  const serviceTier = useMemo(() => {
+    if (!activeProviderCapabilities?.supportsServiceTier) {
+      return undefined;
+    }
+    if (serviceTierOptions.length === 0) {
+      return DEFAULT_SERVICE_TIER;
+    }
+    return rawServiceTier === undefined
+      ? undefined
+      : reconcileServiceTier(rawServiceTier, serviceTierOptions);
+  }, [
+    activeProviderCapabilities?.supportsServiceTier,
+    rawServiceTier,
+    serviceTierOptions,
+  ]);
 
   const permissionMode = resolvePermissionModeSelection({
     rawPermissionMode,
@@ -881,6 +933,7 @@ export function useThreadCreationOptions(
     selectedProviderId: effectiveProviderId,
     setSelectedProviderId,
     setProviderModelReasoning,
+    providers,
     providerOptions,
     hasMultipleProviders,
     selectedProviderDisplayName:
@@ -904,13 +957,14 @@ export function useThreadCreationOptions(
     modelLoadFailed,
     modelLoadError,
     modelCatalogIsVerified,
+    modelCatalogIsSettled,
     reasoningOptions,
     permissionModeOptions,
     supportsPermissionModeSelection,
     permissionModeIsVerified,
     supportsServiceTier,
     serviceTierSupportByProvider,
-    serviceTierFastLabel,
+    serviceTierOptions,
     executionInputSources,
   };
 }

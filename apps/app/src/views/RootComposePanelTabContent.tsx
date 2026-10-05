@@ -28,7 +28,7 @@ import {
   type FileOpenerOriginalTab,
 } from "@/components/plugin/file-opener-tabs";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
-import { useThreadStorageViewer } from "@/components/secondary-panel/useThreadStorageViewer";
+import { useThreadStorageLocation } from "@/hooks/queries/thread-queries";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
 import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
 import {
@@ -297,16 +297,19 @@ function RootComposeFilePreviewTabContent({
     staleTime: 5_000,
   });
   const environment = environmentQuery.data;
+  const imageThreadId = fileOpenerSource?.threadId ?? rootPanelThreadId;
   const storageThreadId =
     tab.kind === "thread-storage-file-preview"
       ? fileOpenerSource === null
         ? (tab.threadId ?? rootPanelThreadId)
         : fileOpenerSource.threadId
       : null;
-  const { threadStorageRootPath } = useThreadStorageViewer({
-    fileListEnabled: storageThreadId !== null,
-    threadId: storageThreadId ?? undefined,
-  });
+  const threadStorageLocationQuery = useThreadStorageLocation(
+    storageThreadId ?? "",
+    { enabled: storageThreadId !== null },
+  );
+  const threadStorageRootPath =
+    threadStorageLocationQuery.data?.storageRootPath ?? null;
   const projectPreviewId =
     tab.kind === "workspace-file-preview" && tab.environmentId === null
       ? fileOpenerSource?.kind === "workspace"
@@ -453,7 +456,7 @@ function RootComposeFilePreviewTabContent({
             onSelectionAddToChat={onSelectionAddToChat}
             source={tab.source}
             statusLabel={tab.statusLabel}
-            threadId={rootPanelThreadId}
+            threadId={imageThreadId}
           />
         ) : projectPreviewId !== null ? (
           <LazyProjectFilePreviewTabContent
@@ -467,6 +470,8 @@ function RootComposeFilePreviewTabContent({
             onRevealInFinder={onRevealInFinder}
             onSelectionAddToChat={onSelectionAddToChat}
             projectId={projectPreviewId}
+            rootPath={projectPreviewRootPath}
+            threadId={imageThreadId}
           />
         ) : (
           <LazyFilePreview

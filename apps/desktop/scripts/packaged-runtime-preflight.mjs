@@ -75,7 +75,7 @@ function runtimeValid(runtime) {
     /^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(runtime.nodeVersion) &&
     typeof runtime.moduleAbi === "string" &&
     /^\d+$/.test(runtime.moduleAbi) &&
-    ["darwin", "linux"].includes(runtime.platform) &&
+    ["darwin", "linux", "win32"].includes(runtime.platform) &&
     ["arm64", "x64"].includes(runtime.arch) &&
     (runtime.family === "electron"
       ? runtime.electronVersion === runtime.version
@@ -109,7 +109,7 @@ export function inspectPackagedRuntime(request, boundary = {}) {
       !["node", "electron"].includes(request.expected.family) ||
       typeof request.expected.version !== "string" ||
       !/^\d+\.\d+\.\d+(?:-[\w.-]+)?$/.test(request.expected.version) ||
-      !["darwin", "linux"].includes(request.expected.platform) ||
+      !["darwin", "linux", "win32"].includes(request.expected.platform) ||
       !["arm64", "x64"].includes(request.expected.arch) ||
       !Array.isArray(request.modules) ||
       request.modules.length < 1 ||

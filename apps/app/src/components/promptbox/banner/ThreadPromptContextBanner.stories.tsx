@@ -423,6 +423,8 @@ function buildPullRequestFixture(
     baseRefName: "main",
     headRefName: "bb/pr-context-banner",
     updatedAt: "2026-06-16T12:30:00Z",
+    autoMerge: false,
+    inMergeQueue: false,
     checks: {
       state: "failing",
       totalCount: 3,
@@ -704,8 +706,9 @@ const destroyedEnvironmentFixture: ThreadPromptEnvironmentGoneSection = {
   status: "destroyed",
 };
 
-const destroyingEnvironmentFixture: ThreadPromptEnvironmentGoneSection = {
-  status: "destroying",
+const restorableEnvironmentFixture: ThreadPromptEnvironmentGoneSection = {
+  status: "destroyed",
+  onRestore: noop,
 };
 
 export function Overview() {
@@ -751,11 +754,17 @@ export function Overview() {
         <Row environmentGone={destroyedEnvironmentFixture} mergeBase={null} />
       </StoryRow>
       <StoryRow
-        label="environment archiving + child thread"
-        hint="archiving-environment row plus parent context"
+        label="environment archived (restorable)"
+        hint="the workspace can be rebuilt on its branch, so a filled restore action is pinned to the far right"
+      >
+        <Row environmentGone={restorableEnvironmentFixture} mergeBase={null} />
+      </StoryRow>
+      <StoryRow
+        label="environment archived + child thread"
+        hint="archived-environment row plus parent context"
       >
         <Row
-          environmentGone={destroyingEnvironmentFixture}
+          environmentGone={destroyedEnvironmentFixture}
           parentThread={parentThreadFixture}
           mergeBase={null}
         />
@@ -915,3 +924,17 @@ export function Overview() {
     </StoryCard>
   );
 }
+
+export const MachineRemovalHistory = () => (
+  <StoryCard>
+    <StoryRow label="Machine removed">
+      <Row environmentGone={{ status: "removed" }} mergeBase={null} />
+    </StoryRow>
+    <StoryRow label="Removal in progress">
+      <Row environmentGone={{ status: "removing" }} mergeBase={null} />
+    </StoryRow>
+    <StoryRow label="Cleanup failed">
+      <Row environmentGone={{ status: "cleanup-failed" }} mergeBase={null} />
+    </StoryRow>
+  </StoryCard>
+);

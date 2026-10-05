@@ -42,6 +42,7 @@ import {
   BB_DESKTOP_APP_COMMAND_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_REQUEST_CHANNEL,
   BB_DESKTOP_CLOSE_WINDOW_RESPONSE_CHANNEL,
+  BB_DESKTOP_FOCUS_WINDOW_CHANNEL,
   BB_DESKTOP_GET_WINDOW_STATE_CHANNEL,
   BB_DESKTOP_OPEN_NEW_TAB_CHANNEL,
   BB_DESKTOP_OPEN_SERVER_DAEMON_LOGS_CHANNEL,
@@ -174,6 +175,8 @@ describe("desktop preload browser API", () => {
 
   it("exposes only the typed browser commands and forwards them over fixed channels", async () => {
     const attachRequest = {
+      threadId: "thread-1",
+      existingOnly: true as const,
       tabId: "browser:a",
       url: "http://localhost:5173/",
       bounds: { x: 0, y: 0, width: 800, height: 600 },
@@ -205,17 +208,27 @@ describe("desktop preload browser API", () => {
     expect(Object.keys(api.browser).sort()).toEqual([
       "attach",
       "detach",
+      "evaluate",
       "findInPage",
       "focus",
+      "getControl",
+      "getTarget",
       "goBack",
       "goForward",
+      "importCookies",
+      "listImportSources",
       "navigate",
+      "onControl",
       "onFindResult",
       "onFocus",
       "onOpenTab",
+      "onPageMessage",
+      "onReveal",
       "onScopedOpenTab",
       "onSnapshot",
       "onState",
+      "openFullDiskAccessSettings",
+      "releaseControl",
       "reload",
       "setBounds",
       "setVisible",
@@ -239,6 +252,8 @@ describe("desktop preload browser API", () => {
     api.browser.setVisibleWithoutFocus?.(visibleRequest);
     api.browser.findInPage?.(findRequest);
     api.browser.stopFindInPage?.(stopFindRequest);
+    expect(api.focusWindow).toBeTypeOf("function");
+    api.focusWindow?.();
     api.setTheme("dark");
     await api.checkForUpdates();
     await expect(api.getWindowState?.()).resolves.toEqual({
@@ -296,6 +311,7 @@ describe("desktop preload browser API", () => {
         channel: BB_DESKTOP_BROWSER_STOP_FIND_IN_PAGE_CHANNEL,
         payload: stopFindRequest,
       },
+      { channel: BB_DESKTOP_FOCUS_WINDOW_CHANNEL, payload: undefined },
       { channel: BB_DESKTOP_SET_THEME_CHANNEL, payload: "dark" },
     ]);
     expect(electronMock.invokeCalls).toContain(BB_DESKTOP_GET_INFO_CHANNEL);
@@ -314,6 +330,7 @@ describe("desktop preload browser API", () => {
     electronMock.setZoomFactor(1.25);
 
     api.browser.attach({
+      threadId: "thread-1",
       tabId: "browser:zoomed",
       url: "https://example.com/",
       bounds: { x: 800, y: 40, width: 400, height: 600 },
@@ -328,6 +345,7 @@ describe("desktop preload browser API", () => {
       {
         channel: BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
         payload: {
+          threadId: "thread-1",
           tabId: "browser:zoomed",
           url: "https://example.com/",
           bounds: { x: 1000, y: 50, width: 500, height: 750 },

@@ -174,6 +174,7 @@ function describeEnvironmentNotReady({
 }: EnvironmentNotReadyDescriptionArgs): LifecycleErrorDescription {
   const { details } = error;
   switch (details.environmentStatus) {
+    case "creating":
     case "provisioning":
       return info({
         operation,
@@ -191,13 +192,6 @@ function describeEnvironmentNotReady({
         operation,
         title: "Workspace setup failed",
         body: "Workspace setup failed.",
-      });
-    case "retiring":
-    case "destroying":
-      return info({
-        operation,
-        title: "Workspace cleaning up",
-        body: "Workspace is being cleaned up.",
       });
     case "destroyed":
       return warning({
@@ -227,12 +221,6 @@ function describeThreadEnvironmentUnavailable({
         operation,
         title: "Workspace unavailable",
         body: "Workspace no longer exists.",
-      });
-    case "destroying":
-      return info({
-        operation,
-        title: "Workspace cleaning up",
-        body: "Workspace is being cleaned up.",
       });
     case "provisioning":
       return info({
@@ -449,6 +437,14 @@ export function parseLifecycleError(error: unknown): LifecycleApiError | null {
 
   const result = lifecycleApiErrorSchema.safeParse(error.body);
   return result.success ? result.data : null;
+}
+
+export function isHostDisconnectedError(error: unknown): boolean {
+  const lifecycleError = parseLifecycleError(error);
+  return (
+    lifecycleError?.code === "host_unavailable" &&
+    lifecycleError.details.reason === "disconnected"
+  );
 }
 
 export function formatLifecycleErrorDescription(

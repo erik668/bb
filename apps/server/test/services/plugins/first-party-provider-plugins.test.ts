@@ -67,7 +67,7 @@ const FIRST_PARTY_PROVIDER_DECLARATIONS = [
     supportsThreadRename: false,
     fork: "tip",
     supportsManualCompaction: true,
-    supportsUsage: false,
+    supportsUsage: true,
     visibility: "installed",
     hasLogo: true,
   },
@@ -243,6 +243,7 @@ describe("first-party provider plugins", () => {
           };
         };
         const skills = { kind: "skills", trigger: "/" } as const;
+        const explicitSkills = { kind: "skills", trigger: "$" } as const;
         const plan = {
           kind: "plan",
           command: { trigger: "/", name: "plan", trailingText: " " },
@@ -268,7 +269,7 @@ describe("first-party provider plugins", () => {
             supportsSessionRewind: true,
             modelCatalogScope: "host",
           },
-          composerActions: [skills, plan, goal],
+          composerActions: [skills, explicitSkills, plan, goal],
         });
         expect(clientFields("claude-code")).toStrictEqual({
           id: "claude-code",
@@ -282,14 +283,14 @@ describe("first-party provider plugins", () => {
           capabilities: {
             supportsThreadArchive: false,
             supportsThreadRename: false,
-            supportsServiceTier: false,
+            supportsServiceTier: true,
             supportsNativeUserQuestion: true,
             permissionModes: ["accept-edits", "auto", "full"],
             supportsFork: true,
             supportsSessionRewind: true,
             modelCatalogScope: "host",
           },
-          composerActions: [skills, plan],
+          composerActions: [skills, explicitSkills, plan],
         });
         expect(clientFields("pi")).toStrictEqual({
           id: "pi",
@@ -307,7 +308,7 @@ describe("first-party provider plugins", () => {
             supportsSessionRewind: true,
             modelCatalogScope: "workspace",
           },
-          composerActions: [skills],
+          composerActions: [skills, explicitSkills],
         });
         expect(clientFields("acp-cursor")).toStrictEqual({
           id: "acp-cursor",
@@ -325,7 +326,7 @@ describe("first-party provider plugins", () => {
             supportsSessionRewind: false,
             modelCatalogScope: "host",
           },
-          composerActions: [skills],
+          composerActions: [skills, explicitSkills],
         });
 
         const claude = harness.deps.providerRegistry.get("claude-code");
@@ -338,15 +339,20 @@ describe("first-party provider plugins", () => {
           "ultracode",
           "max",
         ]);
-        expect(claude?.fallbackModels.map((model) => model.id)).toContain(
-          "claude-opus-5[1m]",
-        );
-        expect(claude?.envPassthrough).toEqual(["BB_CLAUDE_CODE_EXECUTABLE"]);
+        expect(claude?.fallbackModels).toEqual([]);
+        expect(claude?.info.serviceTiers?.map((tier) => tier.id)).toEqual([
+          "default",
+          "fast",
+        ]);
+        expect(claude?.envPassthrough).toEqual([
+          "BB_CLAUDE_CODE_EXECUTABLE",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+        ]);
         expect(
           harness.deps.providerRegistry
             .get("codex")
             ?.info.serviceTiers?.map((tier) => tier.id),
-        ).toEqual(["default", "fast"]);
+        ).toEqual(["default", "fast", "ultrafast"]);
       },
     );
   }, 60_000);

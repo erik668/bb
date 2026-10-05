@@ -1,7 +1,4 @@
-import type {
-  BbPluginApi,
-  PluginThreadEventPayloads,
-} from "@get-bb/plugin-sdk";
+import type { PluginThreadEventPayloads } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   makeThreadResponse,
@@ -268,6 +265,67 @@ describe("push subscription RPC and CLI", () => {
       await host.cleanup();
     }
   });
+
+  it("documents limits in help, validates options, and reports errors as JSON", async () => {
+    const host = await setup();
+    try {
+      const help = (await host.harness.behavior.runCli(["add", "--help"]))
+        .stdout;
+      expect(help).toContain("bb push-notifications add");
+      expect(help).toContain("at most 512 characters");
+
+      const badPlatform = await host.harness.behavior.runCli([
+        "add",
+        "--token",
+        "ExponentPushToken[watch]",
+        "--platform",
+        "watchos",
+        "--label",
+        "Watch",
+      ]);
+      expect(badPlatform.exitCode).toBe(1);
+      expect(badPlatform.stderr).toContain(
+        "invalid value 'watchos' for --platform. Expected one of: ios, android",
+      );
+
+      const guessed = await host.harness.behavior.runCli([
+        "add",
+        "--expo-token",
+        "ExponentPushToken[tablet]",
+        "--os",
+        "android",
+        "--device",
+        "Tablet",
+        "--json",
+      ]);
+      expect(guessed.exitCode, guessed.stderr).toBe(0);
+      expect(JSON.parse(guessed.stdout)).toEqual({
+        id: "subscription-1",
+        created: true,
+      });
+
+      const envelope = await host.harness.behavior.runCli([
+        "remove",
+        "missing",
+        "--json",
+      ]);
+      expect(envelope.exitCode).toBe(1);
+      expect(JSON.parse(envelope.stdout)).toMatchObject({
+        ok: false,
+        error: {
+          code: "subscription_not_found",
+          message: "Push subscription not found: missing",
+        },
+      });
+      expect(envelope.stderr).toContain("Push subscription not found: missing");
+
+      const badChannel = await host.harness.behavior.runCli(["test", "sms"]);
+      expect(badChannel.exitCode).toBe(1);
+      expect(badChannel.stderr).toContain("Use web or desktop");
+    } finally {
+      await host.cleanup();
+    }
+  });
 });
 
 describe("push sender", () => {
@@ -298,7 +356,7 @@ describe("push sender", () => {
           threadId: thread.id,
         },
         sound: "default",
-        channelId: "default",
+        channelId: "threads",
         priority: "high",
       });
       expect(host.expo.requests[0]?.[0]?.data).not.toHaveProperty("serverUrl");
@@ -390,6 +448,7 @@ describe("push sender", () => {
       now += 2;
       await waitForCoalesce();
       expect(host.expo.requests).toEqual([]);
+      expect(host.harness.realtimeSignals).toEqual([]);
     } finally {
       await host.cleanup();
     }
@@ -557,27 +616,6 @@ describe("web and desktop delivery", () => {
       });
       await waitForCoalesce();
       expect(host.harness.realtimeSignals).toHaveLength(2);
-    } finally {
-      await host.cleanup();
-    }
-  });
-
-  it("does not broadcast read, archived, or resumed threads", async () => {
-    const host = await setup();
-    try {
-      for (const overrides of [
-        { lastReadAt: Date.now() + 60_000 },
-        { archivedAt: 100 },
-        { status: "active" as const },
-      ]) {
-        const thread = host.setThread(overrides);
-        await host.harness.behavior.emitThreadEvent("thread.idle", {
-          thread,
-          lastAssistantText: "Stale",
-        });
-      }
-      await waitForCoalesce();
-      expect(host.harness.realtimeSignals).toHaveLength(0);
     } finally {
       await host.cleanup();
     }

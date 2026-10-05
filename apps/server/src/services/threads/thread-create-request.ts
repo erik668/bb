@@ -1,5 +1,8 @@
 import type {
+  JsonObject,
   PromptInput,
+  StartedOnBehalfOf,
+  ThreadCreateOrigin,
   ThreadOriginKind,
   ThreadVisibility,
 } from "@bb/domain";
@@ -7,14 +10,11 @@ import type {
   CreateThreadEnvironmentArgs,
   CreateThreadRequest,
   EnvironmentArgs,
-  StartedOnBehalfOf,
-  ThreadCreateOrigin,
+  ProviderEnvironmentArgs,
 } from "@bb/server-contract";
 
 export interface ThreadCreateServiceRequestInput {
   environment: CreateThreadEnvironmentArgs;
-  experimental_sourcePin?: CreateThreadRequest["experimental_sourcePin"];
-  experimental_supervisor?: CreateThreadRequest["experimental_supervisor"];
   executionInputSources?: CreateThreadRequest["executionInputSources"];
   /**
    * Epoch ms the first message should dispatch at. Present ⇒ the thread is
@@ -23,12 +23,16 @@ export interface ThreadCreateServiceRequestInput {
    */
   sendAt?: CreateThreadRequest["sendAt"];
   input: PromptInput[];
+  pluginMetadata?: CreateThreadRequest["pluginMetadata"];
+  pluginSubmission?: CreateThreadRequest["pluginSubmission"];
   sectionId?: CreateThreadRequest["sectionId"];
+  pinned?: CreateThreadRequest["pinned"];
   model?: CreateThreadRequest["model"];
   origin: ThreadCreateOrigin | null;
   originPluginId?: CreateThreadRequest["originPluginId"];
   originKind?: ThreadOriginKind | null;
   parentThreadId?: string;
+  lifecycleOwnerThreadId?: string;
   permissionMode?: CreateThreadRequest["permissionMode"];
   projectId: string;
   providerId?: CreateThreadRequest["providerId"];
@@ -43,9 +47,10 @@ export interface ThreadCreateServiceRequestInput {
 
 export interface ThreadCreateServiceRequest extends Omit<
   ThreadCreateServiceRequestInput,
-  "environment" | "providerId"
+  "environment" | "pluginMetadata" | "providerId"
 > {
-  environment: EnvironmentArgs;
+  environment: EnvironmentArgs | ProviderEnvironmentArgs;
+  pluginMetadata: { pluginId: string; metadata: JsonObject } | null;
   providerId: string;
   titleFallback: string | null;
   visibility: ThreadVisibility;

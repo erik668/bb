@@ -1,15 +1,11 @@
-import { randomUUID } from "node:crypto";
-import type {
-  BbPluginApi,
-  PluginCliContext,
-  PluginCliResult,
-} from "@get-bb/plugin-sdk";
 import {
-  defaultWorkflowArtifactDocuments,
-  type WorkflowArtifactScope,
-  type WorkflowArtifactSemanticClass,
-  type WorkflowArtifactService,
-} from "./artifact-storage.js";
+  PluginCliError,
+  cliCommand,
+  defineCli,
+  type BbPluginApi,
+  type PluginCliContext,
+  type PluginCliResult,
+} from "@get-bb/plugin-sdk";
 import type { JsonValue } from "./types.js";
 import type {
   WorkflowCallInspection,
@@ -18,13 +14,9 @@ import type {
 } from "./service.js";
 import type { WorkflowRunRow } from "./data.js";
 import type { WorkflowSourceInput } from "./source-resolution.js";
-import {
-  parseStoredWorkflowSettings,
-  workflowRunSettingsSnapshot,
-} from "./settings.js";
+import { parseStoredWorkflowSettings } from "./settings.js";
+import { utf8Prefix } from "./utf8.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
-import { buildWorkflowRunView } from "./ui-view.js";
-import { WORKFLOW_RUNS_REALTIME_CHANNEL } from "./realtime-channel.js";
 
 const STATUS_INLINE_RESULT_MAX_BYTES = 8 * 1024;
 const STATUS_DISPLAY_TEXT_MAX_BYTES = 1_024;
@@ -33,6 +25,7 @@ const LIST_DISPLAY_TEXT_MAX_BYTES = 128;
 const LIST_ERROR_MAX_BYTES = 256;
 const DEFAULT_HISTORY_LIMIT = 10;
 const MAX_HISTORY_LIMIT = 100;
+const DEFAULT_LIST_LIMIT = 20;
 const MAX_LIST_LIMIT = 50;
 
 function success(value: unknown): PluginCliResult {
@@ -46,8 +39,17 @@ function jsonLines(records: readonly unknown[]): PluginCliResult {
   };
 }
 
-function failure(message: string): PluginCliResult {
-  return { exitCode: 1, stderr: `${message}\n` };
+async function guarded(
+  run: () => Promise<PluginCliResult>,
+): Promise<PluginCliResult> {
+  try {
+    return await run();
+  } catch (error) {
+    if (error instanceof PluginCliError) throw error;
+    throw new PluginCliError(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
 }
 
 function requireContext(ctx: PluginCliContext): {
@@ -60,61 +62,19 @@ function requireContext(ctx: PluginCliContext): {
   return { projectId: ctx.projectId, threadId: ctx.threadId };
 }
 
-interface ParsedArguments {
-  options: ReadonlyMap<string, string>;
-  positionals: readonly string[];
-}
-
-function parseArguments(
-  argv: readonly string[],
-  allowedOptions: readonly string[],
-  positionalDescription: string | null = null,
-): ParsedArguments {
-  const allowed = new Set(allowedOptions);
-  const options = new Map<string, string>();
-  const positionals: string[] = [];
-  for (let index = 0; index < argv.length; index += 1) {
-    const argument = argv[index]!;
-    if (!argument.startsWith("--")) {
-      positionals.push(argument);
-      continue;
-    }
-    if (!allowed.has(argument)) {
-      throw new Error(`Unknown option ${argument}`);
-    }
-    if (options.has(argument)) {
-      throw new Error(`${argument} may be provided only once`);
-    }
-    const value = argv[index + 1];
-    if (value === undefined || value.startsWith("--")) {
-      throw new Error(`${argument} requires a value`);
-    }
-    options.set(argument, value);
-    index += 1;
-  }
-  if (positionalDescription === null && positionals.length > 0) {
-    throw new Error(`Unexpected positional argument ${positionals[0]}`);
-  }
-  if (positionalDescription !== null && positionals.length !== 1) {
-    throw new Error(
-      positionals.length === 0
-        ? `${positionalDescription} requires a run ID`
-        : `${positionalDescription} accepts exactly one run ID`,
-    );
-  }
-  return { options, positionals };
-}
-
 function sourceInput(
-  options: ReadonlyMap<string, string>,
+  options: {
+    script: string | undefined;
+    file: string | undefined;
+    name: string | undefined;
+  },
   cwd: string | undefined,
 ): WorkflowSourceInput {
   return {
-    script: options.get("--script"),
-    source: options.get("--source"),
-    scriptPath: options.get("--file"),
+    script: options.script,
+    scriptPath: options.file,
     scriptPathBase: cwd,
-    name: options.get("--name"),
+    name: options.name,
   };
 }
 
@@ -129,38 +89,6 @@ function parseJsonOption(value: string | undefined): JsonValue {
   }
 }
 
-function parseIntegerOption(
-  options: ReadonlyMap<string, string>,
-  name: string,
-  defaultValue: number,
-  minimum: number,
-  maximum: number,
-): number {
-  const raw = options.get(name);
-  if (raw !== undefined && !/^(0|[1-9]\d*)$/.test(raw)) {
-    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
-  }
-  const value = raw === undefined ? defaultValue : Number(raw);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${name} must be an integer from ${minimum} to ${maximum}`);
-  }
-  return value;
-}
-
-function requiredOption(
-  options: ReadonlyMap<string, string>,
-  name: string,
-): string {
-  const value = options.get(name)?.trim();
-  if (value === undefined || value === "")
-    throw new Error(`${name} is required`);
-  return value;
-}
-
-function mutationId(options: ReadonlyMap<string, string>): string {
-  return options.get("--mutation")?.trim() || `cli-${randomUUID()}`;
-}
-
 function parseStoredJson(value: string, description: string): JsonValue {
   try {
     return JSON.parse(value) as JsonValue;
@@ -171,14 +99,6 @@ function parseStoredJson(value: string, description: string): JsonValue {
   }
 }
 
-function utf8CodePointBytes(value: string): number {
-  const codePoint = value.codePointAt(0)!;
-  if (codePoint <= 0x7f) return 1;
-  if (codePoint <= 0x7ff) return 2;
-  if (codePoint <= 0xffff) return 3;
-  return 4;
-}
-
 function boundedText(
   value: string | null,
   maximumBytes: number,
@@ -186,22 +106,9 @@ function boundedText(
   value: string | null;
   truncated: boolean;
 } {
-  if (value === null) return { value, truncated: false };
-  const characters: string[] = [];
-  let bytes = 0;
-  for (const character of value) {
-    const characterBytes = utf8CodePointBytes(character);
-    if (bytes + characterBytes > maximumBytes) {
-      const prefixBudget = maximumBytes - utf8CodePointBytes("…");
-      while (bytes > prefixBudget) {
-        bytes -= utf8CodePointBytes(characters.pop()!);
-      }
-      return { value: `${characters.join("")}…`, truncated: true };
-    }
-    characters.push(character);
-    bytes += characterBytes;
-  }
-  return { value, truncated: false };
+  return value === null || Buffer.byteLength(value, "utf8") <= maximumBytes
+    ? { value, truncated: false }
+    : { value: `${utf8Prefix(value, maximumBytes - 3)}…`, truncated: true };
 }
 
 function inlineRunResult(run: WorkflowRunRow): {
@@ -255,10 +162,6 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     id: run.id,
     projectId: run.projectId,
     originThreadId: run.originThreadId,
-    presentationThreadId: run.presentationThreadId,
-    parentRunId: run.parentRunId,
-    rootRunId: run.rootRunId,
-    campaignId: run.campaignId,
     environmentId: run.environmentId,
     originProvider: originProvider.value,
     originProviderTruncated: originProvider.truncated,
@@ -272,10 +175,8 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     nameTruncated: name.truncated,
     sourceHash: run.sourceHash,
     sourceBytes: new TextEncoder().encode(run.source).byteLength,
-    settings: workflowRunSettingsSnapshot(
-      parseStoredWorkflowSettings(
-        parseStoredJson(run.settingsJson, "workflow settings"),
-      ),
+    settings: parseStoredWorkflowSettings(
+      parseStoredJson(run.settingsJson, "workflow settings"),
     ),
     status: run.status,
     phase: phase.value,
@@ -312,10 +213,6 @@ function listRunSummary(run: WorkflowRunRow) {
   return {
     id: run.id,
     originThreadId: run.originThreadId,
-    presentationThreadId: run.presentationThreadId,
-    parentRunId: run.parentRunId,
-    rootRunId: run.rootRunId,
-    campaignId: run.campaignId,
     environmentId: run.environmentId,
     name: name.value,
     nameTruncated: name.truncated,
@@ -341,10 +238,8 @@ function runLogRecord(run: WorkflowRunRow, exportedAt: number) {
     exportedAt,
     ...fields,
     args: parseStoredJson(argsJson, "workflow args"),
-    settings: workflowRunSettingsSnapshot(
-      parseStoredWorkflowSettings(
-        parseStoredJson(settingsJson, "workflow settings"),
-      ),
+    settings: parseStoredWorkflowSettings(
+      parseStoredJson(settingsJson, "workflow settings"),
     ),
     resultAvailable: resultJson !== null,
     result:
@@ -360,11 +255,6 @@ function runReferenceLogRecord(run: WorkflowRunRow, exportedAt: number) {
     logVersion: 1,
     exportedAt,
     id: run.id,
-    originThreadId: run.originThreadId,
-    presentationThreadId: run.presentationThreadId,
-    parentRunId: run.parentRunId,
-    rootRunId: run.rootRunId,
-    campaignId: run.campaignId,
     name: run.name,
     status: run.status,
     phase: run.phase,
@@ -389,538 +279,232 @@ function callLogRecord(call: WorkflowCallInspection, exportedAt: number) {
   };
 }
 
+const JSON_OPTION_DESCRIPTION =
+  "Report failures as a JSON envelope on stdout; command output is always JSON";
+const RUN_ID_POSITIONAL = {
+  name: "run-id",
+  description: "Workflow run ID returned by bb workflows run",
+  required: true,
+} as const;
+const SOURCE_OPTIONS = {
+  script: {
+    type: "string",
+    placeholder: "javascript",
+    aliases: ["source"],
+    description:
+      "Inline workflow source starting with `export const meta = { name, description, phases }`",
+  },
+  file: {
+    type: "string",
+    placeholder: "path",
+    aliases: ["script-file", "path"],
+    description:
+      "Workflow file inside the origin workspace; relative paths resolve from the CLI working directory",
+  },
+  name: {
+    type: "string",
+    placeholder: "name",
+    aliases: ["workflow"],
+    description:
+      "Named workflow under .bb/workflows/<name>.js; lowercase kebab-case, at most 64 characters",
+  },
+} as const;
+const SOURCE_CONSTRAINT = {
+  kind: "exactly-one",
+  options: ["script", "file", "name"],
+} as const;
+
 export function registerWorkflowCli(
   bb: BbPluginApi,
   service: WorkflowService,
-  artifactService: WorkflowArtifactService,
 ): void {
-  bb.cli.register({
-    name: "workflows",
-    summary: "Run and inspect durable BB workflows",
-    commands: [
-      {
-        name: "run",
-        summary: "Start a workflow and return immediately",
-        usage:
-          "bb workflows run (--script '<javascript>'|--file <path>|--name <name>) [--args '<json>'] [--resume <run-id>] [--present-in <thread-id>] [--campaign <campaign-id>]",
-      },
-      {
-        name: "validate",
-        summary: "Validate workflow source and literal model selections",
-        usage:
-          "bb workflows validate (--script '<javascript>'|--file <path>|--name <name>)",
-      },
-      {
-        name: "status",
-        summary: "Show a compact workflow run summary",
-        usage: "bb workflows status <run-id>",
-      },
-      {
-        name: "details",
-        summary: "Show structured plan, implementation, and verification state",
-        usage: "bb workflows details <run-id>",
-      },
-      {
-        name: "history",
-        summary: "Read one JSONL page of workflow run and call history",
-        usage:
-          "bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]",
-      },
-      {
-        name: "list",
-        summary: "List recent project workflow runs",
-        usage: "bb workflows list [--limit <1-50>]",
-      },
-      {
-        name: "stop",
-        summary: "Cancel a workflow run",
-        usage: "bb workflows stop <run-id>",
-      },
-      {
-        name: "approve-amendment",
-        summary: "Approve a declared change to a campaign acceptance contract",
-        usage:
-          "bb workflows approve-amendment <run-id> --acceptance <acceptance-checkpoint-id>",
-      },
-      {
-        name: "artifact",
-        summary: "Review durable workflow campaign artifacts",
-        usage:
-          "bb workflows artifact <list|seed|show|revise|comment|reply|decide|assess|confirm|steward> <run-id> [options]",
-      },
-    ],
-    async run(argv, ctx) {
-      try {
-        const command = argv[0];
-        if (command === "run") {
-          const { options } = parseArguments(argv.slice(1), [
-            "--script",
-            "--source",
-            "--file",
-            "--name",
-            "--args",
-            "--resume",
-            "--present-in",
-            "--campaign",
-          ]);
-          const context = requireContext(ctx);
-          const prepared = await prepareWorkflowSource(
-            bb,
-            context,
-            sourceInput(options, ctx.cwd),
-          );
-          const run = await service.start({
-            projectId: context.projectId,
-            originThreadId: context.threadId,
-            presentationThreadId: options.get("--present-in") ?? null,
-            campaignId: options.get("--campaign") ?? null,
-            source: prepared.source,
-            args: parseJsonOption(options.get("--args")),
-            resumedFromRunId: options.get("--resume") ?? null,
-          });
-          return success({
-            runId: run.id,
-            campaignId: run.campaignId,
-            name: run.name,
-            status: run.status,
-          });
-        }
-        if (command === "validate") {
-          const { options } = parseArguments(argv.slice(1), [
-            "--script",
-            "--source",
-            "--file",
-            "--name",
-          ]);
-          const context = requireContext(ctx);
-          const prepared = await prepareWorkflowSource(
-            bb,
-            context,
-            sourceInput(options, ctx.cwd),
-          );
-          return success({
-            ...prepared.validation,
-            origin: prepared.origin,
-          });
-        }
-        if (command === "status") {
-          const { positionals } = parseArguments(argv.slice(1), [], "status");
-          const context = requireContext(ctx);
-          const runId = positionals[0]!;
-          const page = service.inspectPage(runId, -1, 1);
-          if (page === null || page.run.projectId !== context.projectId) {
-            throw new Error(`Unknown workflow run ${runId}`);
-          }
-          return success(statusSummary(page));
-        }
-        if (command === "details") {
-          const { positionals } = parseArguments(argv.slice(1), [], "details");
-          const context = requireContext(ctx);
-          const runId = positionals[0]!;
-          const run = service.get(runId);
-          if (run === null || run.projectId !== context.projectId) {
-            throw new Error(`Unknown workflow run ${runId}`);
-          }
-          const campaign = service.inspectCampaign(runId);
-          return success({
-            runId,
-            campaignId: run.campaignId,
-            // The campaign's own outcome ledger, so an orchestrator resuming
-            // work can read what it has actually closed instead of restating
-            // its plan back to itself.
-            acceptanceCoverage: campaign?.coverage ?? null,
-            acceptanceCoverageTruncated: campaign?.coverageTruncated ?? false,
-            checkpoints: service.inspectCheckpoints(runId).map((entry) => ({
-              id: entry.id,
-              checkpoint: entry.checkpoint,
-              phase: entry.phase,
-              childThreadId: entry.childThreadId,
-              createdAt: entry.createdAt,
-              updatedAt: entry.updatedAt,
-            })),
-            campaignRuns:
-              campaign?.runs.map((entry) => ({
-                runId: entry.run.id,
-                name: entry.run.name,
-                status: entry.run.status,
-                checkpointsOmitted: entry.checkpointsOmitted,
-                checkpoints: entry.checkpoints.map((checkpoint) => ({
-                  id: checkpoint.id,
-                  checkpoint: checkpoint.checkpoint,
-                  phase: checkpoint.phase,
-                  childThreadId: checkpoint.childThreadId,
-                  createdAt: checkpoint.createdAt,
-                  updatedAt: checkpoint.updatedAt,
-                })),
-              })) ?? [],
-          });
-        }
-        if (command === "history") {
-          const { options, positionals } = parseArguments(
-            argv.slice(1),
-            ["--cursor", "--limit"],
-            "history",
-          );
-          const runId = positionals[0]!;
-          const cursor = parseIntegerOption(
-            options,
-            "--cursor",
-            0,
-            0,
-            Number.MAX_SAFE_INTEGER,
-          );
-          const limit = parseIntegerOption(
-            options,
-            "--limit",
-            DEFAULT_HISTORY_LIMIT,
-            1,
-            MAX_HISTORY_LIMIT,
-          );
-          const context = requireContext(ctx);
-          const page = service.inspectPage(runId, cursor - 1, limit + 1);
-          if (page === null || page.run.projectId !== context.projectId) {
-            throw new Error(`Unknown workflow run ${runId}`);
-          }
-          const exportedAt = Date.now();
-          const calls = page.calls.slice(0, limit);
-          const hasMore = page.calls.length > limit;
-          const nextCursor = hasMore ? calls.at(-1)!.callIndex + 1 : null;
-          return jsonLines([
-            cursor === 0
-              ? runLogRecord(page.run, exportedAt)
-              : runReferenceLogRecord(page.run, exportedAt),
-            ...calls.map((call) => callLogRecord(call, exportedAt)),
-            {
-              type: "page",
-              logVersion: 1,
-              runId,
-              cursor,
-              limit,
-              returned: calls.length,
-              totalCalls: page.callCounts.total,
-              hasMore,
-              nextCursor,
-              exportedAt,
+  bb.cli.register(
+    defineCli({
+      name: "workflows",
+      summary: "Run and inspect durable BB workflows",
+      description:
+        "Workflows run in the background: start one, then poll the compact status summary and read bounded JSONL history pages.",
+      commands: {
+        run: cliCommand({
+          summary: "Start a workflow and return immediately",
+          constraints: [SOURCE_CONSTRAINT],
+          options: {
+            ...SOURCE_OPTIONS,
+            args: {
+              type: "string",
+              placeholder: "json",
+              description:
+                "JSON value exposed to the script as the global `args`, verbatim",
             },
-          ]);
-        }
-        if (command === "list") {
-          const { options } = parseArguments(argv.slice(1), ["--limit"]);
-          const limit = parseIntegerOption(
-            options,
-            "--limit",
-            20,
-            1,
-            MAX_LIST_LIMIT,
-          );
-          const context = requireContext(ctx);
-          return success(
-            service.list(context.projectId, limit).map(listRunSummary),
-          );
-        }
-        if (command === "stop") {
-          const { positionals } = parseArguments(argv.slice(1), [], "stop");
-          const context = requireContext(ctx);
-          const runId = positionals[0]!;
-          const run = service.get(runId);
-          if (run === null || run.projectId !== context.projectId) {
-            throw new Error(`Unknown workflow run ${runId}`);
-          }
-          return success({ runId, stopped: await service.stop(runId) });
-        }
-        if (command === "approve-amendment") {
-          const { options, positionals } = parseArguments(
-            argv.slice(1),
-            ["--acceptance"],
-            "approve-amendment",
-          );
-          const acceptanceId = options.get("--acceptance");
-          if (acceptanceId === undefined) {
-            throw new Error("approve-amendment requires --acceptance");
-          }
-          const context = requireContext(ctx);
-          const runId = positionals[0]!;
-          const run = service.get(runId);
-          if (run === null || run.projectId !== context.projectId) {
-            throw new Error(`Unknown workflow run ${runId}`);
-          }
-          // The approving thread is recorded, not asserted by the caller: this
-          // is the provenance that replaces a self-attested amendment reason.
-          return success(
-            service.approveAmendment({
-              runId,
-              acceptanceId,
-              approvedByThreadId: context.threadId,
-              surface: "cli",
-            }),
-          );
-        }
-        if (command === "artifact") {
-          const action = argv[1];
-          const allowedActions = new Set([
-            "list",
-            "seed",
-            "show",
-            "revise",
-            "comment",
-            "reply",
-            "decide",
-            "assess",
-            "confirm",
-            "steward",
-          ]);
-          if (action === undefined || !allowedActions.has(action)) {
-            throw new Error(
-              "Usage: bb workflows artifact <list|seed|show|revise|comment|reply|decide|assess|confirm|steward> <run-id> [options]",
-            );
-          }
-          const allowedOptionsByAction: Record<string, readonly string[]> = {
-            list: [],
-            seed: ["--mutation"],
-            show: ["--id", "--revision"],
-            revise: ["--id", "--content", "--expected-revision", "--mutation"],
-            comment: [
-              "--id",
-              "--revision",
-              "--quote",
-              "--start",
-              "--body",
-              "--mutation",
-            ],
-            reply: ["--annotation", "--body", "--mutation"],
-            decide: [
-              "--annotation",
-              "--outcome",
-              "--class",
-              "--rationale",
-              "--mutation",
-            ],
-            assess: ["--change", "--verdict", "--summary", "--mutation"],
-            confirm: ["--change", "--mutation"],
-            steward: [],
-          };
-          const { options, positionals } = parseArguments(
-            argv.slice(2),
-            allowedOptionsByAction[action]!,
-            `artifact ${action}`,
-          );
-          const context = requireContext(ctx);
-          const runId = positionals[0]!;
-          const run = service.inspect(runId);
-          if (
-            run === null ||
-            run.projectId !== context.projectId ||
-            (run.originThreadId !== context.threadId &&
-              run.presentationThreadId !== context.threadId)
-          ) {
-            throw new Error(`Unknown workflow run ${runId}`);
-          }
-          const scope: WorkflowArtifactScope = {
-            campaignId: run.campaignId,
-            projectId: run.projectId,
-            environmentId: run.environmentId,
-            presentationThreadId: run.presentationThreadId,
-            originRunId: run.rootRunId,
-          };
-          const publishChanged = () =>
-            bb.realtime.publish(WORKFLOW_RUNS_REALTIME_CHANNEL, {
-              threadId: run.presentationThreadId,
+            resume: {
+              type: "string",
+              placeholder: "run-id",
+              description:
+                "Reuse the recorded results of a previous run for calls that match",
+            },
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run(input, ctx) {
+            return guarded(async () => {
+              const context = requireContext(ctx);
+              const prepared = await prepareWorkflowSource(
+                bb,
+                context,
+                sourceInput(input.options, ctx.cwd),
+              );
+              const run = await service.start({
+                projectId: context.projectId,
+                originThreadId: context.threadId,
+                source: prepared.source,
+                args: parseJsonOption(input.options.args),
+                resumedFromRunId: input.options.resume ?? null,
+              });
+              return success({
+                runId: run.id,
+                name: run.name,
+                status: run.status,
+              });
             });
-          if (action === "list") return success(artifactService.list(scope));
-          if (action === "seed") {
-            const runView = buildWorkflowRunView(run);
-            const result = artifactService.seed(
-              scope,
-              defaultWorkflowArtifactDocuments({
-                campaignName: run.name,
-                description: runView.description,
-                campaignId: run.campaignId,
-              }),
-              mutationId(options),
-            );
-            publishChanged();
-            return success(result);
-          }
-          if (action === "show") {
-            const revisionRaw = options.get("--revision");
-            const revision =
-              revisionRaw === undefined
-                ? undefined
-                : parseIntegerOption(
-                    options,
-                    "--revision",
-                    1,
-                    1,
-                    Number.MAX_SAFE_INTEGER,
-                  );
-            return success(
-              artifactService.read(
-                scope,
-                requiredOption(options, "--id"),
-                revision,
-              ),
-            );
-          }
-          if (action === "revise") {
-            const artifactId = requiredOption(options, "--id");
-            const current = artifactService.read(scope, artifactId);
-            const expectedRevision = parseIntegerOption(
-              options,
-              "--expected-revision",
-              0,
-              1,
-              Number.MAX_SAFE_INTEGER,
-            );
-            const result = artifactService.seed(
-              scope,
-              [
+          },
+        }),
+        validate: cliCommand({
+          summary: "Validate workflow source and literal model selections",
+          constraints: [SOURCE_CONSTRAINT],
+          options: {
+            ...SOURCE_OPTIONS,
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run(input, ctx) {
+            return guarded(async () => {
+              const context = requireContext(ctx);
+              const prepared = await prepareWorkflowSource(
+                bb,
+                context,
+                sourceInput(input.options, ctx.cwd),
+              );
+              return success({
+                ...prepared.validation,
+                origin: prepared.origin,
+              });
+            });
+          },
+        }),
+        status: cliCommand({
+          summary: "Show a compact workflow run summary",
+          positionals: [RUN_ID_POSITIONAL],
+          options: {
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run(input, ctx) {
+            return guarded(async () => {
+              const context = requireContext(ctx);
+              const runId = input.positionals["run-id"];
+              const page = service.inspectPage(runId, -1, 1);
+              if (page === null || page.run.projectId !== context.projectId) {
+                throw new Error(`Unknown workflow run ${runId}`);
+              }
+              return success(statusSummary(page));
+            });
+          },
+        }),
+        history: cliCommand({
+          summary: "Read one JSONL page of workflow run and call history",
+          positionals: [RUN_ID_POSITIONAL],
+          options: {
+            cursor: {
+              type: "integer",
+              min: 0,
+              max: Number.MAX_SAFE_INTEGER,
+              default: 0,
+              placeholder: "call-index",
+              description:
+                "First call index to include; use a page record's nextCursor to continue",
+            },
+            limit: {
+              type: "integer",
+              min: 1,
+              max: MAX_HISTORY_LIMIT,
+              default: DEFAULT_HISTORY_LIMIT,
+              description: "How many calls to include in this page",
+            },
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run(input, ctx) {
+            return guarded(async () => {
+              const runId = input.positionals["run-id"];
+              const { cursor, limit } = input.options;
+              const context = requireContext(ctx);
+              const page = service.inspectPage(runId, cursor - 1, limit + 1);
+              if (page === null || page.run.projectId !== context.projectId) {
+                throw new Error(`Unknown workflow run ${runId}`);
+              }
+              const exportedAt = Date.now();
+              const calls = page.calls.slice(0, limit);
+              const hasMore = page.calls.length > limit;
+              const nextCursor = hasMore ? calls.at(-1)!.callIndex + 1 : null;
+              return jsonLines([
+                cursor === 0
+                  ? runLogRecord(page.run, exportedAt)
+                  : runReferenceLogRecord(page.run, exportedAt),
+                ...calls.map((call) => callLogRecord(call, exportedAt)),
                 {
-                  kind: current.artifact.kind,
-                  title: current.artifact.title,
-                  content: requiredOption(options, "--content"),
-                  expectedRevision,
+                  type: "page",
+                  logVersion: 1,
+                  runId,
+                  cursor,
+                  limit,
+                  returned: calls.length,
+                  totalCalls: page.callCounts.total,
+                  hasMore,
+                  nextCursor,
+                  exportedAt,
                 },
-              ],
-              mutationId(options),
-            );
-            publishChanged();
-            return success(result);
-          }
-          if (action === "comment") {
-            const artifactId = requiredOption(options, "--id");
-            const revision = parseIntegerOption(
-              options,
-              "--revision",
-              artifactService.read(scope, artifactId).artifact.currentRevision,
-              1,
-              Number.MAX_SAFE_INTEGER,
-            );
-            const detail = artifactService.read(scope, artifactId, revision);
-            const quote = requiredOption(options, "--quote");
-            const startRaw = options.get("--start");
-            const start =
-              startRaw === undefined
-                ? detail.content.indexOf(quote)
-                : parseIntegerOption(
-                    options,
-                    "--start",
-                    0,
-                    0,
-                    detail.content.length,
-                  );
-            if (
-              start < 0 ||
-              detail.content.slice(start, start + quote.length) !== quote
-            ) {
-              throw new Error(
-                "--quote was not found at the requested artifact position",
+              ]);
+            });
+          },
+        }),
+        list: cliCommand({
+          summary: "List recent project workflow runs",
+          options: {
+            limit: {
+              type: "integer",
+              min: 1,
+              max: MAX_LIST_LIMIT,
+              default: DEFAULT_LIST_LIMIT,
+              description: "How many recent runs to list, newest first",
+            },
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run(input, ctx) {
+            return guarded(async () => {
+              const context = requireContext(ctx);
+              return success(
+                service
+                  .list(context.projectId, input.options.limit)
+                  .map(listRunSummary),
               );
-            }
-            if (
-              startRaw === undefined &&
-              detail.content.indexOf(quote, start + 1) !== -1
-            ) {
-              throw new Error(
-                "--quote occurs more than once; pass --start to disambiguate",
-              );
-            }
-            const result = artifactService.addAnnotation(scope, {
-              artifactId,
-              revision,
-              kind: "comment",
-              anchor: {
-                blockId: `cli-${start}`,
-                start,
-                end: start + quote.length,
-                exactQuote: quote,
-                prefix: detail.content.slice(Math.max(0, start - 64), start),
-                suffix: detail.content.slice(
-                  start + quote.length,
-                  start + quote.length + 64,
-                ),
-              },
-              body: requiredOption(options, "--body"),
-              clientMutationId: mutationId(options),
             });
-            publishChanged();
-            return success(result);
-          }
-          if (action === "reply") {
-            const result = artifactService.reply(scope, {
-              annotationId: requiredOption(options, "--annotation"),
-              body: requiredOption(options, "--body"),
-              clientMutationId: mutationId(options),
+          },
+        }),
+        stop: cliCommand({
+          summary: "Cancel a workflow run",
+          positionals: [RUN_ID_POSITIONAL],
+          options: {
+            json: { type: "boolean", description: JSON_OPTION_DESCRIPTION },
+          },
+          run(input, ctx) {
+            return guarded(async () => {
+              const context = requireContext(ctx);
+              const runId = input.positionals["run-id"];
+              const run = service.get(runId);
+              if (run === null || run.projectId !== context.projectId) {
+                throw new Error(`Unknown workflow run ${runId}`);
+              }
+              return success({ runId, stopped: await service.stop(runId) });
             });
-            publishChanged();
-            return success(result);
-          }
-          if (action === "decide") {
-            const outcome = requiredOption(options, "--outcome");
-            if (outcome !== "accepted" && outcome !== "declined") {
-              throw new Error("--outcome must be accepted or declined");
-            }
-            const semanticClassInput = requiredOption(options, "--class");
-            let semanticClass: WorkflowArtifactSemanticClass;
-            switch (semanticClassInput) {
-              case "editorial":
-              case "refinement":
-              case "contract":
-              case "architecture":
-                semanticClass = semanticClassInput;
-                break;
-              default:
-                throw new Error(
-                  "--class must be editorial, refinement, contract, or architecture",
-                );
-            }
-            const result = artifactService.decide(scope, {
-              annotationId: requiredOption(options, "--annotation"),
-              outcome,
-              semanticClass,
-              rationale: options.get("--rationale") ?? "",
-              clientMutationId: mutationId(options),
-            });
-            publishChanged();
-            return success(result);
-          }
-          if (action === "assess") {
-            const verdict = requiredOption(options, "--verdict");
-            if (
-              verdict !== "no-design-impact" &&
-              verdict !== "bounded-design-delta" &&
-              verdict !== "redesign-required"
-            ) {
-              throw new Error(
-                "--verdict must be no-design-impact, bounded-design-delta, or redesign-required",
-              );
-            }
-            const result = artifactService.assessChange(scope, {
-              changeId: requiredOption(options, "--change"),
-              verdict,
-              summary: requiredOption(options, "--summary"),
-              clientMutationId: mutationId(options),
-            });
-            publishChanged();
-            return success(result);
-          }
-          if (action === "confirm") {
-            const result = artifactService.confirmChange(scope, {
-              changeId: requiredOption(options, "--change"),
-              clientMutationId: mutationId(options),
-            });
-            publishChanged();
-            return success(result);
-          }
-          const result = await artifactService.ensureSteward(scope, run.name);
-          publishChanged();
-          return success(result);
-        }
-        return failure(
-          "Usage: bb workflows <run|validate|status|details|history|list|stop|approve-amendment|artifact> [options]",
-        );
-      } catch (error) {
-        return failure(error instanceof Error ? error.message : String(error));
-      }
-    },
-  });
+          },
+        }),
+      },
+    }),
+  );
 }

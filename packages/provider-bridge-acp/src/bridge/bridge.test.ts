@@ -5,15 +5,17 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createStandaloneBuiltinCompactCommandInput } from "@bb/domain";
 import type { DynamicTool, ReasoningLevel } from "@bb/domain";
 import {
+  BRIDGE_JSON_RPC_ERRORS,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
   THREAD_DELTA_NOTIFICATION_METHOD,
 } from "@bb/provider-bridge-protocol";
@@ -27,7 +29,6 @@ import type {
 } from "@bb/provider-bridge-protocol/testing";
 
 import { handleLine } from "./bridge.js";
-import { ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE } from "../bridge-protocol.js";
 import { ACP_BRIDGE_MCP_SERVER_NAME } from "./tool-proxy-mcp.js";
 
 const FAKE_AGENT_PATH = resolve(
@@ -502,6 +503,7 @@ function callDynamicToolBridge(args: {
   token: string;
   tool: string;
   toolArguments: Record<string, unknown>;
+  signal?: AbortSignal;
 }): Promise<unknown> {
   return new Promise((resolveCall, rejectCall) => {
     const socket = createConnection({ host: args.host, port: args.port });
@@ -514,6 +516,14 @@ function callDynamicToolBridge(args: {
       settled = true;
       rejectCall(error);
     };
+    const abort = () => {
+      socket.destroy();
+      rejectOnce(new Error("Cancelled by fixture"));
+    };
+    args.signal?.addEventListener("abort", abort, { once: true });
+    socket.once("close", () =>
+      args.signal?.removeEventListener("abort", abort),
+    );
     socket.setEncoding("utf8");
     socket.on("connect", () => {
       socket.write(
@@ -556,7 +566,25 @@ function callDynamicToolBridge(args: {
   });
 }
 
+async function waitForAgentExit(readyFile: string): Promise<void> {
+  const pid = Number(readFileSync(readyFile, "utf8"));
+  expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
+  await waitFor(
+    () => {
+      try {
+        process.kill(pid, 0);
+        return undefined;
+      } catch {
+        return true;
+      }
+    },
+    "agent termination",
+    5_000,
+  );
+}
+
 beforeEach(() => {
+  bbThreadIdByProviderThreadId.clear();
   workspaceDir = mkdtempSync(join(tmpdir(), "bb-acp-bridge-test-"));
   output = captureBridgeJsonRpcOutput();
 });
@@ -694,6 +722,45 @@ describe("acp bridge", () => {
         },
       ],
       selectedOnlyModels: [],
+    });
+  });
+
+  it("keeps probing reasoning for later models after one model's probe fails", async () => {
+    const modelListId = sendModelList({
+      envVars: {
+        FAKE_ACP_MODEL_CONFIG: "1",
+        FAKE_ACP_THOUGHT_LEVEL_CONFIG: "1",
+        FAKE_ACP_MODEL_COUNT: "3",
+        FAKE_ACP_SET_CONFIG_MODEL_ERROR_VALUE: "fake/strong",
+      },
+    });
+
+    expect((await waitForResponse(modelListId)).result).toMatchObject({
+      models: [
+        {
+          id: "fake/default",
+          supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
+        },
+        {
+          id: "fake/strong",
+          supportedReasoningEfforts: [
+            {
+              reasoningEffort: "medium",
+              description:
+                "Reasoning effort is managed by the connected ACP agent.",
+            },
+          ],
+        },
+        {
+          id: "fake/gen-2",
+          defaultReasoningEffort: "low",
+          supportedReasoningEfforts: [
+            { reasoningEffort: "low" },
+            { reasoningEffort: "medium" },
+            { reasoningEffort: "high" },
+          ],
+        },
+      ],
     });
   });
 
@@ -1012,40 +1079,7 @@ describe("acp bridge", () => {
     ]);
   });
 
-  it("keeps ACP-native discovered models when per-model reasoning discovery errors", async () => {
-    const modelListId = sendModelList({
-      envVars: {
-        FAKE_ACP_MODEL_CONFIG: "1",
-        FAKE_ACP_THOUGHT_LEVEL_CONFIG: "1",
-        FAKE_ACP_SET_CONFIG_MODEL_ERROR: "1",
-      },
-    });
-
-    expect((await waitForResponse(modelListId)).result).toMatchObject({
-      models: [
-        {
-          id: "fake/default",
-          model: "fake/default",
-          displayName: "Fake Default",
-          isDefault: true,
-          defaultReasoningEffort: "medium",
-          supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
-        },
-        {
-          id: "fake/strong",
-          model: "fake/strong",
-          displayName: "Fake Strong",
-          isDefault: false,
-          defaultReasoningEffort: "medium",
-          supportedReasoningEfforts: [{ reasoningEffort: "medium" }],
-        },
-      ],
-      selectedOnlyModels: [],
-    });
-  });
-
   it("times out hung ACP-native discovery, kills the child, and falls back to the synthetic model", async () => {
-    const signalFile = join(workspaceDir, "discovery-agent-signal.txt");
     const readyFile = join(workspaceDir, "discovery-agent-ready.txt");
     let modelListId: number;
 
@@ -1055,7 +1089,6 @@ describe("acp bridge", () => {
         envVars: {
           FAKE_ACP_HANG_INITIALIZE: "1",
           FAKE_ACP_READY_FILE: readyFile,
-          FAKE_ACP_SIGNAL_FILE: signalFile,
         },
       });
       await waitForFileWithRealTimer(readyFile);
@@ -1068,11 +1101,7 @@ describe("acp bridge", () => {
       models: [{ id: "acp-default", isDefault: true }],
       selectedOnlyModels: [],
     });
-    await waitFor(
-      () => (existsSync(signalFile) ? true : undefined),
-      "discovery agent termination",
-      5_000,
-    );
+    await waitForAgentExit(readyFile);
   });
 
   it("serves ACP-native discovered models from cache within the TTL and re-discovers after it", async () => {
@@ -1188,6 +1217,29 @@ describe("acp bridge", () => {
       ),
     ).toBe(true);
   });
+
+  it.each([
+    { dialectId: "opencode", client: "acp", question: "false" },
+    { dialectId: "acp", client: "cli", question: "true" },
+  ])(
+    "sets native question availability only for $dialectId sessions",
+    async ({ dialectId, client, question }) => {
+      const { providerThreadId } = await startThread({
+        dialectId,
+        envVars: {
+          OPENCODE_CLIENT: "cli",
+          OPENCODE_ENABLE_QUESTION_TOOL: "true",
+        },
+      });
+      sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "echo-question-env", mentions: [] }],
+      });
+      await waitForTurnCompleted();
+      expect(agentMessageTexts()).toContain(
+        JSON.stringify({ client, question }),
+      );
+    },
+  );
 
   it("launches ACP agents with a configured reasoning CLI flag", async () => {
     chmodSync(FAKE_AGENT_PATH, 0o755);
@@ -1448,20 +1500,6 @@ describe("acp bridge", () => {
     ]);
   });
 
-  it("does not leak bridge-only Electron env to the spawned agent", async () => {
-    vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
-    const { providerThreadId } = await startThread();
-
-    sendTurnRequest("turn/start", providerThreadId, {
-      input: [
-        { type: "text", text: "echo-electron-run-as-node", mentions: [] },
-      ],
-    });
-    await waitForTurnCompleted();
-
-    expect(agentMessageTexts()).toContain("electron-run-as-node:missing");
-  });
-
   it("preserves Electron Node mode for the dynamic-tool MCP process only", async () => {
     vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
     const { providerThreadId } = await startThread({
@@ -1503,13 +1541,15 @@ describe("acp bridge", () => {
         { type: "text", text: "echo-electron-run-as-node", mentions: [] },
       ],
     });
-    await waitFor(
-      () =>
-        agentMessageTexts().find(
-          (text) => text === "electron-run-as-node:missing",
-        ),
-      "agent environment report",
-    );
+    await expect(
+      waitFor(
+        () =>
+          agentMessageTexts().find((text) =>
+            text.startsWith("electron-run-as-node:"),
+          ),
+        "agent environment report",
+      ),
+    ).resolves.toBe("electron-run-as-node:missing");
   });
 
   it("warns and launches the family id when a reasoning variant is missing", async () => {
@@ -1559,6 +1599,23 @@ describe("acp bridge", () => {
     expect(completed).toMatchObject({ status: "completed" });
     expect(threadEventsOfType("turn/started")).toHaveLength(1);
     expect(agentMessageTexts()).toContain("echo:hello there");
+  });
+
+  it("rebuilds the agent with environment from a later turn", async () => {
+    const envVars = { FAKE_ACP_LOAD_SESSION: "1", FAKE_ACP_PROMPT_ERROR: "1" };
+    const { providerThreadId } = await startThread({ envVars });
+    const turnId = sendTurnRequest("turn/start", providerThreadId, {
+      input: [{ type: "text", text: "fresh environment", mentions: [] }],
+      options: executionOptions({
+        envVars: { FAKE_ACP_PROMPT_ERROR: "0" },
+        providerOptions: { acpLaunchSpec: acpLaunchSpec({ envVars }) },
+      }),
+    });
+
+    expect((await waitForResponse(turnId)).error).toBeUndefined();
+    expect(await waitForTurnCompleted()).toMatchObject({ status: "completed" });
+    expect(agentMessageTexts()).toContain("echo:fresh environment");
+    expect(notifications("session/replaced")).toHaveLength(1);
   });
 
   it("authenticates ACP sessions with cached tokens when advertised", async () => {
@@ -1640,34 +1697,11 @@ describe("acp bridge", () => {
     expect(response.error?.data).toBeUndefined();
   });
 
-  it("passes dynamic tools to ACP sessions as an MCP server", async () => {
-    const { providerThreadId } = await startThread({
-      dynamicTools: [
-        {
-          name: "update_environment_directory",
-          description: "Move this thread to another environment directory.",
-          inputSchema: {
-            type: "object",
-            properties: { path: { type: "string" } },
-            required: ["path"],
-          },
-        },
-      ],
-    });
-
-    const turnId = sendTurnRequest("turn/start", providerThreadId, {
-      input: [{ type: "text", text: "echo-mcp-servers", mentions: [] }],
-    });
-    await waitForResponse(turnId);
-    await waitForTurnCompleted();
-
-    expect(agentMessageTexts()).toContain(
-      `mcp-servers:${ACP_BRIDGE_MCP_SERVER_NAME}`,
-    );
-  });
-
   it("approves Cursor session MCP servers for the session lifetime (#2018)", async () => {
-    const cursorAgent = join(workspaceDir, "cursor-agent");
+    const cursorAgent = join(
+      workspaceDir,
+      process.platform === "win32" ? "cursor-agent.exe" : "cursor-agent",
+    );
     const cursorDataDir = join(workspaceDir, "cursor-data");
     symlinkSync(process.execPath, cursorAgent);
     const { providerThreadId } = await startThread({
@@ -1730,9 +1764,11 @@ describe("acp bridge", () => {
     if (!configText) {
       throw new Error("Fake ACP agent did not report MCP server config");
     }
-    const [mcpServerConfig] = JSON.parse(
+    const mcpServerConfigs = JSON.parse(
       configText.slice(configPrefix.length),
     ) as { env: { name: string; value: string }[]; name: string }[];
+    expect(mcpServerConfigs).toHaveLength(1);
+    const [mcpServerConfig] = mcpServerConfigs;
     if (!mcpServerConfig) {
       throw new Error("Fake ACP agent reported no MCP server config");
     }
@@ -1794,6 +1830,114 @@ describe("acp bridge", () => {
       ok: true,
     });
   });
+
+  it.each(["socket-close", "provider-exit", "turn-end"])(
+    "cancels the runtime tool request after %s",
+    async (kind) => {
+      const { providerThreadId } = await startThread({
+        dynamicTools: [
+          {
+            name: "update_environment_directory",
+            description: "Move this thread to another environment directory.",
+            inputSchema: {
+              type: "object",
+              properties: { path: { type: "string" } },
+              required: ["path"],
+            },
+          },
+        ],
+      });
+
+      const turnId = sendTurnRequest("turn/start", providerThreadId, {
+        input: [{ type: "text", text: "echo-mcp-server-config", mentions: [] }],
+      });
+      await waitForResponse(turnId);
+      await waitForTurnCompleted();
+
+      const configPrefix = "mcp-server-config:";
+      const configText = agentMessageTexts().find((text) =>
+        text.startsWith(configPrefix),
+      );
+      if (!configText) {
+        throw new Error("Fake ACP agent did not report MCP server config");
+      }
+      const [mcpServerConfig] = JSON.parse(
+        configText.slice(configPrefix.length),
+      ) as { env: { name: string; value: string }[]; name: string }[];
+      if (!mcpServerConfig) {
+        throw new Error("Fake ACP agent reported no MCP server config");
+      }
+      expect(mcpServerConfig?.name).toBe(ACP_BRIDGE_MCP_SERVER_NAME);
+      const env = new Map(
+        mcpServerConfig.env.map(({ name, value }) => [name, value]),
+      );
+      const host = env.get("BB_ACP_DYNAMIC_TOOL_HOST");
+      const port = Number(env.get("BB_ACP_DYNAMIC_TOOL_PORT"));
+      const threadId = env.get("BB_ACP_DYNAMIC_TOOL_THREAD_ID");
+      const token = env.get("BB_ACP_DYNAMIC_TOOL_TOKEN");
+      if (!host || !Number.isInteger(port) || !threadId || !token) {
+        throw new Error("MCP server config is missing dynamic tool bridge env");
+      }
+
+      const controller = new AbortController();
+      const bridgeCall = callDynamicToolBridge({
+        callId: "cancelled-tool-call",
+        host,
+        port,
+        threadId,
+        token,
+        tool: "update_environment_directory",
+        toolArguments: {},
+        signal: controller.signal,
+      }).catch((error) => error);
+      const forwarded = await waitFor(
+        () =>
+          output.messages.find(
+            (message) =>
+              message.method === "item/tool/call" && message.id !== undefined,
+          ),
+        "forwarded request",
+      );
+      if (kind === "socket-close") {
+        controller.abort();
+        expect(await bridgeCall).toBeInstanceOf(Error);
+      } else {
+        sendTurnRequest("turn/start", providerThreadId, {
+          input: [
+            {
+              type: "text",
+              text: kind === "provider-exit" ? "die" : "done",
+              mentions: [],
+            },
+          ],
+        });
+        await expect(bridgeCall).resolves.toMatchObject({
+          ok: false,
+          error: "ACP dynamic tool call cancelled",
+        });
+      }
+      const cancellation = await waitFor(
+        () =>
+          output.messages.find(
+            (message) => message.method === "notifications/cancelled",
+          ),
+        "runtime cancellation",
+      );
+      expect(cancellation.params).toEqual({ requestId: forwarded.id });
+      handleLine(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: forwarded.id,
+          result: { success: true, contentItems: [] },
+        }),
+      );
+      expect(
+        output.messages.filter(
+          (message) => message.method === "notifications/cancelled",
+        ),
+      ).toHaveLength(1);
+    },
+  );
 
   it("keeps the dynamic-tool TCP server alive after a client reset on initialize", async () => {
     const { bbThreadId, providerThreadId } = await startThread({
@@ -1989,7 +2133,7 @@ describe("acp bridge", () => {
     );
     expect(prompt).toContain("Available bb skills:");
     expect(prompt).toContain(
-      "- deploy: Ship the app. (SKILL.md: /staged/acp-skills/deploy/SKILL.md)",
+      `- deploy: Ship the app. (SKILL.md: ${join("/staged/acp-skills", "deploy", "SKILL.md")})`,
     );
     await waitForResponse(sendRequest("skills/configure", { roots: [] }));
   });
@@ -2097,7 +2241,7 @@ describe("acp bridge", () => {
         subject: {
           kind: "file_change",
           itemId: "write-tool-1",
-          writeScope: "/tmp/qa-1719",
+          writeScope: normalize("/tmp/qa-1719"),
         },
       },
     });
@@ -2141,8 +2285,11 @@ describe("acp bridge", () => {
     expect(agentMessageTexts()).toContain("permission:always");
   });
 
-  it("performs client fs writes inside the workspace and reports them", async () => {
+  it.each(["add", "update"])("acknowledges fs %s writes", async (kind) => {
     const targetPath = join(workspaceDir, "agent-output.txt");
+    if (kind === "update") {
+      writeFileSync(targetPath, "original content\n");
+    }
     const { providerThreadId } = await startThread({
       permissionMode: "accept-edits",
       permissionEscalation: "ask",
@@ -2161,7 +2308,7 @@ describe("acp bridge", () => {
     ).toContainEqual(
       expect.objectContaining({
         type: "fileChange",
-        changes: [expect.objectContaining({ path: targetPath, kind: "add" })],
+        changes: [expect.objectContaining({ path: targetPath, kind })],
       }),
     );
   });
@@ -2248,27 +2395,6 @@ describe("acp bridge", () => {
     }
   });
 
-  it("cancels a hung prompt and continues the same turn with steer input", async () => {
-    const { providerThreadId } = await startThread();
-    const turnId = sendTurnRequest("turn/start", providerThreadId, {
-      input: [{ type: "text", text: "hang", mentions: [] }],
-    });
-    await waitForResponse(turnId);
-
-    const steerId = sendTurnRequest("turn/steer", providerThreadId, {
-      expectedTurnId: "turn-1",
-      input: [{ type: "text", text: "steered", mentions: [] }],
-    });
-    await waitForResponse(steerId);
-
-    const completed = await waitForTurnCompleted();
-    expect(completed).toMatchObject({ status: "completed" });
-    expect(agentMessageTexts()).toContain("echo:steered");
-    expect(agentMessageTexts()).not.toContain("echo:hang");
-    expect(threadEventsOfType("turn/started")).toHaveLength(1);
-    expect(threadEventsOfType("turn/completed")).toHaveLength(1);
-  });
-
   it("keeps partial output from the cancelled prompt then continues", async () => {
     const { providerThreadId } = await startThread();
     const turnId = sendTurnRequest("turn/start", providerThreadId, {
@@ -2293,7 +2419,69 @@ describe("acp bridge", () => {
     expect(agentMessageTexts().join("")).toContain("echo:steered");
     expect(threadEventsOfType("turn/started")).toHaveLength(1);
     expect(threadEventsOfType("turn/completed")).toHaveLength(1);
+    expect(notifications("session/replaced")).toHaveLength(0);
   });
+
+  it.each(["0", "1"])(
+    "rebuilds a stuck agent after a steer cancellation error (session/load=%s)",
+    async (loadSession) => {
+      const promptLog = join(workspaceDir, "prompts.jsonl");
+      const { providerThreadId } = await startThread({
+        envVars: {
+          FAKE_ACP_LOAD_SESSION: loadSession,
+          FAKE_ACP_CANCEL_ERROR: "1",
+          FAKE_ACP_PROMPT_LOG: promptLog,
+        },
+      });
+      await waitForResponse(
+        sendTurnRequest("turn/start", providerThreadId, {
+          input: [{ type: "text", text: "hang", mentions: [] }],
+        }),
+      );
+      await waitFor(
+        () => (loggedPrompts(promptLog).includes("hang") ? true : undefined),
+        "pending prompt",
+      );
+      await waitForResponse(
+        sendTurnRequest("turn/steer", providerThreadId, {
+          expectedTurnId: "turn-1",
+          clientRequestId: "creq_bcdefghjkm",
+          input: [{ type: "text", text: "steered", mentions: [] }],
+        }),
+      );
+      expect(await waitForTurnCompleted()).toMatchObject({
+        status: "failed",
+      });
+      expect(notifications("error").at(-1)?.params).toMatchObject({
+        message:
+          "Internal error: 'NoneType' object has no attribute 'startswith'",
+      });
+      expect(agentMessageTexts()).not.toContain("echo:steered");
+      expect(
+        emittedDeltaKinds().filter((kind) => kind === "input.accepted"),
+      ).toHaveLength(1);
+
+      await waitForResponse(
+        sendTurnRequest("turn/start", providerThreadId, {
+          input: [{ type: "text", text: "follow-up", mentions: [] }],
+        }),
+      );
+      await waitFor(
+        () => threadEventsOfType("turn/completed")[1],
+        "follow-up completion",
+      );
+      expect(threadEventsOfType("turn/completed")[1]).toMatchObject({
+        status: "completed",
+      });
+      expect(agentMessageTexts()).toContain("echo:follow-up");
+      expect(agentMessageTexts()).not.toContain(
+        "Queued for the next turn. (1 queued)",
+      );
+      expect(notifications("session/replaced").at(-1)?.params).toMatchObject({
+        contextLost: loadSession === "0",
+      });
+    },
+  );
 
   it("delivers stacked steers on the same turn", async () => {
     const { providerThreadId } = await startThread();
@@ -2433,13 +2621,31 @@ describe("acp bridge", () => {
     },
   );
 
-  it("fails the compaction turn when the agent reports the failure in an end-turn message", async () => {
+  it.each([
+    [
+      "fails the compaction turn when the agent reports the failure in an end-turn message",
+      "Compaction failed: summary model rejected the request",
+      "failed",
+    ],
+    [
+      "completes a no-op compaction turn without reporting a compacted context",
+      "Compaction failed: Nothing to compact (session too small)",
+      "skipped",
+    ],
+    [
+      "keeps classifying a no-op compaction when the agent rewords its prose",
+      "compaction failed: nothing to compact — the session is still small",
+      "skipped",
+    ],
+    [
+      "fails the compaction turn when the failure report is reworded or preceded by other text",
+      "Tried shrinking the context.\nCompaction failed: session is locked by another compaction",
+      "failed",
+    ],
+  ])("%s", async (_name, message, outcome) => {
     const { providerThreadId } = await startThread({
       dialectId: "omp",
-      envVars: {
-        FAKE_ACP_COMPACT_AGENT_MESSAGE:
-          "Compaction failed: summary model rejected the request",
-      },
+      envVars: { FAKE_ACP_COMPACT_AGENT_MESSAGE: message },
     });
 
     const turnId = sendTurnRequest("turn/start", providerThreadId, {
@@ -2448,87 +2654,20 @@ describe("acp bridge", () => {
     expect((await waitForResponse(turnId)).error).toBeUndefined();
 
     const completed = await waitForTurnCompleted();
-    expect(completed).toMatchObject({
-      status: "failed",
-      error: {
-        message: "Compaction failed: summary model rejected the request",
-      },
-    });
     expect(threadEventsOfType("thread/compacted")).toEqual([]);
-  });
-
-  it("completes a no-op compaction turn without reporting a compacted context", async () => {
-    const { providerThreadId } = await startThread({
-      dialectId: "omp",
-      envVars: {
-        FAKE_ACP_COMPACT_AGENT_MESSAGE:
-          "Compaction failed: Nothing to compact (session too small)",
-      },
-    });
-
-    const turnId = sendTurnRequest("turn/start", providerThreadId, {
-      input: compactCommandInput(),
-    });
-    expect((await waitForResponse(turnId)).error).toBeUndefined();
-
-    const completed = await waitForTurnCompleted();
+    if (outcome === "failed") {
+      expect(completed).toMatchObject({
+        status: "failed",
+        error: { message },
+      });
+      return;
+    }
     expect(completed).toMatchObject({ status: "completed" });
-    expect(threadEventsOfType("thread/compacted")).toEqual([]);
     expect(threadEventsOfType("provider/warning").at(-1)).toMatchObject({
       category: "compaction-skipped",
       summary: "Context compaction skipped",
-      details: "Compaction failed: Nothing to compact (session too small)",
+      details: message,
     });
-  });
-
-  it("keeps classifying a no-op compaction when the agent rewords its prose", async () => {
-    const { providerThreadId } = await startThread({
-      dialectId: "omp",
-      envVars: {
-        FAKE_ACP_COMPACT_AGENT_MESSAGE:
-          "compaction failed: nothing to compact — the session is still small",
-      },
-    });
-
-    const turnId = sendTurnRequest("turn/start", providerThreadId, {
-      input: compactCommandInput(),
-    });
-    expect((await waitForResponse(turnId)).error).toBeUndefined();
-
-    const completed = await waitForTurnCompleted();
-    expect(completed).toMatchObject({ status: "completed" });
-    expect(threadEventsOfType("thread/compacted")).toEqual([]);
-    expect(threadEventsOfType("provider/warning").at(-1)).toMatchObject({
-      category: "compaction-skipped",
-      summary: "Context compaction skipped",
-      details:
-        "compaction failed: nothing to compact — the session is still small",
-    });
-  });
-
-  it("fails the compaction turn when the failure report is reworded or preceded by other text", async () => {
-    const { providerThreadId } = await startThread({
-      dialectId: "omp",
-      envVars: {
-        FAKE_ACP_COMPACT_AGENT_MESSAGE:
-          "Tried shrinking the context.\nCompaction failed: session is locked by another compaction",
-      },
-    });
-
-    const turnId = sendTurnRequest("turn/start", providerThreadId, {
-      input: compactCommandInput(),
-    });
-    expect((await waitForResponse(turnId)).error).toBeUndefined();
-
-    const completed = await waitForTurnCompleted();
-    expect(completed).toMatchObject({
-      status: "failed",
-      error: {
-        message:
-          "Tried shrinking the context.\nCompaction failed: session is locked by another compaction",
-      },
-    });
-    expect(threadEventsOfType("thread/compacted")).toEqual([]);
   });
 
   it("accepts turn input only after the prompt carrying it goes out", async () => {
@@ -2577,7 +2716,7 @@ describe("acp bridge", () => {
       input: [{ type: "text", text: "late", mentions: [] }],
     });
     const response = await waitForResponse(steerId);
-    expect(response.error?.code).toBe(ACP_BRIDGE_NO_ACTIVE_TURN_ERROR_CODE);
+    expect(response.error?.code).toBe(BRIDGE_JSON_RPC_ERRORS.NO_ACTIVE_TURN);
     expect(response.error?.message).toMatch(/No active turn/);
   });
 
@@ -2787,35 +2926,6 @@ describe("acp bridge", () => {
     expect(notifications("thread/identity")).toEqual([]);
   });
 
-  it("resumes via session/load when the agent supports it", async () => {
-    const first = await startThread({
-      envVars: { FAKE_ACP_LOAD_SESSION: "1" },
-    });
-    await stopThread(first.providerThreadId);
-    startedProviderThreadIds.pop();
-
-    const resumeId = sendRequest("thread/resume", {
-      threadId: first.bbThreadId,
-      cwd: workspaceDir,
-      instructionMode: "append",
-      options: executionOptions({
-        providerOptions: {
-          acpLaunchSpec: acpLaunchSpec({
-            envVars: { FAKE_ACP_LOAD_SESSION: "1" },
-          }),
-        },
-      }),
-      providerThreadId: first.providerThreadId,
-    });
-    const response = await waitForResponse(resumeId);
-    expect(response.result).toEqual({
-      providerThreadId: first.providerThreadId,
-      sessionRestorable: true,
-    });
-    expect(threadEventsOfType("provider/warning")).toHaveLength(0);
-    startedProviderThreadIds.push(first.providerThreadId);
-  });
-
   it("emits session.reset after identity at every construction (start, resume, fork)", async () => {
     const resetIndexesFor = (threadId: string): number[] =>
       output.messages.flatMap((message, index) => {
@@ -2904,6 +3014,42 @@ describe("acp bridge", () => {
     const forkIdentities = identityIndexesFor("thread-fork-reset");
     expect(forkResets).toHaveLength(1);
     expect(forkResets[0]).toBeGreaterThan(forkIdentities[0] ?? Infinity);
+  });
+
+  it("surfaces Grok context window size and prompt usage from session _meta", async () => {
+    const { bbThreadId, providerThreadId } = await startThread({
+      dialectId: "grok",
+      envVars: { FAKE_ACP_GROK_CONTEXT: "1" },
+    });
+
+    expect(contextWindowDeltasFor(bbThreadId)).toEqual([
+      { used: 0, size: 500_000 },
+    ]);
+
+    sendTurnRequest("turn/start", providerThreadId, {
+      input: [{ type: "text", text: "hello", mentions: [] }],
+    });
+    await waitForTurnCompleted();
+
+    expect(contextWindowDeltasFor(bbThreadId)).toEqual([
+      { used: 0, size: 500_000 },
+      { used: 17_504, size: 500_000 },
+    ]);
+  });
+
+  it("ignores Grok-shaped session _meta on other ACP dialects", async () => {
+    const { bbThreadId, providerThreadId } = await startThread({
+      envVars: { FAKE_ACP_GROK_CONTEXT: "1" },
+    });
+
+    expect(contextWindowDeltasFor(bbThreadId)).toEqual([]);
+
+    sendTurnRequest("turn/start", providerThreadId, {
+      input: [{ type: "text", text: "hello", mentions: [] }],
+    });
+    await waitForTurnCompleted();
+
+    expect(contextWindowDeltasFor(bbThreadId)).toEqual([]);
   });
 
   it("holds an agent update written with the session/new response until thread/identity is out", async () => {
@@ -3006,6 +3152,7 @@ describe("acp bridge", () => {
         estimated: false,
       },
     });
+    expect(threadEventsOfType("provider/warning")).toHaveLength(0);
     startedProviderThreadIds.push(first.providerThreadId);
   });
 
@@ -3172,7 +3319,6 @@ describe("acp bridge", () => {
 
   it("releases a session still under construction: the agent is reaped and the pending thread/start fails", async () => {
     const readyFile = join(workspaceDir, "agent-ready");
-    const signalFile = join(workspaceDir, "agent-signal");
     const threadId = "thread-release-during-construction";
     const options = executionOptions({
       providerOptions: {
@@ -3180,7 +3326,6 @@ describe("acp bridge", () => {
           envVars: {
             FAKE_ACP_SESSION_NEW_DELAY_MS: "5000",
             FAKE_ACP_READY_FILE: readyFile,
-            FAKE_ACP_SIGNAL_FILE: signalFile,
           },
         }),
       },
@@ -3205,8 +3350,7 @@ describe("acp bridge", () => {
     const start = await waitForResponse(startId);
     expect(start.result).toBeUndefined();
     expect(start.error?.message).toMatch(/exited|not running|released/u);
-    await waitForFileWithRealTimer(signalFile);
-    expect(readFileSync(signalFile, "utf8")).toContain("SIGTERM");
+    await waitForAgentExit(readyFile);
     expect(
       messagesForThread(threadId).filter(
         (message) => message.method === "thread/identity",
@@ -3228,7 +3372,6 @@ describe("acp bridge", () => {
   it("lets a retried thread/start supersede a construction still in flight for the same thread", async () => {
     const threadId = "thread-retried-construction";
     const slowReadyFile = join(workspaceDir, "slow-agent-ready");
-    const slowSignalFile = join(workspaceDir, "slow-agent-signal");
     const firstStartId = sendRequest("thread/start", {
       threadId,
       cwd: workspaceDir,
@@ -3239,7 +3382,6 @@ describe("acp bridge", () => {
             envVars: {
               FAKE_ACP_SESSION_NEW_DELAY_MS: "5000",
               FAKE_ACP_READY_FILE: slowReadyFile,
-              FAKE_ACP_SIGNAL_FILE: slowSignalFile,
             },
           }),
         },
@@ -3271,7 +3413,7 @@ describe("acp bridge", () => {
     const first = await waitForResponse(firstStartId);
     expect(first.result).toBeUndefined();
     expect(first.error).toBeDefined();
-    await waitForFileWithRealTimer(slowSignalFile);
+    await waitForAgentExit(slowReadyFile);
     expect(
       messagesForThread(threadId)
         .filter((message) => message.method === "thread/identity")

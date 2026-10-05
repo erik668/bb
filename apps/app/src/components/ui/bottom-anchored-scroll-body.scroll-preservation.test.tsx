@@ -8,6 +8,7 @@ import {
   useBottomAnchoredScroll,
 } from "@/components/ui/bottom-anchored-scroll-body";
 import { threadTimelineScrollAnchorAtomFamily } from "@/lib/thread-timeline-scroll-anchor";
+import { scrollPageToTop } from "@/lib/page-scroll-to-top";
 
 interface ScrollMetrics {
   scrollHeight: number;
@@ -117,6 +118,7 @@ interface RenderArgs {
   rowIds: string[];
   showCapturePrependAnchorControl?: boolean;
   showScrollToBottomControl?: boolean;
+  scrollIntoViewRowId?: string;
   virtualized?: boolean;
 }
 
@@ -138,11 +140,34 @@ function ScrollToBottomControl() {
   );
 }
 
+function ScrollRowIntoViewControl({ rowId }: { rowId: string }) {
+  const bottomAnchor = useBottomAnchoredScroll();
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        const element = bottomAnchor
+          ?.getScrollElement()
+          ?.querySelector(`[data-timeline-row-id="${rowId}"]`);
+        if (element instanceof HTMLElement) {
+          bottomAnchor?.scrollElementIntoView({
+            element,
+            options: { block: "start", inline: "nearest" },
+          });
+        }
+      }}
+    >
+      Reveal row
+    </button>
+  );
+}
+
 function renderTimeline({
   threadId,
   rowIds,
   showCapturePrependAnchorControl = false,
   showScrollToBottomControl = false,
+  scrollIntoViewRowId,
   virtualized = false,
 }: RenderArgs) {
   const timeline = (renderedRowIds: string[]) => {
@@ -162,13 +187,17 @@ function renderTimeline({
           <CapturePrependAnchorControl />
         ) : null}
         {showScrollToBottomControl ? <ScrollToBottomControl /> : null}
-        {virtualized ? (
-          <div data-timeline-row-list="top-level">
-            <div data-timeline-virtual-spacer="">{rows}</div>
+        {scrollIntoViewRowId ? (
+          <ScrollRowIntoViewControl rowId={scrollIntoViewRowId} />
+        ) : null}
+        <div data-timeline-row-list="top-level">
+          <div
+            data-timeline-items=""
+            data-timeline-virtual-spacer={virtualized ? "" : undefined}
+          >
+            {rows}
           </div>
-        ) : (
-          rows
-        )}
+        </div>
       </BottomAnchoredScrollBody>
     );
   };
@@ -222,6 +251,55 @@ afterEach(() => {
 });
 
 describe("BottomAnchoredScrollBody scroll preservation", () => {
+  it("detaches from new messages when the page header scrolls to the top", () => {
+    vi.useFakeTimers();
+    const { scrollArea, getRow } = renderTimeline({
+      threadId: "thread-a",
+      rowIds: ["row-a", "row-b"],
+    });
+    const header = document.createElement("header");
+    scrollArea.parentElement?.prepend(header);
+    vi.spyOn(scrollArea, "getClientRects").mockReturnValue(
+      Object.assign([new DOMRect(0, 0, 100, 100)], { item: () => null }),
+    );
+    Object.defineProperty(scrollArea, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    mockScrollAreaRect(scrollArea);
+    mockRowRect(getRow("row-a"), { top: 0, bottom: 100 });
+    setScrollMetrics(scrollArea, {
+      scrollHeight: 400,
+      clientHeight: 100,
+      scrollTop: 300,
+    });
+    getLatestResizeObserver().trigger();
+
+    scrollPageToTop(header);
+    scrollArea.scrollTop = 298;
+    fireEvent.scroll(scrollArea);
+    vi.advanceTimersByTime(300);
+    expect(readAnchor("thread-a")?.atBottom).toBe(false);
+
+    scrollArea.scrollTop = 0;
+    fireEvent.scroll(scrollArea);
+    vi.advanceTimersByTime(300);
+
+    expect(scrollArea.scrollTop).toBe(0);
+    expect(readAnchor("thread-a")).toEqual({
+      rowId: "row-a",
+      offsetWithinRow: 0,
+      atBottom: false,
+    });
+    setScrollMetrics(scrollArea, {
+      scrollHeight: 500,
+      clientHeight: 100,
+      scrollTop: 0,
+    });
+    getLatestResizeObserver().trigger();
+    expect(scrollArea.scrollTop).toBe(0);
+  });
+
   it("shows the thread scrollbar only while scroll events are active", () => {
     vi.useFakeTimers();
     const { scrollArea } = renderTimeline({
@@ -277,41 +355,36 @@ describe("BottomAnchoredScrollBody scroll preservation", () => {
     });
   });
 
-  it("captures rows nested in a virtualizer spacer", () => {
-    const { scrollArea, rowElements } = renderTimeline({
+  it("notifies scroll listeners synchronously when revealing a row moves the viewport", () => {
+    const { scrollArea, getRow, getByRole } = renderTimeline({
       threadId: "thread-a",
-      rowIds: ["row-a", "row-b", "row-c"],
-      virtualized: true,
+      rowIds: ["row-a", "row-b"],
+      scrollIntoViewRowId: "row-a",
     });
     mockScrollAreaRect(scrollArea);
-    mockRowRect(requireHTMLElement(rowElements.get("row-a")!), {
-      top: -120,
-      bottom: -20,
-    });
-    mockRowRect(requireHTMLElement(rowElements.get("row-b")!), {
-      top: -20,
-      bottom: 80,
-    });
-    mockRowRect(requireHTMLElement(rowElements.get("row-c")!), {
-      top: 80,
-      bottom: 180,
-    });
+    const row = getRow("row-a");
+    mockRowRect(row, { top: -300, bottom: -200 });
     setScrollMetrics(scrollArea, {
       scrollHeight: 400,
       clientHeight: 100,
       scrollTop: 300,
     });
     getLatestResizeObserver().trigger();
-
-    scrollArea.scrollTop = 150;
-    fireEvent.wheel(scrollArea);
-    fireEvent.scroll(scrollArea);
-
-    expect(readAnchor("thread-a")).toEqual({
-      rowId: "row-b",
-      offsetWithinRow: 20,
-      atBottom: false,
+    row.scrollIntoView = vi.fn(() => {
+      scrollArea.scrollTop = 0;
     });
+    const observedScrollTops: number[] = [];
+    scrollArea.addEventListener("scroll", () => {
+      observedScrollTops.push(scrollArea.scrollTop);
+    });
+
+    fireEvent.click(getByRole("button", { name: "Reveal row" }));
+
+    expect(row.scrollIntoView).toHaveBeenCalledWith({
+      block: "start",
+      inline: "nearest",
+    });
+    expect(observedScrollTops).toEqual([0]);
   });
 
   it("follows the row window when a windowed timeline slides it without a resize", () => {

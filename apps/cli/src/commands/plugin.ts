@@ -4,9 +4,9 @@ import { access, readFile, realpath } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { z } from "zod";
-import { derivePluginId } from "@bb/domain";
+import { derivePluginId, jsonValueSchema } from "@bb/domain";
 import { pluginCliCall, RESERVED_BB_CLI_COMMANDS } from "@bb/domain/plugin-cli";
 import type {
   InstalledPlugin as PluginEntry,
@@ -24,7 +24,6 @@ import {
   resolvePluginSdkLayout,
   scaffoldPlugin,
   setPluginSdkPin,
-  syncPluginTypes,
   type PluginPackageLayoutMigration,
 } from "@bb/templates/plugin-scaffold";
 import { action } from "../action.js";
@@ -34,8 +33,6 @@ import {
   buildPluginHost,
   buildPluginServer,
   createPluginDevLoop,
-  inspectCachedPluginBuildToolchain,
-  pluginBuildCacheContract,
   PLUGIN_TOOLCHAIN_PINS,
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
@@ -158,33 +155,17 @@ async function readPluginManifest(
   }
 }
 
-async function refreshPluginTypes(
-  rootDir: string,
-  hasApp: boolean,
-): Promise<void> {
+const LEGACY_PLUGIN_SDK_LAYOUT_MESSAGE =
+  "This plugin uses the legacy vendored SDK layout. Its SDK types will not be updated.\n" +
+  "Please run `bb plugin migrate` to update to the latest SDK types.";
+
+async function checkPluginSdkLayout(rootDir: string): Promise<void> {
   const layout = await resolvePluginSdkLayout(rootDir);
   if (layout.kind === "package") {
     warnIfSdkPinIsStale(layout.pin);
     return;
   }
-  let files: Awaited<ReturnType<typeof syncPluginTypes>>;
-  try {
-    files = await syncPluginTypes({ rootDir, app: hasApp });
-  } catch (error) {
-    console.warn(
-      `Could not refresh types/ — ${error instanceof Error ? error.message : String(error)}`,
-    );
-    return;
-  }
-  const written = files.filter((file) => file.outcome === "written");
-  if (written.length > 0) {
-    console.log(
-      `Refreshed SDK declarations: ${written.map((file) => file.path).join(", ")}`,
-    );
-  }
-  console.log(
-    "This plugin vendors types/ — `bb plugin migrate` switches it to the @get-bb/plugin-sdk npm package.",
-  );
+  console.warn(LEGACY_PLUGIN_SDK_LAYOUT_MESSAGE);
 }
 
 const EXACT_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)*$/;
@@ -336,14 +317,23 @@ async function warnIfSdkVersionUnpublished(): Promise<void> {
   );
 }
 
+async function execNpm(
+  args: readonly string[],
+  options: { cwd?: string; timeout?: number; killSignal?: NodeJS.Signals },
+): Promise<{ stdout: string; stderr: string }> {
+  const { exec, execFile } = await import("node:child_process");
+  const { promisify } = await import("node:util");
+  if (process.platform === "win32") {
+    return promisify(exec)(["npm", ...args].join(" "), options);
+  }
+  return promisify(execFile)("npm", [...args], options);
+}
+
 async function probeSdkVersionPublished(): Promise<
   "published" | "missing" | "unknown"
 > {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
   try {
-    const { stdout } = await promisify(execFile)(
-      "npm",
+    const { stdout } = await execNpm(
       ["view", `@get-bb/plugin-sdk@${PLUGIN_SDK_VERSION}`, "version", "--json"],
       { timeout: 5_000, killSignal: "SIGKILL" },
     );
@@ -384,14 +374,10 @@ function npmFailureDetail(cause: unknown): string {
 async function installScaffoldDependencies(
   targetDir: string,
 ): Promise<boolean> {
-  const { execFile } = await import("node:child_process");
-  const { promisify } = await import("node:util");
   try {
-    await promisify(execFile)(
-      "npm",
-      ["install", "--include=dev", "--no-fund", "--no-audit"],
-      { cwd: targetDir },
-    );
+    await execNpm(["install", "--include=dev", "--no-fund", "--no-audit"], {
+      cwd: targetDir,
+    });
   } catch (cause) {
     console.warn(
       `Could not run npm install — run it in the plugin directory before \`bb plugin build\`.${npmFailureDetail(cause)}`,
@@ -478,12 +464,20 @@ async function confirmPluginAction(
   }
 }
 
+function outputMutationJson(
+  opts: JsonOutputOptions,
+  result: { ok: boolean },
+): boolean {
+  if (!outputJson(opts, result)) return false;
+  if (!result.ok) process.exit(1);
+  return true;
+}
+
 function formatMs(ms: number): string {
   return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.round(ms)}ms`;
 }
 
-function formatAbsoluteDate(value: string | number | undefined): string {
-  if (value === undefined) return "unknown date";
+function formatAbsoluteDate(value: number): string {
   const date = new Date(value);
   return Number.isFinite(date.getTime()) ? date.toISOString() : String(value);
 }
@@ -780,6 +774,107 @@ export function registerPluginCommands(
     .description("Manage BB plugins")
     .enablePositionalOptions();
 
+  const rpc = plugin
+    .command("rpc")
+    .description("Inspect discoverable plugin RPC methods");
+  rpc
+    .command("list [plugin-id]")
+    .option("--method <name>", "Filter by exact method name")
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          pluginId: string | undefined,
+          opts: JsonOutputOptions & { method?: string },
+        ) => {
+          const methods = await createCliBbSdk(
+            getUrl(),
+          ).plugins.experimental_discoverRpc({ pluginId, method: opts.method });
+          if (opts.json) {
+            outputJson(opts, methods);
+            return;
+          }
+          if (methods.length === 0) console.log("No discoverable RPC methods.");
+          for (const method of methods)
+            console.log(
+              `${method.pluginId}  ${method.method}  ${method.methodDescription ?? method.registrationDescription ?? ""}`,
+            );
+        },
+      ),
+    );
+  rpc
+    .command("call <plugin-id> <method>")
+    .description("Call a plugin RPC method with server-side schema validation")
+    .option(
+      "--input-file <path>",
+      "Read JSON input from a file; defaults to null",
+    )
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          pluginId: string,
+          method: string,
+          opts: JsonOutputOptions & { inputFile?: string },
+        ) => {
+          const input =
+            opts.inputFile === undefined
+              ? null
+              : jsonValueSchema.parse(
+                  JSON.parse(await readFile(opts.inputFile, "utf8")),
+                );
+          const result = await createCliBbSdk(getUrl()).plugins.callRpc({
+            pluginId,
+            method,
+            input,
+            outputSchema: jsonValueSchema,
+          });
+          if (opts.json) {
+            outputJson(opts, result);
+            return;
+          }
+          console.log(JSON.stringify(result, null, 2));
+        },
+      ),
+    );
+
+  rpc
+    .command("inspect <plugin-id> [method]")
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          pluginId: string,
+          method: string | undefined,
+          opts: JsonOutputOptions,
+        ) => {
+          const methods = await createCliBbSdk(
+            getUrl(),
+          ).plugins.experimental_discoverRpc({ pluginId, method });
+          if (opts.json) {
+            outputJson(opts, methods);
+            return;
+          }
+          if (methods.length === 0) console.log("No discoverable RPC methods.");
+          for (const method of methods) {
+            console.log(`${method.pluginId} · ${method.method}`);
+            if (method.registrationDescription !== null)
+              console.log(method.registrationDescription);
+            if (method.methodDescription !== null)
+              console.log(method.methodDescription);
+            console.log(
+              "Input schema:",
+              JSON.stringify(method.inputSchema, null, 2),
+            );
+            console.log(
+              "Output schema:",
+              JSON.stringify(method.outputSchema, null, 2),
+            );
+          }
+        },
+      ),
+    );
+
   plugin
     .command("search <query>")
     .description(
@@ -809,9 +904,11 @@ export function registerPluginCommands(
             : []),
           result.installed
             ? "✓ installed"
-            : result.compatible
-              ? "compatible"
-              : `requires newer bb${result.incompatibleReason ? `: ${result.incompatibleReason}` : ""}`,
+            : !result.compatible
+              ? `requires newer bb${result.incompatibleReason ? `: ${result.incompatibleReason}` : ""}`
+              : result.conflictingInstallSource !== null
+                ? `id in use by ${result.conflictingInstallSource}`
+                : "compatible",
         ]);
         console.log(
           renderBorderlessTable(
@@ -1004,26 +1101,11 @@ export function registerPluginCommands(
                 "They can read all local BB data, including other plugins' secrets.",
             );
           }
-          if (!opts.yes) {
-            if (!process.stdin.isTTY) {
-              console.error(
-                "Refusing to install without confirmation — re-run with --yes.",
-              );
-              process.exit(1);
-            }
-            const rl = createInterface({
-              input: process.stdin,
-              output: process.stdout,
-            });
-            const answer = (await rl.question("Install? [y/N] "))
-              .trim()
-              .toLowerCase();
-            rl.close();
-            if (answer !== "y" && answer !== "yes") {
-              console.log("Aborted.");
-              process.exit(1);
-            }
-          }
+          await confirmPluginAction(
+            "Install?",
+            "Refusing to install without confirmation — re-run with --yes.",
+            opts.yes === true,
+          );
           const plugin =
             intent.kind === "source"
               ? await createCliBbSdk(getUrl()).plugins.install({
@@ -1215,7 +1297,7 @@ export function registerPluginCommands(
   plugin
     .command("types [path]")
     .description(
-      "Sync a plugin's @get-bb/plugin-sdk surface to the running bb (default: cwd): repin the npm devDependency and the type-only devDependencies of the packages bb shims at runtime (sonner, vaul, the portal radix families, ...) for plugins that depend on the package, or rewrite the vendored types/ declarations for plugins that still carry them",
+      "Sync a package-layout plugin's @get-bb/plugin-sdk surface to the running bb (default: cwd): repin the npm devDependency and the declared type-only devDependencies of the packages bb shims at runtime (sonner, vaul, the portal radix families, ...); legacy vendored-layout plugins must migrate first",
     )
     .option(
       "--check",
@@ -1227,6 +1309,10 @@ export function registerPluginCommands(
         const manifest = await requirePluginManifest(rootDir);
         const hasApp = typeof manifest.bb?.app === "string";
         const layout = await resolvePluginSdkLayout(rootDir);
+        if (layout.kind === "vendored") {
+          console.error(LEGACY_PLUGIN_SDK_LAYOUT_MESSAGE);
+          process.exit(1);
+        }
         if (layout.kind === "package") {
           if (opts.check) {
             console.log(
@@ -1235,7 +1321,6 @@ export function registerPluginCommands(
             const pending = await setPluginSdkPin({
               rootDir,
               sdkVersion: PLUGIN_SDK_VERSION,
-              app: hasApp,
               dryRun: true,
             });
             if (pending === null) {
@@ -1263,11 +1348,10 @@ export function registerPluginCommands(
           const changed = await setPluginSdkPin({
             rootDir,
             sdkVersion: PLUGIN_SDK_VERSION,
-            app: hasApp,
           });
           if (changed === null) {
             console.log(
-              `@get-bb/plugin-sdk is already pinned to ${PLUGIN_SDK_VERSION} — this bb's SDK version${hasApp ? ", and the runtime-shimmed packages are at this bb's versions" : ""}.`,
+              `@get-bb/plugin-sdk is already pinned to ${PLUGIN_SDK_VERSION} — this bb's SDK version${hasApp ? ", and the declared runtime-shimmed packages are at this bb's versions" : ""}.`,
             );
             console.log(
               "The declarations are in node_modules/@get-bb/plugin-sdk/bundled-types/ — read them for exact signatures.",
@@ -1295,26 +1379,6 @@ export function registerPluginCommands(
           );
           return;
         }
-        const files = await syncPluginTypes({
-          rootDir,
-          app: hasApp,
-          check: opts.check ?? false,
-        });
-        for (const file of files) {
-          console.log(`${file.path} ${file.outcome}`);
-        }
-        if (opts.check) {
-          if (files.some((file) => file.outcome === "stale")) {
-            console.error(
-              "Declarations are out of date — run `bb plugin types` to refresh them.",
-            );
-            process.exit(1);
-          }
-          return;
-        }
-        console.log(
-          "These declarations are the full plugin API — read them for exact signatures.",
-        );
       }),
     );
 
@@ -1380,38 +1444,6 @@ export function registerPluginCommands(
     );
 
   plugin
-    .command("cache-inspect")
-    .description(
-      "Read the pinned plugin compiler cache contract and availability without downloads or a server",
-    )
-    .option(
-      "--base-dir <path>",
-      "Plugin cache base directory (default: the selected BB data directory's plugins folder)",
-    )
-    .option("--json", "Output JSON")
-    .action(
-      action(async (opts: JsonOutputOptions & { baseDir?: string }) => {
-        const baseDir =
-          opts.baseDir === undefined
-            ? toolchainBaseDir()
-            : resolve(opts.baseDir);
-        const contract = pluginBuildCacheContract(baseDir);
-        const toolchain = await inspectCachedPluginBuildToolchain(baseDir);
-        const result = {
-          ...contract,
-          available: toolchain !== null,
-          toolchain,
-          fetchAttempts: 0,
-        };
-        if (opts.json) outputJson(opts, result);
-        else
-          console.log(
-            `${result.available ? "Available" : "Unavailable"}: ${result.cacheDir}`,
-          );
-      }),
-    );
-
-  plugin
     .command("build [path]")
     .description(
       "Compile the plugin into dist/: the bb.server backend bundle (server.js, server.meta.json), plus, when declared, the bb.app frontend bundle (app.js, app.css, app.meta.json) and the self-contained bb.host daemon bundle (host.js, host.js.map, host.meta.json) — which carries the plugin's host RPC entry, its provider bridge, or both; each *.meta.json stamps SDK/identity metadata; no server required",
@@ -1423,9 +1455,7 @@ export function registerPluginCommands(
         const manifest = await readPluginManifest(rootDir);
         const hasApp = typeof manifest?.bb?.app === "string";
         const hasHost = typeof manifest?.bb?.host === "string";
-        if (typeof manifest?.bb?.server === "string") {
-          await refreshPluginTypes(rootDir, hasApp);
-        }
+        await checkPluginSdkLayout(rootDir);
         const toolchain = await cliBuildToolchain();
         const server = await buildPluginServer(rootDir, bbVersion, toolchain);
         const files = [server.jsPath, server.mapPath, server.metaPath];
@@ -1454,7 +1484,7 @@ export function registerPluginCommands(
         const manifest = await requirePluginManifest(rootDir);
         const hasApp = typeof manifest.bb?.app === "string";
         const hasHost = typeof manifest.bb?.host === "string";
-        await refreshPluginTypes(rootDir, hasApp);
+        await checkPluginSdkLayout(rootDir);
         const realDir = await realpath(rootDir).catch(() => rootDir);
         const list = await createCliBbSdk(getUrl()).plugins.list();
         const entry = list.plugins.find(
@@ -1546,11 +1576,7 @@ export function registerPluginCommands(
           !response.plugins?.some((entry) => entry.id === id)
             ? { ok: false as const, error: `unknown plugin "${id}"` }
             : response;
-        if (opts.json) {
-          outputJson(opts, result);
-          if (!result.ok) process.exit(1);
-          return;
-        }
+        if (outputMutationJson(opts, result)) return;
         const reloaded =
           id === undefined
             ? (result.plugins ?? [])
@@ -1579,16 +1605,42 @@ export function registerPluginCommands(
               "POST",
             ),
           );
-          if (opts.json) {
-            outputJson(opts, result);
-            if (!result.ok) process.exit(1);
-            return;
-          }
+          if (outputMutationJson(opts, result)) return;
           if (!result.ok || !result.plugin) exitWithError(result);
           printPlugin(result.plugin);
         }),
       );
   }
+
+  plugin
+    .command("safe-mode [state]")
+    .description(
+      "Show plugin safe mode, or turn it on or off. `on` stops every plugin you installed (official store plugins included) while plugins included with bb keep running; `off` restarts the ones that were enabled and exits 1 if any fail to start",
+    )
+    .option("--json", "Output JSON")
+    .action(
+      action(async (state: string | undefined, opts: JsonOutputOptions) => {
+        if (state !== undefined && state !== "on" && state !== "off") {
+          exitWithError({ error: `expected "on" or "off", got "${state}"` });
+        }
+        const plugins = createCliBbSdk(getUrl()).plugins;
+        const updated =
+          state === undefined
+            ? null
+            : await plugins.experimental_setSafeMode({
+                enabled: state === "on",
+              });
+        const result = updated ?? (await plugins.experimental_getSafeMode());
+        const problems = updated?.problems ?? [];
+        if (opts.json) {
+          outputJson(opts, result);
+        } else {
+          console.log(`Plugin safe mode is ${result.enabled ? "on" : "off"}.`);
+          for (const problem of problems) console.error(problem);
+        }
+        if (problems.length > 0) process.exit(1);
+      }),
+    );
 
   plugin
     .command("config <id> [action] [key] [value]")
@@ -1614,29 +1666,26 @@ export function registerPluginCommands(
             value?.startsWith("-") === true &&
             (terminatorIndex < 0 ||
               terminatorIndex > rawArgs.lastIndexOf(value));
+          const valueIsUnknownOption =
+            valueIsOption &&
+            (actionName !== "set" || !negativeNumberValuePattern.test(value));
           const unknownOption =
             [id, actionName, key, ...command.args.slice(4)].find((argument) =>
               argument?.startsWith("-"),
-            ) ??
-            (valueIsOption && !negativeNumberValuePattern.test(value)
-              ? value
-              : undefined);
+            ) ?? (valueIsUnknownOption ? value : undefined);
           if (unknownOption !== undefined)
             command.error(`error: unknown option '${unknownOption}'`);
-          if (command.args.length > 4)
+          const expectedArgumentCount = actionName === "unset" ? 3 : 4;
+          if (command.args.length > expectedArgumentCount)
             command.error(
-              `error: too many arguments for 'config'. Expected 4 arguments but got ${command.args.length}.`,
+              `error: too many arguments for 'config'. Expected ${expectedArgumentCount} arguments but got ${command.args.length}.`,
             );
           const settingsPath = `/${encodeURIComponent(id)}/settings`;
           if (actionName === undefined) {
             const result = pluginSettingsResultSchema.parse(
               await callPlugins(getUrl(), settingsPath, "GET"),
             );
-            if (opts.json) {
-              outputJson(opts, result);
-              if (!result.ok) process.exit(1);
-              return;
-            }
+            if (outputMutationJson(opts, result)) return;
             if (!result.ok) exitWithError(result);
             printSettings(result);
             return;
@@ -1686,11 +1735,7 @@ export function registerPluginCommands(
               values: { [key]: parsedValue },
             }),
           );
-          if (opts.json) {
-            outputJson(opts, result);
-            if (!result.ok) process.exit(1);
-            return;
-          }
+          if (outputMutationJson(opts, result)) return;
           if (!result.ok) exitWithError(result);
           printSettings(result);
         },
@@ -1715,11 +1760,7 @@ export function registerPluginCommands(
               opts.rotate ? { rotate: true } : {},
             ),
           );
-          if (opts.json) {
-            outputJson(opts, result);
-            if (!result.ok) process.exit(1);
-            return;
-          }
+          if (outputMutationJson(opts, result)) return;
           if (!result.ok || !result.token) exitWithError(result);
           console.log(result.token);
         },
@@ -1778,20 +1819,18 @@ export function registerPluginCommands(
 
   plugin
     .command("remove <id>")
+    .alias("uninstall")
     .description(
       "Remove an installed plugin and delete its settings, secrets, and schedules (git:/npm: managed files are deleted; local path sources stay on disk). To move a local plugin to another directory, install the new path instead",
     )
     .option("--json", "Output JSON")
+    .addOption(new Option("--yes").hideHelp())
     .action(
       action(async (id: string, opts: JsonOutputOptions) => {
         const result = pluginMutationResponseSchema.parse(
           await callPlugins(getUrl(), `/${encodeURIComponent(id)}`, "DELETE"),
         );
-        if (opts.json) {
-          outputJson(opts, result);
-          if (!result.ok) process.exit(1);
-          return;
-        }
+        if (outputMutationJson(opts, result)) return;
         if (!result.ok) exitWithError(result);
         console.log(`Removed ${id}.`);
       }),

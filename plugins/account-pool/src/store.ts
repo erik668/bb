@@ -7,12 +7,15 @@ import type { PluginKvStorage } from "@get-bb/plugin-sdk";
 import {
   accountSchema,
   accountSecretSchema,
+  EMPTY_FAMILY_WEEKLY,
   hubTokenSummarySchema,
+  providerSchema,
   quotaSchema,
   type Account,
   type AccountQuota,
   type AccountSecret,
   type HubTokenSummary,
+  type PoolProvider,
 } from "./contracts.js";
 
 const ACCOUNTS_KEY = "accounts:v1";
@@ -110,21 +113,46 @@ export class AccountStore {
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<Account | null> {
-    return this.serialized(async () => {
-      const accounts = await this.list();
-      const index = accounts.findIndex((account) => account.id === id);
-      if (index < 0) return null;
-      const current = accounts[index];
-      if (current === undefined) return null;
-      const updated = accountSchema.parse({ ...current, enabled });
-      accounts[index] = updated;
-      await this.kv.set(ACCOUNTS_KEY, accounts);
-      return updated;
-    });
+    return this.update(id, (account) => ({ ...account, enabled }));
   }
 
   async setPriority(id: string, priority: number): Promise<Account | null> {
     return this.update(id, (account) => ({ ...account, priority }));
+  }
+
+  async setSubscriptionType(
+    id: string,
+    subscriptionType: string,
+  ): Promise<Account | null> {
+    return this.update(id, (account) => ({ ...account, subscriptionType }));
+  }
+
+  async reorder(provider: PoolProvider, accountIds: string[]): Promise<void> {
+    return this.serialized(async () => {
+      const accounts = await this.list();
+      const current = accounts.filter(
+        (account) => account.provider === provider,
+      );
+      const positions = new Map(accountIds.map((id, index) => [id, index]));
+      if (
+        positions.size !== accountIds.length ||
+        current.length !== positions.size ||
+        current.some((account) => !positions.has(account.id))
+      ) {
+        throw new Error(
+          "Include every account for this provider exactly once. Refresh the account list and try again.",
+        );
+      }
+      await this.kv.set(
+        ACCOUNTS_KEY,
+        accounts.map((account) => {
+          const position = positions.get(account.id);
+          return position === undefined
+            ? account
+            : { ...account, priority: position + 1 };
+        }),
+      );
+    });
   }
 
   async recordUsed(
@@ -158,17 +186,7 @@ export class AccountStore {
     id: string,
     accountUuid: string,
   ): Promise<Account | null> {
-    return this.serialized(async () => {
-      const accounts = await this.list();
-      const index = accounts.findIndex((account) => account.id === id);
-      if (index < 0) return null;
-      const current = accounts[index];
-      if (current === undefined) return null;
-      const updated = accountSchema.parse({ ...current, accountUuid });
-      accounts[index] = updated;
-      await this.kv.set(ACCOUNTS_KEY, accounts);
-      return updated;
-    });
+    return this.update(id, (account) => ({ ...account, accountUuid }));
   }
 
   private async update(
@@ -246,7 +264,6 @@ export class HubTokenStore {
   private async load(): Promise<void> {
     await fs.mkdir(this.secretsDir, { recursive: true, mode: 0o700 });
     await fs.chmod(this.secretsDir, 0o700);
-    await fs.rm(path.join(this.secretsDir, "hub-key"), { force: true });
     const names = await fs.readdir(this.secretsDir);
     for (const name of names) {
       if (!name.startsWith(HUB_TOKEN_PREFIX) || !name.endsWith(".json"))
@@ -460,12 +477,12 @@ export class RoutingStore {
     return (await this.kv.get(this.bypassKey(threadId))) === true;
   }
 
-  async isProviderEnabled(provider: "claude" | "codex"): Promise<boolean> {
+  async isProviderEnabled(provider: PoolProvider): Promise<boolean> {
     return (await this.kv.get(`routing.${provider}`)) !== false;
   }
 
   async setProviderEnabled(
-    provider: "claude" | "codex",
+    provider: PoolProvider,
     enabled: boolean,
   ): Promise<void> {
     await this.kv.set(`routing.${provider}`, enabled);
@@ -527,6 +544,8 @@ const quotaRowSchema = z
     bucket_exhaustion_json: z.string(),
     family_weekly_json: z.string(),
     limit_windows_json: z.string(),
+    extra_usage_json: z.string(),
+    usage_restriction_json: z.string(),
     observed_at: z.number().int().nullable(),
     held_until: z.number().int().nullable(),
     error: z.string().nullable(),
@@ -534,6 +553,8 @@ const quotaRowSchema = z
   .strict();
 
 const EMPTY_QUOTA = {
+  usageRestriction: null,
+  extraUsage: null,
   fiveHourUtilization: null,
   fiveHourResetAt: null,
   fiveHourStatus: null,
@@ -541,13 +562,7 @@ const EMPTY_QUOTA = {
   sevenDayResetAt: null,
   sevenDayStatus: null,
   representativeClaim: null,
-  familyWeekly: {
-    fable: null,
-    sonnet: null,
-    opus: null,
-    haiku: null,
-    other: null,
-  },
+  familyWeekly: EMPTY_FAMILY_WEEKLY,
   limitWindows: [],
   observedAt: null,
   heldUntil: null,
@@ -579,6 +594,8 @@ export class QuotaStore {
       representativeClaim: row.representative_claim,
       familyWeekly: JSON.parse(row.family_weekly_json),
       limitWindows: JSON.parse(row.limit_windows_json),
+      extraUsage: JSON.parse(row.extra_usage_json),
+      usageRestriction: JSON.parse(row.usage_restriction_json),
       observedAt: row.observed_at,
       heldUntil: row.held_until,
       error: row.error,
@@ -593,8 +610,8 @@ export class QuotaStore {
           account_id, five_hour_utilization, five_hour_reset_at,
           five_hour_status, seven_day_utilization, seven_day_reset_at,
           seven_day_status, representative_claim, bucket_exhaustion_json,
-          family_weekly_json, limit_windows_json, observed_at, held_until, error
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?)
+          family_weekly_json, limit_windows_json, extra_usage_json, usage_restriction_json, observed_at, held_until, error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
           five_hour_utilization = excluded.five_hour_utilization,
           five_hour_reset_at = excluded.five_hour_reset_at,
@@ -605,6 +622,8 @@ export class QuotaStore {
           representative_claim = excluded.representative_claim,
           family_weekly_json = excluded.family_weekly_json,
           limit_windows_json = excluded.limit_windows_json,
+          extra_usage_json = excluded.extra_usage_json,
+          usage_restriction_json = excluded.usage_restriction_json,
           observed_at = excluded.observed_at,
           held_until = excluded.held_until,
           error = excluded.error`,
@@ -620,6 +639,8 @@ export class QuotaStore {
         value.representativeClaim,
         JSON.stringify(value.familyWeekly),
         JSON.stringify(value.limitWindows),
+        JSON.stringify(value.extraUsage),
+        JSON.stringify(value.usageRestriction),
         value.observedAt,
         value.heldUntil,
         value.error,
@@ -630,6 +651,85 @@ export class QuotaStore {
     this.db
       .prepare("DELETE FROM account_quota WHERE account_id = ?")
       .run(accountId);
+  }
+}
+
+const affinityRowSchema = z.object({
+  affinity_key: z.string(),
+  account_id: z.string().uuid(),
+  last_used_at: z.number().int(),
+});
+
+const activeAccountRowSchema = z.object({
+  provider: providerSchema,
+  account_id: z.string().uuid(),
+});
+
+export interface AccountBinding {
+  accountId: string;
+  lastUsedAt: number;
+}
+
+export class PoolAffinityStore {
+  constructor(private readonly db: Database.Database) {}
+
+  loadBindings(since: number, limit: number): Map<string, AccountBinding> {
+    this.db
+      .prepare("DELETE FROM pool_affinity WHERE last_used_at <= ?")
+      .run(since);
+    this.db
+      .prepare(
+        `DELETE FROM pool_affinity WHERE affinity_key NOT IN (
+        SELECT affinity_key FROM pool_affinity ORDER BY last_used_at DESC, rowid DESC LIMIT ?
+      )`,
+      )
+      .run(limit);
+    return new Map(
+      z
+        .array(affinityRowSchema)
+        .parse(
+          this.db
+            .prepare("SELECT * FROM pool_affinity ORDER BY last_used_at, rowid")
+            .all(),
+        )
+        .map((row) => [
+          row.affinity_key,
+          { accountId: row.account_id, lastUsedAt: row.last_used_at },
+        ]),
+    );
+  }
+
+  loadActiveAccounts(): Map<PoolProvider, { accountId: string }> {
+    return new Map(
+      z
+        .array(activeAccountRowSchema)
+        .parse(this.db.prepare("SELECT * FROM pool_active_account").all())
+        .map((row) => [row.provider, { accountId: row.account_id }]),
+    );
+  }
+
+  putBinding(key: string, binding: AccountBinding): void {
+    this.db
+      .prepare(
+        `INSERT INTO pool_affinity (affinity_key, account_id, last_used_at) VALUES (?, ?, ?)
+       ON CONFLICT(affinity_key) DO UPDATE SET account_id = excluded.account_id, last_used_at = excluded.last_used_at`,
+      )
+      .run(key, binding.accountId, binding.lastUsedAt);
+  }
+
+  removeBinding(key: string): void {
+    this.db
+      .prepare("DELETE FROM pool_affinity WHERE affinity_key = ?")
+      .run(key);
+  }
+
+  putActiveAccount(provider: PoolProvider, accountId: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO pool_active_account (provider, account_id) VALUES (?, ?)
+       ON CONFLICT(provider) DO UPDATE SET account_id = excluded.account_id`,
+      )
+      .run(provider, accountId);
   }
 }
 
@@ -650,4 +750,15 @@ export const QUOTA_MIGRATIONS = [
   )`,
   `ALTER TABLE account_quota ADD COLUMN family_weekly_json TEXT NOT NULL DEFAULT '{"fable":null,"sonnet":null,"opus":null,"haiku":null,"other":null}'`,
   `ALTER TABLE account_quota ADD COLUMN limit_windows_json TEXT NOT NULL DEFAULT '[]'`,
+  `CREATE TABLE pool_affinity (
+    affinity_key TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    last_used_at INTEGER NOT NULL
+  );
+  CREATE TABLE pool_active_account (
+    provider TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL
+  )`,
+  `ALTER TABLE account_quota ADD COLUMN extra_usage_json TEXT NOT NULL DEFAULT 'null'`,
+  `ALTER TABLE account_quota ADD COLUMN usage_restriction_json TEXT NOT NULL DEFAULT 'null'`,
 ];

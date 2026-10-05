@@ -163,6 +163,16 @@ function timelineWorkRowRenderSignature(row: TimelineViewWorkRow): string {
         row.path,
         row.completedAt,
       ]);
+    case "image-generation":
+      return joinSignatureParts([
+        ...baseParts,
+        row.callId,
+        row.prompt,
+        row.path,
+        row.error,
+        row.transparentBackground,
+        row.completedAt,
+      ]);
     case "file-read":
       return joinSignatureParts([
         ...baseParts,
@@ -262,6 +272,15 @@ function timelineWorkRowRenderSignature(row: TimelineViewWorkRow): string {
         row.approvalKind === "permission-grant" ? row.statusReason : null,
         row.target.itemId,
         row.target.toolName,
+      ]);
+    case "form":
+      return joinSignatureParts([
+        ...baseParts,
+        row.interactionId,
+        row.lifecycle,
+        row.title,
+        row.statusReason,
+        JSON.stringify(row.payload),
       ]);
     case "question":
       return joinSignatureParts([

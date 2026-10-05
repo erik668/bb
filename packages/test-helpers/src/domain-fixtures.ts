@@ -38,15 +38,23 @@ export function makeEnvironment(
     projectId: "proj_test",
     hostId: "host_test",
     path: "/workspace",
-    managed: true,
     isGitRepo: true,
     isWorktree: true,
-    workspaceProvisionType: "managed-worktree",
     branchName: "feature/test",
     baseBranch: "main",
     defaultBranch: "main",
     mergeBaseBranch: null,
     status: "ready",
+    environmentProviderId: "git-worktree",
+    environmentProviderSelection: {
+      machine: { type: "existing", hostId: "host_test" },
+      inputs: { branch: { kind: "named", name: "main" } },
+    },
+    environmentProviderInstanceKey: null,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
+    managed: true,
+    workspaceProvisionType: "managed-worktree",
     createdAt: 0,
     updatedAt: 0,
     ...overrides,
@@ -59,6 +67,14 @@ export function makeHost(overrides: Partial<Host> = {}): Host {
     name: "Test host",
     type: "persistent",
     status: "connected",
+    machineProviderId: null,
+    lifecycle: {
+      phase: "active",
+      suspendedAt: null,
+      message: null,
+      pendingLog: "",
+      teardown: null,
+    },
     lastSeenAt: null,
     maxPermissionMode: "full",
     lastRejectedProtocolVersion: null,
@@ -80,6 +96,7 @@ export function makeProviderInfo(
     available: true,
     maintenance: { health: false, usage: false, installation: false },
     composerActions: [],
+    completedTurnDisplay: "collapse",
     capabilities: {
       supportsThreadArchive: true,
       supportsThreadRename: true,
@@ -91,11 +108,20 @@ export function makeProviderInfo(
       permissionModes: ["accept-edits", "auto", "full"],
     },
   };
+  const capabilities = { ...provider.capabilities, ...overrides.capabilities };
   return {
     ...provider,
+    ...(capabilities.supportsServiceTier
+      ? {
+          serviceTiers: [
+            { id: "default", label: "Default" },
+            { id: "fast", label: "Fast" },
+          ],
+        }
+      : {}),
     ...overrides,
     maintenance: { ...provider.maintenance, ...overrides.maintenance },
-    capabilities: { ...provider.capabilities, ...overrides.capabilities },
+    capabilities,
   };
 }
 
@@ -110,6 +136,7 @@ export function makeThread(overrides: Partial<Thread> = {}): Thread {
     sectionId: null,
     status: "idle",
     parentThreadId: null,
+    lifecycleOwnerThreadId: null,
     sourceThreadId: null,
     originKind: null,
     originPluginId: null,
@@ -130,10 +157,7 @@ export function makeThreadWithRuntime(
 ): ThreadWithRuntime {
   const thread: ThreadWithRuntime = {
     ...makeThread(),
-    runtime: {
-      displayStatus: "idle",
-      hostReconnectGraceExpiresAt: null,
-    },
+    runtime: { displayStatus: "idle" },
   };
   return {
     ...thread,
@@ -164,8 +188,11 @@ export function makeThreadListEntry(
     environmentHostId: null,
     environmentName: null,
     environmentBranchName: null,
-    queuedWork: "none",
+    environmentPath: null,
+    environmentProviderId: null,
+    environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
+    queuedWork: "none",
   };
   return {
     ...entry,
@@ -180,6 +207,10 @@ export function makeThreadQueuedMessage(
 ): ThreadQueuedMessage {
   return {
     id: "qmsg_test",
+    origin: null,
+    originPluginId: null,
+    initiator: "user",
+    senderThreadId: null,
     threadId: "thr_test",
     content: [{ type: "text", text: "Queued message", mentions: [] }],
     model: "gpt-5.5",

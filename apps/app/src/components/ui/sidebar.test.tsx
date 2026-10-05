@@ -37,8 +37,8 @@ function settleMobileToggle() {
   });
 }
 
-function createTouch(clientX: number, clientY: number): Touch {
-  return { identifier: 1, clientX, clientY } as Touch;
+function createTouch(clientX: number, clientY: number, identifier = 1): Touch {
+  return { identifier, clientX, clientY } as Touch;
 }
 
 function createTouchList(...touches: Touch[]): TouchList {
@@ -76,15 +76,17 @@ function fireTouchEnd(target: Element | Document | Window, touch: Touch) {
 
 function firePointer(
   target: Element | Document | Window,
-  type: "pointerdown" | "pointermove",
+  type: "pointerdown" | "pointermove" | "pointerup",
   clientX: number,
   clientY: number,
+  pointerId = 1,
+  isPrimary = true,
 ) {
   const event = new Event(type, { bubbles: true, cancelable: true });
   Object.defineProperties(event, {
-    pointerId: { value: 1 },
+    pointerId: { value: pointerId },
     pointerType: { value: "touch" },
-    isPrimary: { value: true },
+    isPrimary: { value: isPrimary },
     button: { value: 0 },
     buttons: { value: 1 },
     clientX: { value: clientX },
@@ -420,8 +422,8 @@ describe("mobile sidebar shelf stacking", () => {
 
     expect(panel.className).toContain("z-0");
     expect(panel.className).toContain("data-[side=left]:border-r");
-    expect(panel.className).toContain("data-[side=right]:border-l");
     expect(inset.className).toContain("max-md:z-30");
+    expect(inset.className).toContain("motion-reduce:transition-none!");
     expect(inset.dataset.sidebarShelf).toBe("closed");
 
     fireEvent.click(screen.getByRole("button", { name: "Toggle Sidebar" }));
@@ -441,20 +443,16 @@ describe("mobile sidebar shelf stacking", () => {
       throw new Error("Expected a page inset");
     }
 
-    expect(inset.className).not.toContain(
-      "data-[sidebar-shelf=open]:rounded",
-    );
-    expect(inset.className).not.toContain("data-[panel-shelf=shelf]:rounded");
+    expect(inset.className).not.toContain("data-[sidebar-shelf=open]:rounded");
+    expect(inset.className).not.toContain("data-[panel-shelf=full]:rounded");
     expect(inset.className).not.toContain(
       "data-[sidebar-shelf=open]:overflow-hidden",
     );
     expect(inset.className).not.toContain(
-      "data-[panel-shelf=shelf]:overflow-hidden",
+      "data-[panel-shelf=full]:overflow-hidden",
     );
-    expect(inset.className).not.toContain(
-      "data-[sidebar-shelf=open]:shadow",
-    );
-    expect(inset.className).not.toContain("data-[panel-shelf=shelf]:shadow");
+    expect(inset.className).not.toContain("data-[sidebar-shelf=open]:shadow");
+    expect(inset.className).not.toContain("data-[panel-shelf=full]:shadow");
   });
 
   it("leaves the page untouched by the shelf on desktop", () => {
@@ -780,6 +778,225 @@ describe("mobile sidebar swipe-open touch listener scoping", () => {
   });
 });
 
+describe("mobile sidebar interrupted swipe sessions", () => {
+  it.each(["touch", "pointer"] as const)(
+    "recovers a %s swipe after an earlier drag loses its end event",
+    (kind) => {
+      vi.useFakeTimers();
+      renderSelectableSwipeHarness();
+      const prose = screen.getByText("Selectable message prose");
+      const inset = document.querySelector('[data-sidebar="inset"]');
+      if (!(inset instanceof HTMLElement)) {
+        throw new Error("Expected a page inset");
+      }
+
+      if (kind === "touch") {
+        fireTouch(prose, "touchstart", createTouch(40, 160));
+        fireTouch(window, "touchmove", createTouch(60, 160));
+        fireTouch(prose, "touchstart", createTouch(40, 160, 2));
+        fireTouch(window, "touchmove", createTouch(190, 160, 2));
+        fireTouchEnd(window, createTouch(190, 160, 2));
+      } else {
+        firePointer(prose, "pointerdown", 40, 160);
+        firePointer(window, "pointermove", 60, 160);
+        firePointer(prose, "pointerdown", 40, 160, 2);
+        firePointer(window, "pointermove", 190, 160, 2);
+        firePointer(window, "pointerup", 190, 160, 2);
+      }
+
+      settleMobileToggle();
+      expect(getMobilePanel()?.dataset.state).toBe("open");
+      expect(inset.style.translate).toBe("");
+    },
+  );
+
+  it("recovers a dragged pointer session when the next iOS gesture emits pointer and touch starts", () => {
+    vi.useFakeTimers();
+    renderSelectableSwipeHarness();
+    const prose = screen.getByText("Selectable message prose");
+    const inset = document.querySelector('[data-sidebar="inset"]');
+    if (!(inset instanceof HTMLElement)) {
+      throw new Error("Expected a page inset");
+    }
+
+    firePointer(prose, "pointerdown", 40, 160);
+    fireTouch(prose, "touchstart", createTouch(40, 160));
+    fireTouch(window, "touchmove", createTouch(60, 160));
+
+    firePointer(prose, "pointerdown", 40, 160, 2);
+    fireTouch(prose, "touchstart", createTouch(40, 160, 2));
+    fireTouch(window, "touchmove", createTouch(190, 160, 2));
+    fireTouchEnd(window, createTouch(190, 160, 2));
+
+    settleMobileToggle();
+    expect(getMobilePanel()?.dataset.state).toBe("open");
+    expect(inset.style.translate).toBe("");
+  });
+
+  it.each(["touch", "pointer"] as const)(
+    "opens when a %s swipe travels most of its distance before release",
+    (kind) => {
+      vi.useFakeTimers();
+      renderSelectableSwipeHarness();
+      const prose = screen.getByText("Selectable message prose");
+
+      if (kind === "touch") {
+        fireTouch(prose, "touchstart", createTouch(40, 160));
+        fireTouch(window, "touchmove", createTouch(60, 160));
+        fireTouchEnd(window, createTouch(190, 160));
+      } else {
+        firePointer(prose, "pointerdown", 40, 160);
+        firePointer(window, "pointermove", 60, 160);
+        firePointer(window, "pointerup", 190, 160);
+      }
+
+      settleMobileToggle();
+      expect(getMobilePanel()?.dataset.state).toBe("open");
+    },
+  );
+
+  it.each(["touch", "pointer"] as const)(
+    "opens from a short %s flick released without further movement",
+    (kind) => {
+      vi.useFakeTimers();
+      renderSelectableSwipeHarness();
+      const prose = screen.getByText("Selectable message prose");
+
+      if (kind === "touch") {
+        fireTouch(prose, "touchstart", createTouch(40, 160));
+        vi.advanceTimersByTime(16);
+        fireTouch(window, "touchmove", createTouch(60, 160));
+        vi.advanceTimersByTime(16);
+        fireTouch(window, "touchmove", createTouch(110, 160));
+        vi.advanceTimersByTime(8);
+        fireTouchEnd(window, createTouch(110, 160));
+      } else {
+        firePointer(prose, "pointerdown", 40, 160);
+        vi.advanceTimersByTime(16);
+        firePointer(window, "pointermove", 60, 160);
+        vi.advanceTimersByTime(16);
+        firePointer(window, "pointermove", 110, 160);
+        vi.advanceTimersByTime(8);
+        firePointer(window, "pointerup", 110, 160);
+      }
+
+      settleMobileToggle();
+      expect(getMobilePanel()?.dataset.state).toBe("open");
+    },
+  );
+
+  it("closes a short swipe that pauses before release", () => {
+    vi.useFakeTimers();
+    renderSelectableSwipeHarness();
+    const prose = screen.getByText("Selectable message prose");
+
+    fireTouch(prose, "touchstart", createTouch(40, 160));
+    vi.advanceTimersByTime(16);
+    fireTouch(window, "touchmove", createTouch(60, 160));
+    vi.advanceTimersByTime(16);
+    fireTouch(window, "touchmove", createTouch(110, 160));
+    vi.advanceTimersByTime(300);
+    fireTouchEnd(window, createTouch(110, 160));
+
+    settleMobileToggle();
+    expect(getMobilePanel()?.dataset.state).toBe("closed");
+  });
+
+  it("keeps tracking when another finger ends during the swipe", () => {
+    vi.useFakeTimers();
+    renderSelectableSwipeHarness();
+    const prose = screen.getByText("Selectable message prose");
+    fireTouch(prose, "touchstart", createTouch(40, 160));
+    fireTouch(window, "touchmove", createTouch(80, 160));
+
+    const otherFingerEnd = new Event("touchend", {
+      bubbles: true,
+      cancelable: true,
+    });
+    Object.defineProperties(otherFingerEnd, {
+      touches: { value: createTouchList(createTouch(80, 160)) },
+      changedTouches: { value: createTouchList(createTouch(200, 160, 2)) },
+    });
+    fireEvent(window, otherFingerEnd);
+
+    fireTouch(window, "touchmove", createTouch(190, 160));
+    fireTouchEnd(window, createTouch(190, 160));
+    settleMobileToggle();
+    expect(getMobilePanel()?.dataset.state).toBe("open");
+  });
+
+  it.each([1, 2])(
+    "opens after Send detaches the touch target with next identifier %s",
+    (identifier) => {
+      renderSelectableSwipeHarness();
+      const prose = screen.getByText("Selectable message prose");
+      const send = document.createElement("button");
+      prose.parentElement?.append(send);
+      send.addEventListener("pointerdown", (event) => event.preventDefault());
+      send.addEventListener("pointerup", () => send.remove());
+
+      firePointer(send, "pointerdown", 320, 600);
+      fireTouch(send, "touchstart", createTouch(320, 600));
+      firePointer(send, "pointerup", 320, 600);
+      fireTouchEnd(send, createTouch(320, 600));
+      expect(send.isConnected).toBe(false);
+
+      firePointer(prose, "pointerdown", 120, 160, identifier);
+      fireTouch(prose, "touchstart", createTouch(120, 160, identifier));
+      fireTouch(window, "touchmove", createTouch(260, 164, identifier));
+      expect(getMobilePanel()?.dataset.state).toBe("open");
+      fireTouchEnd(window, createTouch(260, 164, identifier));
+    },
+  );
+
+  it.each(["pointer", "touch"] as const)(
+    "replaces a %s session when its terminal event never arrives",
+    (kind) => {
+      renderSelectableSwipeHarness();
+      const prose = screen.getByText("Selectable message prose");
+      if (kind === "pointer") {
+        firePointer(prose, "pointerdown", 320, 600);
+        firePointer(prose, "pointerdown", 120, 160, 2);
+        firePointer(window, "pointermove", 260, 164, 2);
+        firePointer(window, "pointerup", 260, 164, 2);
+      } else {
+        fireTouch(prose, "touchstart", createTouch(320, 600));
+        fireTouch(prose, "touchstart", createTouch(120, 160, 2));
+        fireTouch(window, "touchmove", createTouch(260, 164, 2));
+        fireTouchEnd(window, createTouch(260, 164, 2));
+      }
+      expect(getMobilePanel()?.dataset.state).toBe("open");
+    },
+  );
+
+  it("allows vertical scrolling after replacing an interrupted touch", () => {
+    renderSelectableSwipeHarness();
+    const prose = screen.getByText("Selectable message prose");
+    fireTouch(prose, "touchstart", createTouch(320, 600));
+    fireTouch(prose, "touchstart", createTouch(120, 160, 2));
+    const move = new Event("touchmove", { bubbles: true, cancelable: true });
+    Object.defineProperties(move, {
+      touches: { value: createTouchList(createTouch(124, 240, 2)) },
+      changedTouches: { value: createTouchList(createTouch(124, 240, 2)) },
+    });
+    fireEvent(window, move);
+    expect(move.defaultPrevented).toBe(false);
+    expect(getMobilePanel()?.dataset.state).toBe("closed");
+    fireTouch(prose, "touchstart", createTouch(120, 160, 3));
+    fireTouch(window, "touchmove", createTouch(260, 164, 3));
+    expect(getMobilePanel()?.dataset.state).toBe("open");
+  });
+
+  it("keeps the primary pointer session when a second finger lands", () => {
+    renderSelectableSwipeHarness();
+    const prose = screen.getByText("Selectable message prose");
+    firePointer(prose, "pointerdown", 120, 160);
+    firePointer(prose, "pointerdown", 320, 600, 2, false);
+    firePointer(window, "pointermove", 260, 164);
+    expect(getMobilePanel()?.dataset.state).toBe("open");
+  });
+});
+
 describe("mobile sidebar text-selection arbitration", () => {
   it("opens from a right swipe that starts over selectable message prose", () => {
     renderSelectableSwipeHarness();
@@ -853,5 +1070,42 @@ describe("mobile sidebar text-selection arbitration", () => {
     fireTouch(window, "touchmove", createTouch(260, 164));
 
     expect(getMobilePanel()?.dataset.state).toBe("closed");
+  });
+
+  it("clears an active drag when native text selection begins", () => {
+    vi.useFakeTimers();
+    let hasSelection = false;
+    let selectionNode: Node | null = null;
+    vi.spyOn(document, "getSelection").mockImplementation(() =>
+      hasSelection
+        ? ({
+            anchorNode: selectionNode,
+            focusNode: selectionNode,
+            isCollapsed: false,
+          } as Selection)
+        : null,
+    );
+    renderSelectableSwipeHarness();
+    const prose = screen.getByText("Selectable message prose");
+    const inset = document.querySelector('[data-sidebar="inset"]');
+    if (!(inset instanceof HTMLElement)) {
+      throw new Error("Expected a page inset");
+    }
+    selectionNode = prose.firstChild;
+
+    fireTouch(prose, "touchstart", createTouch(40, 160));
+    fireTouch(window, "touchmove", createTouch(60, 160));
+    hasSelection = true;
+    fireEvent(document, new Event("selectionchange"));
+
+    expect(getMobilePanel()?.dataset.state).toBe("closed");
+    expect(inset.style.translate).toBe("");
+
+    hasSelection = false;
+    fireTouch(prose, "touchstart", createTouch(40, 160, 2));
+    fireTouch(window, "touchmove", createTouch(190, 160, 2));
+    fireTouchEnd(window, createTouch(190, 160, 2));
+    settleMobileToggle();
+    expect(getMobilePanel()?.dataset.state).toBe("open");
   });
 });

@@ -1,4 +1,5 @@
 import {
+  formatToolCallCommand,
   isBackgroundAgentTaskType,
   isBackgroundCommandTaskType,
   isSettledWorkflowAgentState,
@@ -11,6 +12,7 @@ import type {
   TimelineFileChange,
   TimelineFileChangeWorkRow,
   TimelineFileReadWorkRow,
+  TimelineImageGenerationWorkRow,
   TimelineImageViewWorkRow,
   TimelineParentChangeSystemRow,
   TimelinePlanStepsWorkRow,
@@ -34,7 +36,6 @@ import {
   durationToCompactString,
   formatDiffStatsText,
 } from "./format-helpers.js";
-import { formatToolCallCommand } from "./tool-call-parsing.js";
 import {
   formatTimelineActivityIntentDetailParts,
   getTimelineActivityIntentDetailDedupeKey,
@@ -148,6 +149,10 @@ type TimelineExecutionWorkRow = TimelineCommandWorkRow | TimelineToolWorkRow;
 type TimelineApprovalWorkRow = Extract<
   TimelineViewWorkRow,
   { workKind: "approval" }
+>;
+type TimelineFormViewWorkRow = Extract<
+  TimelineViewWorkRow,
+  { workKind: "form" }
 >;
 type TimelineFileEditApprovalWorkRow = Extract<
   TimelineApprovalWorkRow,
@@ -867,6 +872,42 @@ function mapImageViewTitle(row: TimelineImageViewWorkRow): TimelineTitle {
   }
 }
 
+function mapImageGenerationTitle(
+  row: TimelineImageGenerationWorkRow,
+): TimelineTitle {
+  if (row.presentation) {
+    return presentedTitle({
+      presentation: row.presentation,
+      status: row.status,
+      startedAt: row.startedAt,
+      completedAt: row.completedAt,
+    });
+  }
+  const label = (() => {
+    switch (row.status) {
+      case "pending":
+        return "Generating image";
+      case "completed":
+        return "Generated image";
+      case "error":
+        return "Image generation failed";
+      case "interrupted":
+        return "Interrupted image generation";
+      default:
+        return assertNever(row.status);
+    }
+  })();
+  return makeTitle({
+    segments: [segment(label, { shimmer: row.status === "pending" })],
+    decorations:
+      row.status === "error"
+        ? [statusDecoration("error", null)]
+        : row.status === "interrupted"
+          ? [statusDecoration("interrupted", null)]
+          : filterNull([durationDecoration(row.startedAt, row.completedAt)]),
+  });
+}
+
 function delegationVerbForStatus(status: TimelineRowStatus): {
   text: string;
   shimmer: boolean;
@@ -893,7 +934,7 @@ function mapDelegationTitle(row: TimelineViewDelegationWorkRow): TimelineTitle {
       status: row.status,
       startedAt: row.startedAt,
       completedAt: row.completedAt,
-      content: description,
+      content: row.presentation.title ?? description,
     });
   }
   const verb = delegationVerbForStatus(row.status);
@@ -1235,6 +1276,31 @@ function mapQuestionTitle(row: TimelineQuestionViewWorkRow): TimelineTitle {
   }
 }
 
+function mapFormTitle(row: TimelineFormViewWorkRow): TimelineTitle {
+  const { presentation } = row;
+  switch (row.lifecycle) {
+    case "pending":
+      return makeTitle({
+        segments: [segment(presentation.label.pending, { shimmer: true })],
+      });
+    case "submitted":
+      return makeTitle({
+        segments: [
+          segment(presentation.title ?? presentation.label.completed, {
+            truncate: true,
+          }),
+        ],
+      });
+    case "cancelled":
+      return makeTitle({
+        segments: [segment(presentation.label.completed, { truncate: true })],
+        decorations: [statusDecoration("interrupted", null)],
+      });
+    default:
+      return assertNever(row.lifecycle);
+  }
+}
+
 function mapFileReadTitle(row: TimelineFileReadWorkRow): TimelineTitle {
   if (row.presentation) {
     return presentedTitle({
@@ -1369,6 +1435,8 @@ function mapWorkTitle(
         return mapWebSearchTitle(row);
       case "web-fetch":
         return mapWebFetchTitle(row);
+      case "image-generation":
+        return mapImageGenerationTitle(row);
       case "image-view":
         return mapImageViewTitle(row);
       case "delegation":
@@ -1379,6 +1447,8 @@ function mapWorkTitle(
         return mapApprovalTitle(row);
       case "question":
         return mapQuestionTitle(row);
+      case "form":
+        return mapFormTitle(row);
       default:
         return assertNever(row);
     }
@@ -1555,13 +1625,22 @@ function mapSystemTitle(row: TimelineSystemViewRow): TimelineTitle {
   if (row.systemKind === "operation" && row.operationKind === "parent-change") {
     return mapParentChangeSystemTitle(row);
   }
+  const isReasoning =
+    row.systemKind === "operation" && row.operationKind === "reasoning";
   const isCompaction =
     row.systemKind === "operation" && row.operationKind === "compaction";
-  const titleText =
-    isCompaction && row.status === "pending" ? `${row.title}…` : row.title;
+  const titleText = isReasoning
+    ? row.status === "pending"
+      ? "Thinking…"
+      : "Thought"
+    : isCompaction && row.status === "pending"
+      ? `${row.title}…`
+      : row.title;
   const decorations: TimelineTitleDecoration[] = hasError
     ? [statusDecoration("error", null, { emphasis: true })]
-    : isCompaction && (row.status === "pending" || row.status === "completed")
+    : isReasoning ||
+        (isCompaction &&
+          (row.status === "pending" || row.status === "completed"))
       ? filterNull([durationDecoration(row.startedAt, row.completedAt)])
       : [];
   const shimmer = row.status === "pending";

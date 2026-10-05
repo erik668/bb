@@ -8,7 +8,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { inspectPackagedRuntime } from "./packaged-runtime-preflight.mjs";
 
@@ -62,7 +62,9 @@ export async function configuredDesktopArchitecture(platform) {
       ? config.mac?.target
       : platform === "linux"
         ? config.linux?.target
-        : null;
+        : platform === "win32"
+          ? config.win?.target
+          : null;
   const architectures = new Set(
     Array.isArray(target)
       ? target.flatMap((item) =>
@@ -88,7 +90,7 @@ export async function resolveAfterPackTarget(context) {
   const platform = context.electronPlatformName;
   if (
     !["arm64", "x64"].includes(arch) ||
-    !["darwin", "linux"].includes(platform) ||
+    !["darwin", "linux", "win32"].includes(platform) ||
     !isAbsolute(context.appOutDir ?? "")
   ) {
     throw new PackagedNativeRuntimeError("PACKAGING_TARGET_INVALID", {
@@ -99,7 +101,9 @@ export async function resolveAfterPackTarget(context) {
   const name =
     platform === "darwin"
       ? context.packager?.appInfo?.productFilename
-      : context.packager?.executableName;
+      : platform === "win32"
+        ? context.packager?.appInfo?.productFilename
+        : context.packager?.executableName;
   if (!validName(name))
     throw new PackagedNativeRuntimeError("PACKAGING_EXECUTABLE_INVALID", {
       name: name ?? null,
@@ -107,7 +111,7 @@ export async function resolveAfterPackTarget(context) {
   const executable =
     platform === "darwin"
       ? join(context.appOutDir, `${name}.app`, "Contents", "MacOS", name)
-      : join(context.appOutDir, name);
+      : join(context.appOutDir, platform === "win32" ? `${name}.exe` : name);
   return {
     appOutDir: context.appOutDir,
     executable,
@@ -131,7 +135,7 @@ export async function packagedNativeRequest({
   const executableRelative = relative(artifactRoot, actualExecutable);
   if (
     executableRelative === ".." ||
-    executableRelative.startsWith("../") ||
+    executableRelative.startsWith(`..${sep}`) ||
     isAbsolute(executableRelative)
   ) {
     throw new PackagedNativeRuntimeError("PACKAGED_EXECUTABLE_ESCAPE", {
@@ -139,7 +143,7 @@ export async function packagedNativeRequest({
       artifactRoot,
     });
   }
-  const names = preparation.PACKAGED_NATIVE_PACKAGE_NAMES;
+  const names = ["node-pty", "better-sqlite3"];
   const found = await preparation.findPackageDirectories(artifactRoot, names);
   const modules = names.flatMap((name) => {
     const roots = found.get(name);

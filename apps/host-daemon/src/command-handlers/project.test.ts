@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { runGit } from "@bb/host-workspace";
 import { afterEach, describe, expect, it } from "vitest";
 import { isExpectedCommandDispatchError } from "../command-dispatch-support.js";
@@ -49,19 +50,24 @@ describe("project.clone", () => {
   it("clones a real repository and reports the resolved path and origin", async () => {
     const root = await tempDir();
     const remoteUrl = await createRemoteRepo(root);
+    const cloneUrl = pathToFileURL(remoteUrl).href;
+    const progress: string[] = [];
     const result = await cloneProject({
       dataDir: path.join(root, "data"),
       projectSlug: "My Project",
-      remoteUrl,
+      remoteUrl: cloneUrl,
+      onProgress: (line) => progress.push(line),
     });
 
     expect(result).toEqual({
       path: path.join(root, "data", "checkouts", "my-project"),
-      gitRemoteUrl: remoteUrl,
+      gitRemoteUrl: cloneUrl,
     });
     await expect(
       fs.readFile(path.join(result.path, "README.md"), "utf8"),
     ).resolves.toBe("hello\n");
+    expect(progress.join("\n")).toContain("Cloning into");
+    expect(progress.join("\n")).toContain("Receiving objects:");
   });
 
   it("refuses a non-empty target with a structured error", async () => {
@@ -92,7 +98,9 @@ describe("project.clone", () => {
     expect(isExpectedCommandDispatchError(error)).toBe(true);
     expect(error).toMatchObject({ code: "git_command_failed" });
     expect(error.message).toContain(
-      `fatal: repository '${missingRemote}' does not exist`,
+      process.platform === "win32"
+        ? `fatal: '${missingRemote}' does not appear to be a git repository`
+        : `fatal: repository '${missingRemote}' does not exist`,
     );
   });
 

@@ -4,11 +4,14 @@ import type {
   ThreadEvent,
   SystemThreadProvisioningStatus,
   SystemThreadInterruptedReason,
+  PluginInteractionLifecycle,
+  ThreadEventItemPresentation,
   UserQuestionInteractionLifecycle,
 } from "@bb/domain";
 import {
   THREAD_CONTEXT_CLEAR_OPERATION,
   isApprovalInteractionLifecycle,
+  isPluginInteractionLifecycle,
   isUserQuestionInteractionLifecycle,
   ownershipChangeOperationMetadataSchema,
 } from "@bb/domain";
@@ -34,12 +37,14 @@ import type {
   EventProjectionThreadOperationMetadata,
   EventProjectionThreadOperationKind,
   EventProjectionThreadOperationStatus,
+  EventProjectionPluginFormLifecycle,
+  EventProjectionPluginFormLifecycleMessage,
 } from "./event-projection-types.js";
 import { getProviderModelFallbackData } from "./model-fallback-extraction.js";
 
 type ParseOperationMessageOptions = Pick<
   BuildEventProjectionMessagesOptions,
-  "includeProviderUnhandledOperations" | "providerDisplayName" | "threadName"
+  "includeDiagnosticOperations" | "providerDisplayName" | "threadName"
 >;
 
 function withThreadName(threadName: string, verb: string): string {
@@ -118,10 +123,10 @@ function threadInterruptedTitle(
     return "Stopped — connection to host was lost";
   }
   switch (reason) {
+    case "host-removed":
+      return "Stopped because the machine was removed";
     case "manual-stop":
       return "Stopped manually";
-    case "workflow-result-cleanup":
-      return "Stopped after accepted workflow result";
     case "host-daemon-restarted":
       return "Stopped — host daemon restarted";
     case "provider-turn-idle":
@@ -377,16 +382,98 @@ function buildUserQuestionLifecycleMessage(
   };
 }
 
+function pluginFormLifecycle(
+  interaction: PluginInteractionLifecycle,
+): EventProjectionPluginFormLifecycle {
+  switch (interaction.status) {
+    case "pending":
+    case "resolving":
+      return "pending";
+    case "resolved":
+      return "submitted";
+    case "interrupted":
+      return "cancelled";
+    default:
+      return assertNever(interaction.status);
+  }
+}
+
+function pluginFormLifecycleStatus(
+  lifecycle: EventProjectionPluginFormLifecycle,
+): EventProjectionPluginFormLifecycleMessage["status"] {
+  switch (lifecycle) {
+    case "pending":
+      return "pending";
+    case "submitted":
+      return "completed";
+    case "cancelled":
+      return "interrupted";
+    default:
+      return assertNever(lifecycle);
+  }
+}
+
+function pluginFormPresentation(
+  interaction: PluginInteractionLifecycle,
+): ThreadEventItemPresentation {
+  const base = interaction.payload.presentation ?? {
+    label: {
+      pending: `Waiting for ${interaction.payload.title}`,
+      completed: `Submitted ${interaction.payload.title}`,
+    },
+    icon: { glyph: "Toolbox" },
+  };
+  const description = interaction.resolution?.description;
+  return {
+    ...base,
+    ...(description?.title === undefined ? {} : { title: description.title }),
+    ...(description?.detail === undefined
+      ? {}
+      : { detail: description.detail }),
+  };
+}
+
+function buildPluginFormLifecycleMessage(
+  decoded: InteractionLifecycleEvent,
+  interaction: PluginInteractionLifecycle,
+  meta: EventMeta,
+): EventProjectionPluginFormLifecycleMessage {
+  const lifecycle = pluginFormLifecycle(interaction);
+  return {
+    kind: "plugin-form-lifecycle",
+    id: messageId(decoded.threadId, "form", interaction.id),
+    threadId: decoded.threadId,
+    sourceSeqStart: meta.seq,
+    sourceSeqEnd: meta.seq,
+    createdAt: meta.createdAt,
+    startedAt: meta.createdAt,
+    scope: decoded.scope,
+    interactionId: interaction.id,
+    lifecycle,
+    status: pluginFormLifecycleStatus(lifecycle),
+    pluginId: interaction.origin.pluginId,
+    rendererId: interaction.origin.rendererId,
+    title: interaction.payload.title,
+    statusReason: interaction.statusReason,
+    presentation: pluginFormPresentation(interaction),
+    payload: interaction.resolution?.description?.payload ?? null,
+  };
+}
+
 function buildInteractionLifecycleMessage(
   decoded: InteractionLifecycleEvent,
   meta: EventMeta,
 ):
   | EventProjectionPermissionGrantLifecycleMessage
   | EventProjectionUserQuestionLifecycleMessage
+  | EventProjectionPluginFormLifecycleMessage
   | null {
   const { interaction } = decoded;
   if (isUserQuestionInteractionLifecycle(interaction)) {
     return buildUserQuestionLifecycleMessage(decoded, interaction, meta);
+  }
+  if (isPluginInteractionLifecycle(interaction)) {
+    return buildPluginFormLifecycleMessage(decoded, interaction, meta);
   }
   if (!isApprovalInteractionLifecycle(interaction)) {
     return null;
@@ -450,6 +537,7 @@ export function parseOperationMessage(
   | EventProjectionOperationMessage
   | EventProjectionPermissionGrantLifecycleMessage
   | EventProjectionUserQuestionLifecycleMessage
+  | EventProjectionPluginFormLifecycleMessage
   | null {
   const threadName = options?.threadName ?? "";
   const modelFallback = getProviderModelFallbackData(decoded);
@@ -463,7 +551,7 @@ export function parseOperationMessage(
   }
 
   if (decoded.type === "provider/unhandled") {
-    if (options?.includeProviderUnhandledOperations !== true) {
+    if (options?.includeDiagnosticOperations !== true) {
       return null;
     }
 
@@ -479,9 +567,18 @@ export function parseOperationMessage(
   }
 
   if (decoded.type === "provider.env-resolved") {
+    if (options?.includeDiagnosticOperations !== true) {
+      return null;
+    }
+
     const detail = decoded.entries
       .map((entry) => {
-        const source = entry.source === "shell" ? "shell" : entry.source.plugin;
+        const source =
+          entry.source === "shell"
+            ? "shell"
+            : "plugin" in entry.source
+              ? entry.source.plugin
+              : entry.source.core;
         const value = typeof entry.value === "string" ? entry.value : "••••••";
         const reason = entry.reason ? ` — ${entry.reason}` : "";
         return `${entry.name}=${value} (${source})${reason}`;
@@ -550,7 +647,7 @@ export function parseOperationMessage(
       title: provisioningTitleForStatus(operationStatus),
       status: operationStatus,
       provisioning: {
-        environmentId,
+        ...(environmentId !== null ? { environmentId } : {}),
         provisioningId,
         ...(transcript ? { transcript } : {}),
       },

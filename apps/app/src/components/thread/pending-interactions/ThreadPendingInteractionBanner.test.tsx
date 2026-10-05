@@ -1,6 +1,12 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -14,9 +20,14 @@ import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
 } from "@/lib/plugin-logos";
+import {
+  markPluginFrontendsSettled,
+  resetPluginFrontendBootStateForTest,
+} from "@/lib/plugin-frontend-boot-state";
 import { resetAllCrashedPluginSlotsForTest } from "../../plugin/PluginSlotMount";
 import { ThreadPendingInteractionBanner } from "./ThreadPendingInteractionBanner";
 import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
+import { BottomAnchorContext } from "@/components/ui/bottom-anchored-scroll-body";
 
 const mocks = vi.hoisted(() => ({
   resolveMutateAsync: vi.fn(async () => ({})),
@@ -40,6 +51,11 @@ vi.mock(
 vi.mock("@/hooks/mutations/thread-interaction-mutations", () => ({
   useResolveThreadPendingInteraction: () => ({
     mutateAsync: mocks.resolveMutateAsync,
+    isPending: false,
+    error: null,
+  }),
+  useCancelThreadPendingInteraction: () => ({
+    mutate: vi.fn(),
     isPending: false,
     error: null,
   }),
@@ -179,6 +195,7 @@ afterEach(() => {
   resetPluginSlotStoreForTest();
   resetPluginLogoStoreForTest();
   resetAllCrashedPluginSlotsForTest();
+  resetPluginFrontendBootStateForTest();
   mocks.resolveMutateAsync.mockClear();
   mocks.stopMutateAsync.mockClear();
 });
@@ -290,7 +307,11 @@ describe("ThreadPendingInteractionBanner request family", () => {
 
   it("renders a plugin request through the plugin's pendingInteraction slot, keyed by <pluginId>/<kind>", () => {
     function SecretForm({ interaction }: PluginPendingInteractionProps) {
-      return <div data-testid="secret-form">{interaction.title}</div>;
+      return (
+        <div data-testid="secret-form">
+          {interaction.title}:{JSON.stringify(interaction.payload)}
+        </div>
+      );
     }
     setPluginSlotRegistrations(
       "secrets",
@@ -303,7 +324,9 @@ describe("ThreadPendingInteractionBanner request family", () => {
     expect(banner.getAttribute("data-request-kind")).toBe(
       "secrets/secret-request",
     );
-    expect(screen.getByTestId("secret-form").textContent).toBe("Add secrets");
+    expect(screen.getByTestId("secret-form").textContent).toBe(
+      'Add secrets:{"fields":["KEY"]}',
+    );
   });
 
   it("renders a provider's plugin-defined request through the same slot, with the form's data", () => {
@@ -329,10 +352,11 @@ describe("ThreadPendingInteractionBanner request family", () => {
     expect(screen.getByTestId("secret-form").textContent).toBe(
       'Add a token:{"fields":["TOKEN"]}',
     );
-    expect(screen.getByText(/The agent asks through/)).toBeTruthy();
+    expect(screen.getByText(/Asked by the agent through/)).toBeTruthy();
   });
 
   it("backs out of a provider's request by stopping the turn, never by cancelling", () => {
+    markPluginFrontendsSettled();
     renderBanner(providerPluginRequest);
     expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Stop turn" }));
@@ -366,7 +390,111 @@ describe("ThreadPendingInteractionBanner presentation detail images", () => {
 });
 
 describe("ThreadPendingInteractionBanner collapsed strip", () => {
-  it("arrives collapsed with the reason, the first command line, and every decision", () => {
+  it("fits native and plugin interaction shells in the remaining footer space", () => {
+    const observers = new Set<() => void>();
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        callback: () => void;
+        constructor(callback: () => void) {
+          this.callback = callback;
+          observers.add(callback);
+        }
+        observe() {}
+        disconnect() {
+          observers.delete(this.callback);
+        }
+      },
+    );
+    try {
+      const scrollElement = document.createElement("div");
+      Object.defineProperty(scrollElement, "clientHeight", { value: 600 });
+      const question: PendingInteraction = {
+        ...planReview,
+        id: "pint_height_question",
+        resolution: null,
+        payload: {
+          kind: "user_question",
+          questions: [
+            {
+              id: "path",
+              prompt: "Which path?",
+              multiSelect: false,
+              allowFreeText: true,
+              options: [],
+            },
+          ],
+        },
+      };
+      const { container } = render(
+        <QueryClientProvider client={new QueryClient()}>
+          <MemoryRouter>
+            <BottomAnchorContext.Provider
+              value={{
+                getScrollElement: () => scrollElement,
+                isAtBottom: true,
+                scrollToBottom: () => {},
+                scrollElementIntoView: () => {},
+                scrollElementIntoViewClampedToMaxScroll: () => {},
+                captureScrollAnchor: () => {},
+              }}
+            >
+              <div data-scroll-footer="">
+                {bannerElement(question)}
+                {bannerElement(pluginRequest)}
+              </div>
+            </BottomAnchorContext.Provider>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+      const native = screen.getByTestId("user-question-banner");
+      const plugin = screen.getByTestId("plugin-interaction-shell");
+      const footer = container.querySelector("[data-scroll-footer]");
+      if (!footer) throw new Error("Missing footer");
+      Object.defineProperty(footer, "offsetHeight", {
+        configurable: true,
+        value: 1000,
+      });
+      for (const shell of [native, plugin]) {
+        Object.defineProperty(shell, "offsetHeight", {
+          configurable: true,
+          value: 400,
+        });
+      }
+      act(() => {
+        for (const observer of observers) observer();
+      });
+      expect(native.style.maxHeight).toBe("200px");
+      expect(plugin.style.maxHeight).toBe("200px");
+      const toggle = plugin.querySelector('button[aria-expanded="true"]');
+      if (!toggle) throw new Error("Missing disclosure");
+      fireEvent.click(toggle);
+      Object.defineProperty(plugin, "offsetHeight", { value: 100 });
+      Object.defineProperty(footer, "offsetHeight", { value: 700 });
+      act(() => {
+        for (const observer of observers) observer();
+      });
+      expect(plugin.style.maxHeight).toBe("");
+      expect(native.style.maxHeight).toBe("300px");
+      for (const footerHeight of [980, 1000]) {
+        Object.defineProperty(footer, "offsetHeight", { value: footerHeight });
+        act(() => {
+          for (const observer of observers) observer();
+        });
+        expect(native.style.maxHeight).toBe("160px");
+      }
+      fireEvent.click(toggle);
+      act(() => {
+        for (const observer of observers) observer();
+      });
+      expect(native.style.maxHeight).toBe("160px");
+      expect(plugin.style.maxHeight).toBe("160px");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("arrives collapsed with only the label and exposes decisions after expansion", () => {
     renderBanner(commandApproval);
     const banner = screen.getByTestId("approval-banner");
     expect(banner.hasAttribute("data-expanded")).toBe(false);
@@ -375,6 +503,8 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
       "python3 -m unittest discover -s tests 2>&1 | tail -20",
     );
     expect(isHidden(screen.getByTestId("command-preview"))).toBe(true);
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+    expandBanner();
     fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
     expect(mocks.resolveMutateAsync).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -404,6 +534,27 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
     expect(screen.getByRole("button", { name: "Show less" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Hide details" }));
     expect(banner.hasAttribute("data-expanded")).toBe(false);
+  });
+
+  it("toggles through the title without submitting an approval", () => {
+    renderBanner(commandApproval);
+    const title = screen.getByRole("button", {
+      name: "Approval needed",
+    });
+    title.focus();
+    fireEvent.click(title);
+    const expandedTitle = screen.getByRole("button", {
+      name: "Approval needed",
+    });
+    expect(expandedTitle.getAttribute("aria-expanded")).toBe("true");
+    expect(document.activeElement).toBe(expandedTitle);
+    fireEvent.click(expandedTitle);
+    expect(
+      screen
+        .getByRole("button", { name: "Approval needed" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(mocks.resolveMutateAsync).not.toHaveBeenCalled();
   });
 
   it("keeps focus on the disclosure button across toggles so Escape works right after opening", () => {
@@ -452,7 +603,7 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
     ).toBe(false);
   });
 
-  it("keeps the source thread reachable from the strip and the card", () => {
+  it("keeps the source thread reachable after expanding", () => {
     render(
       <QueryClientProvider client={new QueryClient()}>
         <MemoryRouter>
@@ -468,11 +619,14 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
       </QueryClientProvider>,
     );
     expect(
+      screen.queryByRole("link", { name: "From Install tools" }),
+    ).toBeNull();
+    expandBanner();
+    expect(
       screen
         .getByRole("link", { name: "From Install tools" })
         .getAttribute("href"),
     ).toBe("/threads/thr_child");
-    expandBanner();
     expect(
       screen.getByRole("link", { name: "From Install tools" }),
     ).toBeTruthy();
@@ -518,5 +672,16 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
         .getByRole("button", { name: "AOption A" })
         .getAttribute("aria-pressed"),
     ).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Submit answer" }));
+    expect(mocks.resolveMutateAsync).toHaveBeenCalledWith({
+      threadId: "thr_1",
+      interactionId: "pint_question",
+      resolution: {
+        kind: "user_answer",
+        answers: { path: { selected: ["a"] } },
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(mocks.stopMutateAsync).toHaveBeenCalledWith("thr_1");
   });
 });

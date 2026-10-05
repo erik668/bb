@@ -32,15 +32,6 @@ export class NativeMemoryBridge {
   private enabled: boolean;
   private readonly host;
   private readonly automaticScans = new Map<string, number>();
-  /**
-   * Environments whose last automatic scan came back `unsupported` — the host
-   * could not read a memory layout there at all. They back off to
-   * {@link UNSUPPORTED_SCAN_DEBOUNCE_MS} instead of being dropped for good,
-   * because `unsupported` also covers a transient scan fault. This is what
-   * makes the idle path affordable without branching on the thread's provider:
-   * whether an environment has native memory is a fact about the workspace and
-   * host, not about which agent happened to go idle in it.
-   */
   private readonly unsupportedScans = new Set<string>();
   private readonly inFlight = new Map<
     string,

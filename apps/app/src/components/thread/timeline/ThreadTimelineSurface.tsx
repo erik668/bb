@@ -11,12 +11,12 @@ import { ConversationTimeline } from "@/components/ui/conversation.js";
 import { HeightTransition } from "@/components/ui/height-transition.js";
 import { Icon } from "@bb/shared-ui/icon";
 import { Skeleton } from "@bb/shared-ui/skeleton";
-import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { toUserAttachmentImageSrc } from "@/lib/user-attachment-images";
 import { ThreadTimelineRows } from "./ThreadTimelineRows.js";
 import { useAutoLoadOlderRows } from "./useAutoLoadOlderRows.js";
 import { TimelineStatusIndicator } from "./TimelineStatusIndicator.js";
 import type { TimelineTitleActionResolver } from "./TimelineTitleView.js";
+import { TimelineReasoningExpansionProvider } from "./TimelineReasoningExpansion.js";
 import { TimelineWorkingIndicator } from "./TimelineWorkingIndicator.js";
 import type {
   ThreadTimelineForkMessageHandler,
@@ -33,12 +33,12 @@ import type {
 
 export interface HostConnectionNotice {
   label: string;
-  tone: "pending" | "error";
 }
 
 export interface ThreadTimelineSurfaceProps {
   activeThinking: ActiveThinking | null;
   canSpawnChild?: boolean;
+  contextBoundarySeq: number | null;
   threadOriginKind?: ThreadOriginKind | null;
   hasOlderTimelineRows?: boolean;
   hostConnectionNotice?: HostConnectionNotice | null;
@@ -140,6 +140,7 @@ function useTimelineRowsWithPendingStop({
 export function ThreadTimelineSurface({
   activeThinking,
   canSpawnChild,
+  contextBoundarySeq,
   threadOriginKind = null,
   hasOlderTimelineRows = false,
   hostConnectionNotice,
@@ -176,9 +177,6 @@ export function ThreadTimelineSurface({
   unreadDividerPlacement,
   workspaceRootPath,
 }: ThreadTimelineSurfaceProps) {
-  const systemConfigQuery = useSystemConfig();
-  const timelineWindowingEnabled =
-    systemConfigQuery.data?.experiments.timelineWindowing ?? false;
   const showActiveThinking =
     activeThinking !== null && ongoingIndicatorLabel === undefined;
   const activeThinkingText = activeThinking?.text.trim() ?? "";
@@ -203,73 +201,72 @@ export function ThreadTimelineSurface({
     !timelineError;
 
   return (
-    <ConversationTimeline className="flex-1">
-      {leadingContent}
-      {showLoadOlderRows ? (
-        <LoadOlderMessages
-          hasOlderTimelineRows={hasOlderTimelineRows}
-          isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
-          onLoadOlderRows={onLoadOlderRows}
-        />
-      ) : null}
-      {isThreadTimelinePending ? (
-        (loadingContent ?? <DelayedThreadLoadingIndicator />)
-      ) : timelineError ? (
-        <TimelineStatusIndicator
-          label="Failed to load timeline"
-          className={timelineErrorClassName}
-        />
-      ) : timelineRowsWithPendingStop.length > 0 ? (
-        <ThreadTimelineRows
-          canSpawnChild={canSpawnChild}
-          threadOriginKind={threadOriginKind}
-          onForkMessage={onForkMessage}
-          onEditMessage={onEditMessage}
-          inlineMessageEditor={inlineMessageEditor}
-          onMessageAddToChat={onMessageAddToChat}
-          onSendToMainMessage={onSendToMainMessage}
-          onSelectionAddToChat={onSelectionAddToChat}
-          consumerMessageActions={consumerMessageActions}
-          includePluginMessageActions={includePluginMessageActions}
-          onOpenLink={onOpenLink}
-          onOpenLocalFileLink={onOpenLocalFileLink}
-          onOpenPluginPanel={onOpenPluginPanel}
-          onTitleAction={onTitleAction}
-          projectId={projectId}
-          resolveMentionLink={resolveMentionLink}
-          resolveUserAttachmentImageSrc={toUserAttachmentImageSrc}
-          hasOlderTimelineRows={hasOlderTimelineRows}
-          isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
-          onLoadOlderRows={onLoadOlderRows}
-          timelineRows={timelineRowsWithPendingStop}
-          timelineNavigationTargetRowId={timelineNavigationTargetRowId}
-          timelineWindowingEnabled={timelineWindowingEnabled}
-          threadId={threadId}
-          threadRuntimeDisplayStatus={threadRuntimeDisplayStatus}
-          unreadDividerAutoScroll={unreadDividerAutoScroll}
-          unreadDividerPlacement={unreadDividerPlacement}
-          workspaceRootPath={workspaceRootPath}
-        />
-      ) : null}
-      {hostConnectionNotice ? (
-        <TimelineStatusIndicator
-          label={hostConnectionNotice.label}
-          className={
-            hostConnectionNotice.tone === "error"
-              ? "mt-4 text-destructive"
-              : "mt-4"
-          }
-        />
-      ) : null}
-      <HeightTransition visible={showOngoingIndicator}>
-        <TimelineWorkingIndicator
-          key={ongoingIndicatorKey}
-          details={activeThinkingDetails}
-          isThinking={showActiveThinking}
-          label={ongoingIndicatorLabel}
-        />
-      </HeightTransition>
-    </ConversationTimeline>
+    <TimelineReasoningExpansionProvider key={threadId}>
+      <ConversationTimeline className="flex-1">
+        {leadingContent}
+        {showLoadOlderRows ? (
+          <LoadOlderMessages
+            key={`context-boundary:${contextBoundarySeq}`}
+            hasOlderTimelineRows={hasOlderTimelineRows}
+            isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
+            onLoadOlderRows={onLoadOlderRows}
+          />
+        ) : null}
+        {isThreadTimelinePending ? (
+          (loadingContent ?? <DelayedThreadLoadingIndicator />)
+        ) : timelineError ? (
+          <TimelineStatusIndicator
+            label="Failed to load timeline"
+            className={timelineErrorClassName}
+          />
+        ) : timelineRowsWithPendingStop.length > 0 ? (
+          <ThreadTimelineRows
+            canSpawnChild={canSpawnChild}
+            threadOriginKind={threadOriginKind}
+            onForkMessage={onForkMessage}
+            onEditMessage={onEditMessage}
+            inlineMessageEditor={inlineMessageEditor}
+            onMessageAddToChat={onMessageAddToChat}
+            onSendToMainMessage={onSendToMainMessage}
+            onSelectionAddToChat={onSelectionAddToChat}
+            consumerMessageActions={consumerMessageActions}
+            includePluginMessageActions={includePluginMessageActions}
+            onOpenLink={onOpenLink}
+            onOpenLocalFileLink={onOpenLocalFileLink}
+            onOpenPluginPanel={onOpenPluginPanel}
+            onTitleAction={onTitleAction}
+            projectId={projectId}
+            resolveMentionLink={resolveMentionLink}
+            resolveUserAttachmentImageSrc={toUserAttachmentImageSrc}
+            hasOlderTimelineRows={hasOlderTimelineRows}
+            isLoadingOlderTimelineRows={isLoadingOlderTimelineRows}
+            onLoadOlderRows={onLoadOlderRows}
+            timelineRows={timelineRowsWithPendingStop}
+            timelineNavigationTargetRowId={timelineNavigationTargetRowId}
+            threadId={threadId}
+            threadRuntimeDisplayStatus={threadRuntimeDisplayStatus}
+            unreadDividerAutoScroll={unreadDividerAutoScroll}
+            unreadDividerPlacement={unreadDividerPlacement}
+            workspaceRootPath={workspaceRootPath}
+          />
+        ) : null}
+        {hostConnectionNotice ? (
+          <TimelineStatusIndicator
+            label={hostConnectionNotice.label}
+            className="mt-4 text-destructive"
+          />
+        ) : null}
+        <HeightTransition visible={showOngoingIndicator}>
+          <TimelineWorkingIndicator
+            key={ongoingIndicatorKey}
+            details={activeThinkingDetails}
+            reasoningId={activeThinking?.id}
+            isThinking={showActiveThinking}
+            label={ongoingIndicatorLabel}
+          />
+        </HeightTransition>
+      </ConversationTimeline>
+    </TimelineReasoningExpansionProvider>
   );
 }
 
@@ -339,17 +336,14 @@ function DelayedThreadLoadingIndicator() {
 function ThreadTimelineLoadingSkeleton() {
   return (
     <div className="mt-6 space-y-5" role="status" aria-label="Loading thread">
-      {}
       <div className="flex justify-end px-2">
         <Skeleton className="h-12 w-3/5" />
       </div>
-      {}
       <div className="space-y-2 px-2">
         <Skeleton className="h-3.5 w-11/12" />
         <Skeleton className="h-3.5 w-full" />
         <Skeleton className="h-3.5 w-3/4" />
       </div>
-      {}
       <div className="space-y-2.5 px-2">
         <div className="flex items-center gap-2">
           <Skeleton className="size-3.5 shrink-0 rounded" />
@@ -364,7 +358,6 @@ function ThreadTimelineLoadingSkeleton() {
           <Skeleton className="h-3 w-1/3" />
         </div>
       </div>
-      {}
       <div className="space-y-2 px-2">
         <Skeleton className="h-3.5 w-5/6" />
         <Skeleton className="h-3.5 w-2/3" />

@@ -3,12 +3,8 @@ import { createHash } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { and, eq } from "drizzle-orm";
-import {
-  environments,
-  getProjectSourceByHost,
-  hostDaemonSessions,
-} from "@bb/db";
+import { eq } from "drizzle-orm";
+import { hostDaemonSessions } from "@bb/db";
 import {
   hostDaemonCommandSchema,
   hostDaemonOnlineRpcResponseMessageSchema,
@@ -16,7 +12,7 @@ import {
   hostDaemonServerWsMessageSchema,
   parseHostDaemonRpcResultForCommand,
 } from "@bb/host-daemon-contract";
-import { type HostType, type ThreadEvent } from "@bb/domain";
+import { type ThreadEvent } from "@bb/domain";
 import type {
   HostDaemonCommand,
   HostDaemonEventEnvelope,
@@ -69,32 +65,6 @@ export function listQueuedCommands(
     .map((queued) => hostDaemonRpcCommandSchema.parse(queued.command));
 }
 
-type ManagedWorktreeEnvironmentProvisionCommand = Extract<
-  HostDaemonCommand,
-  { type: "environment.provision"; workspaceProvisionType: "managed-worktree" }
->;
-
-type ManagedWorktreeEnvironmentProvisionLiveCommand =
-  QueuedCommand<ManagedWorktreeEnvironmentProvisionCommand>;
-
-function isManagedWorktreeEnvironmentProvisionLiveCommand(
-  queued: QueuedCommand,
-): queued is ManagedWorktreeEnvironmentProvisionLiveCommand {
-  return (
-    queued.command.type === "environment.provision" &&
-    queued.command.workspaceProvisionType === "managed-worktree"
-  );
-}
-
-export function requireManagedWorktreeEnvironmentProvisionLiveCommand(
-  queued: QueuedCommand,
-): ManagedWorktreeEnvironmentProvisionLiveCommand {
-  if (isManagedWorktreeEnvironmentProvisionLiveCommand(queued)) {
-    return queued;
-  }
-  throw new Error("Expected managed-worktree environment.provision command");
-}
-
 export function listQueuedThreadCommands(
   harness: TestAppHarness,
   type: HostDaemonCommand["type"],
@@ -111,22 +81,6 @@ export function listQueuedThreadCommands(
     .map((queued) => hostDaemonCommandSchema.parse(queued.command));
 }
 
-export function listQueuedEnvironmentCommands(
-  harness: TestAppHarness,
-  type: HostDaemonCommand["type"],
-  environmentId: string,
-): HostDaemonCommand[] {
-  return pendingHostRpcRequests
-    .filter(
-      (queued) =>
-        isCapturedRpcForHarness(harness, queued) &&
-        queued.command.type === type &&
-        "environmentId" in queued.command &&
-        queued.command.environmentId === environmentId,
-    )
-    .map((queued) => hostDaemonCommandSchema.parse(queued.command));
-}
-
 const pendingHostRpcRequests: QueuedCommand[] = [];
 const testRpcCursorByHost = new Map<string, number>();
 
@@ -134,6 +88,15 @@ interface RegisterTestHostRpcCaptureArgs {
   hostId: string;
   sessionId: string;
   queueBranchOptions?: boolean;
+  onPluginHostCall?: (
+    command: Extract<HostDaemonRpcCommand, { type: "plugin.host.call" }>,
+  ) => Promise<HostDaemonOnlineRpcResult<"plugin.host.call">>;
+  onEnvironmentHook?: (
+    command: Extract<HostDaemonRpcCommand, { type: "environment.hook.run" }>,
+  ) => Promise<void>;
+  onEnvironmentHookCancel?: (
+    operationId: string,
+  ) => Promise<void | { status: "unknown" | "terminated" }>;
   gitBranchOptionsResult?: HostDaemonOnlineRpcResult<"host.list_branch_options">;
   onListBranchOptions?: (
     command: Extract<
@@ -142,10 +105,6 @@ interface RegisterTestHostRpcCaptureArgs {
     >,
   ) => void;
   gitSourceInspectionResult?: HostDaemonOnlineRpcResult<"host.inspect_git_source">;
-  sourceInspectionResult?: HostDaemonOnlineRpcResult<"host.resolve_source">;
-  onResolveSource?: (
-    command: Extract<HostDaemonRpcCommand, { type: "host.resolve_source" }>,
-  ) => void;
   onInspectGitSource?: (
     command: Extract<HostDaemonRpcCommand, { type: "host.inspect_git_source" }>,
   ) => void;
@@ -157,13 +116,15 @@ export interface TestHostRpcSocket {
 }
 
 function isRuntimeWorkspaceFileCommand(command: HostDaemonRpcCommand): boolean {
-  if (command.type === "host.list_files") {
-    return command.path.endsWith(path.join(".bb", "skills"));
+  if (command.type !== "host.list_files" && command.type !== "host.read_file") {
+    return false;
   }
-  if (command.type !== "host.read_file") return false;
+  const hostPath = command.path.replaceAll("\\", "/");
+  if (command.type === "host.list_files") {
+    return hostPath.endsWith(".bb/skills");
+  }
   return (
-    command.path.endsWith(path.join(".bb", "AGENTS.md")) ||
-    command.path.includes(`${path.sep}.bb${path.sep}skills${path.sep}`)
+    hostPath.endsWith(".bb/AGENTS.md") || hostPath.includes("/.bb/skills/")
   );
 }
 
@@ -281,6 +242,7 @@ function respondToProviderModelListCommand(
 
 function buildDefaultGitSourceInspectionResult(): HostDaemonOnlineRpcResult<"host.inspect_git_source"> {
   return {
+    isWorktree: false,
     checkout: {
       kind: "branch",
       branchName: "main",
@@ -327,12 +289,11 @@ export function createTestDaemonEventEnvelope(
 
 export function internalAuthHeaders(
   harness: TestAppHarness,
-  args: { hostId?: string; hostType?: HostType } = {},
+  args: { hostId?: string } = {},
 ): HeadersInit {
   const activeSessions = harness.db
     .select({
       hostId: hostDaemonSessions.hostId,
-      hostType: hostDaemonSessions.hostType,
     })
     .from(hostDaemonSessions)
     .where(eq(hostDaemonSessions.status, "active"))
@@ -343,7 +304,6 @@ export function internalAuthHeaders(
   return {
     authorization: `Bearer ${createTestDaemonHostKey({
       hostId: args.hostId ?? inferredHost?.hostId ?? "host-1",
-      hostType: args.hostType ?? inferredHost?.hostType ?? "persistent",
     })}`,
     "content-type": "application/json",
   };
@@ -380,6 +340,10 @@ export function registerTestHostRpcCapture(
     close() {},
     send(data) {
       const message = hostDaemonServerWsMessageSchema.parse(JSON.parse(data));
+      if (message.type === "machine.shutdown") {
+        deps.hub.unregisterDaemon(args.sessionId);
+        return;
+      }
       if (message.type !== "host-rpc.request") {
         return;
       }
@@ -403,6 +367,79 @@ export function registerTestHostRpcCapture(
         });
         return;
       }
+      if (
+        command.type === "environment.hook.run" ||
+        command.type === "environment.hook.cancel"
+      ) {
+        void Promise.resolve()
+          .then(() =>
+            command.type === "environment.hook.run"
+              ? args.onEnvironmentHook?.(command)
+              : args.onEnvironmentHookCancel?.(command.operationId),
+          )
+          .then(
+            (result) =>
+              deps.hub.recordHostOnlineRpcResponse({
+                message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+                  type: "host-rpc.response",
+                  requestId: message.requestId,
+                  commandType: command.type,
+                  ok: true,
+                  result:
+                    command.type === "environment.hook.cancel"
+                      ? (result ?? { status: "terminated" })
+                      : {},
+                }),
+                sessionId: args.sessionId,
+              }),
+            (error: unknown) =>
+              deps.hub.recordHostOnlineRpcResponse({
+                message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+                  type: "host-rpc.response",
+                  requestId: message.requestId,
+                  commandType: command.type,
+                  ok: false,
+                  errorCode: "setup_script_failed",
+                  errorMessage:
+                    error instanceof Error ? error.message : String(error),
+                }),
+                sessionId: args.sessionId,
+              }),
+          );
+        return;
+      }
+      if (
+        command.type === "plugin.host.call" &&
+        args.onPluginHostCall !== undefined
+      ) {
+        void args.onPluginHostCall(command).then(
+          (result) =>
+            deps.hub.recordHostOnlineRpcResponse({
+              message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+                type: "host-rpc.response",
+                requestId: message.requestId,
+                commandType: command.type,
+                ok: true,
+                result,
+              }),
+              sessionId: args.sessionId,
+            }),
+          (error: unknown) =>
+            deps.hub.recordHostOnlineRpcResponse({
+              message: hostDaemonOnlineRpcResponseMessageSchema.parse({
+                type: "host-rpc.response",
+                requestId: message.requestId,
+                commandType: command.type,
+                ok: false,
+                errorCode: "test_plugin_host_call_failed",
+                errorMessage:
+                  error instanceof Error ? error.message : String(error),
+              }),
+              sessionId: args.sessionId,
+            }),
+        );
+        return;
+      }
       if (respondToRuntimeWorkspaceFileCommand(deps, args, message)) {
         return;
       }
@@ -423,45 +460,6 @@ export function registerTestHostRpcCapture(
             result:
               args.gitBranchOptionsResult ??
               buildDefaultGitBranchOptionsResult(command.selectedBranch),
-          }),
-          sessionId: args.sessionId,
-        });
-        return;
-      }
-      if (command.type === "host.resolve_source") {
-        args.onResolveSource?.(command);
-        const environment = deps.db
-          .select()
-          .from(environments)
-          .where(
-            and(
-              eq(environments.hostId, args.hostId),
-              eq(environments.path, command.path),
-            ),
-          )
-          .limit(1)
-          .get();
-        const source = environment
-          ? getProjectSourceByHost(deps.db, environment.projectId, args.hostId)
-          : null;
-        const sourcePath =
-          source?.type === "local_path" ? source.path : command.path;
-        deps.hub.recordHostOnlineRpcResponse({
-          message: hostDaemonOnlineRpcResponseMessageSchema.parse({
-            type: "host-rpc.response",
-            requestId: message.requestId,
-            commandType: command.type,
-            ok: true,
-            result: args.sourceInspectionResult ?? {
-              repositoryPath: command.path,
-              repositoryIdentity: `${sourcePath}/.git`,
-              commit: "a".repeat(40),
-              tree: "b".repeat(40),
-              workflowPath: command.workflowPath,
-              workflowTree: "b".repeat(40),
-              head: "a".repeat(40),
-              clean: true,
-            },
           }),
           sessionId: args.sessionId,
         });
@@ -579,7 +577,7 @@ export async function reportQueuedCommandSuccess<
   harness: TestAppHarness,
   queued: QueuedCommand<TCommand>,
   result: QueuedCommandResult<TCommand>,
-  args: { hostId?: string; hostType?: HostType } = {},
+  args: { hostId?: string } = {},
 ): Promise<Response> {
   const sessionId = queued.row.sessionId;
   if (!sessionId) {
@@ -608,11 +606,34 @@ export async function reportQueuedCommandSuccess<
   return new Response(null, { status: 200 });
 }
 
+export async function reportNextEnvironmentAttachSuccess(
+  harness: TestAppHarness,
+  threadId: string,
+): Promise<void> {
+  const queued = await waitForQueuedCommand(
+    harness,
+    ({ command }) =>
+      command.type === "environment.attach" &&
+      command.initiator?.threadId === threadId,
+  );
+  if (queued.command.type !== "environment.attach") {
+    throw new Error("Expected environment.attach command");
+  }
+  await reportQueuedCommandSuccess(harness, queued, {
+    path: queued.command.path,
+    isGitRepo: true,
+    isWorktree: false,
+    branchName: "main",
+    defaultBranch: "main",
+    transcript: [],
+  });
+}
+
 export async function reportQueuedCommandError(
   harness: TestAppHarness,
   queued: QueuedCommand,
   args: { errorCode: string; errorMessage: string },
-  auth: { hostId?: string; hostType?: HostType } = {},
+  auth: { hostId?: string } = {},
 ): Promise<Response> {
   const sessionId = queued.row.sessionId;
   if (!sessionId) {

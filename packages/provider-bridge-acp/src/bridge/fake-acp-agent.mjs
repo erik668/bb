@@ -32,6 +32,8 @@
  *                              advertising a thought_level config option
  * - FAKE_ACP_SET_CONFIG_MODEL_ERROR=1
  *                            → fail session/set_config_option for model values
+ * - FAKE_ACP_SET_CONFIG_MODEL_ERROR_VALUE
+ *                            → fail session/set_config_option for one model
  * - FAKE_ACP_SET_CONFIG_FAST_ERROR=1
  *                            → fail session/set_config_option for Fast values
  * - FAKE_ACP_CURSOR_PARAMETERIZED_MODELS=1
@@ -57,18 +59,19 @@
  *                              session/fork responses
  * - FAKE_ACP_IGNORE_CANCEL=1 → never answer a prompt after session/cancel
  * - FAKE_ACP_READY_FILE      → written once the agent process is up
- * - FAKE_ACP_SIGNAL_FILE     → written with "SIGTERM" when the agent is reaped
  * - FAKE_ACP_WRITE_PATH      → target path for the "write-file" prompt
  * - FAKE_ACP_LAUNCH_LOG      → append one line per process launch (used to
  *                              count model-discovery spawns in cache/TTL tests)
  * - FAKE_ACP_PROMPT_LOG      → append one JSON-encoded prompt text per request
  * - FAKE_ACP_PROMPT_ERROR=1  → reject every session/prompt request
+ * - FAKE_ACP_GROK_CONTEXT=1  → advertise Grok model _meta.totalContextTokens
+ *                              and prompt-result _meta.usage
  * - FAKE_ACP_COMPACT_STOP_REASON
  *                            → stop reason returned for /compact
  */
 
 import { createInterface } from "node:readline";
-import { appendFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, writeFileSync } from "node:fs";
 
 const failLoad = process.env.FAKE_ACP_FAIL_LOAD === "1";
 const loadSession = process.env.FAKE_ACP_LOAD_SESSION === "1" || failLoad;
@@ -79,11 +82,14 @@ const usageSessionId = process.env.FAKE_ACP_USAGE_SESSION_ID;
 const modelConfig = process.env.FAKE_ACP_MODEL_CONFIG === "1";
 const modelsField = process.env.FAKE_ACP_MODELS_FIELD === "1";
 const thoughtLevelConfig = process.env.FAKE_ACP_THOUGHT_LEVEL_CONFIG === "1";
+const grokContext = process.env.FAKE_ACP_GROK_CONTEXT === "1";
 const unmappedReasoningConfig =
   process.env.FAKE_ACP_UNMAPPED_REASONING_CONFIG === "1";
 const acceptNativeReasoning =
   process.env.FAKE_ACP_ACCEPT_NATIVE_REASONING === "1";
 const setConfigModelError = process.env.FAKE_ACP_SET_CONFIG_MODEL_ERROR === "1";
+const setConfigModelErrorValue =
+  process.env.FAKE_ACP_SET_CONFIG_MODEL_ERROR_VALUE;
 const setConfigFastError = process.env.FAKE_ACP_SET_CONFIG_FAST_ERROR === "1";
 const cursorParameterizedModels =
   process.env.FAKE_ACP_CURSOR_PARAMETERIZED_MODELS === "1";
@@ -121,6 +127,7 @@ const fakeModels = [
 ];
 
 let activePromptId = null;
+let stuckAfterCancel = false;
 let nextAgentRequestId = 1000;
 let selectedModel = "fake/default";
 let selectedEffort = "none";
@@ -143,19 +150,11 @@ for (let i = fakeModels.length; i < modelCount; i += 1) {
 }
 
 process.on("SIGTERM", () => {
-  if (process.env.FAKE_ACP_SIGNAL_FILE) {
-    const signalFile = process.env.FAKE_ACP_SIGNAL_FILE;
-    const stagedSignalFile = `${signalFile}.${process.pid}.tmp`;
-    // The final path is the test's completion boundary: publish it only after
-    // the marker bytes are complete.
-    writeFileSync(stagedSignalFile, "SIGTERM\n");
-    renameSync(stagedSignalFile, signalFile);
-  }
   process.exit(0);
 });
 
 if (process.env.FAKE_ACP_READY_FILE) {
-  writeFileSync(process.env.FAKE_ACP_READY_FILE, "ready\n");
+  writeFileSync(process.env.FAKE_ACP_READY_FILE, String(process.pid));
 }
 
 if (process.env.FAKE_ACP_LAUNCH_LOG) {
@@ -321,12 +320,13 @@ function configState() {
         name: model.name,
       })),
     };
-  } else if (modelsField) {
+  } else if (modelsField || grokContext) {
     state.models = {
       currentModelId: selectedModel,
       availableModels: fakeModels.map((model) => ({
         modelId: model.value,
         name: model.name,
+        ...(grokContext ? { _meta: { totalContextTokens: 500_000 } } : {}),
       })),
     };
   }
@@ -413,6 +413,15 @@ function captureMcpServers(message) {
 }
 
 async function handlePrompt(message) {
+  if (stuckAfterCancel) {
+    notifyUpdate(messageChunk("Queued for the next turn. (1 queued)"));
+    send({
+      jsonrpc: "2.0",
+      id: message.id,
+      result: { stopReason: "end_turn" },
+    });
+    return;
+  }
   activePromptId = message.id;
   const text = promptText(message.params?.prompt);
   if (process.env.FAKE_ACP_PROMPT_LOG) {
@@ -515,11 +524,14 @@ async function handlePrompt(message) {
     notifyUpdate(messageChunk(`permission:${outcome}`));
   } else if (text.includes("write-file")) {
     try {
-      await requestClient("fs/write_text_file", {
+      const result = await requestClient("fs/write_text_file", {
         sessionId: activeSessionId,
         path: process.env.FAKE_ACP_WRITE_PATH,
         content: "hello from agent\n",
       });
+      if (!result || typeof result !== "object" || Array.isArray(result)) {
+        throw new Error("Invalid fs/write_text_file response");
+      }
       notifyUpdate(messageChunk("write:ok"));
     } catch {
       notifyUpdate(messageChunk("write:denied"));
@@ -532,6 +544,15 @@ async function handlePrompt(message) {
   } else if (text.includes("slow")) {
     notifyUpdate(messageChunk(`echo:${text}`));
     await sleep(300);
+  } else if (text.includes("echo-question-env")) {
+    notifyUpdate(
+      messageChunk(
+        JSON.stringify({
+          client: process.env.OPENCODE_CLIENT,
+          question: process.env.OPENCODE_ENABLE_QUESTION_TOOL,
+        }),
+      ),
+    );
   } else if (text.includes("echo-argv")) {
     // Lets bridge tests assert the launch args (e.g. the --model pin).
     notifyUpdate(messageChunk(`argv:${process.argv.slice(2).join(" ")}`));
@@ -572,7 +593,12 @@ async function handlePrompt(message) {
     send({
       jsonrpc: "2.0",
       id: message.id,
-      result: { stopReason },
+      result: {
+        stopReason,
+        ...(grokContext
+          ? { _meta: { usage: { inputTokens: 17_504, totalTokens: 17_531 } } }
+          : {}),
+      },
     });
   }
 }
@@ -739,7 +765,7 @@ async function handleMessage(message) {
       const configId = message.params?.configId;
       const value = message.params?.value;
       if (configId === "model") {
-        if (setConfigModelError) {
+        if (setConfigModelError || value === setConfigModelErrorValue) {
           send({
             jsonrpc: "2.0",
             id: message.id,
@@ -838,6 +864,19 @@ async function handleMessage(message) {
       if (activePromptId !== null) {
         const id = activePromptId;
         activePromptId = null;
+        if (process.env.FAKE_ACP_CANCEL_ERROR === "1") {
+          stuckAfterCancel = true;
+          send({
+            jsonrpc: "2.0",
+            id,
+            error: {
+              code: -32603,
+              message:
+                "Internal error: 'NoneType' object has no attribute 'startswith'",
+            },
+          });
+          return;
+        }
         send({ jsonrpc: "2.0", id, result: { stopReason: "cancelled" } });
       }
       return;

@@ -1,11 +1,8 @@
 import {
-  availableModelSchema,
   clientTurnRequestIdSchema,
-  conditionalThreadStopOutcomeSchema,
   dynamicToolSchema,
   instructionModeSchema,
   promptInputSchema,
-  threadStopExpectedTurnIdSchema,
 } from "@bb/domain";
 import { z } from "zod";
 import { bridgeExecutionOptionsSchema } from "./execution-options.js";
@@ -21,7 +18,6 @@ export const BRIDGE_REQUEST_METHODS = {
   threadResume: "thread/resume",
   threadFork: "thread/fork",
   threadStop: "thread/stop",
-  experimental_threadStopIfCurrentTurn: "thread/stop-if-current-turn",
   threadDiscard: "thread/discard",
   threadNameSet: "thread/name/set",
   threadArchive: "thread/archive",
@@ -75,24 +71,6 @@ export const threadStopParamsSchema = z
     activeTurnId: z.string().min(1).nullable(),
   })
   .passthrough();
-
-export const experimental_threadStopIfCurrentTurnParamsSchema = z.strictObject({
-  threadId: z.string().min(1),
-  providerThreadId: z.string().min(1),
-  expectedTurnId: threadStopExpectedTurnIdSchema,
-});
-
-export type ExperimentalThreadStopIfCurrentTurnParams = z.infer<
-  typeof experimental_threadStopIfCurrentTurnParamsSchema
->;
-
-export const experimental_threadStopIfCurrentTurnResultSchema = z.strictObject({
-  condition: conditionalThreadStopOutcomeSchema,
-});
-
-export type ExperimentalThreadStopIfCurrentTurnResult = z.infer<
-  typeof experimental_threadStopIfCurrentTurnResultSchema
->;
 
 const threadRefParams = z
   .object({
@@ -160,14 +138,3 @@ export const threadIdentityResultSchema = z
     sessionRestorable: z.boolean().optional(),
   })
   .passthrough();
-
-export type ThreadIdentityResult = z.infer<typeof threadIdentityResultSchema>;
-
-export const modelListResultSchema = z
-  .object({
-    models: z.array(availableModelSchema),
-    selectedOnlyModels: z.array(availableModelSchema).default([]),
-  })
-  .passthrough();
-
-export type ModelListResult = z.infer<typeof modelListResultSchema>;

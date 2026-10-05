@@ -1,11 +1,13 @@
 import type { ReactNode } from "react";
 import type { Host } from "@bb/domain";
+import type { SystemAppUpdateStatus } from "@bb/server-contract";
 import { UPDATE_ACTION_ICON } from "@bb/domain/update-state";
 import {
   HOST_DAEMON_PROTOCOL_VERSION,
   type ProviderCliKey,
 } from "@bb/host-daemon-contract";
 import type { ProviderCliIssue } from "@/components/provider-cli/provider-cli-install";
+import type { ProviderCliInstallFailure } from "@/components/provider-cli/provider-cli-install-store";
 import type { UpdateInventoryMachine } from "@/hooks/useUpdateInventory";
 import { SettingsStoryChrome } from "../../../.ladle/story-settings-chrome";
 import {
@@ -43,6 +45,22 @@ const NPM_VERSION = {
   updateAvailable: false,
   isDevelopment: false,
   upgradeCommand: "npx bb-app@latest",
+};
+
+const IN_APP_UPDATE: SystemAppUpdateStatus = {
+  activity: { phase: "idle" },
+  available: {
+    channel: "latest",
+    commit: null,
+    commitCount: null,
+    subjects: [],
+    version: "0.39.0",
+  },
+  blocked: null,
+  current: { commit: null, version: "0.38.0" },
+  lastResult: null,
+  runningThreadCount: 0,
+  support: { kind: "supported", mode: "npm" },
 };
 
 const DESKTOP_UPDATE = {
@@ -145,19 +163,58 @@ export function ChangelogPreviewExperiment() {
   );
 }
 
+function failedProviderMachine(hostId: string): UpdateInventoryMachine {
+  return machineOf({
+    host: makeHost({ id: hostId, name: "Old Air" }),
+    issues: [
+      updateIssue("codex", "0.157.0", "0.159.3"),
+      updateIssue("claude-code", "2.1.282", "2.1.287"),
+    ],
+  });
+}
+
+function failedProviderFailures(
+  machine: UpdateInventoryMachine,
+): ReadonlyMap<string, ProviderCliInstallFailure> {
+  return new Map(
+    machine.issues.map((issue, index) => [
+      `${machine.host.id}:${issue.provider}`,
+      {
+        issueFingerprint: issue.fingerprint,
+        kind: index === 0 ? "command" : "interrupted",
+        logDialogState: {
+          displayName: issue.status.displayName,
+          log: `$ ${issue.status.executableName} update\n`,
+          message:
+            index === 0
+              ? "Command exited with code 1"
+              : "HTTP 504: bb connect: timed out waiting for the tunnel client",
+          title: `${issue.status.displayName} update log`,
+        },
+      },
+    ]),
+  );
+}
+
 function StoryMachineSection({
   machine,
   app = false,
   appUpdate = false,
+  failuresByJobKey,
 }: {
   machine: UpdateInventoryMachine;
   app?: boolean;
   appUpdate?: boolean;
+  failuresByJobKey?: ReadonlyMap<string, ProviderCliInstallFailure>;
 }) {
   const showDaemon =
     machine.canRetryDaemonUpdate || machine.host.status !== "connected";
   return (
-    <MachineUpdatesSection machine={machine} isThisMachine={false}>
+    <MachineUpdatesSection
+      machine={machine}
+      isThisMachine={false}
+      showServerBadge={false}
+    >
       {app ? (
         <BbAppUpdateRows
           systemVersion={appUpdate ? undefined : NPM_VERSION}
@@ -187,6 +244,7 @@ function StoryMachineSection({
         machine={machine}
         runningJobKey={null}
         queuedJobKeys={NO_JOBS}
+        failuresByJobKey={failuresByJobKey}
         onStartInstall={noop}
         onOpenProvider={noop}
       />
@@ -215,7 +273,11 @@ function StoryAppState({ children }: { children: ReactNode }) {
     isPrimary: true,
   });
   return (
-    <MachineUpdatesSection machine={machine} isThisMachine={false}>
+    <MachineUpdatesSection
+      machine={machine}
+      isThisMachine={false}
+      showServerBadge={false}
+    >
       {children}
     </MachineUpdatesSection>
   );
@@ -275,6 +337,7 @@ export function UpdateStates() {
     host: makeHost({ id: "state-provider-installing", name: "studio-mac" }),
     issues: [updateIssue("claude-code", "2.0.1", "2.1.0")],
   });
+  const providerFailed = failedProviderMachine("state-provider-failed");
   const providerManual = machineOf({
     host: makeHost({ id: "state-provider-manual", name: "homelab" }),
     issues: [manualUpdateIssue("codex", "0.145.0", "0.146.0")],
@@ -381,6 +444,119 @@ export function UpdateStates() {
         </State>
 
         <State
+          name="In-app update available"
+          note="bb runs under the update shim, so it can download the update and restart itself."
+        >
+          <StoryAppState>
+            <BbAppUpdateRows
+              systemVersion={NPM_VERSION}
+              appUpdate={IN_APP_UPDATE}
+              desktopInfo={null}
+              isDesktop={false}
+              onApplyAppUpdate={noop}
+              onRelaunchDesktop={null}
+              onRetryDesktop={null}
+              onShowAppUpdateResult={noop}
+            />
+          </StoryAppState>
+        </State>
+
+        <State
+          name="In-app update downloading"
+          note="The launcher is installing the new version while bb keeps running."
+        >
+          <StoryAppState>
+            <BbAppUpdateRows
+              systemVersion={NPM_VERSION}
+              appUpdate={{
+                ...IN_APP_UPDATE,
+                activity: {
+                  output: [],
+                  phase: "preparing",
+                  startedAt: "2026-09-23T00:00:00.000Z",
+                  step: "Downloading bb-app 0.39.0",
+                  targetVersion: "0.39.0",
+                },
+              }}
+              desktopInfo={null}
+              isDesktop={false}
+              onApplyAppUpdate={noop}
+              onRelaunchDesktop={null}
+              onRetryDesktop={null}
+              onShowAppUpdateResult={noop}
+            />
+          </StoryAppState>
+        </State>
+
+        <State
+          name="In-app update failed"
+          note="The download failed, bb kept running the current version, and the row keeps the details until dismissed."
+        >
+          <StoryAppState>
+            <BbAppUpdateRows
+              systemVersion={NPM_VERSION}
+              appUpdate={{
+                ...IN_APP_UPDATE,
+                lastResult: {
+                  acknowledged: false,
+                  finishedAt: "2026-09-23T00:00:00.000Z",
+                  from: { commit: null, version: "0.38.0" },
+                  id: "update-1",
+                  logTail: ["npm error code E404"],
+                  message: "npm install failed",
+                  outcome: "failed",
+                  phase: "install",
+                  to: { commit: null, version: "0.39.0" },
+                },
+              }}
+              desktopInfo={null}
+              isDesktop={false}
+              onApplyAppUpdate={noop}
+              onRelaunchDesktop={null}
+              onRetryDesktop={null}
+              onShowAppUpdateResult={noop}
+            />
+          </StoryAppState>
+        </State>
+
+        <State
+          name="Source checkout blocked"
+          note="A pnpm start checkout explains why it cannot fast-forward instead of offering a button."
+        >
+          <StoryAppState>
+            <BbAppUpdateRows
+              systemVersion={NPM_VERSION}
+              appUpdate={{
+                ...IN_APP_UPDATE,
+                available: {
+                  channel: "main",
+                  commit: "4f1c2e9a7b0d3c5e8f1a2b3c4d5e6f7a8b9c0d1e",
+                  commitCount: 12,
+                  subjects: ["Fix sidebar flicker"],
+                  version: "0.38.0",
+                },
+                blocked: {
+                  message:
+                    "The working tree has uncommitted changes. Commit or stash them to update from the app.",
+                  reason: "uncommitted-changes",
+                },
+                current: {
+                  commit: "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a0b",
+                  version: "0.38.0",
+                },
+                support: { kind: "supported", mode: "source" },
+              }}
+              desktopInfo={null}
+              isDesktop={false}
+              onApplyAppUpdate={noop}
+              onRelaunchDesktop={null}
+              onRetryDesktop={null}
+              onShowAppUpdateResult={noop}
+            />
+          </StoryAppState>
+        </State>
+
+        <State
           name="Downloading"
           note="The desktop shell is fetching the update automatically."
         >
@@ -475,11 +651,32 @@ export function UpdateStates() {
           <MachineUpdatesSection
             machine={providerInstalling}
             isThisMachine={false}
+            showServerBadge={false}
           >
             <MachineUpdatesRows
               machine={providerInstalling}
               runningJobKey="state-provider-installing:claude-code"
               queuedJobKeys={NO_JOBS}
+              onStartInstall={noop}
+              onOpenProvider={noop}
+            />
+          </MachineUpdatesSection>
+        </State>
+
+        <State
+          name="Update failed"
+          note="The red warning marks the failure and opens the log; Retry is the recovery."
+        >
+          <MachineUpdatesSection
+            machine={providerFailed}
+            isThisMachine={false}
+            showServerBadge={false}
+          >
+            <MachineUpdatesRows
+              machine={providerFailed}
+              runningJobKey={null}
+              queuedJobKeys={NO_JOBS}
+              failuresByJobKey={failedProviderFailures(providerFailed)}
               onStartInstall={noop}
               onOpenProvider={noop}
             />
@@ -541,6 +738,7 @@ export function MultiMachine() {
     }),
     canRetryDaemonUpdate: true,
   });
+  const oldAir = failedProviderMachine("host-old-air");
 
   return (
     <StoryPage>
@@ -560,6 +758,10 @@ export function MultiMachine() {
       >
         <StoryMachineSection machine={workstation} app appUpdate />
         <StoryMachineSection machine={studioMac} />
+        <StoryMachineSection
+          machine={oldAir}
+          failuresByJobKey={failedProviderFailures(oldAir)}
+        />
         <StoryMachineSection machine={ciRunner} />
       </MachineUpdatesFleetSection>
     </StoryPage>

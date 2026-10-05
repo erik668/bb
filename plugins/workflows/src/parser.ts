@@ -7,10 +7,9 @@ import {
 import { ancestor } from "acorn-walk";
 import type { JsonObject, JsonValue, ParsedWorkflow } from "./types.js";
 import {
+  AGENT_OPTION_KEYS,
   assertValidJsonSchema,
   assertValidWorkflowSourceText,
-  parseContextProfile,
-  parseContextRequirement,
 } from "./validation.js";
 import { canonicalizeJson } from "./cache.js";
 
@@ -68,13 +67,7 @@ function literalValue(node: Expression, path: string): JsonValue {
         ) {
           throw new Error(`${path} must use plain literal properties`);
         }
-        const key =
-          property.key.type === "Identifier"
-            ? property.key.name
-            : property.key.type === "Literal" &&
-                typeof property.key.value === "string"
-              ? property.key.value
-              : null;
+        const key = propertyName(property);
         if (key === null) throw new Error(`${path} contains an invalid key`);
         if (seen.has(key)) {
           throw new Error(
@@ -126,18 +119,6 @@ function inspectAgentOptions(
   node: ObjectExpression,
   selections: LiteralAgentSelection[],
 ): void {
-  const allowed = new Set([
-    "provider",
-    "model",
-    "reasoningLevel",
-    "outputSchema",
-    "schema",
-    "contextRequirement",
-    "contextProfile",
-    "title",
-    "label",
-    "phase",
-  ]);
   const properties = new Map<string, Expression>();
   for (const property of node.properties) {
     if (
@@ -150,7 +131,7 @@ function inspectAgentOptions(
     }
     const key = propertyName(property);
     if (key === null) throw new Error("agent options contain an invalid key");
-    if (!allowed.has(key)) {
+    if (!AGENT_OPTION_KEYS.has(key)) {
       throw new Error(`Unknown agent option ${JSON.stringify(key)}`);
     }
     if (properties.has(key)) {
@@ -219,29 +200,6 @@ function inspectAgentOptions(
     throw new Error(
       "agent options.outputSchema and agent options.schema must be structurally identical when both are provided",
     );
-  }
-  const contextRequirement = properties.get("contextRequirement");
-  if (contextRequirement !== undefined) {
-    let literal: JsonValue | undefined;
-    try {
-      literal = literalValue(
-        contextRequirement,
-        "agent options.contextRequirement",
-      );
-    } catch {
-      literal = undefined;
-    }
-    if (literal !== undefined) parseContextRequirement(literal);
-  }
-  const contextProfile = properties.get("contextProfile");
-  if (contextProfile !== undefined) {
-    let literal: JsonValue | undefined;
-    try {
-      literal = literalValue(contextProfile, "agent options.contextProfile");
-    } catch {
-      literal = undefined;
-    }
-    if (literal !== undefined) parseContextProfile(literal);
   }
   for (const key of ["title", "label", "phase"] as const) {
     const expression = properties.get(key);
@@ -331,11 +289,7 @@ function readMetadata(node: ObjectExpression): ParsedWorkflow["metadata"] {
     let detail: string | null;
     if (phase.detail === undefined) {
       detail = null;
-    } else if (typeof phase.detail !== "string") {
-      throw new Error(
-        `meta.phases[${index}].detail must be a non-empty string when provided`,
-      );
-    } else if (phase.detail.trim() === "") {
+    } else if (typeof phase.detail !== "string" || phase.detail.trim() === "") {
       throw new Error(
         `meta.phases[${index}].detail must be a non-empty string when provided`,
       );

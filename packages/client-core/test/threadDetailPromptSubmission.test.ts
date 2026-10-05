@@ -241,6 +241,36 @@ describe("threadDetailPromptSubmission", () => {
     }
     expect(
       canSubmitFollowUpShortcut({
+        hasPromptDraftInput: false,
+        isFollowUpSubmitting: false,
+        isQueueMutationPending: false,
+        queuedMessageCount: 1,
+        runtimeDisplayStatus: "idle",
+        submitModeKind: "ready",
+      }),
+    ).toBe(true);
+    expect(
+      canSubmitFollowUpShortcut({
+        hasPromptDraftInput: true,
+        isFollowUpSubmitting: false,
+        isQueueMutationPending: false,
+        queuedMessageCount: 0,
+        runtimeDisplayStatus: "waiting-for-host",
+        submitModeKind: "queue",
+      }),
+    ).toBe(true);
+    expect(
+      canSubmitFollowUpShortcut({
+        hasPromptDraftInput: false,
+        isFollowUpSubmitting: false,
+        isQueueMutationPending: false,
+        queuedMessageCount: 1,
+        runtimeDisplayStatus: "waiting-for-host",
+        submitModeKind: "queue",
+      }),
+    ).toBe(false);
+    expect(
+      canSubmitFollowUpShortcut({
         hasPromptDraftInput: true,
         isFollowUpSubmitting: false,
         isQueueMutationPending: false,
@@ -282,7 +312,6 @@ describe("threadDetailPromptSubmission", () => {
 
     const queueableStatuses: ThreadRuntimeDisplayStatus[] = [
       "active",
-      "host-reconnecting",
       "provisioning",
       "starting",
       "waiting-for-host",
@@ -319,7 +348,7 @@ describe("threadDetailPromptSubmission", () => {
     }
   });
 
-  it("keeps stopping and pending interactions blocked before starting stop-only mode", () => {
+  it("offers a stop-free queue mode while a stop is in flight, and keeps pending interactions blocked", () => {
     const onStop = () => undefined;
     expect(
       buildFollowUpSubmitMode({
@@ -330,7 +359,7 @@ describe("threadDetailPromptSubmission", () => {
         onStop,
         runtimeDisplayStatus: "starting",
       }),
-    ).toEqual({ kind: "blocked", reason: "stopping" });
+    ).toEqual({ kind: "queue-while-stopping" });
     expect(
       buildFollowUpSubmitMode({
         hasPendingInteraction: true,

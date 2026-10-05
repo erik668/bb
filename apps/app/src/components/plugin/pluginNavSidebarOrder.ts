@@ -9,6 +9,7 @@ export const BUILT_IN_SIDEBAR_NAVIGATION_KEYS = {
   newThread: "__bb__/new-thread",
   searchThreads: "__bb__/search-threads",
   extensions: "__bb__/extensions",
+  skills: "__bb__/skills",
   automations: "__bb__/automations",
 } as const;
 
@@ -20,47 +21,55 @@ export const DEFAULT_BUILT_IN_SIDEBAR_NAVIGATION_ORDER = [
   BUILT_IN_SIDEBAR_NAVIGATION_KEYS.newThread,
   BUILT_IN_SIDEBAR_NAVIGATION_KEYS.searchThreads,
   BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions,
+  BUILT_IN_SIDEBAR_NAVIGATION_KEYS.skills,
   BUILT_IN_SIDEBAR_NAVIGATION_KEYS.automations,
 ] as const;
+
+export function seedSkillsNavigationPreference(
+  order: readonly string[],
+  visibleKeys: readonly string[] | null,
+): { order: string[]; visibleKeys: string[] | null } {
+  const { extensions, skills } = BUILT_IN_SIDEBAR_NAVIGATION_KEYS;
+  const pluginsIndex = order.indexOf(extensions);
+  const nextOrder = [...order];
+  const nextVisibleKeys = visibleKeys === null ? null : [...visibleKeys];
+  if (pluginsIndex !== -1 && !order.includes(skills)) {
+    nextOrder.splice(pluginsIndex + 1, 0, skills);
+    if (
+      nextVisibleKeys?.includes(extensions) &&
+      !nextVisibleKeys.includes(skills)
+    ) {
+      nextVisibleKeys.splice(
+        nextVisibleKeys.indexOf(extensions) + 1,
+        0,
+        skills,
+      );
+    }
+  }
+  return { order: nextOrder, visibleKeys: nextVisibleKeys };
+}
 
 export function getPluginNavPanelKey(panel: PluginNavPanelIdentity): string {
   return `${panel.pluginId}/${panel.id}`;
 }
 
-interface ArrangePluginNavPanelsArgs<TPanel extends PluginNavPanelIdentity> {
-  panels: readonly TPanel[];
-  storedOrder: readonly string[];
-}
-
-interface ArrangedPluginNavPanels<TPanel extends PluginNavPanelIdentity> {
-  ordered: TPanel[];
-  normalizedOrder: string[];
-}
-
 interface ArrangePluginNavPanelPreferencesArgs<
   TPanel extends PluginNavPanelIdentity,
-> extends ArrangePluginNavPanelsArgs<TPanel> {
+> {
+  panels: readonly TPanel[];
+  storedOrder: readonly string[];
   storedVisibleKeys: readonly string[] | null;
   defaultHiddenKeys: readonly string[];
 }
 
 interface ArrangedPluginNavPanelPreferences<
   TPanel extends PluginNavPanelIdentity,
-> extends ArrangedPluginNavPanels<TPanel> {
+> {
+  ordered: TPanel[];
+  normalizedOrder: string[];
   visible: TPanel[];
   visibleKeys: string[];
   normalizedVisibleKeys: string[] | null;
-}
-
-export function arrangePluginNavPanels<TPanel extends PluginNavPanelIdentity>({
-  panels,
-  storedOrder,
-}: ArrangePluginNavPanelsArgs<TPanel>): ArrangedPluginNavPanels<TPanel> {
-  return arrangeByStoredOrder({
-    items: panels,
-    getId: getPluginNavPanelKey,
-    storedOrder,
-  });
 }
 
 export function arrangePluginNavPanelPreferences<
@@ -71,8 +80,9 @@ export function arrangePluginNavPanelPreferences<
   storedVisibleKeys,
   defaultHiddenKeys,
 }: ArrangePluginNavPanelPreferencesArgs<TPanel>): ArrangedPluginNavPanelPreferences<TPanel> {
-  const { ordered, normalizedOrder } = arrangePluginNavPanels({
-    panels,
+  const { ordered, normalizedOrder } = arrangeByStoredOrder({
+    items: panels,
+    getId: getPluginNavPanelKey,
     storedOrder,
   });
   const normalizedVisibleKeys =
@@ -112,18 +122,4 @@ export function togglePluginNavPanelVisibility(
     return normalized.includes(key) ? normalized : [...normalized, key];
   }
   return normalized.filter((item) => item !== key);
-}
-
-export function migrateLegacyHiddenPluginNavPanelOrder(
-  order: readonly string[],
-  hiddenKeys: readonly string[],
-): string[] {
-  const uniqueOrder = [
-    ...new Set([...order, ...hiddenKeys].filter((key) => key.length > 0)),
-  ];
-  const hidden = new Set(hiddenKeys);
-  return [
-    ...uniqueOrder.filter((key) => !hidden.has(key)),
-    ...uniqueOrder.filter((key) => hidden.has(key)),
-  ];
 }

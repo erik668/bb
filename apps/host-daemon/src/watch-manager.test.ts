@@ -32,7 +32,6 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
   let sharedGitRefsFingerprintError: Error | null = null;
   const workspace = {
     path,
-    managed: false,
     isGitRepo,
     isWorktree: false,
     getDefaultBranch: vi.fn(async () => "main"),
@@ -72,12 +71,10 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
     diffPatch: vi.fn(async () => []),
     getPullRequest: vi.fn(async () => ({ outcome: "none" as const })),
     runPullRequestAction: vi.fn(async () => undefined),
-    listFiles: vi.fn(async () => []),
     commit: vi.fn(async () => ({
       commitSha: "commit-1",
       commitSubject: "commit",
     })),
-    reset: vi.fn(async () => undefined),
     setLocalStateFingerprint(value: GetLocalStateFingerprintResult) {
       localStateFingerprint = value;
     },
@@ -90,7 +87,6 @@ function createFakeWorkspace(path: string, isGitRepo = true) {
     setSharedGitRefsFingerprintError(error: Error | null) {
       sharedGitRefsFingerprintError = error;
     },
-    destroy: vi.fn(async () => undefined),
   } satisfies HostWorkspace & {
     setLocalStateFingerprint: (value: GetLocalStateFingerprintResult) => void;
     setLocalStateFingerprintError: (error: Error | null) => void;
@@ -148,7 +144,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -187,7 +182,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -226,7 +220,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -239,7 +232,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -294,7 +286,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -355,7 +346,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -431,7 +421,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -470,7 +459,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -499,7 +487,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -518,7 +505,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -552,7 +538,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -575,90 +560,6 @@ describe("WatchManager", () => {
     expect(watchWorkspace).toHaveBeenCalledTimes(1);
     expect(stopWatchingStatus).toHaveBeenCalledTimes(1);
     expect(manager.workspaceWatchCount()).toBe(0);
-  });
-
-  it("waits for pending watch startup before removing an environment watch", async () => {
-    const stopWatchingStatus = vi.fn(() => undefined);
-    const workspace = createFakeWorkspace("/tmp/env-watch");
-    const pendingWorkspace = createDeferredPromise<HostWorkspace>();
-    const { hostWatcher, watchWorkspace } = createFakeHostWatcher({
-      watchWorkspaceImplementation: () => stopWatchingStatus,
-    });
-    const manager = new WatchManager({
-      hostWatcher,
-      provisionWorkspace: vi.fn(() => pendingWorkspace.promise),
-    });
-
-    const start = manager.replaceWatchSet({
-      generation: 1,
-      workspaceTargets: [
-        {
-          environmentId: "env-watch",
-          workspaceContext: {
-            workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
-          },
-        },
-      ],
-      threadStorageTargets: [],
-    });
-    const remove = manager.removeEnvironmentWorkspaceWatch("env-watch");
-
-    await Promise.resolve();
-    expect(stopWatchingStatus).not.toHaveBeenCalled();
-
-    pendingWorkspace.resolve(workspace);
-    await Promise.all([start, remove]);
-
-    expect(watchWorkspace).toHaveBeenCalledTimes(1);
-    expect(stopWatchingStatus).toHaveBeenCalledTimes(1);
-    expect(manager.workspaceWatchCount()).toBe(0);
-  });
-
-  it("reports shared git ref changes separately from local workspace changes", async () => {
-    let watchWorkspaceArgs: WatchWorkspaceArgs | undefined;
-    const workspace = createFakeWorkspace("/tmp/env-watch");
-    const { hostWatcher } = createFakeHostWatcher({
-      watchWorkspaceImplementation: (args) => {
-        watchWorkspaceArgs = args;
-        return () => undefined;
-      },
-    });
-    const onWorkspaceStatusChanged = vi.fn();
-    const manager = new WatchManager({
-      hostWatcher,
-      provisionWorkspace: vi.fn(async () => workspace),
-      onWorkspaceStatusChanged,
-    });
-
-    await manager.replaceWatchSet({
-      generation: 1,
-      workspaceTargets: [
-        {
-          environmentId: "env-watch",
-          workspaceContext: {
-            workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
-          },
-        },
-      ],
-      threadStorageTargets: [],
-    });
-    workspace.setSharedGitRefsFingerprint("refs:/tmp/env-watch:changed");
-
-    watchWorkspaceArgs?.onChange({
-      changedPaths: ["/tmp/shared/.git/refs/heads/main"],
-      changeKinds: ["shared-git-refs-changed"],
-      kind: "workspace-status-changed",
-      environmentId: "env-watch",
-    });
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(onWorkspaceStatusChanged).toHaveBeenCalledWith({
-      changeKinds: ["git-refs-changed"],
-      environmentId: "env-watch",
-    });
   });
 
   it("reports shared git ref changes from single-dir git watcher events", async () => {
@@ -684,7 +585,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -732,7 +632,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -805,7 +704,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],
@@ -872,7 +770,6 @@ describe("WatchManager", () => {
           environmentId: "env-watch",
           workspaceContext: {
             workspacePath: "/tmp/env-watch",
-            workspaceProvisionType: "unmanaged",
           },
         },
       ],

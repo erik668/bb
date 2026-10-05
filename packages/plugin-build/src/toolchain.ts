@@ -1,19 +1,13 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import {
-  mkdir,
-  readFile,
-  realpath,
-  rename,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname, isAbsolute, join, relative } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { omitNpmScriptPolicyEnv } from "@bb/process-utils";
+import { resolveBundledNpmCli } from "./npm-cli.js";
 
 const run = promisify(execFile);
 
@@ -50,26 +44,6 @@ function pinKey(): string {
 export function toolchainCacheDir(baseDir: string): string {
   const key = Object.values(PLUGIN_TOOLCHAIN_PINS).join("-");
   return join(baseDir, `toolchain-${key}`);
-}
-
-export function pluginBuildCacheContract(baseDir: string): {
-  version: 1;
-  pins: typeof PLUGIN_TOOLCHAIN_PINS;
-  cacheDir: string;
-  marker: { pins: string };
-} {
-  return {
-    version: 1,
-    pins: { ...PLUGIN_TOOLCHAIN_PINS },
-    cacheDir: toolchainCacheDir(baseDir),
-    marker: { pins: pinKey() },
-  };
-}
-
-export async function inspectCachedPluginBuildToolchain(
-  baseDir: string,
-): Promise<PluginBuildToolchain | null> {
-  return readCachedToolchain(toolchainCacheDir(baseDir));
 }
 
 function packageDir(require: NodeRequire, name: string): string | null {
@@ -141,9 +115,7 @@ function resolveLocalToolchain(): PluginBuildToolchain | null {
   return toolchainFrom(createRequire(import.meta.url));
 }
 
-async function readCachedToolchain(
-  dir: string,
-): Promise<PluginBuildToolchain | null> {
+async function isInstalled(dir: string): Promise<boolean> {
   try {
     const raw = await readFile(join(dir, ".bb-toolchain.json"), "utf8");
     const parsed: unknown = JSON.parse(raw);
@@ -152,36 +124,12 @@ async function readCachedToolchain(
       parsed === null ||
       (parsed as { pins?: unknown }).pins !== pinKey()
     ) {
-      return null;
+      return false;
     }
-    const root = await realpath(dir);
-    for (const name of Object.keys(PLUGIN_TOOLCHAIN_PINS)) {
-      if (!(await isContainedRealPath(root, join(dir, "node_modules", name))))
-        return null;
-    }
-    const toolchain = toolchainFrom(createRequire(join(dir, "noop.js")));
-    if (toolchain === null) return null;
-    for (const [key, value] of Object.entries(toolchain)) {
-      const path = key === "tailwindCssDir" ? value : fileURLToPath(value);
-      if (!(await isContainedRealPath(root, path))) return null;
-    }
-    return toolchain;
   } catch {
-    return null;
+    return false;
   }
-}
-
-async function isContainedRealPath(
-  root: string,
-  path: string,
-): Promise<boolean> {
-  const within = relative(root, await realpath(path));
-  return (
-    within !== ".." &&
-    !within.startsWith("../") &&
-    !within.startsWith("..\\") &&
-    !isAbsolute(within)
-  );
+  return toolchainFrom(createRequire(join(dir, "noop.js"))) !== null;
 }
 
 export async function resolvePluginBuildToolchain(
@@ -198,8 +146,10 @@ export async function resolvePluginBuildToolchain(
   }
 
   const dir = toolchainCacheDir(baseDir);
-  const cached = await inspectCachedPluginBuildToolchain(baseDir);
-  if (cached !== null) return cached;
+  if (await isInstalled(dir)) {
+    const cached = toolchainFrom(createRequire(join(dir, "noop.js")));
+    if (cached !== null) return cached;
+  }
 
   options?.onFetchStart?.();
   const startedAt = Date.now();
@@ -211,8 +161,9 @@ export async function resolvePluginBuildToolchain(
       `${JSON.stringify({ name: "bb-plugin-toolchain", private: true, version: "0.0.0" }, null, 2)}\n`,
     );
     await run(
-      "npm",
+      process.execPath,
       [
+        resolveBundledNpmCli(),
         "install",
         "--prefix",
         staging,
@@ -243,8 +194,7 @@ export async function resolvePluginBuildToolchain(
     try {
       await rename(staging, dir);
     } catch {
-      if ((await readCachedToolchain(dir)) === null)
-        throw new Error(errorPromoting(dir));
+      if (!(await isInstalled(dir))) throw new Error(errorPromoting(dir));
     }
   } finally {
     await rm(staging, { recursive: true, force: true });

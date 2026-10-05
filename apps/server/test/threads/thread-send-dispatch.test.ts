@@ -1,27 +1,33 @@
 import {
   archiveThread,
+  getAppSettings,
+  updateHost,
   getQueuedThreadMessage,
   getThread,
   listEvents,
   listQueuedThreadMessages,
   markThreadDeleted,
+  setAppSettings,
   setQueuedThreadMessageFailureReason,
   setQueuedThreadMessageGroupBoundary,
 } from "@bb/db";
+import type { EnvironmentRow } from "@bb/db";
 import {
   changedMessageSchema,
   turnScope,
-  type Environment,
+  type ServiceTier,
   type Thread,
   type ThreadChangedMessage,
 } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TelemetryService } from "../../src/services/system/telemetry.js";
+import * as queuedDispatch from "../../src/services/threads/queued-message-dispatch.js";
 import * as threadEvents from "../../src/services/threads/thread-events.js";
 import { runQueuedMessageDispatch } from "../../src/services/threads/queued-message-dispatch.js";
 import {
   createAutomaticQueuedMessageGroupEligibility,
+  createQueuedMessageForThread,
   sendQueuedMessage,
   sendQueuedMessageNow,
 } from "../../src/services/threads/queued-messages.js";
@@ -29,6 +35,7 @@ import { queueParentSystemMessage } from "../../src/services/threads/parent-syst
 import { acceptThreadSendRequest } from "../../src/services/threads/thread-send-request.js";
 import { handleUpdateEnvironmentDirectoryToolCall } from "../../src/services/threads/thread-environment-directory.js";
 import { applyLoggedThreadLifecycleEvent } from "../../src/services/threads/lifecycle-outcome.js";
+import { buildExecutionOptions } from "../../src/services/threads/thread-commands.js";
 import { sendThreadMessage } from "../../src/services/threads/thread-send.js";
 import {
   internalAuthHeaders,
@@ -51,7 +58,7 @@ import {
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 
 interface IdleThreadFixture {
-  environment: Environment;
+  environment: EnvironmentRow;
   sessionId: string;
   thread: Thread;
 }
@@ -63,6 +70,7 @@ interface SeedIdleThreadFixtureArgs {
 
 interface SeedProviderThreadFixtureArgs extends SeedIdleThreadFixtureArgs {
   status?: "active" | "idle" | "starting";
+  serviceTier?: ServiceTier;
 }
 
 afterEach(() => vi.restoreAllMocks());
@@ -91,6 +99,7 @@ function seedProviderThreadFixture(
   seedThreadRuntimeState(args.harness.deps, {
     environmentId: environment.id,
     providerThreadId: `provider-send-dispatch-${args.value}`,
+    serviceTier: args.serviceTier,
     threadId: thread.id,
   });
 
@@ -124,7 +133,7 @@ function seedColdIdleThreadFixture(
 
 function installTelemetryCaptureSpy(harness: TestAppHarness) {
   const capture = vi.fn<TelemetryService["capture"]>();
-  harness.deps.telemetry = { capture };
+  harness.deps.telemetry = { ...harness.deps.telemetry, capture };
   return capture;
 }
 
@@ -158,8 +167,9 @@ describe("queued message dispatch hook", () => {
             kind: "automatic",
             isGroupEligible: createAutomaticQueuedMessageGroupEligibility(
               harness.deps,
-              { now: Date.now(), thread },
+              { now: Date.now(), retryingFailure: false, thread },
             ),
+            retryingFailure: false,
           },
           threadId: thread.id,
           queuedMessageId: queued.id,
@@ -201,8 +211,9 @@ describe("queued message dispatch hook", () => {
             kind: "automatic",
             isGroupEligible: createAutomaticQueuedMessageGroupEligibility(
               harness.deps,
-              { now: Date.now(), thread },
+              { now: Date.now(), retryingFailure: false, thread },
             ),
+            retryingFailure: false,
           },
           threadId: thread.id,
           queuedMessageId: queued.id,
@@ -230,6 +241,7 @@ describe("queued message auto-send notification", () => {
       const queued = seedQueuedMessage(harness.deps, {
         threadId: thread.id,
         content: textInput("queued while idle"),
+        reasoningLevel: "high",
       });
       const socket = createMockHubSocket();
       harness.hub.subscribe(socket, { kind: "thread-list" });
@@ -239,14 +251,18 @@ describe("queued message auto-send notification", () => {
           kind: "automatic",
           isGroupEligible: createAutomaticQueuedMessageGroupEligibility(
             harness.deps,
-            { now: Date.now(), thread },
+            { now: Date.now(), retryingFailure: false, thread },
           ),
+          retryingFailure: false,
         },
         threadId: thread.id,
         queuedMessageId: queued.id,
         mode: "auto",
       });
 
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ model: queued.model, reasoningLevel: "high" });
       const statusMessages = parseThreadMessages(socket.messages).filter(
         (message) =>
           message.id === thread.id &&
@@ -286,6 +302,9 @@ describe("user message telemetry", () => {
         trigger: "user",
       });
 
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ model: "gpt-5", reasoningLevel: "medium" });
       expect(capture).toHaveBeenCalledWith({
         name: "user_message_sent",
         properties: {
@@ -325,6 +344,84 @@ describe("user message telemetry", () => {
       });
 
       expect(capture).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("active thread admission before host readiness", () => {
+  it.each(["stale", "fresh"] as const)(
+    "rejects a start with a %s snapshot without waking a suspended host",
+    async (snapshot) => {
+      await withTestHarness(async (harness) => {
+        const { environment, thread } = seedProviderThreadFixture({
+          harness,
+          value: 3987,
+        });
+        updateHost(harness.db, harness.hub, environment.hostId, {
+          phase: "suspended",
+          suspendedAt: Date.now(),
+        });
+        applyLoggedThreadLifecycleEvent(harness.deps, {
+          event: { type: "run.started" },
+          threadId: thread.id,
+        });
+        const current = getThread(harness.db, thread.id);
+        expect(current?.status).toBe("active");
+        if (current === null) throw new Error("Missing seeded thread");
+        const readiness = vi
+          .spyOn(queuedDispatch, "requestQueuedMachineReadiness")
+          .mockImplementation(() => {});
+
+        await expect(
+          acceptThreadSendRequest(harness.deps, {
+            thread: snapshot === "stale" ? thread : current,
+            payload: { input: textInput("begin another turn"), mode: "start" },
+          }),
+        ).rejects.toMatchObject({
+          status: 409,
+          body: {
+            code: "thread_not_writable",
+            details: { reason: "already_active" },
+          },
+        });
+        expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+        expect(readiness).not.toHaveBeenCalled();
+      });
+    },
+  );
+
+  it("keeps the host wait for queue-if-active after a stale idle snapshot", async () => {
+    await withTestHarness(async (harness) => {
+      const { environment, thread } = seedProviderThreadFixture({
+        harness,
+        value: 3988,
+      });
+      updateHost(harness.db, harness.hub, environment.hostId, {
+        phase: "suspended",
+        suspendedAt: Date.now(),
+      });
+      applyLoggedThreadLifecycleEvent(harness.deps, {
+        event: { type: "run.started" },
+        threadId: thread.id,
+      });
+      const readiness = vi
+        .spyOn(queuedDispatch, "requestQueuedMachineReadiness")
+        .mockImplementation(() => {});
+
+      await expect(
+        acceptThreadSendRequest(harness.deps, {
+          thread,
+          payload: {
+            input: textInput("follow up later"),
+            mode: "queue-if-active",
+          },
+        }),
+      ).resolves.toMatchObject({
+        delivery: "queued",
+        queuedMessage: { waitingOn: { kind: "host-offline" } },
+      });
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(1);
+      expect(readiness).toHaveBeenCalledWith(harness.deps, environment.hostId);
     });
   });
 });
@@ -608,6 +705,8 @@ describe("startup queue waits", () => {
         id: failed.id,
         threadId: thread.id,
         failureReason: "Terminal failure",
+        now: Date.now(),
+        retryDelaysMs: [],
       });
       setQueuedThreadMessageGroupBoundary({
         db: harness.db,
@@ -907,6 +1006,64 @@ describe("startup queue waits", () => {
       ).toMatchObject({
         target: { mode: "auto", expectedTurnId: "turn-system-notice-ready" },
       });
+    });
+  });
+
+  it("sends to an idle thread while a plugin's question card is still open", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({
+        harness,
+        status: "idle",
+        value: 66,
+      });
+      const pending = harness.deps.pendingInteractions.requestPluginInteraction(
+        {
+          pluginId: "ask-user-question",
+          threadId: thread.id,
+          rendererId: "ask-user-question",
+          title: "Which database?",
+          payload: {},
+          presentation: {
+            label: { pending: "Asking a question", completed: "Asked" },
+            icon: { glyph: "MessageQuestion" },
+          },
+          describeSubmission: null,
+          timeoutMs: 10_000,
+        },
+      );
+      const [interaction] =
+        harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        );
+      expect(interaction).toMatchObject({ turnId: null, status: "pending" });
+
+      await expect(
+        acceptThreadSendRequest(harness.deps, {
+          payload: {
+            input: textInput("carry on without waiting for the card"),
+            mode: "auto",
+            model: "gpt-5",
+            permissionMode: "full",
+            reasoningLevel: "medium",
+            serviceTier: "default",
+          },
+          thread,
+        }),
+      ).resolves.toEqual({ ok: true, delivery: "sent" });
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toEqual([]);
+      expect(
+        harness.deps.pendingInteractions.getThreadInteraction({
+          threadId: thread.id,
+          interactionId: interaction!.id,
+        }),
+      ).toMatchObject({ status: "pending" });
+
+      harness.deps.pendingInteractions.cancelPluginInteraction({
+        threadId: thread.id,
+        interactionId: interaction!.id,
+        reason: "user",
+      });
+      await expect(pending).resolves.toMatchObject({ outcome: "cancelled" });
     });
   });
 
@@ -1244,6 +1401,383 @@ describe("idle cold-start activation", () => {
       expect(
         listQueuedThreadCommands(harness, "thread.start", thread.id),
       ).toHaveLength(0);
+    });
+  });
+});
+
+describe("service tier execution lifecycle", () => {
+  it("dispatches a previously queued fast message at the default tier after fast is disabled", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({
+        harness,
+        value: 82,
+        serviceTier: "fast",
+      });
+      const queued = await createQueuedMessageForThread(harness.deps, {
+        thread,
+        payload: { input: textInput("queued fast turn"), serviceTier: "fast" },
+      });
+      expect(queued.serviceTier).toBe("fast");
+      setAppSettings(harness.db, {
+        ...getAppSettings(harness.db),
+        allowFastServiceTier: false,
+      });
+
+      await sendQueuedMessage(harness.deps, {
+        claimPolicy: {
+          kind: "automatic",
+          isGroupEligible: createAutomaticQueuedMessageGroupEligibility(
+            harness.deps,
+            { now: Date.now(), retryingFailure: false, thread },
+          ),
+          retryingFailure: false,
+        },
+        threadId: thread.id,
+        queuedMessageId: queued.id,
+        mode: "auto",
+      });
+
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ serviceTier: "default" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toContainEqual(
+        expect.objectContaining({
+          options: expect.objectContaining({ serviceTier: "default" }),
+        }),
+      );
+    });
+  });
+
+  it.each(["fast", "default"] as const)(
+    "uses an accepted direct %s choice as the next default",
+    async (serviceTier) => {
+      await withTestHarness(async (harness) => {
+        const { thread } = seedProviderThreadFixture({
+          harness,
+          value: 80,
+          serviceTier: serviceTier === "fast" ? "default" : "fast",
+        });
+        await expect(
+          acceptThreadSendRequest(harness.deps, {
+            thread,
+            payload: {
+              input: textInput("change tier"),
+              mode: "start",
+              serviceTier,
+            },
+          }),
+        ).resolves.toMatchObject({ delivery: "sent" });
+        expect(
+          threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+        ).toMatchObject({ serviceTier });
+        await expect(
+          buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
+        ).resolves.toMatchObject({ serviceTier });
+        expect(
+          listQueuedThreadCommands(harness, "turn.submit", thread.id),
+        ).toContainEqual(
+          expect.objectContaining({
+            options: expect.objectContaining({ serviceTier }),
+          }),
+        );
+      });
+    },
+  );
+
+  it("keeps queued choices separate until dispatch and preserves the next row", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({
+        harness,
+        value: 81,
+        serviceTier: "fast",
+      });
+      const older = await createQueuedMessageForThread(harness.deps, {
+        thread,
+        payload: {
+          input: textInput("older standard turn"),
+          serviceTier: "default",
+        },
+      });
+      const newer = await createQueuedMessageForThread(harness.deps, {
+        thread,
+        payload: { input: textInput("newer fast turn"), serviceTier: "fast" },
+      });
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
+        { id: older.id, serviceTier: "default" },
+        { id: newer.id, serviceTier: "fast" },
+      ]);
+      await expect(
+        buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
+      ).resolves.toMatchObject({ serviceTier: "fast" });
+      await sendQueuedMessage(harness.deps, {
+        claimPolicy: {
+          kind: "automatic",
+          isGroupEligible: createAutomaticQueuedMessageGroupEligibility(
+            harness.deps,
+            { now: Date.now(), retryingFailure: false, thread },
+          ),
+          retryingFailure: false,
+        },
+        threadId: thread.id,
+        queuedMessageId: older.id,
+        mode: "auto",
+      });
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ serviceTier: "default" });
+      await expect(
+        buildExecutionOptions(harness.deps, {}, { threadId: thread.id }),
+      ).resolves.toMatchObject({ serviceTier: "default" });
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toMatchObject([
+        { id: newer.id, serviceTier: "fast" },
+      ]);
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toContainEqual(
+        expect.objectContaining({
+          options: expect.objectContaining({ serviceTier: "default" }),
+        }),
+      );
+    });
+  });
+
+  it("snapshots a busy follow-up without changing the active tier", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({
+        harness,
+        value: 83,
+        status: "active",
+        serviceTier: "fast",
+      });
+      const result = await acceptThreadSendRequest(harness.deps, {
+        thread,
+        payload: {
+          input: textInput("wait for standard"),
+          mode: "queue-if-active",
+          serviceTier: "default",
+        },
+      });
+      expect(result).toMatchObject({
+        delivery: "queued",
+        queuedMessage: { serviceTier: "default" },
+      });
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ serviceTier: "fast" });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+    });
+  });
+
+  it("does not save a rejected default choice or consume its queued snapshot", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({
+        harness,
+        value: 82,
+        serviceTier: "fast",
+      });
+      const queued = await createQueuedMessageForThread(harness.deps, {
+        thread,
+        payload: { input: textInput("standard turn"), serviceTier: "default" },
+      });
+      archiveThread(harness.db, harness.hub, thread.id);
+      await expect(
+        acceptThreadSendRequest(harness.deps, {
+          thread,
+          payload: {
+            input: textInput("rejected"),
+            mode: "start",
+            serviceTier: "default",
+          },
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      await expect(
+        sendQueuedMessageNow(harness.deps, {
+          threadId: thread.id,
+          queuedMessageId: queued.id,
+          mode: "auto",
+        }),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(
+        threadEvents.getLastExecutionOptions(harness.deps, thread.id),
+      ).toMatchObject({ serviceTier: "fast" });
+      expect(getQueuedThreadMessage(harness.db, queued.id)).toMatchObject({
+        serviceTier: "default",
+      });
+      expect(
+        listQueuedThreadCommands(harness, "turn.submit", thread.id),
+      ).toEqual([]);
+    });
+  });
+});
+
+describe("concurrent idle dispatch regression", () => {
+  it("retains every concurrent queue-mode send", async () => {
+    await withTestHarness(async (harness) => {
+      const { thread } = seedProviderThreadFixture({ harness, value: 3716 });
+      const results = await Promise.allSettled(
+        Array.from({ length: 4 }, (_, index) =>
+          acceptThreadSendRequest(harness.deps, {
+            thread,
+            payload: {
+              input: textInput(`concurrent message ${index}`),
+              mode: "queue-if-active",
+              model: "gpt-5",
+              permissionMode: "full",
+              reasoningLevel: "medium",
+              serviceTier: "default",
+            },
+          }),
+        ),
+      );
+      expect(
+        results.map((result) =>
+          result.status === "rejected" ? String(result.reason) : result.status,
+        ),
+        `queued=${listQueuedThreadMessages(harness.db, thread.id).length}; commands=${listQueuedThreadCommands(harness, "turn.submit", thread.id).length}`,
+      ).toEqual(Array.from({ length: 4 }, () => "fulfilled"));
+      expect(listQueuedThreadMessages(harness.db, thread.id)).toHaveLength(3);
+    });
+  });
+});
+
+describe("competing turn refusals", () => {
+  const competingTurnMessage = (threadId: string) =>
+    `Refusing to start a competing turn for thread "${threadId}" while another turn is active or starting`;
+
+  async function sendStartFromIdle(
+    harness: TestAppHarness,
+    fixture: IdleThreadFixture,
+  ) {
+    await sendThreadMessage(harness.deps, {
+      environment: fixture.environment,
+      payload: {
+        input: textInput("send while the daemon runs a turn"),
+        mode: "start",
+        model: "gpt-5",
+        permissionMode: "full",
+        reasoningLevel: "medium",
+        serviceTier: "default",
+      },
+      thread: fixture.thread,
+      trigger: "user",
+    });
+    expect(getThread(harness.db, fixture.thread.id)?.status).toBe("active");
+    const queued = await waitForQueuedCommand(
+      harness,
+      (candidate) =>
+        candidate.command.type === "turn.submit" &&
+        candidate.command.threadId === fixture.thread.id,
+    );
+    if (queued.command.type !== "turn.submit") {
+      throw new Error("Expected a turn.submit command");
+    }
+    return { queued, requestId: queued.command.requestId };
+  }
+
+  it("keeps the thread active when the daemon refuses a competing turn while a root turn is running", async () => {
+    await withTestHarness(async (harness) => {
+      const fixture = seedProviderThreadFixture({
+        harness,
+        status: "idle",
+        value: 61,
+      });
+      const { queued, requestId } = await sendStartFromIdle(harness, fixture);
+      seedTurnStarted(harness.deps, {
+        environmentId: fixture.environment.id,
+        providerThreadId: "provider-send-dispatch-61",
+        threadId: fixture.thread.id,
+        turnId: "turn-unrequested",
+      });
+
+      await reportQueuedCommandError(harness, queued, {
+        errorCode: "competing_turn",
+        errorMessage: competingTurnMessage(fixture.thread.id),
+      });
+
+      const events = listEvents(harness.db, { threadId: fixture.thread.id });
+      const rejection = events.find(
+        (event) => event.type === "client/turn/rejected",
+      );
+      expect(JSON.parse(rejection?.data ?? "{}")).toEqual({
+        requestId,
+        reason: "competing_turn",
+        message: competingTurnMessage(fixture.thread.id),
+      });
+      expect(events.some((event) => event.type === "system/error")).toBe(false);
+      expect(getThread(harness.db, fixture.thread.id)?.status).toBe("active");
+
+      const completed = await harness.app.request("/internal/session/events", {
+        method: "POST",
+        headers: internalAuthHeaders(harness),
+        body: JSON.stringify({
+          sessionId: fixture.sessionId,
+          eventGroups: groupHostDaemonEvents([
+            {
+              threadId: fixture.thread.id,
+              event: {
+                type: "turn/completed",
+                threadId: fixture.thread.id,
+                providerThreadId: "provider-send-dispatch-61",
+                scope: turnScope("turn-unrequested"),
+                status: "completed",
+              },
+            },
+          ]),
+        }),
+      });
+      expect(completed.status, await completed.clone().text()).toBe(200);
+      expect(getThread(harness.db, fixture.thread.id)?.status).toBe("idle");
+    });
+  });
+
+  it("fails the run when a competing-turn refusal arrives without a running root turn", async () => {
+    await withTestHarness(async (harness) => {
+      const fixture = seedProviderThreadFixture({
+        harness,
+        status: "idle",
+        value: 62,
+      });
+      const { queued } = await sendStartFromIdle(harness, fixture);
+
+      await reportQueuedCommandError(harness, queued, {
+        errorCode: "competing_turn",
+        errorMessage: competingTurnMessage(fixture.thread.id),
+      });
+
+      const events = listEvents(harness.db, { threadId: fixture.thread.id });
+      expect(
+        events.some((event) => event.type === "client/turn/rejected"),
+      ).toBe(true);
+      expect(events.some((event) => event.type === "system/error")).toBe(true);
+      expect(getThread(harness.db, fixture.thread.id)?.status).toBe("error");
+    });
+  });
+
+  it("still fails the run for other refusals while a root turn is stored", async () => {
+    await withTestHarness(async (harness) => {
+      const fixture = seedProviderThreadFixture({
+        harness,
+        status: "idle",
+        value: 63,
+      });
+      const { queued } = await sendStartFromIdle(harness, fixture);
+      seedTurnStarted(harness.deps, {
+        environmentId: fixture.environment.id,
+        providerThreadId: "provider-send-dispatch-63",
+        threadId: fixture.thread.id,
+        turnId: "turn-unrequested",
+      });
+
+      await reportQueuedCommandError(harness, queued, {
+        errorCode: "provider_rpc_error",
+        errorMessage: "Provider rejected the turn",
+      });
+
+      expect(getThread(harness.db, fixture.thread.id)?.status).toBe("error");
     });
   });
 });

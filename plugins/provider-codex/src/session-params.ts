@@ -486,7 +486,7 @@ export function gitWritableRootsForWorkspace(
   return [...new Set(writableRoots)];
 }
 
-export function combineWorkspaceWriteRoots(
+function combineWorkspaceWriteRoots(
   roots: readonly string[],
   additionalRoots: readonly string[],
 ): string[] {
@@ -528,37 +528,27 @@ export function toCodexThreadPermissionSettings(
 export function toCodexPermissionSettings(
   args: ToCodexPermissionSettingsArgs,
 ): CodexPermissionSettings {
-  const permissionPolicy = args.options;
-  switch (permissionPolicy.permissionScope) {
-    case "workspace":
-      return {
-        approvalPolicy: toWorkspaceApprovalPolicy(permissionPolicy),
-        approvalsReviewer: toCodexApprovalsReviewer(args.options),
-        sandbox: "workspace-write",
-        sandboxPolicy: toWorkspaceWriteCodexSandboxPolicy(
-          combineWorkspaceWriteRoots(
-            args.gitWritableRoots,
-            args.additionalWorkspaceWriteRoots,
-          ),
-        ),
-      };
-    case "full":
-      return {
-        approvalPolicy: "never",
-        approvalsReviewer: toCodexApprovalsReviewer(args.options),
-        sandbox: "danger-full-access",
-        sandboxPolicy: { type: "dangerFullAccess" },
-      };
-  }
+  return {
+    ...toCodexThreadPermissionSettings(args.options),
+    sandboxPolicy:
+      args.options.permissionScope === "workspace"
+        ? toWorkspaceWriteCodexSandboxPolicy(
+            combineWorkspaceWriteRoots(
+              args.gitWritableRoots,
+              args.additionalWorkspaceWriteRoots,
+            ),
+          )
+        : { type: "dangerFullAccess" },
+  };
 }
 
 export function toCodexServiceTier(
   tier: ServiceTier | undefined,
-): "fast" | undefined {
-  return tier === "fast" ? "fast" : undefined;
+): string | null | undefined {
+  return tier === "default" ? null : tier;
 }
 
-export function toCodexReasoningEffort(
+function toCodexReasoningEffort(
   reasoningLevel: ReasoningLevel,
 ): CodexReasoningEffort {
   const codexEffort = mapBbReasoningLevelToCodex(reasoningLevel);
@@ -620,7 +610,6 @@ export function buildCodexConfig(
       args.options.reasoningLevel,
     );
   }
-  config["features.default_mode_request_user_input"] = false;
   if (args.options?.providerSubagentsEnabled === false) {
     config["features.multi_agent"] = false;
     config["features.multi_agent_v2.max_concurrent_threads_per_session"] = 1;

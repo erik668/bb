@@ -1,9 +1,11 @@
 import { z } from "zod";
-import type {
-  AccountQuota,
-  AccountSecret,
-  LimitWindow,
-  LimitWindowSlot,
+import { parseCodexRequestBody } from "./request-body.js";
+import {
+  EMPTY_FAMILY_WEEKLY,
+  type AccountQuota,
+  type AccountSecret,
+  type LimitWindow,
+  type LimitWindowSlot,
 } from "./contracts.js";
 import {
   codexAccessTokenExpiresAt,
@@ -12,16 +14,19 @@ import {
 } from "./credentials.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import {
+  fetchOAuthRefresh,
   filterRequestHeaders,
   mountedUpstreamUrl,
+  oauthSecretDueForRefresh,
+  parseOAuthRefreshResponse,
 } from "./provider-adapter.js";
+import { epochMilliseconds } from "./quota.js";
 
 export const CODEX_AUTH_BASE_URL = "https://auth.openai.com";
 export const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 export const DEFAULT_CODEX_REFRESH_URL = `${CODEX_AUTH_BASE_URL}/oauth/token`;
 export const DEFAULT_CODEX_USAGE_URL =
   "https://chatgpt.com/backend-api/wham/usage";
-const REFRESH_WINDOW_MS = 5 * 60 * 1_000;
 const USAGE_REQUEST_TIMEOUT_MS = 15_000;
 const ALLOWED_REQUEST_HEADERS = new Set([
   "accept",
@@ -29,8 +34,11 @@ const ALLOWED_REQUEST_HEADERS = new Set([
   "content-type",
   "openai-beta",
   "originator",
+  "session-id",
   "session_id",
+  "thread-id",
   "user-agent",
+  "x-openai-internal-codex-responses-lite",
 ]);
 const ALLOWED_REQUEST_HEADER_PREFIXES = ["x-codex-", "x-stainless-"];
 
@@ -51,10 +59,9 @@ function numberHeader(headers: Headers, name: string): number | null {
 
 function resetAt(headers: Headers, prefix: string, now: number): number | null {
   const raw = numberHeader(headers, `${prefix}-reset-at`);
-  if (raw !== null)
-    return Math.round(raw < 1_000_000_000_000 ? raw * 1_000 : raw);
+  if (raw !== null && raw > 0) return epochMilliseconds(raw);
   const after = numberHeader(headers, `${prefix}-reset-after-seconds`);
-  return after === null ? null : now + Math.round(after * 1_000);
+  return after === null || after <= 0 ? null : now + Math.round(after * 1_000);
 }
 
 function windowMinutesFromSeconds(
@@ -83,20 +90,40 @@ function windowFromHeaders(
   const usedPercent = numberHeader(headers, `${prefix}-used-percent`);
   const reset = resetAt(headers, prefix, now);
   const minutes = numberHeader(headers, `${prefix}-window-minutes`);
-  if (usedPercent === null && reset === null) return previous;
+  const overLimit =
+    headers.get(`${prefix}-over-limit`)?.toLowerCase() === "true";
+  if (usedPercent === null && reset === null && !overLimit) return previous;
   const utilization =
     usedPercent === null
       ? (previous?.utilization ?? null)
       : Math.max(0, Math.min(1, usedPercent / 100));
+  const windowMinutes =
+    minutes !== null && minutes > 0
+      ? Math.round(minutes)
+      : (previous?.windowMinutes ?? null);
+  const nextReset =
+    reset ??
+    (previous?.resetAt !== null &&
+    previous?.resetAt !== undefined &&
+    previous.resetAt > now
+      ? previous.resetAt
+      : null);
+  if (
+    windowMinutes === null &&
+    nextReset === null &&
+    !overLimit &&
+    (utilization === null || utilization === 0)
+  )
+    return null;
   return {
     slot,
-    windowMinutes:
-      minutes !== null && minutes > 0
-        ? Math.round(minutes)
-        : (previous?.windowMinutes ?? null),
+    windowMinutes,
     utilization,
-    resetAt: reset ?? previous?.resetAt ?? null,
-    status: utilization !== null && utilization >= 1 ? "rejected" : null,
+    resetAt: nextReset,
+    status:
+      overLimit || (utilization !== null && utilization >= 1)
+        ? "rejected"
+        : null,
     observedAt: now,
     source: "header",
   };
@@ -118,14 +145,46 @@ function withoutClaudeSlots(previous: AccountQuota): AccountQuota {
     sevenDayResetAt: null,
     sevenDayStatus: null,
     representativeClaim: null,
-    familyWeekly: {
-      fable: null,
-      sonnet: null,
-      opus: null,
-      haiku: null,
-      other: null,
-    },
+
+    familyWeekly: EMPTY_FAMILY_WEEKLY,
   };
+}
+
+function creditAvailability(
+  credits: { has_credits: boolean; unlimited: boolean } | null,
+  source: "header" | "usage",
+  now: number,
+): AccountQuota["extraUsage"] {
+  return credits === null
+    ? null
+    : {
+        status:
+          credits.has_credits || credits.unlimited ? "allowed" : "rejected",
+        source,
+        observedAt: now,
+      };
+}
+
+function booleanHeader(headers: Headers, name: string): boolean | null {
+  const value = headers.get(name)?.toLowerCase();
+  if (value === "true" || value === "1") return true;
+  if (value === "false" || value === "0") return false;
+  return null;
+}
+
+const WORKSPACE_HARD_STOP_REASONS = new Set([
+  "workspace_owner_credits_depleted",
+  "workspace_member_credits_depleted",
+  "workspace_owner_usage_limit_reached",
+  "workspace_member_usage_limit_reached",
+]);
+
+function restrictionFromReason(
+  reason: string | null,
+): AccountQuota["usageRestriction"] {
+  return reason !== null && WORKSPACE_HARD_STOP_REASONS.has(reason)
+    ? { reason, resetAt: null }
+    : null;
 }
 
 function codexQuotaFromHeaders(
@@ -143,10 +202,37 @@ function codexQuotaFromHeaders(
     priorSecondary,
     now,
   );
-  if (primary === priorPrimary && secondary === priorSecondary) return previous;
+  const hasCredits = booleanHeader(headers, "x-codex-credits-has-credits");
+  const unlimited = booleanHeader(headers, "x-codex-credits-unlimited");
+  const creditsObserved = hasCredits !== null && unlimited !== null;
+  const reason = headers.get("x-codex-rate-limit-reached-type");
+  let restriction =
+    reason === null ? previous.usageRestriction : restrictionFromReason(reason);
+  if (
+    reason === null &&
+    restriction?.reason.includes("credits_depleted") &&
+    creditsObserved &&
+    (hasCredits || unlimited)
+  )
+    restriction = null;
+  const extraUsage = creditsObserved
+    ? creditAvailability({ has_credits: hasCredits, unlimited }, "header", now)
+    : previous.extraUsage;
+  if (
+    primary === priorPrimary &&
+    secondary === priorSecondary &&
+    !creditsObserved &&
+    reason === null
+  )
+    return previous;
   return {
     ...withoutClaudeSlots(previous),
     accountId,
+    extraUsage:
+      restriction === null
+        ? extraUsage
+        : { status: "rejected", source: "header", observedAt: now },
+    usageRestriction: restriction,
     limitWindows: orderedWindows([primary, secondary]),
     observedAt: now,
     heldUntil: null,
@@ -164,6 +250,22 @@ const usageWindowSchema = z
 
 const usageResponseSchema = z
   .object({
+    plan_type: z.string().trim().min(1).nullish().catch(null),
+    credits: z
+      .object({ has_credits: z.boolean(), unlimited: z.boolean() })
+      .nullish(),
+    spend_control: z
+      .object({
+        reached: z.boolean(),
+        individual_limit: z
+          .object({
+            remaining_percent: z.number(),
+            reset_at: z.number().nullish(),
+          })
+          .nullish(),
+      })
+      .nullish(),
+    rate_limit_reached_type: z.object({ type: z.string().min(1) }).nullish(),
     rate_limit: z
       .object({
         primary_window: usageWindowSchema.nullish(),
@@ -185,11 +287,7 @@ function windowFromUsage(
     value.reset_at !== null &&
     value.reset_at !== undefined &&
     Number.isFinite(value.reset_at)
-      ? Math.round(
-          value.reset_at < 1_000_000_000_000
-            ? value.reset_at * 1_000
-            : value.reset_at,
-        )
+      ? epochMilliseconds(value.reset_at)
       : value.reset_after_seconds !== null &&
           value.reset_after_seconds !== undefined &&
           Number.isFinite(value.reset_after_seconds)
@@ -213,18 +311,74 @@ export function codexQuotaFromUsage(
   now: number,
 ): AccountQuota | null {
   const parsed = usageResponseSchema.safeParse(payload);
-  if (!parsed.success || parsed.data.rate_limit == null) return null;
+  if (!parsed.success) return null;
+  const data = parsed.data;
+  if (
+    data.rate_limit === undefined &&
+    data.credits === undefined &&
+    data.spend_control === undefined &&
+    data.rate_limit_reached_type === undefined
+  )
+    return null;
+  const control = data.spend_control;
+  const individual = control?.individual_limit;
+  let reasonRestriction =
+    data.rate_limit_reached_type === undefined
+      ? previous.usageRestriction
+      : restrictionFromReason(data.rate_limit_reached_type?.type ?? null);
+  if (
+    data.rate_limit_reached_type === undefined &&
+    reasonRestriction !== null
+  ) {
+    if (
+      reasonRestriction.reason.includes("credits_depleted") &&
+      (data.credits?.has_credits === true || data.credits?.unlimited === true)
+    )
+      reasonRestriction = null;
+    if (
+      reasonRestriction?.reason.includes("usage_limit_reached") &&
+      control?.reached === false &&
+      (individual == null || individual.remaining_percent > 0)
+    )
+      reasonRestriction = null;
+  }
+  const restriction =
+    control?.reached === true ||
+    (individual != null && individual.remaining_percent <= 0)
+      ? {
+          reason: "spend_control_reached",
+          resetAt:
+            individual?.reset_at == null
+              ? null
+              : epochMilliseconds(individual.reset_at),
+        }
+      : control !== undefined &&
+          reasonRestriction?.reason === "spend_control_reached"
+        ? null
+        : reasonRestriction;
+  const extraUsage =
+    data.credits === undefined
+      ? previous.extraUsage
+      : creditAvailability(data.credits, "usage", now);
   return {
     ...withoutClaudeSlots(previous),
     accountId,
-    limitWindows: orderedWindows([
-      windowFromUsage("primary", parsed.data.rate_limit.primary_window, now),
-      windowFromUsage(
-        "secondary",
-        parsed.data.rate_limit.secondary_window,
-        now,
-      ),
-    ]),
+    usageRestriction: restriction,
+    extraUsage:
+      restriction === null
+        ? extraUsage
+        : { status: "rejected", source: "usage", observedAt: now },
+    limitWindows:
+      data.rate_limit === undefined
+        ? previous.limitWindows
+        : orderedWindows([
+            windowFromUsage("primary", data.rate_limit?.primary_window, now),
+            windowFromUsage(
+              "secondary",
+              data.rate_limit?.secondary_window,
+              now,
+            ),
+          ]),
     observedAt: now,
   };
 }
@@ -256,8 +410,15 @@ export function createCodexAdapter(options: {
         },
       };
     },
-    modelFamily: () => "other",
-    prepareBody: (body) => body,
+    parseRequest(body, headers) {
+      const parsed = parseCodexRequestBody(body, headers);
+      return {
+        family: parsed.family,
+        affinityId: parsed.affinityId,
+        parentAffinityId: parsed.parentAffinityId,
+        forAccount: () => body,
+      };
+    },
     upstreamUrl: (request, settings) =>
       mountedUpstreamUrl(request, settings.codexUpstreamBaseUrl, "v1/"),
     requestHeaders(inbound, account, secret) {
@@ -279,6 +440,7 @@ export function createCodexAdapter(options: {
       return codexQuotaFromHeaders(accountId, headers, previous, now);
     },
     isQuotaRejection(headers) {
+      if (headers.has("x-codex-rate-limit-reached-type")) return true;
       return ["primary", "secondary"].some((window) => {
         const prefix = `x-codex-${window}`;
         return (
@@ -288,29 +450,16 @@ export function createCodexAdapter(options: {
       });
     },
     async refreshSecret(context) {
-      const secret = context.secret;
-      if (
-        secret.kind !== "oauth" ||
-        secret.expiresAt === null ||
-        secret.expiresAt > context.now() + REFRESH_WINDOW_MS
-      ) {
-        return { secret, refreshed: false };
-      }
-      const response = await context.fetch(options.refreshUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json",
-        },
-        body: JSON.stringify({
+      const secret = oauthSecretDueForRefresh(context);
+      if (secret === null) return { secret: context.secret, refreshed: false };
+      const parsed = parseOAuthRefreshResponse(
+        await fetchOAuthRefresh(context, options.refreshUrl, {
           client_id: CODEX_OAUTH_CLIENT_ID,
           grant_type: "refresh_token",
           refresh_token: secret.refreshToken,
         }),
-      });
-      if (!response.ok)
-        throw new Error(`OAuth refresh failed with HTTP ${response.status}.`);
-      const parsed = refreshResponseSchema.parse(await response.json());
+        refreshResponseSchema,
+      );
       const refreshed: AccountSecret = {
         kind: "oauth",
         accessToken: parsed.access_token,
@@ -343,9 +492,19 @@ export function createCodexAdapter(options: {
         await response.body?.cancel();
         return;
       }
+      const parsed = usageResponseSchema.safeParse(
+        await response.json().catch(() => null),
+      );
+      if (!parsed.success) return;
+      if (parsed.data.plan_type != null) {
+        await context.accounts.setSubscriptionType(
+          context.account.id,
+          parsed.data.plan_type,
+        );
+      }
       const quota = codexQuotaFromUsage(
         context.account.id,
-        await response.json().catch(() => null),
+        parsed.data,
         context.quotas.get(context.account.id),
         context.now(),
       );

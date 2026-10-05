@@ -1,22 +1,14 @@
-import { createHash } from "node:crypto";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import {
-  createFakePluginHost,
-  makeThreadResponse,
-} from "@get-bb/plugin-sdk/testing";
-import { afterEach, describe, expect, it } from "vitest";
+import { createFakePluginHost } from "@get-bb/plugin-sdk/testing";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   type Db,
   deleteTerminalRuns,
-  attachCallThread,
-  claimQueuedRun,
   getCall,
   getRun,
   getRunRequired,
   listExpiredTerminalRuns,
   migrations,
-  settleRun,
-  startCall,
+  ownWorker,
 } from "./data.js";
 import plugin from "./server.js";
 import {
@@ -28,11 +20,6 @@ import {
   DEFAULT_WORKFLOW_SETTINGS,
   type WorkflowSettings,
 } from "./settings.js";
-import {
-  MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
-  MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
-} from "./workflow-campaign.js";
-import type { WorkflowCheckpoint } from "./workflow-checkpoint.js";
 
 async function eventually(
   assertion: () => void | Promise<void>,
@@ -78,66 +65,20 @@ interface WorkerState {
   deleted: boolean;
 }
 
-type ThreadTimelineResult = Awaited<
-  ReturnType<BbPluginApi["sdk"]["threads"]["timeline"]>
->;
-
-type ContextWindowUsage = NonNullable<
-  ThreadTimelineResult["contextWindowUsage"]
->;
-
-function timelineResult(
-  contextWindowUsage?: ContextWindowUsage,
-): ThreadTimelineResult {
-  return {
-    rows: [],
-    activePromptMode: null,
-    activeThinking: null,
-    activeWorkflows: [],
-    activeBackgroundCommands: [],
-    pendingTodos: null,
-    goal: null,
-    modelFallback: null,
-    ...(contextWindowUsage === undefined ? {} : { contextWindowUsage }),
-    contextBoundarySeq: null,
-    timelinePage: {
-      kind: "latest",
-      segmentLimit: 0,
-      returnedSegmentCount: 0,
-      hasOlderRows: false,
-      olderCursor: null,
-    },
-    maxSeq: 0,
-  };
-}
-
 function setup(
   settings: WorkflowSettings = DEFAULT_WORKFLOW_SETTINGS,
   files: Record<string, string> = {},
 ) {
   let childCount = 0;
   let originDeleted = false;
-  let contextCaptureFails = false;
+  let originArchived = false;
   const workers = new Map<string, WorkerState>();
   const archived: string[] = [];
   const archiveFailures = new Set<string>();
-  const contextUsage = new Map<string, ContextWindowUsage>();
-  const threads = new Map([
-    [
-      "origin",
-      makeThreadResponse({
-        id: "origin",
-        projectId: "project-test",
-        environmentId: "environment-1",
-        providerId: "codex",
-      }),
-    ],
-  ]);
   const { bb, harness } = createFakePluginHost({
     pluginId: "workflows",
     sdk: {
       threads: {
-        events: { list: async () => [] },
         get: async ({ threadId }) => {
           if (threadId === "origin") {
             if (originDeleted) {
@@ -146,7 +87,13 @@ function setup(
                 code: "thread_not_found",
               });
             }
-            return threads.get(threadId)!;
+            return {
+              id: threadId,
+              environmentId: "environment-1",
+              providerId: "codex",
+              status: "idle",
+              archivedAt: originArchived ? Date.now() : null,
+            } as never;
           }
           const worker = workers.get(threadId);
           if (worker?.deleted) {
@@ -155,23 +102,17 @@ function setup(
               code: "thread_not_found",
             });
           }
-          const configured = threads.get(threadId);
-          if (configured !== undefined) return configured;
-          return makeThreadResponse({
+          return {
             id: threadId,
-            projectId: "project-test",
             environmentId: "environment-1",
             providerId: "codex",
             status: worker?.status ?? "active",
-          });
+          } as never;
         },
+        list: async () => [],
         output: async ({ threadId }) => ({
           output: workers.get(threadId)?.output ?? null,
         }),
-        timeline: async ({ threadId }) => {
-          if (contextCaptureFails) throw new Error("timeline unavailable");
-          return timelineResult(contextUsage.get(threadId));
-        },
         defaultExecutionOptions: async () => ({
           model: "gpt-test",
           reasoningLevel: "medium",
@@ -179,7 +120,8 @@ function setup(
           serviceTier: "default",
           source: "default",
         }),
-        spawn: async () => {
+        spawn: async (args) => {
+          expect(args.lifecycleOwnerThreadId).toBe("origin");
           childCount += 1;
           const id = `child-${childCount}`;
           workers.set(id, { status: "active", output: null, deleted: false });
@@ -243,39 +185,17 @@ function setup(
       },
     },
   });
-  const acceptedWorkflowWorkerStops: Parameters<
-    typeof bb.server.experimental_stopAcceptedWorkflowWorker
-  >[0][] = [];
-  Object.defineProperty(bb.server, "experimental_stopAcceptedWorkflowWorker", {
-    value: async (
-      args: Parameters<
-        typeof bb.server.experimental_stopAcceptedWorkflowWorker
-      >[0],
-    ) => {
-      acceptedWorkflowWorkerStops.push(args);
-    },
-  });
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
   const service = createWorkflowService(bb, db, settings);
 
-  async function start(
-    workflowSource: string,
-    options: {
-      originThreadId?: string;
-      resumedFromRunId?: string | null;
-      campaignId?: string | null;
-      presentationThreadId?: string | null;
-    } = {},
-  ) {
+  async function start(workflowSource: string) {
     return service.start({
       projectId: "project-test",
-      originThreadId: options.originThreadId ?? "origin",
+      originThreadId: "origin",
       source: workflowSource,
       args: null,
-      resumedFromRunId: options.resumedFromRunId ?? null,
-      campaignId: options.campaignId ?? null,
-      presentationThreadId: options.presentationThreadId ?? null,
+      resumedFromRunId: null,
     });
   }
 
@@ -287,32 +207,14 @@ function setup(
     workers,
     start,
     archived,
-    acceptedWorkflowWorkerStops,
     failArchive: (threadId: string) => archiveFailures.add(threadId),
-    childCount: () => childCount,
-    setThread: (
-      threadId: string,
-      overrides: Parameters<typeof makeThreadResponse>[0] = {},
-    ) => {
-      threads.set(
-        threadId,
-        makeThreadResponse({
-          id: threadId,
-          projectId: "project-test",
-          environmentId: "environment-1",
-          providerId: "codex",
-          ...overrides,
-        }),
-      );
+    allowArchive: (threadId: string) => archiveFailures.delete(threadId),
+    archiveOrigin: () => {
+      originArchived = true;
     },
+    childCount: () => childCount,
     deleteOrigin: () => {
       originDeleted = true;
-    },
-    setContextUsage: (threadId: string, usage: ContextWindowUsage) => {
-      contextUsage.set(threadId, usage);
-    },
-    failContextCapture: () => {
-      contextCaptureFails = true;
     },
   };
 }
@@ -342,6 +244,7 @@ function expiredRunWithWorkers(
     finishedAt,
   );
   threadIds.forEach((threadId, index) => {
+    ownWorker(db, threadId, runId, `${runId}-call-${index}`, "origin");
     db.prepare(
       `INSERT INTO workflow_calls (
         id, run_id, call_index, cache_key, prompt, options_json,
@@ -361,12 +264,6 @@ function expiredRunWithWorkers(
   return runId;
 }
 
-function threadSpawnInput(test: ReturnType<typeof setup>, index: number) {
-  const call = test.harness.sdk.callsTo("threads.spawn")[index];
-  if (call === undefined) throw new Error(`Missing thread spawn call ${index}`);
-  return call[0] as Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0];
-}
-
 describe("workflow service policy integration", () => {
   const harnesses: Array<ReturnType<typeof setup>["harness"]> = [];
 
@@ -375,84 +272,9 @@ describe("workflow service policy integration", () => {
     harnesses.length = 0;
   });
 
-  it("injects, persists, inspects, and replays a phase context profile without changing legacy prompts", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const profile = {
-      requiredSkills: ["code-navigation", "implementation-loop"],
-      memoryQueries: ["workflow replay and rollback compatibility"],
-      artifactRefs: [".architect/design/approved-design.md"],
-      stopCondition: "targeted verification passes",
-    };
-    const workflowSource = source(
-      `const legacy = await agent("legacy task");
-       const profiled = await agent("profiled task", {
-         contextProfile: ${JSON.stringify(profile)}
-       });
-       return { legacy, profiled };`,
-      "phase-context",
-    );
-    const run = await test.start(workflowSource);
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      const legacyPrompt = threadSpawnInput(test, 0).prompt;
-      expect(legacyPrompt).toBe(
-        `[BB workflow phase-context · run ${run.id}]\n\nlegacy task\n\nYour final text IS the return value (not a human-facing message), so return raw data.`,
-      );
-      test.service.onThreadIdle("child-1", "legacy-result");
-
-      await eventually(() => expect(test.childCount()).toBe(2));
-      const profiledPrompt = threadSpawnInput(test, 1).prompt;
-      expect(profiledPrompt).toContain("[Phase context manifest]");
-      for (const value of [
-        ...profile.requiredSkills,
-        ...profile.memoryQueries,
-        ...profile.artifactRefs,
-        profile.stopCondition,
-      ]) {
-        expect(profiledPrompt?.split(value)).toHaveLength(2);
-      }
-      expect(profiledPrompt).toContain(
-        "Memory queries are advisory and may be stale.",
-      );
-      expect(profiledPrompt).toContain(
-        "Artifact references are caller supplied and are not authenticated by Workflows.",
-      );
-      expect(getCall(test.db, run.id, 1)?.contextProfileJson).toBe(
-        JSON.stringify(profile),
-      );
-      expect(
-        test.service.inspect(run.id)?.calls[1]?.options.contextProfile,
-      ).toEqual(profile);
-
-      test.service.onThreadIdle("child-2", "profiled-result");
-      await eventually(() =>
-        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
-      );
-      const resumed = await test.start(workflowSource, {
-        resumedFromRunId: run.id,
-      });
-      await eventually(() =>
-        expect(getRunRequired(test.db, resumed.id).status).toBe("succeeded"),
-      );
-      expect(test.childCount()).toBe(2);
-      expect(test.service.inspect(resumed.id)?.calls).toMatchObject([
-        { replaySource: "resumed-run", options: { contextProfile: null } },
-        { replaySource: "resumed-run", options: { contextProfile: profile } },
-      ]);
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("freezes run policy without persisting plugin-global admission", async () => {
+  it("applies live settings to future run snapshots without mutating existing runs", async () => {
     const initial = {
       maxActiveRuns: 1,
-      maxGlobalConcurrentAgents: 3,
       maxConcurrentAgents: 2,
       maxAgentCalls: 3,
       totalRunTimeoutMs: 120_000,
@@ -492,7 +314,6 @@ describe("workflow service policy integration", () => {
     ) as { runId: string };
     const next = {
       maxActiveRuns: 2,
-      maxGlobalConcurrentAgents: 6,
       maxConcurrentAgents: 4,
       maxAgentCalls: 8,
       totalRunTimeoutMs: 180_000,
@@ -526,40 +347,8 @@ describe("workflow service policy integration", () => {
     const secondStatus = JSON.parse(secondStatusResult.stdout!) as {
       settings: Record<string, number>;
     };
-    expect(firstStatus.settings).toEqual(
-      Object.fromEntries(
-        Object.entries(initial)
-          .filter(([key]) => key !== "maxGlobalConcurrentAgents")
-          .map(([key, value]) => [key, value]),
-      ),
-    );
-    expect(secondStatus.settings).toEqual(
-      Object.fromEntries(
-        Object.entries(next)
-          .filter(([key]) => key !== "maxGlobalConcurrentAgents")
-          .map(([key, value]) => [key, value]),
-      ),
-    );
-  });
-
-  it("parents every worker to the workflow origin thread", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const run = await test.start(source(`return await agent("owned");`));
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-
-    await eventually(() => expect(test.childCount()).toBe(1));
-    expect(test.harness.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({
-      parentThreadId: "origin",
-    });
-
-    test.service.onThreadIdle("child-1", "done");
-    await eventually(() =>
-      expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
-    );
-    controller.abort();
-    await worker;
+    expect(firstStatus.settings).toEqual(initial);
+    expect(secondStatus.settings).toEqual(next);
   });
 
   it("resolves named and path children on the origin host", async () => {
@@ -608,53 +397,25 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("keeps nested inline, named, and path workflows durable after the origin thread is deleted", async () => {
-    const inline = source("return { kind: 'inline', args };", "inline-child");
-    const named = source("return { kind: 'named', args };", "named-child");
-    const path = source("return { kind: 'path', args };", "path-child");
-    const test = setup(DEFAULT_WORKFLOW_SETTINGS, {
-      "/workspace/.bb/workflows/named-child.js": named,
-      "/workspace/child.js": path,
-    });
+  it("cancels queued workflows when their origin was deleted while offline", async () => {
+    const test = setup();
     harnesses.push(test.harness);
-    const run = await test.start(
-      source(
-        `return [
-          await workflow({ script: ${JSON.stringify(inline)} }, { value: 1 }),
-          await workflow("named-child", { value: 2 }),
-          await workflow({ scriptPath: "child.js" }, { value: 3 }),
-        ];`,
-        "deleted-origin-nesting",
-      ),
-    );
+    const run = await test.start(source(`return await agent("never launch");`));
     test.deleteOrigin();
     const controller = new AbortController();
     const worker = test.service.runWorker(controller.signal);
-    await eventually(() =>
-      expect(getRunRequired(test.db, run.id)).toMatchObject({
-        status: "succeeded",
-        resultJson:
-          '[{"kind":"inline","args":{"value":1}},{"kind":"named","args":{"value":2}},{"kind":"path","args":{"value":3}}]',
-      }),
-    );
-    expect(test.harness.sdk.callsTo("files.read")).toEqual([
-      [
-        {
-          hostId: "host-1",
-          path: "/workspace/.bb/workflows/named-child.js",
-          rootPath: "/workspace",
-        },
-      ],
-      [
-        {
-          hostId: "host-1",
-          path: "/workspace/child.js",
-          rootPath: "/workspace",
-        },
-      ],
-    ]);
-    controller.abort();
-    await worker;
+    try {
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id)).toMatchObject({
+          status: "cancelled",
+          notificationOutcome: "abandoned",
+        }),
+      );
+      expect(test.childCount()).toBe(0);
+    } finally {
+      controller.abort();
+      await worker;
+    }
   });
 
   it("serializes parallel nested preparation but launches child agents concurrently", async () => {
@@ -719,7 +480,7 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("settles a later nested launch and returns null for an earlier parallel failure", async () => {
+  it("recovers nested launch ordering after failure and queues inline with path sources", async () => {
     const test = setup();
     harnesses.push(test.harness);
     const reads: string[] = [];
@@ -757,7 +518,6 @@ describe("workflow service policy integration", () => {
       const terminal = getRunRequired(test.db, run.id);
       expect(terminal.status).toBe("succeeded");
       expect(terminal.resultJson).toBe('[null,"inline"]');
-      expect(terminal.error).toBeNull();
     });
     controller.abort();
     await worker;
@@ -842,469 +602,6 @@ describe("workflow service policy integration", () => {
     await test.service.stop(second.id);
     controller.abort();
     await worker;
-  });
-
-  it("admits agent calls across active runs through one host-global limit", async () => {
-    const test = setup({
-      ...DEFAULT_WORKFLOW_SETTINGS,
-      maxActiveRuns: 2,
-      maxGlobalConcurrentAgents: 1,
-      maxConcurrentAgents: 2,
-    });
-    harnesses.push(test.harness);
-    const parallelSource = source(
-      `return await Promise.all([agent("first"), agent("second")]);`,
-      "global-agent-admission",
-    );
-    const first = await test.start(parallelSource);
-    const second = await test.start(parallelSource);
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      expect(getRunRequired(test.db, first.id).status).toBe("running");
-      expect(getRunRequired(test.db, second.id).status).toBe("running");
-
-      test.service.updateSettings({
-        ...DEFAULT_WORKFLOW_SETTINGS,
-        maxActiveRuns: 2,
-        maxGlobalConcurrentAgents: 2,
-        maxConcurrentAgents: 2,
-      });
-      await eventually(() => expect(test.childCount()).toBe(2));
-
-      test.service.onThreadIdle("child-1", "result-1");
-      test.service.onThreadIdle("child-2", "result-2");
-      await eventually(() => expect(test.childCount()).toBe(4));
-      test.service.onThreadIdle("child-3", "result-3");
-      test.service.onThreadIdle("child-4", "result-4");
-
-      await eventually(() => {
-        expect(getRunRequired(test.db, first.id).status).toBe("succeeded");
-        expect(getRunRequired(test.db, second.id).status).toBe("succeeded");
-      });
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("applies a lower live admission cap without cancelling active calls", async () => {
-    const test = setup({
-      ...DEFAULT_WORKFLOW_SETTINGS,
-      maxGlobalConcurrentAgents: 2,
-      maxConcurrentAgents: 3,
-    });
-    harnesses.push(test.harness);
-    const run = await test.start(
-      source(
-        `return await Promise.all([
-          agent("first"),
-          agent("second"),
-          agent("third"),
-        ]);`,
-        "decrease-global-agent-admission",
-      ),
-    );
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(2));
-      test.service.updateSettings({
-        ...DEFAULT_WORKFLOW_SETTINGS,
-        maxGlobalConcurrentAgents: 1,
-        maxConcurrentAgents: 3,
-      });
-
-      test.service.onThreadIdle("child-1", "first result");
-      await eventually(() =>
-        expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded"),
-      );
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(test.childCount()).toBe(2);
-
-      test.service.onThreadIdle("child-2", "second result");
-      await eventually(() => expect(test.childCount()).toBe(3));
-      test.service.onThreadIdle("child-3", "third result");
-      await eventually(() =>
-        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
-      );
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("removes a cancelled call from the host-global admission queue", async () => {
-    const test = setup({
-      ...DEFAULT_WORKFLOW_SETTINGS,
-      maxActiveRuns: 2,
-      maxGlobalConcurrentAgents: 1,
-      maxConcurrentAgents: 1,
-    });
-    harnesses.push(test.harness);
-    const first = await test.start(source(`return await agent("first");`));
-    const second = await test.start(source(`return await agent("second");`));
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      await test.service.stop(second.id);
-      test.service.onThreadIdle("child-1", "done");
-
-      await eventually(() => {
-        expect(getRunRequired(test.db, first.id).status).toBe("succeeded");
-        expect(getRunRequired(test.db, second.id).status).toBe("cancelled");
-      });
-      expect(test.childCount()).toBe(1);
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("reports declared context requirements against runtime-observed capacity", async () => {
-    const test = setup({
-      ...DEFAULT_WORKFLOW_SETTINGS,
-      maxGlobalConcurrentAgents: 4,
-    });
-    harnesses.push(test.harness);
-    const run = await test.start(
-      source(
-        `return await Promise.all([
-        agent("untracked"),
-        agent("unknown", { contextRequirement: { minimumTokens: 500000 } }),
-        agent("fit", { contextRequirement: { minimumTokens: 1000000 } }),
-        agent("undersized", { contextRequirement: { minimumTokens: 1000000 } }),
-      ]);`,
-        "context-fit",
-      ),
-    );
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(4));
-      test.setContextUsage("child-3", {
-        usedTokens: 300_000,
-        modelContextWindow: 1_000_000,
-        estimated: false,
-      });
-      test.setContextUsage("child-4", {
-        usedTokens: 180_000,
-        modelContextWindow: 258_400,
-        estimated: true,
-      });
-
-      for (let index = 1; index <= 4; index += 1) {
-        test.service.onThreadIdle(`child-${index}`, `result-${index}`);
-      }
-      await eventually(() =>
-        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
-      );
-
-      await eventually(() =>
-        expect(test.service.inspect(run.id)!.calls).toMatchObject([
-          {
-            prompt: "untracked",
-            promptBytes: 9,
-            contextFit: "untracked",
-            observedModelContextWindow: null,
-          },
-          {
-            prompt: "unknown",
-            contextFit: "unknown",
-            options: { contextRequirement: { minimumTokens: 500_000 } },
-            observedModelContextWindow: null,
-          },
-          {
-            prompt: "fit",
-            contextFit: "fit",
-            observedContextUsedTokens: 300_000,
-            observedModelContextWindow: 1_000_000,
-            contextUsageEstimated: false,
-          },
-          {
-            prompt: "undersized",
-            contextFit: "undersized",
-            observedContextUsedTokens: 180_000,
-            observedModelContextWindow: 258_400,
-            contextUsageEstimated: true,
-          },
-        ]),
-      );
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("keeps context telemetry best-effort when the timeline is unavailable", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    test.failContextCapture();
-    const run = await test.start(
-      source(
-        `return await agent("work", {
-        contextRequirement: { minimumTokens: 1000000 }
-      });`,
-        "context-telemetry-failure",
-      ),
-    );
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      test.service.onThreadIdle("child-1", "done");
-      await eventually(() =>
-        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
-      );
-      expect(test.service.inspect(run.id)!.calls[0]).toMatchObject({
-        contextFit: "unknown",
-        observedContextUsedTokens: null,
-        observedModelContextWindow: null,
-      });
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("settles ordinary output while context telemetry remains pending", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    test.harness.sdk.stub(
-      "threads.timeline",
-      (() => new Promise<ThreadTimelineResult>(() => undefined)) as never,
-    );
-    const run = await test.start(source(`return await agent("work");`));
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      test.service.onThreadIdle("child-1", "done");
-      await eventually(() => {
-        expect(getRunRequired(test.db, run.id).status).toBe("succeeded");
-        expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded");
-      });
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it.each(["partial output", '{"answer":42}'])(
-    "does not repair or accept interrupted output: %s",
-    async (output) => {
-      const test = setup();
-      harnesses.push(test.harness);
-      test.harness.sdk.stub("threads.events.list", async () => [
-        {
-          id: "event-manual",
-          threadId: "child-1",
-          seq: 2,
-          createdAt: Date.now(),
-          scope: { kind: "thread" },
-          type: "system/thread/interrupted",
-          data: { reason: "manual-stop" },
-        },
-      ]);
-      const run = await test.start(
-        source(`return await agent("structured", {
-      outputSchema: { type: "object", required: ["answer"], properties: { answer: { type: "number" } } }
-    });`),
-      );
-      const controller = new AbortController();
-      const worker = test.service.runWorker(controller.signal);
-      try {
-        await eventually(() => expect(test.childCount()).toBe(1));
-        test.service.onThreadIdle("child-1", output);
-        await eventually(() =>
-          expect(getRunRequired(test.db, run.id).status).toBe("failed"),
-        );
-        expect(getCall(test.db, run.id, 0)).toMatchObject({
-          status: "failed",
-          repairAttempts: 0,
-          resultJson: null,
-        });
-        expect(
-          test.harness.sdk
-            .callsTo("threads.send")
-            .filter(
-              ([args]) =>
-                typeof args === "object" &&
-                args !== null &&
-                "threadId" in args &&
-                args.threadId === "child-1",
-            ),
-        ).toHaveLength(0);
-        expect(test.acceptedWorkflowWorkerStops).toHaveLength(0);
-      } finally {
-        controller.abort();
-        await worker;
-      }
-    },
-  );
-
-  it("rejects a first structured result after manual stop before idle handling", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    let release: () => void = () => {
-      throw new Error("Boundary not reached");
-    };
-    let reached: () => void = () => {};
-    const boundaryReached = new Promise<void>((resolve) => {
-      reached = resolve;
-    });
-    test.harness.sdk.stub("threads.events.list", async () => {
-      await new Promise<void>((resolve) => {
-        release = resolve;
-        reached();
-      });
-      return [
-        {
-          id: "event-manual",
-          threadId: "child-1",
-          seq: 2,
-          createdAt: Date.now(),
-          scope: { kind: "thread" },
-          type: "system/thread/interrupted",
-          data: { reason: "manual-stop" },
-        },
-      ];
-    });
-    const run = await test.start(
-      source(`
-      await agent("structured", { outputSchema: { type: "object" } });
-      return await agent("must not launch");
-    `),
-    );
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      const submission = test.service.submitStructuredResult("child-1", {
-        answer: 42,
-      });
-      await boundaryReached;
-      expect(getCall(test.db, run.id, 0)?.status).toBe("running");
-      release();
-      await expect(submission).resolves.toMatchObject({
-        ok: false,
-        terminal: true,
-      });
-      await eventually(() =>
-        expect(getRunRequired(test.db, run.id).status).toBe("failed"),
-      );
-      expect(test.childCount()).toBe(1);
-      expect(getCall(test.db, run.id, 0)?.resultJson).toBeNull();
-      expect(test.acceptedWorkflowWorkerStops).toHaveLength(0);
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("accepts structured output while context telemetry remains pending", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    test.harness.sdk.stub(
-      "threads.timeline",
-      (() => new Promise<ThreadTimelineResult>(() => undefined)) as never,
-    );
-    const run = await test.start(
-      source(`return await agent("structured", {
-        outputSchema: {
-          type: "object",
-          required: ["answer"],
-          properties: { answer: { type: "number" } }
-        }
-      });`),
-    );
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      await expect(
-        test.service.submitStructuredResult("child-1", { answer: 42 }),
-      ).resolves.toEqual({ ok: true });
-      await eventually(() => {
-        expect(getRunRequired(test.db, run.id).status).toBe("succeeded");
-        expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded");
-      });
-      const call = getCall(test.db, run.id, 0)!;
-      expect(test.acceptedWorkflowWorkerStops).toEqual([
-        {
-          acceptance: "accepted",
-          callId: call.id,
-          childThreadId: "child-1",
-          resultSha256: createHash("sha256")
-            .update(call.resultJson!)
-            .digest("hex"),
-          runId: run.id,
-        },
-      ]);
-      expect(test.harness.sdk.callsTo("threads.stop")).toHaveLength(0);
-    } finally {
-      controller.abort();
-      await worker;
-    }
-  });
-
-  it("uses cleanup provenance for idempotent structured output resubmission", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const run = await test.start(
-      source(`return await agent("structured", {
-        outputSchema: {
-          type: "object",
-          required: ["answer"],
-          properties: { answer: { type: "number" } }
-        }
-      });`),
-    );
-    const controller = new AbortController();
-    const worker = test.service.runWorker(controller.signal);
-    try {
-      await eventually(() => expect(test.childCount()).toBe(1));
-      await expect(
-        test.service.submitStructuredResult("child-1", { answer: 42 }),
-      ).resolves.toEqual({ ok: true });
-      await expect(
-        test.service.submitStructuredResult("child-1", { answer: 42 }),
-      ).resolves.toEqual({ ok: true });
-      const call = getCall(test.db, run.id, 0)!;
-      const resultSha256 = createHash("sha256")
-        .update(call.resultJson!)
-        .digest("hex");
-      expect(test.acceptedWorkflowWorkerStops).toEqual([
-        {
-          acceptance: "accepted",
-          callId: call.id,
-          childThreadId: "child-1",
-          resultSha256,
-          runId: run.id,
-        },
-        {
-          acceptance: "idempotent",
-          callId: call.id,
-          childThreadId: "child-1",
-          resultSha256,
-          runId: run.id,
-        },
-      ]);
-      expect(
-        await test.service.submitStructuredResult("child-1", { answer: 7 }),
-      ).toEqual({
-        ok: false,
-        terminal: true,
-        error:
-          "A different structured result was already accepted for this workflow call",
-      });
-      expect(test.acceptedWorkflowWorkerStops).toHaveLength(2);
-    } finally {
-      controller.abort();
-      await worker;
-    }
   });
 
   it.each([
@@ -1642,12 +939,6 @@ describe("workflow service policy integration", () => {
     const run = await test.start(
       source(`return await agent("never");`, "signal-run"),
     );
-    expect(run).toMatchObject({
-      originThreadId: "origin",
-      presentationThreadId: "origin",
-      parentRunId: null,
-      rootRunId: run.id,
-    });
     expect(signalsFor("origin")).toHaveLength(1);
     const controller = new AbortController();
     const worker = test.service.runWorker(controller.signal);
@@ -1663,482 +954,37 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("surfaces a hidden origin on its nearest visible ancestor without duplicate signals", async () => {
+  it("publishes a workflow-runs signal for phase and call progress, not only run lifecycle", async () => {
     const test = setup();
     harnesses.push(test.harness);
-    test.setThread("root-visible", { visibility: "visible" });
-    test.setThread("middle-hidden", {
-      visibility: "hidden",
-      parentThreadId: "root-visible",
-    });
-    test.setThread("worker-hidden", {
-      visibility: "hidden",
-      parentThreadId: "middle-hidden",
-    });
-
-    const run = await test.start(source("return null", "hidden-origin"), {
-      originThreadId: "worker-hidden",
-    });
-    const runSignals = test.harness.realtimeSignals.filter(
-      (signal) => signal.channel === "workflow-runs",
+    const signalCount = () =>
+      test.harness.realtimeSignals.filter(
+        (signal) =>
+          signal.channel === "workflow-runs" &&
+          (signal.payload as { threadId?: unknown }).threadId === "origin",
+      ).length;
+    const run = await test.start(
+      source(`phase("Review"); return await agent("one");`, "progress-run"),
     );
-
-    expect(run).toMatchObject({
-      originThreadId: "worker-hidden",
-      presentationThreadId: "root-visible",
-      parentRunId: null,
-      rootRunId: run.id,
-    });
-    expect(
-      runSignals.map(
-        (signal) => (signal.payload as { threadId: string }).threadId,
-      ),
-    ).toEqual(["worker-hidden", "root-visible"]);
-  });
-
-  it("inherits presentation and root IDs when a workflow worker launches a nested run", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const parent = await test.start(source("return null", "causal-parent"));
-    expect(claimQueuedRun(test.db, 4)?.id).toBe(parent.id);
-    const parentCall = startCall(test.db, {
-      runId: parent.id,
-      callIndex: 0,
-      cacheKey: "causal-child",
-      prompt: "launch nested workflow",
-      options: {
-        selection: null,
-        outputSchema: null,
-        contextRequirement: null,
-        contextProfile: null,
-        title: null,
-        phase: null,
-      },
-      selection: {
-        providerId: "codex",
-        model: "gpt-test",
-        reasoningLevel: "medium",
-        permissionMode: "full",
-      },
-      replay: null,
-    });
-    expect(attachCallThread(test.db, parentCall.id, "nested-worker")).toBe(
-      true,
+    const afterStart = signalCount();
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    await eventually(() =>
+      expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
     );
-    test.setThread("nested-worker", {
-      visibility: "hidden",
-      parentThreadId: "unrelated-visible-parent",
-    });
+    expect(signalCount()).toBeGreaterThanOrEqual(afterStart + 4);
 
-    const nested = await test.start(source("return null", "causal-child"), {
-      originThreadId: "nested-worker",
-    });
-
-    expect(nested).toMatchObject({
-      originThreadId: "nested-worker",
-      presentationThreadId: "origin",
-      parentRunId: parent.id,
-      rootRunId: parent.id,
-      campaignId: parent.campaignId,
-    });
-  });
-
-  it("aggregates independent continuations by explicit campaign without changing causal lineage", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(source("return null", "campaign-plan"));
-    const second = await test.start(source("return null", "campaign-build"), {
-      campaignId: first.campaignId,
-    });
-
-    expect(first.campaignId).toBe(first.id);
-    expect(second).toMatchObject({
-      campaignId: first.campaignId,
-      parentRunId: null,
-      rootRunId: second.id,
-      presentationThreadId: first.presentationThreadId,
-    });
-    expect(
-      test.service.inspectCampaign(first.id)?.runs.map(({ run }) => run.id),
-    ).toEqual([first.id, second.id]);
-    await expect(
-      test.start(source("return null", "unknown-campaign"), {
-        campaignId: "build:unknown",
-      }),
-    ).rejects.toThrow(/unknown workflow campaign/i);
-    test.db
-      .prepare(
-        "UPDATE workflow_runs SET presentation_thread_id = ? WHERE id = ?",
-      )
-      .run("other-presentation", second.id);
-    expect(() => test.service.inspectCampaign(first.id)).toThrow(
-      /campaign scope is inconsistent/i,
+    const beforeSettle = signalCount();
+    test.service.onThreadIdle("child-1", "done");
+    await eventually(() =>
+      expect(getCall(test.db, run.id, 0)?.status).toBe("succeeded"),
     );
-  });
-
-  it("bounds campaign checkpoint hydration while retaining every run summary", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const runs = [await test.start(source("return null", "campaign-root"))];
-    for (let index = 1; index < 6; index += 1) {
-      runs.push(
-        await test.start(source("return null", `campaign-run-${index}`), {
-          campaignId: runs[0]!.campaignId,
-        }),
-      );
-    }
-    test.db
-      .prepare(
-        `INSERT INTO workflow_checkpoints (
-           id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
-           ordinal, created_at, updated_at
-         ) VALUES (?, ?, ?, ?, NULL, NULL, 0, 1, 1)`,
-      )
-      .run("wcp_omitted_invalid", runs[1]!.id, "invalid", "not-json");
-
-    const campaign = test.service.inspectCampaign(runs[0]!.id);
-    expect(campaign).not.toBeNull();
-    expect(campaign?.runs).toHaveLength(runs.length);
-    expect(campaign?.detailedRunLimit).toBe(
-      MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
+    expect(signalCount()).toBeGreaterThan(beforeSettle);
+    await eventually(() =>
+      expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
     );
-    expect(campaign?.omittedCheckpointRunCount).toBe(2);
-    expect(
-      campaign?.runs
-        .filter((entry) => !entry.checkpointsOmitted)
-        .map((entry) => entry.run.id),
-    ).toEqual([runs[0]!.id, ...runs.slice(-3).map((run) => run.id)]);
-    expect(campaign?.runs.map((entry) => entry.run.id)).toEqual(
-      runs.map((run) => run.id),
-    );
-    expect(test.service.inspectCampaign(runs[1]!.id)?.runs).toHaveLength(
-      runs.length,
-    );
-  });
-
-  it("derives acceptance coverage from the full ledger past hydration bounds", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const runs = [await test.start(source("return null", "coverage-root"))];
-    for (let index = 1; index < 6; index += 1) {
-      runs.push(
-        await test.start(source("return null", `coverage-run-${index}`), {
-          campaignId: runs[0]!.campaignId,
-        }),
-      );
-    }
-    let ordinal = 0;
-    const publish = (runId: string, checkpoint: WorkflowCheckpoint) => {
-      ordinal += 1;
-      test.db
-        .prepare(
-          `INSERT INTO workflow_checkpoints (
-             id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
-             ordinal, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, NULL, NULL, ?, 1, 1)`,
-        )
-        .run(
-          `wcp_${ordinal}`,
-          runId,
-          checkpoint.id,
-          JSON.stringify(checkpoint),
-          ordinal,
-        );
-    };
-
-    // The contract and the opening plan live on a run old enough that bounded
-    // hydration drops its checkpoints. Coverage must still see them, which is
-    // why it reads the ledger directly instead of the hydrated campaign view.
-    publish(runs[1]!.id, {
-      kind: "acceptance",
-      id: "phase-0",
-      title: "Phase 0 acceptance",
-      status: "succeeded",
-      summary: null,
-      criteria: [
-        {
-          id: "cli-runs-two-cases",
-          statement: "An engineer runs two synthetic cases from one command.",
-          provenBy: "command",
-          detail: null,
-        },
-        {
-          id: "sealed-result",
-          statement: "A cancelled job still yields a sealed result.",
-          provenBy: "artifact",
-          detail: null,
-        },
-      ],
-    });
-    publish(runs[1]!.id, {
-      kind: "plan",
-      id: "plan-run-1",
-      title: "Selected plan",
-      status: "succeeded",
-      summary: null,
-      detail: null,
-      items: [
-        {
-          id: "containment",
-          title: "Containment proof",
-          objective: "Precondition for running anything remotely.",
-          detail: null,
-          ticketRef: null,
-          nodeType: "gate",
-        },
-      ],
-    });
-    publish(runs[1]!.id, {
-      kind: "work-item",
-      id: "containment",
-      title: "Containment proof",
-      status: "succeeded",
-      summary: null,
-      ticketRef: null,
-      changedFiles: [],
-      blocker: null,
-    });
-    publish(runs[5]!.id, {
-      kind: "plan",
-      id: "plan-run-6",
-      title: "Selected plan",
-      status: "running",
-      summary: null,
-      detail: null,
-      items: [
-        {
-          id: "fae-remote",
-          title: "Add the remote command",
-          objective: "Expose the two synthetic cases.",
-          detail: null,
-          ticketRef: null,
-          satisfies: ["cli-runs-two-cases"],
-        },
-        {
-          id: "sealing",
-          title: "Seal results",
-          objective: "Seal a result even on cancellation.",
-          detail: null,
-          ticketRef: null,
-          satisfies: ["sealed-result"],
-        },
-      ],
-    });
-    publish(runs[5]!.id, {
-      kind: "verification",
-      id: "verify-remote",
-      title: "Two synthetic cases",
-      status: "succeeded",
-      summary: null,
-      workItemId: "fae-remote",
-      acceptanceId: "cli-runs-two-cases",
-      command: "pnpm fae remote",
-      counts: { passed: 2, failed: 0, skipped: 0 },
-    });
-
-    const campaign = test.service.inspectCampaign(runs[0]!.id);
-    expect(
-      campaign?.runs.find((entry) => entry.run.id === runs[1]!.id)
-        ?.checkpointsOmitted,
-    ).toBe(true);
-    expect(campaign?.coverageTruncated).toBe(false);
-    expect(campaign?.coverage?.acceptanceId).toBe("phase-0");
-    expect(
-      campaign?.coverage?.criteria.map((criterion) => [
-        criterion.id,
-        criterion.state,
-      ]),
-    ).toEqual([
-      ["cli-runs-two-cases", "closed"],
-      ["sealed-result", "in-flight"],
-    ]);
-    // The containment gate succeeded and satisfies nothing: legitimate
-    // precondition work, and not evidence that an outcome moved.
-    expect(campaign?.coverage?.orphanWorkItemIds).toEqual(["containment"]);
-    expect(campaign?.coverage?.unanchoredProgress).toBe(false);
-  });
-
-  it("fails campaign inspection closed on project scope corruption", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(source("return null", "campaign-project"));
-    const second = await test.start(
-      source("return null", "campaign-project-2"),
-      {
-        campaignId: first.campaignId,
-      },
-    );
-    test.db
-      .prepare("UPDATE workflow_runs SET project_id = ? WHERE id = ?")
-      .run("other-project", second.id);
-    expect(() => test.service.inspectCampaign(first.id)).toThrow(
-      /campaign scope is inconsistent/i,
-    );
-  });
-
-  it("fails campaign inspection closed on environment scope corruption", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(
-      source("return null", "campaign-environment"),
-    );
-    const second = await test.start(
-      source("return null", "campaign-environment-2"),
-      { campaignId: first.campaignId },
-    );
-    test.db
-      .prepare("UPDATE workflow_runs SET environment_id = ? WHERE id = ?")
-      .run("other-environment", second.id);
-    expect(() => test.service.inspectCampaign(first.id)).toThrow(
-      /campaign scope is inconsistent/i,
-    );
-  });
-
-  it("rejects independent campaign continuation from an unrelated thread tree", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(source("return null", "campaign-origin"));
-    test.setThread("unrelated-root", { visibility: "visible" });
-    await expect(
-      test.start(source("return null", "unrelated-continuation"), {
-        originThreadId: "unrelated-root",
-        campaignId: first.campaignId,
-      }),
-    ).rejects.toThrow(/must be the origin or one of its ancestors/i);
-  });
-
-  it("rejects resuming a campaign from an unrelated thread tree", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(source("return null", "resume-origin"));
-    settleRun(test.db, {
-      id: first.id,
-      status: "succeeded",
-      result: null,
-      error: null,
-    });
-    test.setThread("unrelated-resume-root", { visibility: "visible" });
-    await expect(
-      test.start(source("return null", "unrelated-resume"), {
-        originThreadId: "unrelated-resume-root",
-        resumedFromRunId: first.id,
-      }),
-    ).rejects.toThrow(/must be the origin or one of its ancestors/i);
-  });
-
-  it("rejects an existing campaign presentation mismatch", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(
-      source("return null", "campaign-presentation"),
-    );
-    test.setThread("alternate-visible", {
-      visibility: "visible",
-      parentThreadId: "origin",
-    });
-    test.setThread("alternate-child", {
-      visibility: "hidden",
-      parentThreadId: "alternate-visible",
-    });
-    await expect(
-      test.start(source("return null", "presentation-mismatch"), {
-        originThreadId: "alternate-child",
-        campaignId: first.campaignId,
-        presentationThreadId: "alternate-visible",
-      }),
-    ).rejects.toThrow(/campaign must use one presentation thread/i);
-  });
-
-  it("rejects explicit campaign conflicts with causal and resumed lineage", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const parent = await test.start(source("return null", "lineage-parent"));
-    const other = await test.start(source("return null", "other-campaign"));
-    expect(claimQueuedRun(test.db, 4)?.id).toBe(parent.id);
-    const parentCall = startCall(test.db, {
-      runId: parent.id,
-      callIndex: 0,
-      cacheKey: "lineage-conflict",
-      prompt: "launch conflicting nested workflow",
-      options: {
-        selection: null,
-        outputSchema: null,
-        contextRequirement: null,
-        contextProfile: null,
-        title: null,
-        phase: null,
-      },
-      selection: {
-        providerId: "codex",
-        model: "gpt-test",
-        reasoningLevel: "medium",
-        permissionMode: "full",
-      },
-      replay: null,
-    });
-    expect(attachCallThread(test.db, parentCall.id, "conflicting-child")).toBe(
-      true,
-    );
-    test.setThread("conflicting-child", {
-      visibility: "hidden",
-      parentThreadId: "origin",
-    });
-    await expect(
-      test.start(source("return null", "causal-conflict"), {
-        originThreadId: "conflicting-child",
-        campaignId: other.campaignId,
-      }),
-    ).rejects.toThrow(/campaign must match its causal parent/i);
-
-    settleRun(test.db, {
-      id: parent.id,
-      status: "succeeded",
-      result: null,
-      error: null,
-    });
-    await expect(
-      test.start(source("return null", "resume-conflict"), {
-        resumedFromRunId: parent.id,
-        campaignId: other.campaignId,
-      }),
-    ).rejects.toThrow(/campaign must match.*resumed run/i);
-  });
-
-  it("atomically caps a campaign at the UI contract run limit", async () => {
-    const test = setup();
-    harnesses.push(test.harness);
-    const first = await test.start(source("return null", "campaign-limit"));
-    for (
-      let index = 1;
-      index < MAX_WORKFLOW_RUNS_PER_CAMPAIGN - 1;
-      index += 1
-    ) {
-      await test.start(source("return null", `campaign-limit-${index}`), {
-        campaignId: first.campaignId,
-      });
-    }
-    const boundary = await Promise.allSettled([
-      test.start(source("return null", "campaign-limit-racer-a"), {
-        campaignId: first.campaignId,
-      }),
-      test.start(source("return null", "campaign-limit-racer-b"), {
-        campaignId: first.campaignId,
-      }),
-    ]);
-    expect(boundary.map((result) => result.status).sort()).toEqual([
-      "fulfilled",
-      "rejected",
-    ]);
-    expect(test.service.inspectCampaign(first.id)?.runs).toHaveLength(
-      MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
-    );
-    await expect(
-      test.start(source("return null", "campaign-limit-101"), {
-        campaignId: first.campaignId,
-      }),
-    ).rejects.toThrow(
-      new RegExp(`cannot exceed ${MAX_WORKFLOW_RUNS_PER_CAMPAIGN} runs`, "i"),
-    );
+    controller.abort();
+    await worker;
   });
 
   it("does not create or orphan a call when cancellation wins catalog or spawn", async () => {
@@ -2263,10 +1109,6 @@ describe("workflow service policy integration", () => {
         `UPDATE workflow_runs SET status = 'succeeded', result_json = 'null', finished_at = ? WHERE id = ?`,
       )
       .run(Date.now(), ancestor.id);
-    test.setThread("origin-2", {
-      visibility: "hidden",
-      parentThreadId: "origin",
-    });
     await expect(
       test.service.start({
         projectId: "project-test",
@@ -2293,97 +1135,77 @@ describe("workflow service policy integration", () => {
     ).rejects.toThrow("different environment or workspace");
   });
 
-  it("reconciles missed idle and deleted events from persisted running calls", async () => {
-    const idle = setup();
-    harnesses.push(idle.harness);
-    const idleRun = await idle.start(source(`return await agent("idle");`));
-    const idleController = new AbortController();
-    const idleWorker = idle.service.runWorker(idleController.signal);
-    await eventually(() => expect(idle.childCount()).toBe(1));
-    idle.workers.set("child-1", {
-      status: "idle",
-      output: "reconciled",
-      deleted: false,
-    });
-    idle.db
-      .prepare(
-        `UPDATE workflow_calls SET last_activity_at = ? WHERE run_id = ?`,
-      )
-      .run(Date.now() - 2_000_000, idleRun.id);
-    await eventually(() =>
-      expect(getRunRequired(idle.db, idleRun.id).status).toBe("succeeded"),
-    );
-    idleController.abort();
-    await idleWorker;
-
-    const deleted = setup();
-    harnesses.push(deleted.harness);
-    const deletedRun = await deleted.start(
-      source(`return await agent("deleted");`),
-    );
-    const deletedController = new AbortController();
-    const deletedWorker = deleted.service.runWorker(deletedController.signal);
-    await eventually(() => expect(deleted.childCount()).toBe(1));
-    deleted.workers.get("child-1")!.deleted = true;
-    await eventually(() => {
-      const run = getRunRequired(deleted.db, deletedRun.id);
-      expect(run.status).toBe("failed");
-      expect(run.error).toContain("deleted");
-    });
-    deletedController.abort();
-    await deletedWorker;
-
-    const errored = setup();
-    harnesses.push(errored.harness);
-    const erroredRun = await errored.start(
-      source(`return await agent("errored");`),
-    );
-    const errorController = new AbortController();
-    const errorWorker = errored.service.runWorker(errorController.signal);
-    await eventually(() => expect(errored.childCount()).toBe(1));
-    errored.workers.get("child-1")!.status = "error";
-    await eventually(() => {
-      const run = getRunRequired(errored.db, erroredRun.id);
-      expect(run.status).toBe("failed");
-      expect(run.error).toContain("error state");
-    });
-    errorController.abort();
-    await errorWorker;
-  });
-
   it("keeps quiet workers alive until the total run timeout", async () => {
     const test = setup();
     harnesses.push(test.harness);
     const run = await test.start(source(`return await agent("quiet");`));
     const controller = new AbortController();
+    vi.useFakeTimers();
     const worker = test.service.runWorker(controller.signal);
-    await eventually(() => expect(test.childCount()).toBe(1));
-    test.db
-      .prepare(
-        `UPDATE workflow_calls SET last_activity_at = ? WHERE run_id = ?`,
-      )
-      .run(Date.now() - 2_000_000, run.id);
-    await new Promise((resolve) => setTimeout(resolve, 1_200));
-    expect(getRunRequired(test.db, run.id)).toMatchObject({
-      status: "running",
-      error: null,
-    });
-    expect(getCall(test.db, run.id, 0)).toMatchObject({
-      status: "running",
-      error: null,
-    });
+    try {
+      await vi.waitFor(() => expect(test.childCount()).toBe(1), {
+        timeout: 4_000,
+      });
+      test.db
+        .prepare(
+          `UPDATE workflow_calls SET last_activity_at = ? WHERE run_id = ?`,
+        )
+        .run(Date.now() - 2_000_000, run.id);
+      await vi.advanceTimersByTimeAsync(1_200);
+      expect(getRunRequired(test.db, run.id)).toMatchObject({
+        status: "running",
+        error: null,
+      });
+      expect(getCall(test.db, run.id, 0)).toMatchObject({
+        status: "running",
+        error: null,
+      });
 
-    test.db
-      .prepare(`UPDATE workflow_runs SET started_at = ? WHERE id = ?`)
-      .run(Date.now() - 90_000_000, run.id);
-    await eventually(() => {
-      const timedOutRun = getRunRequired(test.db, run.id);
-      expect(timedOutRun.status).toBe("failed");
-      expect(timedOutRun.error).toContain("run timed out");
-      expect(timedOutRun.error).not.toContain("Cancelled");
-    });
-    controller.abort();
-    await worker;
+      test.db
+        .prepare(`UPDATE workflow_runs SET started_at = ? WHERE id = ?`)
+        .run(Date.now() - 90_000_000, run.id);
+      await vi.waitFor(
+        () => {
+          const timedOutRun = getRunRequired(test.db, run.id);
+          expect(timedOutRun.status).toBe("failed");
+          expect(timedOutRun.error).toContain("run timed out");
+          expect(timedOutRun.error).not.toContain("Cancelled");
+        },
+        { timeout: 4_000 },
+      );
+    } finally {
+      controller.abort();
+      try {
+        await worker;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("fails an archived worker once when its lifecycle event arrives", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source(`return await agent("work");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
+      );
+      test.service.onThreadArchived("child-1");
+      test.service.onThreadArchived("child-1");
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("failed"),
+      );
+      expect(getCall(test.db, run.id, 0)).toMatchObject({
+        status: "failed",
+        error: "Workflow worker was archived",
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
   });
 
   it("leaves clean shutdown state recoverable without a false notification", async () => {
@@ -2480,6 +1302,508 @@ describe("workflow service policy integration", () => {
     });
   });
 
+  it.each([1, 2])(
+    "retries a transient origin lookup before execution check %s",
+    async (failingCheck) => {
+      const test = setup();
+      harnesses.push(test.harness);
+      const run = await test.start(source('return await agent("work");'));
+      let checks = 0;
+      test.harness.sdk.stub("threads.get", async ({ threadId }) => {
+        if (threadId === "origin") {
+          checks++;
+          if (checks === failingCheck)
+            throw Object.assign(new Error("connection reset"), {
+              code: "ECONNRESET",
+            });
+        }
+        return { id: threadId, archivedAt: null, status: "active" } as never;
+      });
+      const controller = new AbortController();
+      const worker = test.service.runWorker(controller.signal);
+      try {
+        await eventually(() => expect(test.childCount()).toBe(1));
+        expect(getRunRequired(test.db, run.id).status).toBe("running");
+        test.service.onThreadIdle("child-1", "done");
+        await eventually(() =>
+          expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+        );
+      } finally {
+        controller.abort();
+        await worker;
+      }
+    },
+  );
+
+  it("discovers workers once and skips origins of backed-off notifications", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source('return "done";'));
+    test.db
+      .prepare(
+        "UPDATE workflow_runs SET status = 'succeeded', notification_next_attempt_at = ? WHERE id = ?",
+      )
+      .run(Date.now() + 60_000, run.id);
+    test.harness.sdk.stub(
+      "threads.list",
+      async () => [{ id: "legacy-worker" }] as never,
+    );
+    test.harness.sdk.stub("threads.getPluginMetadata", async () => ({}));
+    const originCallsBefore = test.harness.sdk.callsTo("threads.get").length;
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await vi.waitFor(
+        () =>
+          expect(
+            test.harness.sdk.callsTo("threads.getPluginMetadata"),
+          ).toHaveLength(1),
+        { timeout: 4_000 },
+      );
+      await vi.advanceTimersByTimeAsync(2_200);
+      expect(test.harness.sdk.callsTo("threads.list")).toHaveLength(1);
+      expect(
+        test.harness.sdk.callsTo("threads.getPluginMetadata"),
+      ).toHaveLength(1);
+      expect(test.harness.sdk.callsTo("threads.get")).toHaveLength(
+        originCallsBefore,
+      );
+      expect(getRunRequired(test.db, run.id).notificationSent).toBe(false);
+    } finally {
+      controller.abort();
+      try {
+        await worker;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("reconciles origins at startup without polling", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source(`return await agent("work");`));
+    const originGets = () =>
+      test.harness.sdk.callsTo("threads.get").filter((args) => {
+        const first = args[0];
+        return (
+          typeof first === "object" &&
+          first !== null &&
+          "threadId" in first &&
+          first.threadId === "origin"
+        );
+      }).length;
+    const controller = new AbortController();
+    vi.useFakeTimers();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await vi.waitFor(
+        () =>
+          expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
+        { timeout: 4_000 },
+      );
+      const before = originGets();
+      await vi.advanceTimersByTimeAsync(2_200);
+      expect(getRunRequired(test.db, run.id).status).toBe("running");
+      expect(originGets() - before).toBeLessThanOrEqual(1);
+    } finally {
+      controller.abort();
+      try {
+        await worker;
+      } finally {
+        vi.useRealTimers();
+      }
+    }
+  });
+
+  it("keeps cleanup pending after stop fails and completes it after restart", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    expiredRunWithWorkers(test.db, "stop-failure", ["worker-stop"]);
+    test.harness.sdk.stub("threads.stop", async () => {
+      throw new Error("Host disconnected");
+    });
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(test.harness.sdk.callsTo("threads.stop").length).toBeGreaterThan(
+          0,
+        ),
+      );
+      expect(test.archived).toEqual([]);
+      expect(
+        test.db.prepare(`SELECT archived_at FROM workflow_workers`).get(),
+      ).toEqual({ archived_at: null });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+    test.harness.sdk.stub("threads.stop", async () => ({ ok: true }));
+    const restarted = createWorkflowService(test.bb, test.db);
+    const restartController = new AbortController();
+    const restartWorker = restarted.runWorker(restartController.signal);
+    try {
+      await eventually(() => expect(test.archived).toContain("worker-stop"));
+    } finally {
+      restartController.abort();
+      await restartWorker;
+    }
+  });
+
+  it("owns and archives every retry attempt before history expires", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source(`return await agent("retry");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
+      );
+      test.service.onThreadFailed("child-1", "HTTP 500: Internal server error");
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-2"),
+      );
+      test.service.onThreadIdle("child-2", "done");
+      await eventually(() =>
+        expect(test.archived).toEqual(
+          expect.arrayContaining(["child-1", "child-2"]),
+        ),
+      );
+      expect(getRunRequired(test.db, run.id).status).toBe("succeeded");
+      expect(
+        test.db
+          .prepare(`SELECT thread_id FROM workflow_workers ORDER BY thread_id`)
+          .all(),
+      ).toEqual([{ thread_id: "child-1" }, { thread_id: "child-2" }]);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("cancels in-flight work and retains history when the origin is archived", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(source(`return await agent("work");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.childThreadId).toBe("child-1"),
+      );
+      test.archiveOrigin();
+      await test.service.onOriginUnavailable("origin");
+      await eventually(() => expect(test.archived).toContain("child-1"));
+      expect(getRunRequired(test.db, run.id)).toMatchObject({
+        status: "cancelled",
+        notificationOutcome: "abandoned",
+      });
+      expect(test.harness.sdk.callsTo("threads.send")).toHaveLength(0);
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("does not retire a discovered worker while its spawn response is pending", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let metadata: NonNullable<
+      Parameters<typeof test.bb.sdk.threads.spawn>[0]["pluginMetadata"]
+    > = {};
+    test.harness.sdk.stub(
+      "threads.spawn",
+      async (args: Parameters<typeof test.bb.sdk.threads.spawn>[0]) => {
+        metadata = args.pluginMetadata!;
+        await gate;
+        return { id: "spawning-worker" } as never;
+      },
+    );
+    test.harness.sdk.stub("threads.list", async () =>
+      metadata.workflowWorker ? ([{ id: "spawning-worker" }] as never) : [],
+    );
+    test.harness.sdk.stub("threads.getPluginMetadata", async () => metadata);
+    const run = await test.start(
+      source(`return await agent("pending spawn");`),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(metadata.workflowWorker).toBe(1));
+      expect(
+        test.db.prepare(`SELECT thread_id FROM workflow_workers`).get(),
+      ).toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(test.archived).toEqual([]);
+      release();
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)?.childThreadId).toBe(
+          "spawning-worker",
+        ),
+      );
+      expect(test.harness.sdk.callsTo("threads.stop")).toHaveLength(0);
+      test.service.onThreadIdle("spawning-worker", "done");
+      await eventually(() =>
+        expect(test.archived).toContain("spawning-worker"),
+      );
+    } finally {
+      release();
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("does not retire a worker that attaches while cleanup archives an earlier one", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    let releaseSpawn = () => {};
+    const spawnGate = new Promise<void>((resolve) => {
+      releaseSpawn = resolve;
+    });
+    let releaseStop = () => {};
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    let metadata: NonNullable<
+      Parameters<typeof test.bb.sdk.threads.spawn>[0]["pluginMetadata"]
+    > = {};
+    test.harness.sdk.stub(
+      "threads.spawn",
+      async (args: Parameters<typeof test.bb.sdk.threads.spawn>[0]) => {
+        metadata = args.pluginMetadata!;
+        await spawnGate;
+        return { id: "zz-live-worker" } as never;
+      },
+    );
+    test.harness.sdk.stub("threads.list", async () =>
+      metadata.workflowWorker ? ([{ id: "zz-live-worker" }] as never) : [],
+    );
+    test.harness.sdk.stub("threads.getPluginMetadata", async () => metadata);
+    test.harness.sdk.stub(
+      "threads.stop",
+      async ({ threadId }: { threadId: string }) => {
+        if (threadId === "aa-retired-worker") await stopGate;
+        return { ok: true } as never;
+      },
+    );
+    const stoppedThreads = () =>
+      test.harness.sdk
+        .callsTo("threads.stop")
+        .map(([args]) => (args as { threadId: string }).threadId);
+    const run = await test.start(source(`return await agent("live work");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(metadata.workflowWorker).toBe(1));
+      expect(
+        test.db.prepare(`SELECT thread_id FROM workflow_workers`).get(),
+      ).toBeUndefined();
+      expiredRunWithWorkers(test.db, "retired-run", ["aa-retired-worker"]);
+      await eventually(() =>
+        expect(stoppedThreads()).toContain("aa-retired-worker"),
+      );
+      releaseSpawn();
+      await eventually(() =>
+        expect(getCall(test.db, run.id, 0)).toMatchObject({
+          status: "running",
+          childThreadId: "zz-live-worker",
+        }),
+      );
+      releaseStop();
+      await eventually(() =>
+        expect(test.archived).toContain("aa-retired-worker"),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(stoppedThreads()).not.toContain("zz-live-worker");
+      expect(test.archived).not.toContain("zz-live-worker");
+      expect(getCall(test.db, run.id, 0)?.status).toBe("running");
+      test.service.onThreadIdle("zz-live-worker", "done");
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("succeeded"),
+      );
+      await eventually(() => expect(test.archived).toContain("zz-live-worker"));
+    } finally {
+      releaseSpawn();
+      releaseStop();
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("still archives an orphaned worker listed behind a slow stop", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    let releaseStop = () => {};
+    const stopGate = new Promise<void>((resolve) => {
+      releaseStop = resolve;
+    });
+    test.harness.sdk.stub(
+      "threads.stop",
+      async ({ threadId }: { threadId: string }) => {
+        if (threadId === "aa-retired-worker") await stopGate;
+        return { ok: true } as never;
+      },
+    );
+    expiredRunWithWorkers(test.db, "retired-run", ["aa-retired-worker"]);
+    ownWorker(
+      test.db,
+      "zz-orphan-worker",
+      "missing-run",
+      "missing-call",
+      "origin",
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(
+          test.harness.sdk
+            .callsTo("threads.stop")
+            .map(([args]) => (args as { threadId: string }).threadId),
+        ).toContain("aa-retired-worker"),
+      );
+      expect(test.archived).toEqual([]);
+      releaseStop();
+      await eventually(() =>
+        expect(test.archived).toEqual([
+          "aa-retired-worker",
+          "zz-orphan-worker",
+        ]),
+      );
+    } finally {
+      releaseStop();
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("owns a worker returned after cancellation wins the spawn race", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    test.harness.sdk.stub("threads.spawn", async () => {
+      await gate;
+      return { id: "late-worker" } as never;
+    });
+    const run = await test.start(source(`return await agent("late");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(test.harness.sdk.callsTo("threads.spawn")).toHaveLength(1),
+      );
+      test.archiveOrigin();
+      await test.service.onOriginUnavailable("origin");
+      release();
+      await eventually(() => expect(test.archived).toContain("late-worker"));
+      expect(getRunRequired(test.db, run.id).status).toBe("cancelled");
+    } finally {
+      release();
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("recovers metadata ownership after a spawn response is lost and the service restarts", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const metadata = new Map<
+      string,
+      NonNullable<
+        Parameters<typeof test.bb.sdk.threads.spawn>[0]["pluginMetadata"]
+      >
+    >();
+    test.harness.sdk.stub(
+      "threads.spawn",
+      async (args: Parameters<typeof test.bb.sdk.threads.spawn>[0]) => {
+        metadata.set("lost-worker", args.pluginMetadata!);
+        throw new Error("Spawn response lost");
+      },
+    );
+    const run = await test.start(source(`return await agent("lost");`));
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() =>
+        expect(getRunRequired(test.db, run.id).status).toBe("failed"),
+      );
+      expect(test.db.prepare(`SELECT * FROM workflow_workers`).all()).toEqual(
+        [],
+      );
+    } finally {
+      controller.abort();
+      await worker;
+    }
+    test.harness.sdk.stub(
+      "threads.list",
+      async () => [{ id: "lost-worker" }] as never,
+    );
+    test.harness.sdk.stub(
+      "threads.getPluginMetadata",
+      async ({ threadId }: { threadId: string }) => metadata.get(threadId)!,
+    );
+    const restarted = createWorkflowService(test.bb, test.db);
+    const restartController = new AbortController();
+    const restartWorker = restarted.runWorker(restartController.signal);
+    try {
+      await eventually(() => expect(test.archived).toContain("lost-worker"));
+      expect(
+        test.db
+          .prepare(
+            `SELECT archived_at FROM workflow_workers WHERE thread_id = 'lost-worker'`,
+          )
+          .get(),
+      ).toEqual({ archived_at: expect.any(Number) });
+    } finally {
+      restartController.abort();
+      await restartWorker;
+    }
+  });
+
+  it.each([true, false])(
+    "handles a notification 409 with archived origin = %s",
+    async (archived) => {
+      const test = setup();
+      harnesses.push(test.harness);
+      test.harness.sdk.stub("threads.send", async () => {
+        if (archived) test.archiveOrigin();
+        throw Object.assign(
+          new Error(archived ? "Thread is archived" : "Unrelated conflict"),
+          { status: 409 },
+        );
+      });
+      const run = await test.start(source(`return "done";`));
+      const controller = new AbortController();
+      const worker = test.service.runWorker(controller.signal);
+      try {
+        await eventually(() =>
+          expect(getRunRequired(test.db, run.id)).toMatchObject({
+            status: "succeeded",
+            notificationAttemptCount: 1,
+            notificationOutcome: archived ? "abandoned" : "pending",
+            notificationError: expect.any(String),
+          }),
+        );
+        expect(
+          getRunRequired(test.db, run.id).notificationNextAttemptAt,
+        ).toEqual(archived ? null : expect.any(Number));
+      } finally {
+        controller.abort();
+        await worker;
+      }
+    },
+  );
+
   it("permanently settles a missing-origin notification", async () => {
     const test = setup();
     harnesses.push(test.harness);
@@ -2526,7 +1850,7 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("keeps an expired run when one of its workers does not archive", async () => {
+  it("retains cleanup ownership after expired history is deleted and retries after restart", async () => {
     const test = setup();
     harnesses.push(test.harness);
     const expired = expiredRunWithWorkers(test.db, "sweep-retry", [
@@ -2538,10 +1862,29 @@ describe("workflow service policy integration", () => {
     const controller = new AbortController();
     const worker = test.service.runWorker(controller.signal);
     await eventually(() => expect(test.archived).toContain("worker-ok"));
-    expect(getRunRequired(test.db, expired).id).toBe(expired);
-
+    await eventually(() => expect(getRun(test.db, expired)).toBeNull());
     controller.abort();
     await worker;
+    expect(
+      test.db
+        .prepare(
+          `SELECT thread_id FROM workflow_workers WHERE archived_at IS NULL`,
+        )
+        .all(),
+    ).toEqual([{ thread_id: "worker-broken" }]);
+    test.allowArchive("worker-broken");
+    const restarted = createWorkflowService(test.bb, test.db);
+    const restartController = new AbortController();
+    const restartWorker = restarted.runWorker(restartController.signal);
+    try {
+      await eventually(() => expect(test.archived).toContain("worker-broken"));
+      expect(test.db.prepare(`SELECT * FROM workflow_workers`).all()).toEqual(
+        [],
+      );
+    } finally {
+      restartController.abort();
+      await restartWorker;
+    }
   });
 
   it("deletes expired resume chains leaf-first across bounded batches", () => {

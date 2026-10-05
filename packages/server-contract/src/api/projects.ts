@@ -186,17 +186,6 @@ export const projectPathsQuerySchema = z
   .superRefine(rejectMultipleWorkspaceSelectors);
 export type ProjectPathsQuery = z.infer<typeof projectPathsQuerySchema>;
 
-export const projectFileContentQuerySchema = z
-  .object({
-    ...projectWorkspaceRoutingFields,
-    path: z.string().min(1),
-  })
-  .partial({ hostId: true, environmentId: true })
-  .superRefine(rejectMultipleWorkspaceSelectors);
-export type ProjectFileContentQuery = z.infer<
-  typeof projectFileContentQuerySchema
->;
-
 export const projectBranchesQuerySchema = branchListQuerySchema
   .extend({
     hostId: z.string().min(1),
@@ -379,9 +368,6 @@ export const editableSkillScopeSchema = z.enum([
   "provider-project",
 ]);
 export type EditableSkillScope = z.infer<typeof editableSkillScopeSchema>;
-
-export const deletableSkillScopeSchema = editableSkillScopeSchema;
-export type DeletableSkillScope = z.infer<typeof deletableSkillScopeSchema>;
 
 export const deleteSkillRequestSchema = z
   .object({

@@ -20,41 +20,35 @@ type ThreadStatusShape = Pick<
 type ThreadRuntimeShape = Pick<ThreadWithRuntime, "runtime">;
 type ThreadActivityStateShape = Pick<ThreadListEntry, "activity">;
 
-export function isRuntimeBusyThread(thread: ThreadRuntimeShape): boolean {
+function isRuntimeBusyThread(thread: ThreadRuntimeShape): boolean {
   return isRunningThreadRuntimeDisplayStatus(thread.runtime.displayStatus);
 }
 
-export function hasActiveWorkflowActivity(
-  thread: ThreadActivityStateShape,
-): boolean {
+function hasActiveWorkflowActivity(thread: ThreadActivityStateShape): boolean {
   return thread.activity.activeWorkflowCount > 0;
 }
 
-export function hasActiveBackgroundAgentActivity(
+function hasActiveBackgroundAgentActivity(
   thread: ThreadActivityStateShape,
 ): boolean {
   return thread.activity.activeBackgroundAgentCount > 0;
 }
 
-export function hasActiveBackgroundCommandActivity(
+function hasActiveBackgroundCommandActivity(
   thread: ThreadActivityStateShape,
 ): boolean {
   return thread.activity.activeBackgroundCommandCount > 0;
 }
 
-export function hasActivePlanModeActivity(
-  thread: ThreadActivityStateShape,
-): boolean {
+function hasActivePlanModeActivity(thread: ThreadActivityStateShape): boolean {
   return thread.activity.activePlanModeCount > 0;
 }
 
-export function hasActiveGoalActivity(
-  thread: ThreadActivityStateShape,
-): boolean {
+function hasActiveGoalActivity(thread: ThreadActivityStateShape): boolean {
   return thread.activity.activeGoalCount > 0;
 }
 
-export function isBusyThread(
+function isBusyThread(
   thread: ThreadRuntimeShape & ThreadActivityStateShape,
 ): boolean {
   return (
@@ -128,9 +122,8 @@ export function getThreadListIndicatorLabel(
   return kind === "none" ? null : THREAD_LIST_INDICATOR_LABELS[kind];
 }
 
-export function hasThreadListWorkingActivity(
+function hasThreadListWorkingActivity(
   state: ThreadListIndicatorState,
-  hasRunningPluginStatus = false,
 ): boolean {
   return (
     state.isRuntimeActive ||
@@ -138,9 +131,28 @@ export function hasThreadListWorkingActivity(
     state.isBackgroundAgentActive ||
     state.isBackgroundCommandActive ||
     state.isPlanModeActive ||
-    state.isGoalActive ||
-    hasRunningPluginStatus
+    state.isGoalActive
   );
+}
+
+export function threadListIndicatorStateForThread(
+  thread: ThreadListEntry,
+  hasUnsubmittedDraft: boolean,
+): ThreadListIndicatorState {
+  const unreadDone = isUnreadDoneThread(thread);
+  return {
+    hasPendingInteraction: thread.hasPendingInteraction,
+    hasUnsubmittedDraft,
+    hasUnreadError: unreadDone && thread.status === "error",
+    hasUnreadSuccess: unreadDone && thread.status !== "error",
+    isBackgroundAgentActive: hasActiveBackgroundAgentActivity(thread),
+    isBackgroundCommandActive: hasActiveBackgroundCommandActivity(thread),
+    isGoalActive: hasActiveGoalActivity(thread),
+    queuedWork: thread.queuedWork,
+    isPlanModeActive: hasActivePlanModeActivity(thread),
+    isRuntimeActive: isRuntimeBusyThread(thread),
+    isWorkflowActive: hasActiveWorkflowActivity(thread),
+  };
 }
 
 export function resolveThreadListIndicator(
@@ -157,15 +169,10 @@ export function resolveThreadListIndicator(
   if (state.isWorkflowActive) return "workflow";
   if (state.isBackgroundAgentActive) return "background-agent";
   if (state.isBackgroundCommandActive) return "background-command";
-  // Queued work outranks a draft: the draft is the user's to send whenever,
-  // while a queued row is work already committed that has not run yet. It sits
-  // below every working arm above deliberately — a thread that is BOTH running
-  // and holding a queued follow-up is best described by what it is doing, and
-  // the queue rows above its composer say the rest.
   if (state.queuedWork === "failed") return "queued-failed";
+  if (state.hasUnreadSuccess) return "unread-success";
   if (state.queuedWork === "waiting") return "queued-waiting";
   if (state.hasUnsubmittedDraft) return "draft";
-  if (state.hasUnreadSuccess) return "unread-success";
   return "none";
 }
 
@@ -182,20 +189,6 @@ export interface CollapsedChildActivity {
   unread: boolean;
   unreadError: boolean;
 }
-
-export const NO_COLLAPSED_CHILD_ACTIVITY: CollapsedChildActivity = {
-  pending: false,
-  working: false,
-  hasUnsubmittedDraft: false,
-  runtimeWorking: false,
-  workflow: false,
-  backgroundAgent: false,
-  backgroundCommand: false,
-  planMode: false,
-  goal: false,
-  unread: false,
-  unreadError: false,
-};
 
 type ThreadActivityShape = ThreadStatusShape &
   ThreadRuntimeShape &

@@ -1,6 +1,11 @@
+import { openSecondaryPanelTabInState } from "@bb/client-core";
 import type { ThreadTab } from "@bb/server-contract";
 import { describe, expect, it } from "vitest";
-import { createEmptyFixedPanelTabsState } from "./fixed-panel-tabs-state";
+import {
+  createEmptyFixedPanelTabsState,
+  createTerminalFixedPanelTab,
+  createThreadInfoFixedPanelTab,
+} from "./fixed-panel-tabs-state";
 import { createPluginPageFixedPanelTab } from "./fixed-panel-tabs-state";
 import {
   areThreadTabListsEquivalent,
@@ -22,6 +27,61 @@ function browserTab(
 }
 
 describe("thread tab synchronization", () => {
+  it("preserves unseen server tabs while applying local additions, removals, edits, and reordering", () => {
+    const first = browserTab("first", "First");
+    const second = browserTab("second", "Second");
+    const third = browserTab("third", "Third");
+    const unseen = browserTab("unseen", "Unseen");
+    const added = browserTab("added", "Added");
+    const renamed = { ...third, title: "Renamed" };
+    expect(
+      mergeThreadTabChanges(
+        [first, second, third, unseen],
+        [first, second, third],
+        [renamed, first, added],
+      ),
+    ).toEqual([renamed, first, unseen, added]);
+  });
+
+  it("preserves remote additions and edits when removing a local tab", () => {
+    const source = browserTab("source", "Source");
+    const updatedSource = { ...source, title: "Updated elsewhere" };
+    const detour = browserTab("detour", "Detour");
+    const remote = browserTab("remote", "Remote");
+    expect(
+      mergeThreadTabChanges(
+        [updatedSource, detour, remote],
+        [source, detour],
+        [source],
+      ),
+    ).toEqual([updatedSource, remote]);
+  });
+
+  it("inserts a replacement without restoring other remotely closed tabs", () => {
+    const source = browserTab("source", "Source");
+    const placeholder = browserTab("placeholder", "Placeholder");
+    const neighbor = browserTab("neighbor", "Neighbor");
+    const terminal = createTerminalFixedPanelTab({ terminalId: "replacement" });
+    expect(
+      mergeThreadTabChanges(
+        [placeholder, neighbor],
+        [source, placeholder, neighbor],
+        [source, terminal, neighbor],
+      ),
+    ).toEqual([terminal, neighbor]);
+  });
+
+  it("keeps remote ordering unless the local operation reorders tabs", () => {
+    const a = browserTab("a", "A");
+    const b = browserTab("b", "B");
+    const c = browserTab("c", "C");
+    const remote = browserTab("remote", "Remote");
+    expect(mergeThreadTabChanges([c, a, b], [a, b, c], [a, c])).toEqual([c, a]);
+    expect(
+      mergeThreadTabChanges([a, remote, b, c], [a, b, c], [c, a, b]),
+    ).toEqual([c, remote, a, b]);
+  });
+
   it("preserves local presentation state while adopting remote tabs", () => {
     const first = browserTab("first", "First");
     const second = browserTab("second", "Second");
@@ -44,7 +104,7 @@ describe("thread tab synchronization", () => {
     const withoutActive = reconcileFixedPanelTabsState(withBoth, [second]);
     expect(withoutActive).toMatchObject({
       lastUsedAt: 123,
-      secondary: { activeTabId: null, isOpen: true },
+      secondary: { activeTabId: second.id, isOpen: true },
     });
   });
 
@@ -82,30 +142,22 @@ describe("thread tab synchronization", () => {
   });
 });
 
-describe("merging tab changes from partially loaded clients", () => {
-  it("preserves unseen tabs while applying explicit additions, removals, edits, and reordering", () => {
-    const first = browserTab("first", "First");
-    const second = browserTab("second", "Second");
-    const third = browserTab("third", "Third");
-    const unseen = browserTab("unseen", "Unseen");
-    const added = browserTab("added", "Added");
-    const renamed = { ...third, title: "Renamed" };
-    expect(
-      mergeThreadTabChanges(
-        [first, second, third],
-        [renamed, first, added],
-        [first, second, third, unseen],
-      ),
-    ).toEqual([renamed, first, added, unseen]);
+it("returns to the prior terminal when another client removes the active terminal before its close callback", () => {
+  const source = createTerminalFixedPanelTab({ terminalId: "source" });
+  const detour = createTerminalFixedPanelTab({ terminalId: "detour" });
+  const state = openSecondaryPanelTabInState({
+    state: createEmptyFixedPanelTabsState({
+      secondary: {
+        tabs: [createThreadInfoFixedPanelTab(), source],
+        activeTabId: source.id,
+        isOpen: true,
+      },
+    }),
+    tab: detour,
   });
-
-  it("does not resurrect remotely closed tabs or overwrite remote edits to untouched tabs", () => {
-    const first = browserTab("first", "First");
-    const closed = browserTab("closed", "Closed");
-    const renamed = { ...first, title: "Renamed elsewhere" };
-    const added = browserTab("added", "Added");
-    expect(
-      mergeThreadTabChanges([first, closed], [first, closed, added], [renamed]),
-    ).toEqual([renamed, added]);
-  });
+  const reconciled = reconcileFixedPanelTabsState(state, [
+    createThreadInfoFixedPanelTab(),
+    source,
+  ]);
+  expect(reconciled.secondary.activeTabId).toBe(source.id);
 });

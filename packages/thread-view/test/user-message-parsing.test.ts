@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import { turnScope, type PromptTextMention } from "@bb/domain";
 import {
   createTimelineEventFactory,
+  decodeThreadEventRow,
   type TimelineEventFactory,
 } from "./timeline-test-harness.js";
-import { decodeThreadEventRow } from "../src/event-decode.js";
 import type { BuildEventProjectionMessagesOptions } from "../src/event-projection-types.js";
 import type { AcceptedClientRequest } from "../src/accepted-client-request-context.js";
 import {
@@ -47,16 +47,6 @@ function systemSteerRequest(): ClientTurnRequestedEventRow {
     senderThreadId: null,
     target: { kind: "auto", expectedTurnId: "turn-1" },
     text: "[bb system] Mid-turn nudge",
-  });
-}
-
-function systemMessageRequest(): ClientTurnRequestedEventRow {
-  const event = createTimelineEventFactory({ threadId: "thread-1" });
-  return event.clientTurnRequested({
-    initiator: "system",
-    senderThreadId: null,
-    target: { kind: "new-turn" },
-    text: "[bb system] Maintenance notice.",
   });
 }
 
@@ -288,24 +278,6 @@ describe("user message parsing", () => {
       initiator: "agent",
       senderThreadId: "thr_legacy",
       text: "[bb message from thread:thr_legacy; reply later]\n\nLegacy handoff",
-    });
-  });
-
-  it("populates initiator for system-initiated messages with a turnRequest", () => {
-    const { event, meta } = decodeThreadEventRow(systemMessageRequest());
-
-    const message =
-      parseUsersFromClientRequest({
-        decoded: event,
-        meta,
-        options: standardProjectionOptions,
-      })[0] ?? null;
-
-    expect(message).toMatchObject({
-      kind: "user",
-      initiator: "system",
-      senderThreadId: null,
-      turnRequest: { isGrouped: false, kind: "message", status: "pending" },
     });
   });
 
@@ -587,23 +559,6 @@ describe("user message parsing", () => {
     ).toMatchObject({
       kind: "user",
       text: "Fallback message",
-      turnRequest: { isGrouped: false, kind: "message", status: "pending" },
-    });
-  });
-
-  it("renders system-originated turns as user messages", () => {
-    const { event, meta } = decodeThreadEventRow(systemMessageRequest());
-
-    expect(
-      parseUsersFromClientRequest({
-        decoded: event,
-        meta,
-        options: standardProjectionOptions,
-      })[0] ?? null,
-    ).toMatchObject({
-      initiator: "system",
-      kind: "user",
-      text: "[bb system] Maintenance notice.",
       turnRequest: { isGrouped: false, kind: "message", status: "pending" },
     });
   });

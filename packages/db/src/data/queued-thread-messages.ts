@@ -1,3 +1,4 @@
+import { acquireProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   and,
   asc,
@@ -12,17 +13,23 @@ import {
   lte,
   min,
   notExists,
+  ne,
   notInArray,
   or,
   sql,
 } from "drizzle-orm";
 import { alias } from "drizzle-orm/sqlite-core";
-import { QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX } from "@bb/domain";
+import {
+  QUEUED_MESSAGE_PLUGIN_WAIT_HOLDER_PREFIX,
+  projectAttachmentPaths,
+} from "@bb/domain";
 import type {
   PermissionMode,
   PromptInput,
   QueuedMessagePayload,
   QueuedMessageSystemNotice,
+  StartedOnBehalfOf,
+  ThreadCreateOrigin,
   QueuedMessageWaitHolder,
   QueuedMessageWaitingOn,
   QueuedMessageWaitingOnKind,
@@ -44,12 +51,25 @@ import {
   createQueuedThreadMessageId,
 } from "../ids.js";
 import { createOrderKeyAfter, createOrderKeyBetween } from "./order-keys.js";
-import { queryInSqliteVariableBatches } from "./events.js";
+import { queryInSqliteVariableBatches } from "./sqlite-variable-batches.js";
 
 export interface CreateQueuedThreadMessageInput {
   threadId: string;
   content: PromptInput[];
   senderThreadId?: string | null;
+  /**
+   * How the dispatch this row is queued from was requested, and the plugin
+   * that requested it, so a drained re-attempt carries the provenance its
+   * first attempt had. Both null for everything but a thread's first dispatch.
+   */
+  origin?: ThreadCreateOrigin | null;
+  originPluginId?: string | null;
+  /**
+   * The thread that asked for this dispatch, when one did. Distinct from
+   * `senderThreadId`, which is the sender of a message TO an existing thread:
+   * a thread-start has a requester and no message sender.
+   */
+  requestedBy?: StartedOnBehalfOf | null;
   model: string;
   reasoningLevel: string;
   permissionMode: PermissionMode;
@@ -255,14 +275,32 @@ function partitionQueuedMessageGroups(
   return groups;
 }
 
-const IDLE_DRAINABLE_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
+/**
+ * The waits that mean "this row is only behind the turn that is running". The
+ * manual-stop queue pause exists to hold exactly these back, because a user
+ * who stopped a thread did not thereby ask for whatever was lined up behind
+ * it.
+ */
+const ORDINARY_TURN_END_WAIT_KINDS = ["thread-busy", "turn-starting"] as const;
+
+/**
+ * Every wait an idle thread clears by being idle. `stopping` joins the
+ * ordinary two rather than replacing them: it is drainable for the same
+ * reason, and deliberately outside {@link ORDINARY_TURN_END_WAIT_KINDS} so the
+ * manual-stop pause lets it through — a row acquires it only from an action
+ * the user took after requesting the stop.
+ */
+const IDLE_DRAINABLE_WAIT_KINDS = [
+  ...ORDINARY_TURN_END_WAIT_KINDS,
+  "stopping",
+] as const;
 
 function hasOrdinaryTurnEndWait(row: QueuedThreadMessageRow): boolean {
   if (row.waitingOn === null) return true;
   try {
     const parsed = JSON.parse(row.waitingOn) as { kind?: unknown };
-    return (
-      parsed.kind === "thread-busy" || parsed.kind === "turn-starting"
+    return ORDINARY_TURN_END_WAIT_KINDS.some(
+      (waitKind) => waitKind === parsed.kind,
     );
   } catch {
     return false;
@@ -565,6 +603,11 @@ export function createQueuedThreadMessageInTransaction(
   input: CreateQueuedThreadMessageInput,
 ) {
   const now = Date.now();
+  acquireProjectAttachmentOwnership(
+    tx,
+    input.threadId,
+    projectAttachmentPaths(input.content),
+  );
   const id = createQueuedThreadMessageId();
   const lastQueuedMessage = getLastQueuedThreadMessage(tx, input.threadId);
   const sortKey = lastQueuedMessage
@@ -577,6 +620,10 @@ export function createQueuedThreadMessageInTransaction(
       threadId: input.threadId,
       content: JSON.stringify(input.content),
       senderThreadId: input.senderThreadId ?? null,
+      origin: input.origin ?? null,
+      originPluginId: input.originPluginId ?? null,
+      requestedByInitiator: input.requestedBy?.initiator ?? null,
+      requestedByThreadId: input.requestedBy?.senderThreadId ?? null,
       model: input.model,
       reasoningLevel: input.reasoningLevel,
       permissionMode: input.permissionMode,
@@ -638,6 +685,11 @@ export function updateQueuedThreadMessage(
         return { kind: "stale" };
       }
 
+      acquireProjectAttachmentOwnership(
+        tx,
+        input.threadId,
+        projectAttachmentPaths(input.content),
+      );
       const queuedMessage = tx
         .update(queuedThreadMessages)
         .set({
@@ -671,7 +723,7 @@ export function getQueuedThreadMessage(db: DbQueryConnection, id: string) {
   );
 }
 
-export function hasQueuedThreadMessages(
+export function hasClaimedQueuedThreadMessages(
   db: DbQueryConnection,
   threadId: string,
 ): boolean {
@@ -679,10 +731,56 @@ export function hasQueuedThreadMessages(
     db
       .select({ id: queuedThreadMessages.id })
       .from(queuedThreadMessages)
-      .where(eq(queuedThreadMessages.threadId, threadId))
+      .where(
+        and(
+          eq(queuedThreadMessages.threadId, threadId),
+          isNotNull(queuedThreadMessages.claimedAt),
+        ),
+      )
       .limit(1)
       .get() !== undefined
   );
+}
+
+export function deleteQueuedRetriesForThreadEventSuffixInTransaction(
+  db: DbTransaction,
+  args: {
+    cutoffSequence: number;
+    oldMaxSequence: number;
+    threadId: string;
+  },
+): number {
+  const retries = db
+    .select()
+    .from(queuedThreadMessages)
+    .where(
+      and(
+        eq(queuedThreadMessages.threadId, args.threadId),
+        eq(queuedThreadMessages.payloadKind, "retry"),
+        exists(
+          db
+            .select({ sequence: events.sequence })
+            .from(events)
+            .where(
+              and(
+                eq(events.threadId, args.threadId),
+                eq(events.type, "client/turn/requested"),
+                sql`${events.sequence} >= ${args.cutoffSequence}`,
+                sql`${events.sequence} <= ${args.oldMaxSequence}`,
+                sql`json_extract(${events.data}, '$.requestId') = ${queuedThreadMessages.retryOfTurnRequestId}`,
+              ),
+            ),
+        ),
+      ),
+    )
+    .all();
+  for (const retry of retries) {
+    clearPreviousQueuedMessageGroupEdgeInTransaction(db, retry);
+    db.delete(queuedThreadMessages)
+      .where(eq(queuedThreadMessages.id, retry.id))
+      .run();
+  }
+  return retries.length;
 }
 
 function manuallyStoppedQueuePauseQuery(
@@ -752,6 +850,24 @@ export function isThreadQueueAutoSendPaused(
 }
 
 /**
+ * The SQL mirror of {@link isOrdinaryTurnEndQueuedMessage}, negated: the rows
+ * the manual-stop queue pause does not apply to. Kept beside the JS predicate
+ * it mirrors so the two cannot drift silently.
+ */
+function notOrdinaryTurnEndQueuedThreadMessage() {
+  return or(
+    isNotNull(queuedThreadMessages.systemNotice),
+    and(
+      isNotNull(queuedThreadMessages.waitingOn),
+      notInArray(
+        sql<string>`json_extract(${queuedThreadMessages.waitingOn}, '$.kind')`,
+        [...ORDINARY_TURN_END_WAIT_KINDS],
+      ),
+    ),
+  );
+}
+
+/**
  * Threads a drain could move right now.
  *
  * `pending` is included alongside `idle`, and the environment join is a LEFT
@@ -777,15 +893,11 @@ export function listIdleThreadsWithQueuedMessages(
         isNull(threads.deletedAt),
         or(
           notExists(manuallyStoppedQueuePauseQuery(db, threads.id)),
-          isNotNull(queuedThreadMessages.systemNotice),
+          notOrdinaryTurnEndQueuedThreadMessage(),
         ),
-        // A gone environment (destroying/destroyed) is never reprovisioned, so
-        // its queued rows can never drain. Leave them out of the sweep instead
-        // of failing the same send every cycle (#1789). A thread with NO
-        // environment is not that case — it has simply not provisioned yet.
         or(
           isNull(threads.environmentId),
-          notInArray(environments.status, ["destroying", "destroyed"]),
+          ne(environments.status, "destroyed"),
         ),
         // Only rows an idle thread actually unblocks. A thread whose only
         // queued row is waiting on a clock or a plugin is not a drain
@@ -797,53 +909,6 @@ export function listIdleThreadsWithQueuedMessages(
     .groupBy(threads.id)
     .orderBy(asc(min(queuedThreadMessages.createdAt)), asc(threads.id))
     .all();
-}
-
-export function claimQueuedThreadMessage(
-  db: DbConnection,
-  notifier: DbNotifier,
-  id: string,
-): ClaimedQueuedThreadMessageRow | null {
-  const claimedQueuedMessage = db.transaction(
-    (tx) => {
-      const existing = tx
-        .select()
-        .from(queuedThreadMessages)
-        .where(eq(queuedThreadMessages.id, id))
-        .get();
-      if (
-        !existing ||
-        existing.claimedAt !== null ||
-        existing.claimToken !== null
-      ) {
-        return null;
-      }
-
-      const now = Date.now();
-      clearPreviousQueuedMessageGroupEdgeInTransaction(tx, existing, now);
-      const claimToken = createQueuedThreadMessageClaimToken();
-      const updated = tx
-        .update(queuedThreadMessages)
-        .set({ claimedAt: now, claimToken, updatedAt: now })
-        .where(
-          and(
-            eq(queuedThreadMessages.id, id),
-            isNull(queuedThreadMessages.claimedAt),
-            isNull(queuedThreadMessages.claimToken),
-          ),
-        )
-        .returning()
-        .get();
-
-      return requireClaimedQueuedThreadMessage(updated ?? null);
-    },
-    { behavior: "immediate" },
-  );
-
-  if (claimedQueuedMessage) {
-    notifier.notifyThread(claimedQueuedMessage.threadId, ["queue-changed"]);
-  }
-  return claimedQueuedMessage;
 }
 
 function claimQueuedThreadMessageIdsInTransaction(
@@ -891,15 +956,23 @@ export type QueuedThreadMessageGroupClaimPolicy =
   | {
       kind: "automatic";
       isGroupEligible: QueuedThreadMessageGroupEligibility;
+      /**
+       * True only for the retry the row's own `next_attempt_at` booked. A recorded
+       * failure hides a row from every other automatic claim — otherwise the
+       * idle drain would re-run a failing send every sweep tick — and the one
+       * claim that must see through it is the retry of that failure.
+       */
+      retryingFailure: boolean;
     }
   | { kind: "explicit-send" };
 
 function isAutomaticQueuedThreadMessageGroupClaimAllowed(
   rows: readonly QueuedThreadMessageRow[],
   pauseOrdinaryMessages: boolean,
+  retryingFailure: boolean,
 ): boolean {
   return (
-    rows.every((row) => row.failureReason === null) &&
+    (retryingFailure || rows.every((row) => row.failureReason === null)) &&
     (!pauseOrdinaryMessages ||
       rows.every((row) => !isOrdinaryTurnEndQueuedMessage(row)))
   );
@@ -931,6 +1004,7 @@ export function claimQueuedThreadMessageGroup(
           !isAutomaticQueuedThreadMessageGroupClaimAllowed(
             group,
             isThreadQueueAutoSendPaused(tx, existing.threadId),
+            policy.retryingFailure,
           )) ||
         (policy.kind === "automatic" && !policy.isGroupEligible(group))
       ) {
@@ -962,7 +1036,7 @@ export function claimNextQueuedThreadMessageGroup(
   db: DbConnection,
   notifier: DbNotifier,
   threadId: string,
-  isGroupEligible?: QueuedThreadMessageGroupEligibility,
+  isGroupEligible: QueuedThreadMessageGroupEligibility,
 ): ClaimedQueuedThreadMessageRow[] | null {
   const claimedQueuedMessages = db.transaction(
     (tx) => {
@@ -975,14 +1049,14 @@ export function claimNextQueuedThreadMessageGroup(
       const pauseOrdinaryMessages = isThreadQueueAutoSendPaused(tx, threadId);
       const group =
         partitionQueuedMessageGroups(queuedMessages).find((rows) => {
-          const eligible = isGroupEligible
-            ? rows.some(isIdleDrainableQueuedMessage) && isGroupEligible(rows)
-            : rows.every(isIdleDrainableQueuedMessage);
+          const eligible =
+            rows.some(isIdleDrainableQueuedMessage) && isGroupEligible(rows);
           return (
             eligible &&
             isAutomaticQueuedThreadMessageGroupClaimAllowed(
               rows,
               pauseOrdinaryMessages,
+              false,
             )
           );
         }) ?? null;
@@ -1235,6 +1309,8 @@ export function requeueClaimedQueuedThreadMessages(
             waitHolder: waitHolderFor(args.waitingOn),
             sendAt: args.sendAt,
             failureReason: null,
+            failureCount: 0,
+            nextAttemptAt: null,
             updatedAt: now,
           })
           .where(
@@ -1255,8 +1331,12 @@ export function requeueClaimedQueuedThreadMessages(
             // A re-queue is a fresh, successful statement of why this row is
             // waiting, which supersedes whatever the previous attempt failed
             // with. Leaving a stale failure next to a current wait would show
-            // the user two contradictory explanations of the same row.
+            // the user two contradictory explanations of the same row, and
+            // would spend the row's remaining attempts against a failure it
+            // has since got past.
             failureReason: null,
+            failureCount: 0,
+            nextAttemptAt: null,
             updatedAt: now,
           })
           .where(
@@ -1608,8 +1688,11 @@ export function setQueuedThreadMessageWaitingOn(
         // successful statement of why this row is waiting supersedes whatever
         // a previous attempt failed with. Leaving a stale failure beside a
         // current wait would show the reader two contradictory explanations of
-        // one row.
+        // one row, and would spend the row's remaining attempts against a
+        // failure it has since got past.
         failureReason: null,
+        failureCount: 0,
+        nextAttemptAt: null,
         updatedAt: Date.now(),
       })
       .where(
@@ -1632,6 +1715,14 @@ export interface SetQueuedThreadMessageFailureReasonArgs {
   id: string;
   threadId: string;
   failureReason: string;
+  now: number;
+  /**
+   * How long to wait before each further automatic attempt, indexed by the
+   * failures already recorded. Running off the end is what makes a failure
+   * terminal, so the caller decides how many attempts a row gets and how far
+   * apart — the policy is the server's, the counting is this row's.
+   */
+  retryDelaysMs: readonly number[];
 }
 
 /**
@@ -1642,33 +1733,98 @@ export interface SetQueuedThreadMessageFailureReasonArgs {
  * is still waiting on whatever it was waiting on, and the failure is a separate
  * fact about the last attempt rather than a new reason to wait. A later
  * successful re-queue clears it (see `requeueClaimedQueuedThreadMessages`).
+ *
+ * Recording a failure also spends one of the row's attempts and books the next
+ * one. What failed a dispatch is usually a condition with an end — a provider
+ * whose plugin is still loading, a workspace mid-rebuild — so the row is owed
+ * another try before anybody is asked to look at it. It is terminal only once
+ * `retryDelaysMs` runs out, which is the state `next_attempt_at` NULL records.
  */
 export function setQueuedThreadMessageFailureReason(
   db: DbConnection,
   notifier: DbNotifier,
   args: SetQueuedThreadMessageFailureReasonArgs,
 ): QueuedThreadMessageRow | null {
-  const updated =
-    db
-      .update(queuedThreadMessages)
-      .set({
-        failureReason: args.failureReason,
-        updatedAt: Date.now(),
-      })
-      .where(
-        and(
-          eq(queuedThreadMessages.id, args.id),
-          eq(queuedThreadMessages.threadId, args.threadId),
-          liveQueuedThreadMessage(),
-        ),
-      )
-      .returning()
-      .get() ?? null;
+  const updated = db.transaction(
+    (tx): QueuedThreadMessageRow | null => {
+      const existing = getQueuedThreadMessage(tx, args.id);
+      if (
+        !existing ||
+        existing.threadId !== args.threadId ||
+        isQueuedThreadMessageClaimed(existing)
+      ) {
+        return null;
+      }
+      const failureCount = existing.failureCount + 1;
+      const delayMs = args.retryDelaysMs[failureCount - 1];
+      return (
+        tx
+          .update(queuedThreadMessages)
+          .set({
+            failureReason: args.failureReason,
+            failureCount,
+            nextAttemptAt: delayMs === undefined ? null : args.now + delayMs,
+            updatedAt: args.now,
+          })
+          .where(
+            and(
+              eq(queuedThreadMessages.id, args.id),
+              eq(queuedThreadMessages.threadId, args.threadId),
+              liveQueuedThreadMessage(),
+            ),
+          )
+          .returning()
+          .get() ?? null
+      );
+    },
+    { behavior: "immediate" },
+  );
 
   if (updated) {
     notifier.notifyThread(args.threadId, ["queue-changed"]);
   }
   return updated;
+}
+
+/**
+ * Every live row whose booked retry has come due, oldest first.
+ *
+ * Deliberately not filtered by wait: the retry is not the wait's wake firing
+ * again, it is core re-asking the whole question from scratch, which is the
+ * only thing that can move a row whose wait went stale while it sat failed
+ * (a `host-offline` row whose host came back during the failure, say). Rows
+ * on archived or deleted threads are excluded for the same reason the due
+ * sweep excludes them: nobody is waiting for those to send.
+ */
+export function listRetryableFailedQueuedThreadMessages(
+  db: DbQueryConnection,
+  now: number,
+): QueuedThreadMessageRow[] {
+  return db
+    .select()
+    .from(queuedThreadMessages)
+    .where(
+      and(
+        isNotNull(queuedThreadMessages.failureReason),
+        isNotNull(queuedThreadMessages.nextAttemptAt),
+        lte(queuedThreadMessages.nextAttemptAt, now),
+        liveQueuedThreadMessage(),
+        exists(
+          db
+            .select({ live: sql`1` })
+            .from(threads)
+            .where(
+              and(
+                eq(threads.id, queuedThreadMessages.threadId),
+                isNull(threads.archivedAt),
+                isNull(threads.deletedAt),
+              ),
+            ),
+        ),
+      ),
+    )
+    .orderBy(asc(queuedThreadMessages.nextAttemptAt), asc(queuedThreadMessages.id))
+    .all();
 }
 
 /**
@@ -1909,6 +2065,8 @@ export function listThreadIdsWithHostOfflineQueueWaits(
     .where(
       and(
         eq(environments.hostId, hostId),
+        isNull(threads.archivedAt),
+        isNull(threads.deletedAt),
         sql`json_extract(${queuedThreadMessages.waitingOn}, '$.kind') = 'host-offline'`,
         automaticallyDrainableQueuedThreadMessage(),
       ),

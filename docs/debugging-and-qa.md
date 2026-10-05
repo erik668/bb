@@ -3,33 +3,206 @@
 - `pnpm dev` prints the active frontend URL, server API URL, host daemon port, data dir, and logs dir. Do not assume fixed dev ports.
 - `pnpm start:worktree` builds production artifacts and serves the optimized app bundle from the checkout-specific dev server URL, while keeping the same dev data directory and deterministic server/host-daemon ports. It has no Vite dev server or hot reload.
 - `pnpm start:worktree-remote` is the trusted-network variant of `pnpm start:worktree`; it binds that server to all IPv4 interfaces.
+- `pnpm desktop` packages the Electron app and launches it against the installed data directory, ports and Electron user-data directory, the same targets a released build uses. It therefore shares the single-instance lock with an installed bb: quit that first, or the launch focuses it instead of starting your build.
+- `pnpm desktop:worktree` packages and launches it against this checkout's data directory and deterministic ports, the same instance `pnpm start:worktree` uses, so a packaged build never touches `~/.bb` or port 38886. It also points Electron's own user-data directory at `$BB_DATA_DIR/desktop` — window state, storage and the single-instance lock all live there. Without that the build would share `~/Library/Application Support/bb` with an installed bb, fail to take the lock, and quit while the installed app focuses itself, which reads as a successful launch of code that never ran. Override it with `BB_DESKTOP_USER_DATA_DIR`. It refuses to start when the server or host-daemon port is busy, because a stale server there would answer for the build you meant to test. DevTools stay closed unless you set `BB_DESKTOP_OPEN_DEVTOOLS=1`, matching a released build. Both commands always repackage first; Turbo caches everything except electron-builder itself. Signing is left to electron-builder's keychain auto-discovery, so machines without a Developer ID identity produce unsigned artifacts and macOS shows the usual first-launch warning.
 - The packaged app defaults to server/frontend `:38886`, host daemon `:38887`, data dir `~/.bb/`, and logs under `~/.bb/logs/`.
+- `bb-app` (including `pnpm start`), `bb-server`, and `bb-host-daemon` capture service stdout and stderr directly in `logs/server-stdio.log` and `logs/host-daemon-stdio.log` under the selected data directory. These append across restarts and are separate from rotating application logs. Use `tail -F` on these files for console output and early startup errors; service output is no longer forwarded to the launcher's terminal.
 - Entity IDs in URLs (`proj_*`, `thr_*`) are primary keys. Query them directly against the active data dir: `sqlite3 <data>/bb.db "SELECT * FROM threads WHERE id = 'thr_xxx';"`.
 - API routes are under `/api/v1/`, for example `GET /api/v1/threads/:id`.
 - Use `curl` against the server API to isolate frontend issues from server behavior.
 - Use the CLI to inspect state: `pnpm bb thread show <id>`, `pnpm bb project list`, `pnpm bb status`. From source, use `pnpm bb:dev`.
 
-## Local Dev QA Launcher
+## ACP Steer Cancellation Failures
 
-Use `scripts/bb-dev-app` when validating changes in the desktop dev app or helping QA from this checkout:
+ACP steering cancels the active prompt before submitting the follow-up. If that
+prompt returns an error during cancellation, BB marks the session for rebuilding
+before the next turn. The replacement process attempts `session/load`; providers
+without working session restoration start fresh and report the loss of in-agent
+history. The failed turn stays failed, and an unsent steer is not acknowledged as
+accepted.
 
-- `pnpm dev:status` runs `scripts/bb-dev-app status` to print the active branch, Node runtime, dev URLs, data dir, and logs.
-- `scripts/bb-dev-app current` restarts the dev server on the current branch.
-- `scripts/bb-dev-app main` fetches `origin/main`, fast-forwards `main`, and launches the dev server from this checkout.
-- `scripts/bb-dev-app branch <branch>` switches to a local branch, or creates it from `origin/<branch>`, then launches the dev server.
-- `pnpm dev:stop` runs `scripts/bb-dev-app stop` to stop the launcher-managed dev server and desktop.
-- `scripts/bb-dev-app logs dev` and `scripts/bb-dev-app logs desktop` follow logs.
+Older Hermes adapters can throw `NoneType.startswith` during cancellation and
+leave their internal session marked running. Update Hermes to include
+[the null-response fix](https://github.com/NousResearch/hermes-agent/commit/8f0322da5b82029f3bc4d16fbaa2c986299abfc6)
+and [the running-state cleanup](https://github.com/NousResearch/hermes-agent/commit/bccd45618c16b605822dd179cd0399abdecaf698),
+then restart its retained process with `bb thread stop <thread-id>` before sending
+a new message. BB's recovery prevents reuse after a cancellation error; it does
+not repair the older adapter's failing turn.
 
-By default the launcher starts only the dev server (web frontend, server, host daemon) and prints the URL without opening a browser. Pass `--open` to open the browser after startup. Pass `--desktop` (e.g. `scripts/bb-dev-app current --desktop`) to also launch the Electron desktop shell — only do this when the user is testing a desktop-only change.
+## Machine Authentication Cache
 
-The launcher uses the Node executable from the caller's `PATH`. It does not select another installed Node version. The `.nvmrc` file pins the primary development runtime to Node 22.19.0. Node 24 and Node 26 remain compatibility targets. Desktop development requires Node 22.19 or newer in the Node 22 release line.
+Successful verification of an unlimited daemon host key is cached in server
+memory for 30 seconds, capped at the key's expiry. The cache holds at most
+1,024 entries and retains only token hashes. Hits neither read nor write the
+authentication database and do not extend the cache lifetime. The next request
+after expiry uses the existing verifier and updates usage timestamps, so
+`lastRequest` and `updatedAt` describe the last full verification rather than
+every request. A burst of concurrent cold requests can still perform separate
+verifications before the first result is cached.
+
+Revocation and reenrollment invalidate that host's cached keys and prevent
+already-running verifications from returning or caching invalidated credentials.
+Restarting the server discards the cache. Enrollment keys and keys with quotas,
+refills, or enabled rate limiting always use the existing verifier. Direct edits
+to authentication rows outside the machine-auth service are observed when the
+cache expires; QA that changes a warmed key's database fields must account for
+that window. Expiry known when caching is enforced on every hit.
+
+## Slow Database Operations
+
+The server logs `Slow DB query` when a prepared statement, `exec` batch, or
+complete transaction takes at least 100 ms. `durationMs` measures elapsed time;
+`cpuDurationMs` measures CPU time on the calling thread. A large gap indicates
+waiting or descheduling, not necessarily inefficient SQL. It does not by itself
+distinguish filesystem I/O, lock waits, and scheduler contention.
+
+`operation: "transaction"` includes the callback, commit, and rollback; its SQL
+label identifies the transaction mode rather than containing callback SQL.
+Statements inside it may also log, so do not add their durations to the
+transaction duration. Commit timing matters because SQLite's automatic WAL
+checkpoint can perform filesystem writes and synchronization on the server
+thread. `operation: "exec"` also covers maintenance batches. SQL string
+literals are redacted and parameter values are never logged.
+
+## Native Draft Rollback
+
+Migration `0132_thread_drafts` now only adds the temporary `threads.draft`
+column. Its original pre-release SQL merged Drafts plugin queue entries into
+that column and deleted the held rows and built-in plugin installation. The
+original hash remains accepted by `migration-history.ts` for databases that
+already ran it; it is not replayed.
+
+Migration `0133_remove_thread_drafts` drops the column without converting its
+contents back into queued messages. Databases upgrading through the revised
+`0132` retain their existing queue rows and Drafts plugin installation. Databases
+that ran the original `0132` lose the stored core draft contents, retaining their
+thread rows and any remaining queued messages. The restored built-in plugin is
+installed through normal server startup. Reintroducing native drafts requires
+a new migration after `0133`.
+
+## Archive Confirmation Counts
+
+`GET /api/v1/threads/:id/child-summary` and `sdk.threads.childSummary` return
+`nonDeletedChildCount` for deletion (direct children, including archived rows)
+and `unarchivedDescendantCount` for archive confirmation. The latter follows
+the same hierarchy, lifecycle-owner, and hidden source-fork edges as
+`archive-all`, deduplicates threads, traverses archived intermediaries, and
+excludes hidden, already archived, or deleted candidates and the requested root.
+Hidden threads still participate in the archive cascade, and visible descendants
+beneath hidden threads still count toward confirmation.
+The UI adds the root to the displayed total and skips confirmation when no
+unarchived descendants remain or the General setting `confirmThreadArchive`
+is disabled. The summary is a preview; concurrent changes
+can alter the eventual archive result. CLI and SDK archive calls remain
+non-interactive.
+
+## File Content Routes
+
+Clients read file bytes through path-shaped GET routes, so relative URLs in
+HTML and markdown resolve against the same route:
+
+- `/api/v1/threads/:id/thread-storage/files/:path` reads the thread's storage
+  folder.
+- `/api/v1/threads/:id/host-files/:absolutePath` and
+  `/api/v1/hosts/:id/files/:absolutePath` read the thread environment's host or
+  the named host from its filesystem root. The path omits the leading `/`; a
+  first segment such as `C:` selects that Windows drive root.
+- `/api/v1/environments/:id/files/:path` reads the environment workspace, and
+  `/api/v1/environments/:id/revisions/:ref/files/:path` reads `HEAD` or a
+  4-40 character hex commit from it.
+- `/api/v1/projects/:id/files/:path` and
+  `/api/v1/projects/:id/hosts/:hostId/files/:path` read the project's local-path
+  source on the primary or named host.
+
+Media elements, HTML iframes, markdown images, and Download links use these
+URLs directly. The server resolves the root on every request, so they need no
+setup and do not expire.
+
+Plugins that preview an arbitrary host directory instead mint a lease:
+`POST /api/v1/files/previews` with `{ hostId?, rootPath, ttlMs? }` returns
+`{ baseUrl, expiresAtMs }`, and `GET /api/v1/file-previews/:lease/:path` reads
+that root. Minting the same root again returns the same `baseUrl` and extends
+its expiry. Leases live in server memory and do not survive a server restart.
+
+File content reads support a single HTTP byte range for media playback, seeking, and
+file preview sampling. Responses advertise `Accept-Ranges: bytes`; bounded,
+open-ended, and suffix ranges return `206` with `Content-Range` and the selected
+bytes. Unsatisfiable ranges return `416` with `Content-Range: bytes */<size>`.
+Malformed ranges, unsupported units, and multipart ranges fall back to the full
+`200` response. HEAD ignores Range. Revision routes read the file with one
+whole-file daemon read, so those responses ignore Range, keep the daemon's
+25 MB non-image limit, and revalidate with a strong SHA-256 ETag.
+
+File previews request the first 64 KiB. A complete sample becomes the preview
+directly. Otherwise the sample, its MIME type, and the `Content-Range` size
+classify the file: images and videos render from the file URL, binaries show
+their size and a Download link, and text is fetched in full only when it is at
+most 25 MB. The Download link is the file URL with the anchor `download`
+attribute, so the browser streams it to disk without the 25 MB limit.
+
+`If-None-Match` revalidation takes precedence over Range. Streamed responses use
+weak metadata ETags (`W/"file-<revision>"`), not content SHA-256 hashes. This
+avoids reading an entire large file just to validate it. Because the validator
+is weak, any `If-Range` header falls back to a full `200` response, including a
+matching weak tag or date. All raw file responses carry `Content-Security-Policy:
+sandbox allow-scripts`, including SVG and XHTML, so directly opened documents
+cannot acquire the app's origin privileges. HTML also carries the no-store
+policy, at any size; the app renders an HTML iframe only for files up
+to 5 MiB and shows larger HTML as source or, past 25 MB, as a Download.
+
+The server uses `host.read_file_chunk` for a metadata-only probe (`length: 0`),
+then reads at most 1 MiB per RPC as the HTTP consumer pulls data. HEAD, `304`,
+and `416` responses read no contents. Cancelling or aborting stops subsequent
+reads; an already in-flight RPC can finish. Each RPC opens and closes its file
+handle, so no remote read session needs cleanup. Offsets and lengths are
+validated at the daemon boundary, and paths remain confined to the route's root.
+
+The daemon returns a revision based on device, inode, size, and nanosecond
+mtime/ctime. Every content read checks the expected revision before and after
+reading from its open descriptor. A mismatch before response headers produces
+retryable `409 file_changed`; a change or error after streaming starts aborts
+the HTTP body. The server also rejects short/misaligned chunks. This detects
+ordinary writes, truncation, and replacement; it is not an immutable filesystem
+snapshot or a cryptographic guarantee against changes hidden by filesystem
+metadata granularity.
+
+Streamed reads bypass the whole-file size caps (including the 25 MiB
+non-image cap); each chunk stays bounded regardless of file size. `host.read_file`
+consumers such as `POST /files/read` and revision routes keep their
+whole-file limits and SHA-256 validators. `sdk.projects.fileContent` (and
+`bb project content`) reads through the project file routes and decides utf8 versus
+base64 from the returned bytes. Host-daemon protocol 219 introduced the chunk
+RPC; older enrolled daemons cannot serve streamed reads until updated.
+
+## Stale Workspace Claims
+
+Failed thread provisioning immediately requests environment cleanup. If a previous
+failure left a claim behind, sends, environment admission, and provider path claims
+repair it when they encounter it; restarting the server is not required.
+
+Claims owned by threads that are still starting or stopping remain blocked. A stale
+claim on a ready or shared checkout is released locally, preserving the workspace.
+A partially created environment retains its claim and is scheduled for the existing
+background lifecycle cleanup. Sends report `workspace_busy` with “Workspace cleanup
+is pending. Try again shortly.” until removal completes. Provider cleanup is never
+awaited by this admission repair, and startup does not scan for abandoned claims.
+
+## Local Dev QA
+
+Run `pnpm dev` from this checkout and keep it running in a terminal. It prints
+the checkout-specific URLs, data directory, and logs directory. Stop it with
+Ctrl-C. For desktop-only changes, start
+`pnpm exec turbo run dev --filter=@bb/desktop` in a second terminal.
+
+Use the Node version in `.nvmrc` (22.19.0). Desktop development requires
+Node 22.19 or newer in the Node 22 release line.
 
 A bb connect shared-port URL is a different browser origin from localhost. If
 QA through that URL needs the browser-local host daemon, restart the dev app
 with the share origin configured after exposing its app port:
 
 ```bash
-BB_APP_URL=https://<handle>--<app-port>.getbb.app scripts/bb-dev-app current
+BB_APP_URL=https://<handle>--<app-port>.getbb.app pnpm dev
 ```
 
 The port remains stable for the checkout, so the existing share continues to
@@ -37,16 +210,94 @@ work after the restart. The host daemon intentionally rejects remote origins
 that are not configured; otherwise any webpage could drive its local editor
 API.
 
-Branch switches intentionally keep dirty work in this checkout; git will stop if a local file would be overwritten. Set `BB_DEV_APP_STASH_DIRTY=1` for a one-off launch that stashes first.
-
-For CLI QA against the dev instance, run `eval "$(scripts/bb-dev-app env)"` first. This sets `BB_SERVER_URL`, `BB_HOST_DAEMON_PORT`, and `BB_PROJECT_ID=proj_personal` so `pnpm bb:dev ...` does not accidentally target the packaged app.
+For CLI QA, `pnpm bb:dev` derives this checkout's server and daemon endpoints.
+In the test shell, clear inherited endpoint and thread context overrides first
+so commands target the dev instance. Keep these changes inside that shell.
 
 Test agents with:
 
 ```bash
-eval "$(scripts/bb-dev-app env)"
+unset BB_SERVER_URL BB_HOST_DAEMON_PORT BB_THREAD_ID BB_ENVIRONMENT_ID BB_THREAD_STORAGE BB_PROJECT_ID BB_CLI BB_CLI_REEXEC
 pnpm bb:dev thread spawn --project proj_personal --provider codex --permission-mode accept-edits --title "Smoke test" --prompt "Reply only with ok." --json
 ```
+
+## Desktop Browser CDP Prototype
+
+Run the isolated Electron compatibility fixture through Turbo:
+
+```bash
+pnpm exec turbo run smoke:browser-cdp --filter=@bb/desktop > /tmp/browser-cdp-smoke.log 2>&1
+```
+
+The harness currently requires Linux x64, `xvfb-run`, and network access to
+GitHub releases. It downloads checksum-pinned DevBrowser 1.0.0-rc.2 and
+agent-browser 0.36.0 into a fresh temporary directory, bundles the fixture,
+and drives real `WebContentsView` tabs through the production CDP bridge and
+native adapter. It uses a local fixture website and a separate Electron
+profile, without starting a BB core or reading an existing BB store.
+
+The command prints its artifact directory, including screenshots, protocol
+method traces, and the result summary. Connection credentials are redacted
+from the diagnostic output. Desktop startup now registers the native broker;
+`bb browser` and `bb.sdk.experimental_desktopBrowsers` expose its public API.
+This fixture also exercises service-created hidden automation tabs and leases.
+The fixture verifies simultaneous control of a hidden thread and another
+thread, in addition to both clients’ main-page workflows. It verifies trusted
+snapshot-reference clicks in same-origin and nested iframes, scrolling,
+selector clicks in a cross-origin iframe with a native child CDP session,
+and pointer input in a hidden thread’s iframe. Site isolation is enabled
+for the fixture. Unmodified RC2 omits cross-origin iframe contents from
+snapshots; use the local-build mode below for the implemented cross-origin
+ref support. Popup control remains untested.
+
+To validate a modified DevBrowser build, run:
+
+```bash
+pnpm exec turbo run smoke:browser-cdp --filter=@bb/desktop -- --dev-browser /absolute/path/to/dev-browser > /tmp/browser-cdp-local-smoke.log 2>&1
+```
+
+The `--dev-browser` option copies that binary into the artifact directory,
+records its SHA256 and local-build provenance, and adds required cross-origin
+snapshot-ref tests. These reject old refs after same-URL reloads, origin
+changes, frame removal, and parent navigation, even after a fresh snapshot
+has allocated new refs. It checks both the stale-ref error and absence of
+click side effects. Frame origin changes are driven through the parent
+iframe’s `src`: Puppeteer’s `Frame.goto()` can lose its session on a renderer
+swap, including in ordinary Chrome. The default command continues to test the unmodified
+release. Run the task with `-- --help` for usage.
+
+The native adapter uses one viewport capture before pointer input following
+attachment or navigation, so input does not race the renderer’s readiness.
+Concurrent pointer commands share that capture and preserve their order.
+Attachment enables Chromium focus emulation and temporarily disables background
+throttling, restoring the original throttling state on detach. While a CDP
+screenshot is pending, bounded native captures request frames without revealing
+the view; they stop at completion or a five-second deadline. The original CDP
+screenshot parameters are preserved.
+The image is discarded locally; pending input is rejected if navigation
+or a replacement controller invalidates it. A failed capture can be retried,
+and detaching one virtual session cancels its pending input while other
+sessions remain usable.
+
+After library cleanup and writing the result, the runner allows five seconds
+for Electron to quit. If it remains alive, the runner terminates its fixture
+process group and records `forcedExit: true`. A successful smoke command with
+that flag proves the listed browser checks, not graceful Electron shutdown.
+
+## Desktop Browser Broker Integration
+
+```bash
+pnpm exec turbo run smoke:browser-broker --filter=@bb/desktop -- --dev-browser /absolute/path/to/dev-browser > /tmp/browser-broker-smoke.log 2>&1
+```
+
+This isolated fixture uses an in-memory migrated test server, the actual SDK
+and CLI, an authenticated host broker, the desktop broker client, and real
+Electron tabs. The test harness supplies the server-to-host RPC responder;
+it does not start a full enrolled daemon or prove remote-machine transport.
+It verifies private connection-file permissions, ownership, browser input,
+capture, revocation, and connection generations. The default downloads the
+checksum-pinned release; the optional binary path records local provenance.
+No existing BB store or browser profile is used.
 
 ## Record Provider Bridge Traffic
 
@@ -54,8 +305,13 @@ Export `BB_PROVIDER_BRIDGE_RECORD_DIR` before you start the dev app and every
 provider bridge records its runtime and provider wires as NDJSON:
 
 ```bash
-BB_PROVIDER_BRIDGE_RECORD_DIR=$HOME/.bb/provider-recordings/raw scripts/bb-dev-app current
-eval "$(scripts/bb-dev-app env)"
+BB_PROVIDER_BRIDGE_RECORD_DIR=$HOME/.bb/provider-recordings/raw pnpm dev
+```
+
+In a second terminal, run:
+
+```bash
+unset BB_SERVER_URL BB_HOST_DAEMON_PORT BB_THREAD_ID BB_ENVIRONMENT_ID BB_THREAD_STORAGE BB_PROJECT_ID BB_CLI BB_CLI_REEXEC
 pnpm bb:dev thread spawn --project proj_personal --provider codex --prompt "Run git status." --json
 ls ~/.bb/provider-recordings/raw/codex/
 ```
@@ -80,7 +336,7 @@ Use `pnpm seed:perf` to fill a dev database with a large, realistic fixture:
 many projects, ~1,200 threads, and ~400k event rows with production-like
 payloads. Use it to reproduce performance problems that only appear at scale.
 
-- Start the dev app once first (`scripts/bb-dev-app current`), then stop it and
+- Start the dev app once first (`pnpm dev`), then stop it and
   seed. The fixture then attaches to the real local host, so agents still run.
 - By default the command seeds this checkout's dev data dir. Pass
   `--data-dir <path>` for another target. The command refuses to touch `~/.bb`.
@@ -116,7 +372,14 @@ Gates under `apps/server/test/provider-corpus/`:
 - `timeline-perf.test.ts` measures the 10 largest threads per provider (latest
   page and full page walk, five builds each, calibrated against a synthetic
   thread built in the same run) and compares with `snapshots/perf-baseline.json`.
-  The CI micro-benchmark in the same file needs no corpus.
+  The CI micro-benchmark in the same file needs no corpus. Each sample clears
+  the decoded-event cache and the latest-page selection memo, so the gate keeps
+  measuring cold builds.
+- `timeline-streaming-memo.test.ts` marks each thread active, appends streaming
+  rows to its latest turn tick by tick (plus one late output delta for the
+  previous root turn), and requires every latest-page build to equal a build on
+  a fresh connection with empty caches. It prints how many builds reused the
+  selection memo and the warm and cold tick build times.
 
 Run them:
 
@@ -208,7 +471,8 @@ says so and even paired ratios drift by 10–20%.
 
 ## Local Cloud
 
-Run the Cloud dashboard and Connect worker against one local D1 database:
+Run the Cloud dashboard, the Connect worker, and the AI gateway against one
+local D1 database:
 
 ```bash
 pnpm cloud:dev
@@ -216,21 +480,46 @@ pnpm cloud:dev
 
 The command applies migrations and prints the dashboard URL. Create a local
 email/password account, claim a handle, create a pairing code, and run the
-displayed `bb connect` command against a bb started with `pnpm dev`. The same
-worktree-specific local origin serves the dashboard at `bb.localhost` and
-routes `<handle>.bb.localhost` through the Connect worker. Email/password auth
+displayed `bb account login --code` command against a bb started with
+`pnpm dev` (`bb connect --code` does the same and also turns remote access
+back on). A browser sign-in started with
+`bb account login` opens `<local origin>/link?code=…` on the same origin. The
+same worktree-specific local origin serves the dashboard at `bb.localhost`,
+sends `bb.localhost/api/ai/*` to the AI gateway worker, and routes
+`<handle>.bb.localhost` through the Connect worker. Email/password auth
 is enabled only for this loopback workflow; production remains GitHub-only.
 `pnpm dev` automatically sets `BB_DEV_CONNECT_BASE_URL` to that worktree's
-local Cloud origin. While the bb is unpaired, Settings → Installed plugins → Connect
-therefore opens the local dashboard and a pasted code redeems locally. An
-explicit `bb connect --server ...` or `--base-url ...` still wins, so the dev bb
-can still pair with getbb.app.
+local Cloud origin. While the bb is signed out, Settings → bb account and
+Settings → Installed plugins → Connect therefore sign in against the local
+Cloud, and a pasted code redeems locally. An explicit `--base-url ...` (or
+`bb connect --server ...`) still wins, so the dev bb can still sign in to
+getbb.app.
 Local machine enrollment follows the same origin: local `http:` server URLs
 produce `ws:` machine tunnels and `http:` share URLs, while non-local machine
 enrollment remains HTTPS-only.
 
+The AI gateway answers `503 unavailable` until an OpenRouter key is present.
+Export `OPENROUTER_API_KEY` in the shell before `pnpm cloud:dev` to pass it
+through to the local worker; the startup banner says which mode is active.
+To exercise the whole chain without OpenRouter, export
+`BB_CLOUD_DEV_AI_UPSTREAM_BASE_URL` (for example `http://127.0.0.1:4599/api/v1`)
+pointing at a local OpenAI-compatible fake, plus any non-empty
+`OPENROUTER_API_KEY`.
+The production gateway gets the key from the repository's `OPENROUTER_API_KEY`
+Actions secret, which `deploy-ai-gateway.yml` uploads with each deploy. Set the
+staging key with `wrangler secret put OPENROUTER_API_KEY --env staging` from
+`apps/ai-gateway`. Use a dedicated OpenRouter key with account-wide zero data
+retention and a daily credit limit.
+
 Ctrl-C stops the local services. Local D1 state is kept under
 `.wrangler/cloud-dev`.
+
+To test a source bb against the deployed staging Cloud instead, start it with
+`pnpm dev --staging`. bb account and Connect then sign in, redeem codes, open
+tunnels, and call the AI gateway at `https://vibecodethis.site`; no
+`pnpm cloud:dev` is needed. The flag only changes the default origin, so a
+dev data dir already signed in elsewhere keeps its account until
+`bb account logout`.
 
 ## Provider-literal ratchet (G1)
 
@@ -243,3 +532,120 @@ literals, regenerate the baseline with `--write` and commit it so the reduction
 is recorded. `--list` prints every hit. When the baseline reaches zero, delete
 it and the guard. This is guardrail G1 of the provider-plugin migration
 (the provider-plugin API design (docs/provider-plugin-api.md, added by the v3 contract PR; overview at https://get-bb.github.io/reports/design/provider-plugin-api.html)).
+
+## Linux AppImage Node runtime
+
+The AppImage launcher probes user namespaces and injects `--no-sandbox` when
+they are unavailable. Electron running as Node rejects that Chromium flag.
+The owned runtime supplies it after Node's `--` argument separator: AppRun sees
+the explicit flag and skips injection, while Node treats it as a script
+argument. The bridge subprocess receives only its script path. The AppImage
+lifecycle smoke exercises this launch and verifies that its runtime mount
+survives closing the GUI.
+
+## Prepared Worktree Restarts
+
+`pnpm start` and `pnpm start:worktree` always run Turbo-backed preparation before
+launching. Turbo decides which tasks need rebuilding and restores unchanged
+artifacts from cache. Native modules are checked and repaired when necessary.
+Worktree startup retains stable checkout-specific data, ports, telemetry, and
+runtime policy.
+
+Use `pnpm start --dryrun` or `pnpm start:worktree --dryrun` ahead of startup.
+The same command selects its normal dotenv settings and runtime policy, prepares
+artifacts through Turbo, prints resolved ports, bind host, data/config/log paths
+and runtime entrypoints as JSON, then exits. It does not launch services, migrate
+instance data or require ports to be free. Dry runs still write build outputs and
+may repair native modules. Install dependencies with
+`pnpm install --frozen-lockfile` beforehand when needed.
+
+Build tasks clean their own outputs when they run. Startup does not clear output
+directories before invoking Turbo. Cache hits use Turbo's normal restoration
+behavior, which restores cached files but can leave extra files from an earlier
+build. There is no custom preparation receipt or whole-checkout hashing pass.
+Do not prepare concurrently with another preparation or against build files
+still served by a live instance.
+
+Preparation writes build outputs in the checkout. If the previous process serves
+those same paths, preparation can change files it reads: this is not an atomic
+release switch. Use a separate staging checkout to warm the shared Turbo cache
+while the old instance runs, then stop the verified instance, update/install and
+prepare its stable checkout, and launch. For an already stopped, fully prepared
+checkout, normal startup restores its artifacts through Turbo cache hits. Moving
+the serving checkout changes the default instance data and ports; do not move it as a restart shortcut.
+
+The repo-level programmatic entry point is `prepareRuntime()` in
+`scripts/start-bb.mjs`. This is a source-maintenance helper, not a new
+installed `bb` command or public plugin SDK API. The source launcher accepts `--dryrun` for preparation and configuration preview.
+`pnpm start` keeps its existing production dotenv and packaged runtime policy.
+
+Turbo output ownership is separate: server `build` owns `apps/server/dist`,
+`@bb/bundled-plugins#build` assembles `packages/bundled-plugins/dist` from 33 independently
+cached `<plugin-package>#prepare:bundled` tasks. Each plugin declares
+`@bb/plugin-build` as a workspace dev dependency and runs
+`bb-plugin-build prepare-bundled` from its own directory. Turbo builds the shared
+executable through `^build` before preparation. The executable bundles the plugin
+without importing server policy or requiring a TypeScript loader. Each plugin
+task owns only its
+`plugins/<name>/.bundled-runtime` directory; regular plugin builds still own
+`plugins/<name>/dist`. Changing one plugin rebuilds its preparation and final
+assembly, while unchanged plugins restore from cache. Shared SDK/toolchain
+changes deliberately invalidate every plugin. The assembly package declares its
+plugin dependencies in `package.json`; Turbo
+uses `^prepare:bundled` to build them. Adding a bundled plugin requires its
+package script and workspace dependency, checked against the runtime registry
+by the startup test suite. Shared sources are hashed through workspace `topo`
+dependencies rather than repository-wide source globs.
+Bundled preparation uses temporary source copies and never writes the regular
+plugin `dist` directories. `bb-app#build` depends on and
+copies prepared plugins into its own package output. The plugin task hashes
+plugin sources, manifests, branding, skills, staging scripts/entries, lockfile,
+patches, workspace configuration, SDK/build-tool sources and versions, and theme;
+generated modules and SDK artifacts arrive through explicit dependency edges.
+The source preparation runner supplies `BB_BUILD_TOOLCHAIN` with Node, OS, and
+architecture to partition Turbo cache entries; callers should use the runner
+rather than set this internal build identity themselves.
+
+Built source servers resolve plugins and the bundled marketplace from
+`packages/bundled-plugins/dist` before looking beside the server bundle.
+This prevents legacy `apps/server/dist/builtin-plugins` artifacts left by a
+Turbo cache restore from overriding newly prepared plugins. Installed packages
+use their shipped `server/dist/builtin-plugins` directory. Built-in plugins
+update with the server; users do not update them separately.
+
+## Reviewing UI Code Splits
+
+See [UI code splitting](ui-code-splitting.md) for the app's `defineSplit`
+contract, explicit preload scopes, bundle-boundary guards, and parallel worker
+handoff requirements. Use an isolated production build with browser request
+interception to review loading and failure states and verify cold-download
+behavior. Keep temporary review stories and fixtures out of the final diff.
+
+## Pull Request Status And Daemon Compatibility
+
+Host-daemon protocol 226 opens the service tier: `serviceTier` in execution
+options is any non-empty tier id instead of `fast` or `default`, and
+`model/list` entries may carry `supportedServiceTiers`. A daemon on 225 rejects
+tier ids other than `fast` and `default`.
+
+Host-daemon protocol 224 removes wire members that neither side used: the
+`host.file_metadata` command, the `disallowedTools` runtime-context field, the
+`cwd` and `requirement` fields on provider installation and usage commands, the
+`appliedAs` field of `turn.submit` results, and the `serviceManager` field of
+`server_move.inspect` results.
+
+Host-daemon protocol 223 upgrades Zod to 4.6.5. String length constraints now
+count Unicode code points rather than UTF-16 code units. For example, a
+controller label containing 256 emoji passes the 256-character limit; 257
+emoji fails. Daemons on protocol 222 must update before reconnecting so the
+server and daemon enforce the same validation behavior.
+
+Host-daemon protocol 222 adds required `autoMerge` and nullable `inMergeQueue`
+fields to `workspace.pull_request` results. A null queue value means the
+separate GitHub GraphQL lookup was unavailable; other PR data remains usable.
+The server checks protocol compatibility before parsing session payloads.
+A daemon still on 221 is rejected with `protocol_version_mismatch` and cannot
+serve workspace RPCs until it updates and reconnects. Auto-update-enabled
+older daemons install the server's matching bb-app artifact; disabled or failed
+updates leave the machine disconnected until a manual update succeeds. This
+is an intentional version gate, not backward-compatible field defaulting.

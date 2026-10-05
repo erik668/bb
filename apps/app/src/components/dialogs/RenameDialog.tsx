@@ -1,6 +1,8 @@
 import { capitalize } from "@bb/thread-view";
 import {
+  useCallback,
   useId,
+  useRef,
   useState,
   type FormEvent,
   type ReactNode,
@@ -32,12 +34,42 @@ export function RenameDialog({
   shellClassName,
   children,
 }: RenameDialogProps) {
-  const { inputRef, handleOpenAutoFocus } = useRenameDialogAutoFocus();
+  const { inputRef, handleOpenAutoFocus: focusInputOnOpen } =
+    useRenameDialogAutoFocus();
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const capturedOpenFocusRef = useRef(false);
+  const handleOpenAutoFocus = useCallback(
+    (event: Event) => {
+      if (!capturedOpenFocusRef.current) {
+        const activeElement = document.activeElement;
+        returnFocusRef.current =
+          activeElement instanceof HTMLElement &&
+          activeElement !== document.body
+            ? activeElement
+            : null;
+        capturedOpenFocusRef.current = true;
+      }
+      focusInputOnOpen(event);
+    },
+    [focusInputOnOpen],
+  );
+  const handleAfterCloseAutoFocus = useCallback(() => {
+    const returnFocus = returnFocusRef.current;
+    returnFocusRef.current = null;
+    capturedOpenFocusRef.current = false;
+    if (
+      returnFocus?.isConnected &&
+      returnFocus.closest('[aria-hidden="true"], [inert]') === null
+    ) {
+      returnFocus.focus({ preventScroll: true });
+    }
+  }, []);
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className={shellClassName}
         onOpenAutoFocus={handleOpenAutoFocus}
+        onAfterCloseAutoFocus={handleAfterCloseAutoFocus}
       >
         {children(inputRef)}
       </DialogContent>
@@ -49,13 +81,8 @@ interface RenameDialogContentProps {
   entityLabel: string;
   initialName: string;
   pending: boolean;
-  errorMessage?: string | null;
-  placeholder?: string;
-  inputDetails?: ReactNode;
-  maxLength?: { limit: number; message: string };
   autoCapitalize: "words" | "sentences";
   compact?: boolean;
-  clearAction?: { label: string; onClear: () => void };
   onRename: (name: string) => void;
   inputRef: RefObject<HTMLInputElement | null>;
 }
@@ -64,13 +91,8 @@ export function RenameDialogContent({
   entityLabel,
   initialName,
   pending,
-  errorMessage,
-  placeholder,
-  inputDetails,
-  maxLength,
   autoCapitalize,
   compact = false,
-  clearAction,
   onRename,
   inputRef,
 }: RenameDialogContentProps) {
@@ -78,7 +100,6 @@ export function RenameDialogContent({
   const [nextName, setNextName] = useState(initialName);
   const { validationMessage, validate, clearMessage } = useNameValidation({
     emptyMessage: `${capitalize(entityLabel)} name cannot be empty.`,
-    maxLength,
   });
 
   const handleSubmit = (event: FormEvent<HTMLFormElement>) => {
@@ -90,7 +111,6 @@ export function RenameDialogContent({
 
     onRename(trimmedName);
   };
-  const displayedErrorMessage = validationMessage ?? errorMessage;
 
   return (
     <>
@@ -110,8 +130,6 @@ export function RenameDialogContent({
             id={inputId}
             aria-label={`${capitalize(entityLabel)} name`}
             value={nextName}
-            placeholder={placeholder}
-            maxLength={maxLength?.limit}
             autoCapitalize={autoCapitalize}
             autoCorrect="off"
             spellCheck={false}
@@ -121,22 +139,11 @@ export function RenameDialogContent({
               clearMessage();
             }}
           />
-          {inputDetails}
-          {displayedErrorMessage ? (
-            <p className="text-sm text-destructive">{displayedErrorMessage}</p>
+          {validationMessage ? (
+            <p className="text-sm text-destructive">{validationMessage}</p>
           ) : null}
         </div>
         <DialogFooter>
-          {clearAction ? (
-            <Button
-              type="button"
-              variant="outline"
-              disabled={pending}
-              onClick={clearAction.onClear}
-            >
-              {clearAction.label}
-            </Button>
-          ) : null}
           <Button type="submit" disabled={pending}>
             Rename {entityLabel}
           </Button>

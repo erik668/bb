@@ -20,6 +20,11 @@ function environment(overrides: Partial<Environment> = {}): Environment {
     hostId: "host-a",
     path: "/workspace/project-a",
     managed: false,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
+    environmentProviderId: null,
+    environmentProviderInstanceKey: null,
+    environmentProviderSelection: null,
     isGitRepo: true,
     isWorktree: false,
     workspaceProvisionType: "unmanaged",
@@ -154,9 +159,6 @@ describe("provider-native memory shadow bridge", () => {
       }),
       lastAssistantText: "done",
     });
-
-    // Which agent went idle must not decide whether the workspace is scanned:
-    // the host owns that answer, so a thread on any provider reaches it.
     expect(
       host.harness.experimental_hostRpcCalls.map((call) => call.method),
     ).toEqual(["scanNativeMemory"]);
@@ -186,13 +188,7 @@ describe("provider-native memory shadow bridge", () => {
     await idle("thread-1");
     await idle("thread-2");
     await idle("thread-3");
-
-    // One round trip answers for the whole environment. This is what pays for
-    // dropping the provider-id guard: idle traffic no longer costs a scan.
     expect(host.harness.experimental_hostRpcCalls).toHaveLength(1);
-
-    // The backoff must not be permanent — `unsupported` also covers a
-    // transient scan fault, so an explicit scan still reaches the host.
     setScanSupported(true);
     await expect(
       host.harness.callRpc("scanNativeMemory", {

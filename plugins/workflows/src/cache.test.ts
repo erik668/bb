@@ -7,7 +7,6 @@ import {
   type WorkflowCallCacheInput,
   type WorkflowCallResultStatus,
 } from "./cache.js";
-import { parseAgentOptions } from "./validation.js";
 
 function cacheInput(): WorkflowCallCacheInput {
   return {
@@ -25,8 +24,6 @@ function cacheInput(): WorkflowCallCacheInput {
       properties: { approved: { type: "boolean" } },
       required: ["approved"],
     },
-    contextRequirement: null,
-    contextProfile: null,
     executionSemantics: {
       workerPromptVersion: "worker-prompt-v1",
       resultProtocolVersion: "structured-result-v1",
@@ -49,8 +46,6 @@ describe("workflow call cache identity", () => {
         properties: { approved: { type: "boolean" } },
         type: "object",
       },
-      contextRequirement: null,
-      contextProfile: null,
       selection: {
         permissionMode: "accept-edits",
         reasoningLevel: "medium",
@@ -108,25 +103,6 @@ describe("workflow call cache identity", () => {
       (input: WorkflowCallCacheInput) => ({
         ...input,
         outputSchema: { type: "string" },
-      }),
-    ],
-    [
-      "context requirement",
-      (input: WorkflowCallCacheInput) => ({
-        ...input,
-        contextRequirement: { minimumTokens: 1_000_000 },
-      }),
-    ],
-    [
-      "context profile",
-      (input: WorkflowCallCacheInput) => ({
-        ...input,
-        contextProfile: {
-          requiredSkills: ["implementation-loop"],
-          memoryQueries: [],
-          artifactRefs: [],
-          stopCondition: "implementation verified",
-        },
       }),
     ],
     [
@@ -189,33 +165,6 @@ describe("workflow call cache identity", () => {
     expect(computeWorkflowCallCacheKey(decorated)).toBe(
       computeWorkflowCallCacheKey(input),
     );
-  });
-
-  it("uses native schema through canonical outputSchema identity", () => {
-    const native = parseAgentOptions({
-      schema: {
-        required: ["approved"],
-        properties: { approved: { type: "boolean" } },
-        type: "object",
-      },
-      label: "Native label",
-      phase: "Review",
-    });
-    const compatible = parseAgentOptions({
-      outputSchema: {
-        type: "object",
-        properties: { approved: { type: "boolean" } },
-        required: ["approved"],
-      },
-      title: "Compatible title",
-      phase: "Different display phase",
-    });
-    const changed = parseAgentOptions({ schema: { type: "string" } });
-    const keyFor = (outputSchema: WorkflowCallCacheInput["outputSchema"]) =>
-      computeWorkflowCallCacheKey({ ...cacheInput(), outputSchema });
-
-    expect(keyFor(native.outputSchema)).toBe(keyFor(compatible.outputSchema));
-    expect(keyFor(changed.outputSchema)).not.toBe(keyFor(native.outputSchema));
   });
 });
 
@@ -299,7 +248,6 @@ describe("workflow call result reuse", () => {
       "running",
       "failed",
       "cancelled",
-      "incomplete",
     ];
     for (const status of nonReusableStatuses) {
       expect(reusableSuccessfulResult({ status, result: "stale" })).toEqual({

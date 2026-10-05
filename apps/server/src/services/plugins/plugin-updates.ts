@@ -30,18 +30,25 @@ import {
   type PluginUpdateResolution,
 } from "./update-resolver.js";
 import { PluginActivationRolledBackError } from "./plugin-activation.js";
+import type { SafeModeActivationRefusalArgs } from "./plugin-runtime.js";
 import type { createPluginActivation } from "./plugin-activation.js";
 import {
   createListedRegistryNpmResolverRun,
   type createManagedPluginArtifacts,
 } from "./managed-plugin-artifacts.js";
 import { MARKETPLACE_FETCH_TIMEOUT_MS } from "../plugin-catalog/marketplace-http.js";
-import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
+import {
+  SERVER_MOVE_FROZEN_RETRY_MS,
+  isServerMoveFrozen,
+} from "../server-move/freeze-state.js";
+import {
+  pluginUpdateCheckEntrySchema,
+  type PluginSourceDetail,
+  type PluginUpdateCheckEntry,
+} from "@bb/server-contract";
 import type {
   PluginApplyUpdateOutcome,
   PluginServiceDeps,
-  PluginSourceView,
-  PluginUpdateCheckEntry,
 } from "./plugin-service-internal.js";
 
 const PLUGIN_UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1_000;
@@ -65,7 +72,7 @@ export interface PluginUpdates {
   startPeriodicUpdateChecks(): void;
   stopPeriodicUpdateChecks(): Promise<void>;
   listUpdateResults(): PluginUpdateCheckEntry[];
-  getSource(id: string): Promise<PluginSourceView | undefined>;
+  getSource(id: string): Promise<PluginSourceDetail | undefined>;
   applyUpdate(id: string): Promise<PluginApplyUpdateOutcome>;
 }
 
@@ -84,6 +91,9 @@ interface PluginUpdatesContext {
     "applyNpmCandidate" | "stageGitCandidate"
   >;
   runArtifactGc: ReturnType<typeof createPluginActivation>["runArtifactGc"];
+  safeModeActivationRefusal: (
+    args: SafeModeActivationRefusalArgs,
+  ) => string | null;
 }
 
 export function createPluginUpdates(
@@ -99,6 +109,7 @@ export function createPluginUpdates(
     npmIntentForRow,
     managedArtifacts: { applyNpmCandidate, stageGitCandidate },
     runArtifactGc,
+    safeModeActivationRefusal,
   } = context;
   const now = deps.now ?? Date.now;
   const gitCandidateProbeCache = new Map<string, GitCandidateProbeResult>();
@@ -277,7 +288,7 @@ export function createPluginUpdates(
       return {
         outcome: "unavailable",
         detail:
-          "installed from the retired remote marketplace — remove it and reinstall from Extensions → Plugins → Browse to switch to the bundled copy",
+          "installed from the retired remote marketplace — remove it and reinstall from Plugins → Browse plugins to switch to the bundled copy",
       };
     }
     if (args.row.sourceKind === "npm") {
@@ -328,9 +339,7 @@ export function createPluginUpdates(
       url: intent.url,
       intent: intent.selector,
       currentCommit: args.row.gitResolvedCommit,
-      ...(intent.selector.kind === "range"
-        ? { probeCandidate: probeGitCandidate }
-        : {}),
+      probeCandidate: probeGitCandidate,
     });
     if (remote.outcome !== "update-available") return remote;
     if (intent.selector.kind === "range") return remote;
@@ -383,21 +392,27 @@ export function createPluginUpdates(
     return Math.max(0, PLUGIN_UPDATE_CHECK_INTERVAL_MS - (now() - oldest));
   }
 
-  function runPeriodicCheck(): void {
+  async function runPeriodicCheck(): Promise<void> {
     if (periodicChecksStopped) return;
-    void updates
-      .checkForUpdates()
-      .catch((error: unknown) => {
-        deps.logger.warn({ err: error }, "periodic plugin update check failed");
-      })
-      .finally(() => {
-        if (!periodicChecksStopped) {
-          cancelPeriodicCheck = scheduleUpdateCheck(
-            PLUGIN_UPDATE_CHECK_INTERVAL_MS,
-            runPeriodicCheck,
-          );
-        }
-      });
+    if (isServerMoveFrozen(deps.db)) {
+      cancelPeriodicCheck = scheduleUpdateCheck(
+        SERVER_MOVE_FROZEN_RETRY_MS,
+        runPeriodicCheck,
+      );
+      return;
+    }
+    try {
+      await updates.checkForUpdates();
+    } catch (error: unknown) {
+      deps.logger.warn({ err: error }, "periodic plugin update check failed");
+    } finally {
+      if (!periodicChecksStopped) {
+        cancelPeriodicCheck = scheduleUpdateCheck(
+          PLUGIN_UPDATE_CHECK_INTERVAL_MS,
+          runPeriodicCheck,
+        );
+      }
+    }
   }
 
   async function checkRows(
@@ -549,6 +564,16 @@ export function createPluginUpdates(
       return withPluginOperationLock(REGISTRATION_MUTATION_KEY, async () => {
         const row = getInstalledPlugin(deps.db, id);
         if (!row) return { ok: false, error: `unknown plugin "${id}"` };
+        const safeModeRefusal = safeModeActivationRefusal({
+          pluginId: id,
+          provenance: row.provenance,
+          builtinName:
+            row.sourceKind === "builtin" ? row.sourceBuiltinName : null,
+          action: "update",
+        });
+        if (safeModeRefusal !== null) {
+          return { ok: false, error: safeModeRefusal };
+        }
         const from = installedUpdateVersion(row);
         const npmRun = npmRunForRow(row);
         const selectionNpmIntent =

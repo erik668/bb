@@ -2,7 +2,6 @@ import { useState, type ReactNode } from "react";
 import type { PromptTextMention, ThreadListEntry } from "@bb/domain";
 import {
   NewThreadPromptBoxUI,
-  type NewThreadBranchConfig,
   type NewThreadEnvironmentConfig,
   type NewThreadModeConfig,
   type NewThreadProjectConfig,
@@ -13,7 +12,6 @@ import {
   HOST_IDS,
   PROJECT_IDS,
   PROJECT_NAMES,
-  STORY_BRANCH_OPTIONS,
   STORY_CLAUDE_CODE_PROVIDER_ID,
   STORY_CURSOR_PROVIDER_ID,
   STORY_PROVIDERS_BY_ID,
@@ -64,7 +62,7 @@ export const HOME_THREADS: ThreadListEntry[] = [
     titleFallback: "Reduce style recalculation",
     status: "starting",
     latestAttentionAt: 860,
-    runtime: { displayStatus: "starting", hostReconnectGraceExpiresAt: null },
+    runtime: { displayStatus: "starting" },
   }),
   makeThreadListEntry({
     id: "thr_home_automations",
@@ -114,25 +112,9 @@ const noop = () => {};
 
 const storyEnvironment: NewThreadEnvironmentConfig = {
   value: `host:${HOST_IDS.local}:local`,
-  onChange: noop,
   sources: STORY_PROJECT_SOURCES,
   host: makeHost({ id: HOST_IDS.local }),
   isLocal: true,
-};
-
-const storyBranch: NewThreadBranchConfig = {
-  value: null,
-  currentBranch: "main",
-  isNew: false,
-  options: STORY_BRANCH_OPTIONS,
-  loading: false,
-  currentOptionLabel: "Current: main",
-  placeholder: "Current checkout",
-  triggerLabel: "Current (main)",
-  triggerTitle: "Current: main",
-  onChange: noop,
-  onClear: noop,
-  onCreate: noop,
 };
 
 const storyWorktree: NewThreadWorktreeConfig = {
@@ -149,7 +131,6 @@ const storyProject: NewThreadProjectConfig = {
 
 const storyModeConfig = {
   environment: storyEnvironment,
-  branch: storyBranch,
   worktree: storyWorktree,
   permission: {
     value: "auto",
@@ -183,6 +164,7 @@ export function StoryComposer() {
   return (
     <ModelPickerStoryQueryProvider>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="top"
         id="story-compact-home-composer"
         value={value}
         mentionRanges={mentionRanges}

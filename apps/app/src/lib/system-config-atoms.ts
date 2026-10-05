@@ -1,5 +1,4 @@
 import { atom } from "jotai";
-import { DEFAULTS } from "@bb/config/defaults";
 import { defaultAppSettings, defaultAppTheme } from "@bb/domain";
 import type { WorkspaceOpenTarget } from "@bb/host-daemon-contract";
 import type { HostDaemonStatusSnapshot } from "./api-host-daemon";
@@ -18,16 +17,19 @@ import {
 import { wsManager } from "./ws";
 
 const unavailableSystemConfig: SystemConfigResponse = {
+  serverAccess: {
+    providers: [],
+    defaultProviderId: "direct",
+    effectiveUrl: null,
+    urlSource: null,
+  },
   generalSettings: defaultAppSettings,
   keybindings: [],
   defaultKeybindings: [],
   keybindingOverrides: [],
   experiments: {
     changelogPreview: false,
-    editMessages: false,
-    mobileApp: false,
-    sidebarProgressiveDisclosure: false,
-    timelineWindowing: false,
+    serverMove: false,
   },
   appearance: defaultAppTheme,
   customThemes: [],
@@ -39,12 +41,6 @@ const unavailableSystemConfig: SystemConfigResponse = {
   primaryHostId: null,
   primaryHostPlatform: null,
   voiceTranscriptionEnabled: false,
-  aiServices: {
-    inference: DEFAULTS.inferenceModel,
-    inferenceFallback: DEFAULTS.inferenceFallbackModel,
-    transcription: DEFAULTS.transcriptionModel,
-    services: [],
-  },
   dataDir: "",
 };
 
@@ -174,12 +170,18 @@ systemConfigRefreshTickAtom.onMount = (setRefreshTick) => {
     setRefreshTick((count) => count + 1);
   });
   const unsubscribeChanged = wsManager.onChanged((message) => {
+    const hostConnectionChanged =
+      message.entity === "host" &&
+      message.changes.some(
+        (change) =>
+          change === "host-connected" || change === "host-disconnected",
+      );
     if (
-      message.entity === "host" ||
+      hostConnectionChanged ||
       (message.entity === "system" &&
         message.changes.includes("config-changed"))
     ) {
-      if (message.entity === "host") {
+      if (hostConnectionChanged) {
         invalidateSystemConfig();
       }
       setRefreshTick((count) => count + 1);

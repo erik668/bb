@@ -1,14 +1,17 @@
 import { useCallback, useState, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { threadsQueryKey } from "@/hooks/queries/query-keys";
 import type { ThreadQueuedMessage } from "@bb/domain";
-import { makeThreadQueuedMessage } from "@bb/test-helpers/domain-fixtures";
+import {
+  makeThreadListEntry,
+  makeThreadQueuedMessage,
+} from "@bb/test-helpers/domain-fixtures";
 import {
   applyQueuedMessageReorder,
   type QueuedMessageReorderRequest,
 } from "@/lib/queued-message-reorder";
-import {
-  QueuedMessagesList,
-  type QueuedMessageGroupBoundaryRequest,
-} from "@/components/promptbox/banner/QueuedMessagesList";
+import type { QueuedMessageGroupBoundaryRequest } from "@/components/promptbox/banner/LazyQueuedMessagesList";
+import { QueuedMessagesList } from "@/components/promptbox/banner/QueuedMessagesList";
 import { StoryCard, StoryRow } from "../../../../.ladle/story-card";
 
 export default {
@@ -219,6 +222,14 @@ const waitingForWorkspace: readonly ThreadQueuedMessage[] = [
     id: "q_provisioning",
     text: "Re-run the setup checks after the workspace is ready.",
     waitingOn: { kind: "provisioning" },
+  }),
+];
+
+const sendingAfterStop: readonly ThreadQueuedMessage[] = [
+  makeQueuedMessage({
+    id: "q_stopping",
+    text: "Summarise what you changed before you stopped.",
+    waitingOn: { kind: "stopping" },
   }),
 ];
 
@@ -623,6 +634,14 @@ export function SteerWaitStates() {
         </ResponsivePromptStage>
       </StoryRow>
       <StoryRow
+        label="sending after a stop"
+        hint="the user pressed Send now while the thread was stopping; the row explains itself and drops Send now because pressing it again would change nothing"
+      >
+        <ResponsivePromptStage>
+          <StaticQueuedMessagesList queuedMessages={sendingAfterStop} />
+        </ResponsivePromptStage>
+      </StoryRow>
+      <StoryRow
         label="pending interaction"
         hint="the active turn needs the user's answer; no Send now"
       >
@@ -766,7 +785,6 @@ export function InFlightStates() {
           />
         </ResponsivePromptStage>
       </StoryRow>
-      {}
     </StoryCard>
   );
 }
@@ -804,5 +822,47 @@ export function NarrowSurface() {
         </PromptStage>
       </StoryRow>
     </StoryCard>
+  );
+}
+
+export function SenderMetadata() {
+  const [queryClient] = useState(() => {
+    const client = new QueryClient();
+    client.setQueryData(threadsQueryKey(), [
+      makeThreadListEntry({ id: "thr_review", title: "Code review" }),
+    ]);
+    return client;
+  });
+  const messages = [
+    makeQueuedMessage({
+      id: "q_user",
+      text: "Please review the final changes.",
+    }),
+    makeQueuedMessage({
+      id: "q_agent",
+      text: "The review is complete. All checks passed.",
+      initiator: "agent",
+      senderThreadId: "thr_review",
+    }),
+    makeQueuedMessage({
+      id: "q_system",
+      text: "The background task has completed.",
+      initiator: "system",
+      waitingOn: { kind: "provisioning" },
+    }),
+  ];
+  return (
+    <QueryClientProvider client={queryClient}>
+      <StoryCard>
+        <StoryRow
+          label="sender metadata"
+          hint="Non-user senders share the second line with wait metadata."
+        >
+          <ResponsivePromptStage>
+            <StaticQueuedMessagesList queuedMessages={messages} />
+          </ResponsivePromptStage>
+        </StoryRow>
+      </StoryCard>
+    </QueryClientProvider>
   );
 }

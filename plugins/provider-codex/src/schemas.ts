@@ -323,6 +323,29 @@ export const codexPermissionsRequestApprovalParamsSchema = z.object({
   permissions: codexRequestPermissionsSchema,
 });
 
+const codexToolRequestUserInputOptionSchema = z.object({
+  label: z.string(),
+  description: z.string(),
+});
+
+const codexToolRequestUserInputQuestionSchema = z.object({
+  id: z.string(),
+  header: z.string(),
+  question: z.string(),
+  isSecret: z.boolean().default(false),
+  options: z
+    .array(codexToolRequestUserInputOptionSchema)
+    .nullable()
+    .default(null),
+});
+
+export const codexToolRequestUserInputParamsSchema = z.object({
+  threadId: z.string(),
+  turnId: z.string(),
+  itemId: z.string(),
+  questions: z.array(codexToolRequestUserInputQuestionSchema),
+});
+
 const codexThreadItemEnvelopeSchema = z
   .object({
     type: z.string(),
@@ -334,7 +357,7 @@ export const codexSubAgentActivityItemSchema = z
   .object({
     type: z.literal("subAgentActivity"),
     id: z.string(),
-    kind: z.enum(["started", "interacted", "interrupted"]),
+    kind: z.enum(["started", "interacted", "interrupted", "completed"]),
     agentThreadId: z.string(),
     agentPath: z.string(),
   })
@@ -440,6 +463,27 @@ export const codexHandledThreadItemSchema = z.discriminatedUnion("type", [
     .passthrough(),
   z
     .object({
+      type: z.literal("imageGeneration"),
+      id: z.string(),
+      status: z.union([
+        codexToolReferenceStatusSchema,
+        z.literal("in_progress").transform(() => "inProgress" as const),
+      ]),
+      revisedPrompt: z.string().nullable(),
+      result: z.string(),
+      transparentBackground: z.boolean().nullish(),
+      failure: z
+        .object({
+          type: z.literal("usageLimitExceeded"),
+          limitId: z.string(),
+          resetsAt: z.number().nullable(),
+        })
+        .nullable(),
+      savedPath: z.string().optional(),
+    })
+    .passthrough(),
+  z
+    .object({
       type: z.literal("reasoning"),
       id: z.string(),
       summary: codexStringArraySchema,
@@ -518,13 +562,14 @@ const codexTurnErrorSchema = z
   })
   .passthrough();
 
-const codexTurnSchema = z
+export const codexTurnSchema = z
   .object({
     id: z.string(),
     status: codexTurnStatusSchema,
     error: codexTurnErrorSchema.nullable().optional(),
   })
   .passthrough();
+export type CodexTurn = z.infer<typeof codexTurnSchema>;
 
 const codexThreadSchema = z
   .object({
@@ -537,7 +582,8 @@ const codexTokenUsageBreakdownSchema = z
   .object({
     totalTokens: z.number(),
     inputTokens: z.number(),
-    cachedInputTokens: z.number(),
+    cachedInputTokens: z.number().nonnegative(),
+    cacheWriteInputTokens: z.number().nonnegative().optional(),
     outputTokens: z.number(),
     reasoningOutputTokens: z.number(),
   })
@@ -1003,6 +1049,12 @@ export const codexHandledEventSchema = z.discriminatedUnion("method", [
   ),
   createCodexEventSchema("deprecationNotice", codexWarningParamsSchema),
   createCodexEventSchema("configWarning", codexWarningParamsSchema),
+  createCodexEventSchema(
+    "warning",
+    z
+      .object({ threadId: z.string().nullable(), message: z.string() })
+      .passthrough(),
+  ),
 ]);
 export type CodexHandledEvent = z.infer<typeof codexHandledEventSchema>;
 type HandledCodexMethod = CodexHandledEvent["method"];

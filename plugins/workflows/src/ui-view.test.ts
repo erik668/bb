@@ -19,12 +19,6 @@ function call(index: number, phase: string | null): WorkflowCallInspection {
     resolvedPermissionMode: "full",
     status: "succeeded",
     childThreadId: `thr_${index}`,
-    promptBytes: 8,
-    contextMinimumTokens: index === 1 ? 1_000_000 : null,
-    contextProfileJson: null,
-    observedContextUsedTokens: index === 1 ? 180_000 : null,
-    observedModelContextWindow: index === 1 ? 258_400 : null,
-    contextUsageEstimated: index === 1 ? false : null,
     providerRetryAttempts: 0,
     repairAttempts: 0,
     resultJson: '"done"',
@@ -38,8 +32,6 @@ function call(index: number, phase: string | null): WorkflowCallInspection {
     options: {
       selection: null,
       outputSchema: null,
-      contextRequirement: index === 1 ? { minimumTokens: 1_000_000 } : null,
-      contextProfile: null,
       title: `Agent ${index}`,
       phase,
     },
@@ -49,60 +41,58 @@ function call(index: number, phase: string | null): WorkflowCallInspection {
       reasoningLevel: "medium",
       permissionMode: "full",
     },
-    contextFit: index === 1 ? "undersized" : "untracked",
     source: "live",
+  };
+}
+
+function run(calls: WorkflowCallInspection[]): WorkflowRunInspection {
+  return {
+    id: "wfr_test",
+    projectId: "proj_test",
+    originThreadId: "thr_origin",
+    environmentId: "env_test",
+    originProvider: "codex",
+    originModel: "gpt-test",
+    originReasoningLevel: "medium",
+    originPermissionMode: "full",
+    name: "phase-test",
+    source: `export const meta = {
+      name: "phase-test",
+      description: "Test phase presentation",
+      phases: [{ title: "Declared", detail: "Declared first" }],
+    };
+    return null;`,
+    sourceHash: "source_hash",
+    argsJson: "null",
+    settingsJson: "{}",
+    status: "running",
+    resumedFromRunId: null,
+    resultJson: null,
+    error: null,
+    phase: "Empty Current",
+    replaySafetyVersion: 1,
+    notificationSent: false,
+    notificationOutcome: "pending",
+    notificationAttemptCount: 0,
+    notificationNextAttemptAt: null,
+    notificationError: null,
+    createdAt: 0,
+    startedAt: 0,
+    finishedAt: null,
+    calls,
   };
 }
 
 describe("workflow UI view", () => {
   it("preserves distinct undeclared phases and an empty current phase", () => {
-    const run: WorkflowRunInspection = {
-      id: "wfr_test",
-      projectId: "proj_test",
-      originThreadId: "thr_origin",
-      presentationThreadId: "thr_origin",
-      parentRunId: null,
-      rootRunId: "wfr_test",
-      campaignId: "wfr_test",
-      environmentId: "env_test",
-      originProvider: "codex",
-      originModel: "gpt-test",
-      originReasoningLevel: "medium",
-      originPermissionMode: "full",
-      name: "phase-test",
-      source: `export const meta = {
-        name: "phase-test",
-        description: "Test phase presentation",
-        phases: [{ title: "Declared", detail: "Declared first" }],
-      };
-      return null;`,
-      sourceHash: "source_hash",
-      argsJson: "null",
-      settingsJson: "{}",
-      status: "running",
-      resumedFromRunId: null,
-      resultJson: null,
-      error: null,
-      phase: "Empty Current",
-      replaySafetyVersion: 1,
-      replayBarrierIndex: null,
-      notificationSent: false,
-      notificationOutcome: "pending",
-      notificationAttemptCount: 0,
-      notificationNextAttemptAt: null,
-      notificationError: null,
-      createdAt: 0,
-      startedAt: 0,
-      finishedAt: null,
-      calls: [
-        call(0, "Declared"),
-        call(1, "Dynamic B"),
-        call(2, null),
-        call(3, "Dynamic A"),
-      ],
-    };
+    const inspection = run([
+      call(0, "Declared"),
+      call(1, "Dynamic B"),
+      call(2, null),
+      call(3, "Dynamic A"),
+    ]);
 
-    const view = buildWorkflowRunView(run);
+    const view = buildWorkflowRunView(inspection);
 
     expect(view.phases.map((phase) => phase.title)).toEqual([
       "Declared",
@@ -114,5 +104,15 @@ describe("workflow UI view", () => {
       view.phases.map((phase) => phase.calls.map((entry) => entry.id)),
     ).toEqual([["wfc_0"], ["wfc_1"], ["wfc_3"], []]);
     expect(view.unphasedCalls.map((entry) => entry.id)).toEqual(["wfc_2"]);
+  });
+
+  it("truncates fallback labels by display width", () => {
+    const workflowCall = call(0, null);
+    workflowCall.prompt = "调".repeat(100);
+    workflowCall.options.title = null;
+
+    const view = buildWorkflowRunView(run([workflowCall]));
+
+    expect(view.unphasedCalls[0]?.label).toBe(`${"调".repeat(39)}…`);
   });
 });

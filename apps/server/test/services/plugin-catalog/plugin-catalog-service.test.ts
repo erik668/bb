@@ -4,16 +4,26 @@ import { join } from "node:path";
 import {
   createConnection,
   getPluginMarketplace,
+  listPluginMarketplaceIcons,
   markInstalledPluginRemoved,
   migrate,
   upsertPluginMarketplace,
   upsertInstalledPlugin,
   type DbConnection,
+  type PluginSourceIntent,
 } from "@bb/db";
-import { ROOT_PLUGIN_SOURCE_SELECTION } from "@bb/server-contract";
+import {
+  CURATED_PLUGIN_MARKETPLACE_NAME,
+  ROOT_PLUGIN_SOURCE_SELECTION,
+} from "@bb/server-contract";
 import { PLUGIN_CATALOG_CATEGORIES } from "@bb/domain";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createPluginCatalogService } from "../../../src/services/plugin-catalog/plugin-catalog-service.js";
+import {
+  SERVER_MOVE_FROZEN_RETRY_MS,
+  setServerMoveFrozen,
+} from "../../../src/services/server-move/freeze-state.js";
+import { refreshCuratedMarketplace } from "../../helpers/plugin-catalog.js";
 import type { MarketplaceFetch } from "../../../src/services/plugin-catalog/marketplace-http.js";
 import {
   CURATED_MARKETPLACE_V1_URL,
@@ -170,6 +180,7 @@ describe("plugin catalog service", () => {
       rootDir: `/bundled/${args.name}`,
       version: "0.0.1",
       enabled: true,
+      enabledFollowsDefault: false,
     });
   }
 
@@ -195,7 +206,14 @@ describe("plugin catalog service", () => {
       icon: "FileText",
       iconUrl: null,
       category: "File Viewers & Editors",
-      screenshots: [],
+      screenshots: [
+        "https://getbb.app/marketplace/v2/screenshots/docs/docs-21ddb6757-inline-review-desktop.png",
+        "https://getbb.app/marketplace/v2/screenshots/docs/docs-f4957b72f-inline-editing-desktop.png",
+        "https://getbb.app/marketplace/v2/screenshots/docs/docs-f4957b72f-ask-mobile.png",
+        "https://getbb.app/marketplace/v2/screenshots/docs/docs-63b536e70-workspace-desktop.png",
+        "https://getbb.app/marketplace/v2/screenshots/docs/docs-21ddb6757-html-desktop.png",
+        "https://getbb.app/marketplace/v2/screenshots/docs/docs-21ddb6757-vault-desktop.png",
+      ],
       collections: [
         {
           id: "bb-official",
@@ -276,13 +294,6 @@ describe("plugin catalog service", () => {
       "installation stopped by test",
     );
     expect(installedNames).toEqual(["docs"]);
-  });
-
-  it("rejects unknown catalog entries", async () => {
-    const catalog = service();
-    await expect(
-      catalog.install({ entryId: "does-not-exist" }),
-    ).rejects.toThrow('unknown plugin catalog entry "does-not-exist"');
   });
 
   it("drops entries whose bundled manifest is unreadable", async () => {
@@ -376,7 +387,9 @@ describe("plugin catalog service", () => {
         lastModified: null,
         lastSuccessfulRefreshAt: 1_000,
       });
-      await expect(catalog.refresh(2_000)).rejects.toThrow("HTTP 503");
+      await expect(refreshCuratedMarketplace(catalog, 2_000)).rejects.toThrow(
+        "HTTP 503",
+      );
       expect(await catalog.search("widgets")).toHaveLength(1);
     });
 
@@ -396,7 +409,7 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(requests.slice(0, 2)).toEqual([V2_MANIFEST_URL, V1_MANIFEST_URL]);
       expect(await catalog.search("widgets")).toHaveLength(1);
     });
@@ -426,10 +439,10 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       v2Available = false;
       requests.length = 0;
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
 
       expect(
         requests.filter(
@@ -459,7 +472,9 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await expect(catalog.refresh(1_000)).rejects.toThrow("HTTP 500");
+      await expect(refreshCuratedMarketplace(catalog, 1_000)).rejects.toThrow(
+        "HTTP 500",
+      );
       expect(requests).toEqual([V2_MANIFEST_URL]);
     });
 
@@ -473,7 +488,7 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(requests[0]).toBe(CUSTOM_V1_MANIFEST_URL);
       expect(requests).toHaveLength(2);
       expect(await catalog.search("widgets")).toHaveLength(1);
@@ -527,7 +542,7 @@ describe("plugin catalog service", () => {
             : new Response(null, { status: 404 }),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       const widgets = (await catalog.search("widgets")).find(
         (entry) => entry.entryId === "widgets",
       );
@@ -664,7 +679,7 @@ describe("plugin catalog service", () => {
       };
       const catalog = service({ fetch: fetchImpl });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       const tinted = Object.fromEntries(
         (await catalog.search("")).map((entry) => [
           entry.entryId,
@@ -694,7 +709,7 @@ describe("plugin catalog service", () => {
       };
       const catalog = service({ fetch: fetchImpl });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       const results = await catalog.search("widgets");
       expect(results).toHaveLength(1);
       expect(results[0]).toMatchObject({
@@ -716,7 +731,7 @@ describe("plugin catalog service", () => {
       expect((await catalog.search("thread-hover-cards")).length).toBe(0);
       expect(requests[1]?.url).toBe(ICON_URL);
 
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
       const conditional = requests.filter(
         (request) => request.url === MANIFEST_URL,
       )[1];
@@ -740,7 +755,7 @@ describe("plugin catalog service", () => {
         fetch: async () =>
           jsonResponse(manifest([remoteEntry({ id: "Not Valid" })])),
       });
-      await expect(catalog.refresh(5_000)).rejects.toThrow(
+      await expect(refreshCuratedMarketplace(catalog, 5_000)).rejects.toThrow(
         /invalid marketplace manifest/,
       );
       expect((await catalog.search("thread-hover-cards")).length).toBe(1);
@@ -757,7 +772,9 @@ describe("plugin catalog service", () => {
       const catalog = service({
         fetch: async () => new Response("nope", { status: 503 }),
       });
-      await expect(catalog.refresh(7_000)).rejects.toThrow("HTTP 503");
+      await expect(refreshCuratedMarketplace(catalog, 7_000)).rejects.toThrow(
+        "HTTP 503",
+      );
       expect((await catalog.search("")).length).toBe(
         BUNDLED_PLUGINS.length + SEED_ENTRY_COUNT,
       );
@@ -774,7 +791,9 @@ describe("plugin catalog service", () => {
             name: "someone-else",
           }),
       });
-      await expect(catalog.refresh(9_000)).rejects.toThrow(/someone-else/);
+      await expect(refreshCuratedMarketplace(catalog, 9_000)).rejects.toThrow(
+        /someone-else/,
+      );
       expect((await catalog.search("widgets")).length).toBe(0);
     });
 
@@ -804,7 +823,7 @@ describe("plugin catalog service", () => {
                 status: 200,
               }),
       });
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       const [entry] = await catalog.search("widgets");
       expect(entry).toMatchObject({ entryId: "widgets", iconUrl: null });
       expect(await catalog.icon("bb-community", "widgets")).toBeUndefined();
@@ -822,7 +841,7 @@ describe("plugin catalog service", () => {
             ? jsonResponse(manifest([remoteEntry()]))
             : new Response(Buffer.alloc(300 * 1024, 0x41), { status: 200 }),
       });
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeUndefined();
       expect(
         warnings.some((warning) => warning.includes("exceeds 262144 bytes")),
@@ -857,11 +876,11 @@ describe("plugin catalog service", () => {
           return new Response(VALID_SVG, { status: 200 });
         },
       });
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeDefined();
       expect(await catalog.icon("bb-community", "gadgets")).toBeUndefined();
 
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeDefined();
       expect(await catalog.icon("bb-community", "gadgets")).toBeDefined();
     });
@@ -878,10 +897,10 @@ describe("plugin catalog service", () => {
               )
             : new Response(VALID_SVG, { status: 200 }),
       });
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeDefined();
       listIcon = false;
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeUndefined();
     });
 
@@ -900,11 +919,11 @@ describe("plugin catalog service", () => {
             : new Response("nope", { status: 503 });
         },
       });
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeDefined();
 
       iconUrl = "./icons/replacement.svg";
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
       expect(await catalog.icon("bb-community", "widgets")).toBeUndefined();
     });
 
@@ -923,7 +942,9 @@ describe("plugin catalog service", () => {
             : new Response(VALID_SVG, { status: 200 }),
       });
 
-      await expect(catalog.refresh(3_000)).rejects.toThrow("icon write failed");
+      await expect(refreshCuratedMarketplace(catalog, 3_000)).rejects.toThrow(
+        "icon write failed",
+      );
       expect(await catalog.search("widgets")).toEqual([]);
       expect(await catalog.search("thread-hover-cards")).toHaveLength(1);
       expect(getPluginMarketplace(db, "bb-community")).toMatchObject({
@@ -971,7 +992,7 @@ describe("plugin catalog service", () => {
         ),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       const byId = new Map(
         (await catalog.search("")).map((entry) => [entry.entryId, entry]),
       );
@@ -984,7 +1005,7 @@ describe("plugin catalog service", () => {
         fetch: fetchWith(() => statsResponse({ other: { installs: 9 } })),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect((await catalog.search("widgets"))[0]?.installs).toBeNull();
     });
 
@@ -1009,10 +1030,10 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect((await catalog.search("widgets"))[0]?.installs).toBe(5);
       installs = 40;
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
       expect((await catalog.search("widgets"))[0]?.installs).toBe(40);
     });
 
@@ -1028,9 +1049,9 @@ describe("plugin catalog service", () => {
         ),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       sidecarBroken = true;
-      await catalog.refresh(2_000);
+      await refreshCuratedMarketplace(catalog, 2_000);
       expect((await catalog.search("widgets"))[0]?.installs).toBe(7);
       expect(getPluginMarketplace(db, "bb-community")).toMatchObject({
         lastSuccessfulRefreshAt: 2_000,
@@ -1050,7 +1071,7 @@ describe("plugin catalog service", () => {
         ),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect((await catalog.search("widgets"))[0]?.installs).toBeNull();
     });
 
@@ -1092,7 +1113,7 @@ describe("plugin catalog service", () => {
             ? jsonResponse(manifest([entry]))
             : new Response(VALID_SVG, { status: 200 }),
       });
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       return catalog;
     }
 
@@ -1193,33 +1214,123 @@ describe("plugin catalog service", () => {
         rootDir: "/managed/thread-hover-cards",
         version: "0.1.0",
         enabled: true,
+        enabledFollowsDefault: false,
       });
       expect((await catalog.search("thread-hover-cards"))[0]?.installed).toBe(
         true,
       );
     });
+
+    it.each([
+      {
+        name: "a local checkout",
+        source: "path:/Users/me/git/thread-hover-cards",
+        sourceIntent: {
+          kind: "path",
+          canonicalPath: "/Users/me/git/thread-hover-cards",
+        },
+        installed: false,
+      },
+      {
+        name: "a different git repository",
+        source: "git:https://github.com/someone-else/hover-cards.git@main",
+        sourceIntent: {
+          kind: "git",
+          url: "https://github.com/someone-else/hover-cards.git",
+          subdirectory: null,
+          selector: { kind: "ref", ref: "main", refKind: "branch" },
+        },
+        installed: false,
+      },
+      {
+        name: "the entry's git repository",
+        source: "git:https://github.com/brsbl/bb-plugins@main",
+        sourceIntent: {
+          kind: "git",
+          url: "https://github.com/brsbl/bb-plugins",
+          subdirectory: null,
+          selector: { kind: "ref", ref: "main", refKind: "branch" },
+        },
+        installed: true,
+      },
+    ] satisfies {
+      name: string;
+      source: string;
+      sourceIntent: PluginSourceIntent;
+      installed: boolean;
+    }[])(
+      "reports a direct install from $name with the same id as installed: $installed",
+      async ({ source, sourceIntent, installed }) => {
+        const catalog = service();
+        upsertInstalledPlugin(db, {
+          id: "thread-hover-cards",
+          source,
+          provenance: { kind: "direct" },
+          sourceIntent,
+          exactResolution:
+            sourceIntent.kind === "git"
+              ? { kind: "git", commit: "0".repeat(40) }
+              : { kind: "path" },
+          updateState: {
+            lastCheckAt: null,
+            availableCompatibleVersion: null,
+            newestIncompatibleVersion: null,
+            statusDetail: null,
+          },
+          activeArtifactId: null,
+          rootDir: "/Users/me/git/thread-hover-cards",
+          version: "0.1.0",
+          enabled: true,
+          enabledFollowsDefault: false,
+        });
+        expect((await catalog.search("thread-hover-cards"))[0]).toMatchObject({
+          installed,
+          conflictingInstallSource: installed ? null : source,
+        });
+      },
+    );
   });
 
   describe("catalog limits and trust", () => {
-    it("refuses a manifest that lists more than the entry limit", async () => {
-      const oversize = manifest(
-        Array.from({ length: 257 }, (_unused, index) =>
-          remoteEntry({ id: `widgets-${index}` }),
+    it("refreshes and searches a catalog with more than 1024 entries", async () => {
+      const largeManifest = manifest(
+        Array.from({ length: 1025 }, (_unused, index) =>
+          remoteEntry({ id: `widgets-${index}`, icon: "Zap" }),
         ),
       );
       const catalog = service({
-        fetch: async () => jsonResponse(oversize),
+        fetch: async () => jsonResponse(largeManifest),
       });
 
-      await expect(catalog.refresh(1_000)).rejects.toThrow(
-        /at most 256 plugins/u,
-      );
-      expect(getPluginMarketplace(db, "bb-community")?.lastError).toMatch(
-        /at most 256 plugins/u,
-      );
+      await refreshCuratedMarketplace(catalog, 1_000);
+      expect(getPluginMarketplace(db, "bb-community")?.lastError).toBeNull();
+      expect(await catalog.search("widgets")).toHaveLength(1025);
+      expect(await catalog.search("widgets-1024")).toEqual([
+        expect.objectContaining({ entryId: "widgets-1024" }),
+      ]);
     });
 
-    it("refuses a catalog whose icons pass the total byte budget", async () => {
+    it("refreshes a remote manifest larger than 1 MiB", async () => {
+      const largeManifest = manifest(
+        Array.from({ length: 600 }, (_unused, index) =>
+          remoteEntry({
+            id: `widgets-${index}`,
+            icon: "Zap",
+            description: "x".repeat(2_000),
+          }),
+        ),
+      );
+      expect(JSON.stringify(largeManifest).length).toBeGreaterThan(1_048_576);
+      const catalog = service({
+        fetch: async () => jsonResponse(largeManifest),
+      });
+
+      await refreshCuratedMarketplace(catalog, 1_000);
+      expect(getPluginMarketplace(db, "bb-community")?.lastError).toBeNull();
+      expect(await catalog.search("widgets")).toHaveLength(600);
+    });
+
+    it("stores catalog icons totaling more than 8 MiB", async () => {
       const bigSvg = Buffer.from(
         `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><title>${"a".repeat(200 * 1024)}</title><path d="M0 0h16v16H0z"/></svg>`,
       );
@@ -1239,9 +1350,12 @@ describe("plugin catalog service", () => {
               }),
       });
 
-      await expect(catalog.refresh(1_000)).rejects.toThrow(
-        /exceed the 8388608 byte total limit/u,
-      );
+      await refreshCuratedMarketplace(catalog, 1_000);
+      const icons = listPluginMarketplaceIcons(db, "bb-community");
+      expect(icons).toHaveLength(64);
+      expect(
+        icons.reduce((total, icon) => total + icon.bytes.byteLength, 0),
+      ).toBeGreaterThan(8 * 1024 * 1024);
     });
 
     it("fetches entry icons concurrently", async () => {
@@ -1267,7 +1381,7 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(peak).toBeGreaterThan(1);
       expect(await catalog.search("widgets-11")).toHaveLength(1);
     });
@@ -1294,7 +1408,7 @@ describe("plugin catalog service", () => {
         },
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect(iconRequests).toEqual([]);
       expect(await catalog.icon("bb-community", "widgets")).toBeUndefined();
       expect(warnings.join("\n")).toMatch(/non-public address 127\.0\.0\.1/u);
@@ -1319,7 +1433,7 @@ describe("plugin catalog service", () => {
               }),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       const results = await catalog.search("");
       expect(
         results.filter((entry) => entry.pluginId === occupied.pluginId),
@@ -1354,10 +1468,41 @@ describe("plugin catalog service", () => {
             : new Response(null, { status: 404 }),
       });
 
-      await catalog.refresh(1_000);
+      await refreshCuratedMarketplace(catalog, 1_000);
       expect((await catalog.search("widgets"))[0]?.source).toBe(
         "npm:bb-plugin-widgets@^1.0.0 (registry https://npm.acme.test)",
       );
     });
+  });
+
+  it("defers the periodic marketplace refresh while the server is moving", async () => {
+    const fetched: string[] = [];
+    const catalog = service({
+      fetch: async (url) => {
+        fetched.push(String(url));
+        return new Response(null, { status: 503 });
+      },
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    setServerMoveFrozen(db, true);
+    try {
+      catalog.startPeriodicRefresh();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetched).toEqual([]);
+      expect(
+        getPluginMarketplace(db, CURATED_PLUGIN_MARKETPLACE_NAME)
+          ?.lastAttemptedRefreshAt,
+      ).toBeNull();
+
+      setServerMoveFrozen(db, false);
+      await vi.advanceTimersByTimeAsync(SERVER_MOVE_FROZEN_RETRY_MS);
+      await vi.waitFor(() => {
+        expect(fetched).not.toEqual([]);
+      });
+    } finally {
+      catalog.stopPeriodicRefresh();
+      setServerMoveFrozen(db, false);
+      vi.useRealTimers();
+    }
   });
 });

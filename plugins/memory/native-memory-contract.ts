@@ -1,14 +1,5 @@
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-
-/**
- * On-disk memory layouts the host scanner knows how to read. A layout names a
- * filesystem convention this plugin implements — `claude-memory-dir` is the
- * `~/.claude/settings.json` + `~/.claude/projects/<key>/memory/` tree — not a
- * bb provider id. Nothing routes on it: bb never maps a thread's provider onto
- * a layout, and no provider declares one. Adding an agent's memory tree means
- * adding a scanner and an entry here, with no change to the idle path.
- */
 export const NATIVE_MEMORY_LAYOUTS = ["claude-memory-dir"] as const;
 export type NativeMemoryLayout = (typeof NATIVE_MEMORY_LAYOUTS)[number];
 export const NATIVE_MEMORY_MAX_FILE_BYTES = 64 * 1024;

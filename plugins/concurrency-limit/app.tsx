@@ -5,8 +5,8 @@ import {
   useRpc,
   type StandardSchemaV1InferOutput,
 } from "@get-bb/plugin-sdk/app";
-import { Input } from "@bb/shared-ui/input";
-import { MAX_LIMIT_VALUE } from "./limits.js";
+import { Input } from "@/components/ui/input";
+import { MAX_LIMIT_VALUE, parseLimitValue } from "./limits.js";
 import type { concurrencyLimitRpcContract } from "./server.js";
 
 type ConfigurationView = StandardSchemaV1InferOutput<
@@ -40,9 +40,8 @@ function parseDraft(
 ): { ok: true; value: number | null } | { ok: false } {
   const trimmed = raw.trim();
   if (trimmed === "") return { ok: true, value: null };
-  if (!/^\d+$/u.test(trimmed)) return { ok: false };
-  const value = Number(trimmed);
-  return value <= MAX_LIMIT_VALUE ? { ok: true, value } : { ok: false };
+  const value = parseLimitValue(trimmed);
+  return value === null ? { ok: false } : { ok: true, value };
 }
 
 function ConcurrencyLimitSettings() {

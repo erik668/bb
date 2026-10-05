@@ -247,7 +247,7 @@ const TOAST_EXAMPLES: readonly ToastExample[] = [
     group: "Thread actions",
     label: "archive worktree group",
     source: "ProjectRow",
-    usage: ["Sidebar project row", "Archive worktree group succeeds"],
+    usage: ["Sidebar project row", "Archive environment group succeeds"],
     current: {
       tone: "success",
       title: "Archived 3 threads",
@@ -299,19 +299,6 @@ const TOAST_EXAMPLES: readonly ToastExample[] = [
       tone: "error",
       title: "Failed to open file locally",
       description: "Thread storage path is not available yet.",
-    },
-  },
-  {
-    id: "opening-editor",
-    group: "Local files",
-    label: "opening editor",
-    source: "GitDiffCard story",
-    usage: ["Story-only GitDiffCard fixture", "Open in editor handler runs"],
-    current: {
-      tone: "message",
-      title: "Opening in editor",
-      description:
-        "apps/app/src/components/settings/UpdatesSettingsSection.tsx",
     },
   },
   {

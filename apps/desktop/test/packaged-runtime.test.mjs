@@ -103,6 +103,28 @@ test("closed requests reject unknown, missing, malformed and duplicate fields be
   }
 });
 
+test("Windows runtime observations use the same closed native evidence contract", (t) => {
+  const f = fixture(t);
+  const request = {
+    ...f.request,
+    expected: { ...f.request.expected, platform: "win32" },
+  };
+  const result = inspectPackagedRuntime(
+    request,
+    synthetic((response) => ({
+      ...response,
+      runtime: { ...response.runtime, platform: "win32" },
+    })),
+  );
+  assert.equal(result.passed, true);
+  assert.equal(result.runtime.platform, "win32");
+  assert.equal(result.modules[0].native[0].sha256, hash(f.native));
+  assert.equal(
+    inspectPackagedRuntime(request, synthetic()).blocker.code,
+    "RUNTIME_IDENTITY_MISMATCH",
+  );
+});
+
 test("actual Node mismatch precedes module side effects and reports measured runtime", (t) => {
   const f = fixture(t);
   const marker = join(f.temp, "marker");

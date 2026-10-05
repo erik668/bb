@@ -9,14 +9,14 @@ import {
   type CommandResultSideEffectsResult,
   type HostDaemonCommandExecutionRecord,
 } from "./command-result-side-effects.js";
-import { settleEnvironmentDestroyCommandResult } from "../services/environments/environment-cleanup-internal.js";
 import {
   settleEnvironmentProvisionCancelCommandResult,
   settleEnvironmentProvisionCommandResult,
-} from "../services/environments/environment-provisioning-internal.js";
+} from "../services/environments/environment-engine.js";
 import {
   settleThreadPlanCancelCommandResult,
   settleThreadStartCommandResult,
+  settleThreadStorageDeleteCommandResult,
   settleThreadStopCommandResult,
   settleTurnSubmitCommandResult,
 } from "../services/threads/thread-lifecycle.js";
@@ -42,9 +42,8 @@ type CommandResultSideEffectHandlers = {
 };
 
 const commandResultSideEffectHandlers: CommandResultSideEffectHandlers = {
-  "environment.destroy": settleEnvironmentDestroyCommandResult,
-  "environment.provision": settleEnvironmentProvisionCommandResult,
-  "environment.provision.cancel": settleEnvironmentProvisionCancelCommandResult,
+  "environment.attach": settleEnvironmentProvisionCommandResult,
+  "environment.attach.cancel": settleEnvironmentProvisionCancelCommandResult,
   "interactive.resolve": ({ deps, command, report }) => {
     deps.pendingInteractions.settleInteractiveResolveCommandResultInTransaction(
       {
@@ -56,6 +55,7 @@ const commandResultSideEffectHandlers: CommandResultSideEffectHandlers = {
   },
   "thread.start": settleThreadStartCommandResult,
   "thread.stop": settleThreadStopCommandResult,
+  "thread.storage.delete": settleThreadStorageDeleteCommandResult,
   "thread.plan.cancel": settleThreadPlanCancelCommandResult,
   "turn.submit": settleTurnSubmitCommandResult,
   "workspace.commit": ({ deps, command, report }) => {

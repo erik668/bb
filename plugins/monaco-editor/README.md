@@ -35,7 +35,7 @@ pnpm exec turbo run typecheck test --filter=bb-plugin-monaco-editor
 ```
 
 `scripts/stage-assets.mjs` builds the Monaco bundle the editor loads, into
-`dist/monaco`. Packaging runs it (`apps/server/scripts/copy-builtin-plugins.ts`),
+`dist/monaco`. Packaging runs it (`bb-plugin-build prepare-bundled`),
 since only a builtin's `dist/` ships. A source checkout never runs that path —
 the dev server loads builtins straight from `plugins/<name>` — so the plugin
 builds the bundle itself when it is missing or older than `monaco-bundle/`,
@@ -58,7 +58,10 @@ the API plus its contribution modules (find, folding, word navigation,
 sorting, …) and every Monarch grammar. What it leaves out is the language
 *services* for CSS, HTML, JSON, and TypeScript — completion and type checking
 this plugin has no use for. esbuild proves what is reachable, so the result is
-4.6 MB rather than the 24 MB of Monaco's prebuilt tree.
+4.6 MB rather than the 24 MB of Monaco's prebuilt tree. Monaco's icon webfont
+is inlined as a data URL, so the bundle stays the three files the loader
+fetches from the preview URL: `editor.js`, `editor.css`, and
+`editor.worker.js`.
 
 Do not trim that entry to `editor.api` to save the difference. The API without
 the contributions still opens files and still types, so the editor looks fine

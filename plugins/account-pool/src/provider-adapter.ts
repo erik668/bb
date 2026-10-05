@@ -1,12 +1,26 @@
+import type { z } from "zod";
 import type {
   Account,
+  AccountPoolConfig,
   AccountQuota,
   AccountSecret,
   ModelFamily,
   PoolProvider,
 } from "./contracts.js";
-import type { HubSettings } from "./hub.js";
+import { retryAfterMilliseconds } from "./quota.js";
 import type { AccountStore, QuotaStore } from "./store.js";
+
+const OAUTH_REFRESH_TIMEOUT_MS = 15_000;
+const OAUTH_REFRESH_WINDOW_MS = 5 * 60 * 1_000;
+
+export class TransientOAuthRefreshError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+  }
+}
 
 export interface AdapterSecretContext {
   account: Account;
@@ -15,6 +29,7 @@ export interface AdapterSecretContext {
   quotas: QuotaStore;
   fetch: typeof fetch;
   now: () => number;
+  forceRefresh: boolean;
 }
 
 export interface AdapterUsageContext {
@@ -40,9 +55,16 @@ export interface ProviderAdapter {
   provider: PoolProvider;
   upstreamName: string;
   importAccount(): Promise<ImportedProviderAccount>;
-  modelFamily(body: Uint8Array): ModelFamily;
-  prepareBody(body: Uint8Array, account: Account): Uint8Array;
-  upstreamUrl(request: Request, settings: HubSettings): URL;
+  parseRequest(
+    body: Uint8Array,
+    headers: Headers,
+  ): {
+    family: ModelFamily;
+    affinityId: string | null;
+    parentAffinityId: string | null;
+    forAccount: (account: Account) => Uint8Array;
+  };
+  upstreamUrl(request: Request, settings: AccountPoolConfig): URL;
   requestHeaders(
     inbound: Headers,
     account: Account,
@@ -59,12 +81,111 @@ export interface ProviderAdapter {
   refreshSecret(
     context: AdapterSecretContext,
   ): Promise<{ secret: AccountSecret; refreshed: boolean }>;
-  refreshUsage?(context: AdapterUsageContext): Promise<void>;
+  refreshUsage(context: AdapterUsageContext): Promise<void>;
   errorResponse(
     status: number,
     message: string,
     headers?: HeadersInit,
   ): Response;
+}
+
+export function oauthSecretDueForRefresh(
+  context: AdapterSecretContext,
+): Extract<AccountSecret, { kind: "oauth" }> | null {
+  const secret = context.secret;
+  if (
+    secret.kind !== "oauth" ||
+    (!context.forceRefresh &&
+      (secret.expiresAt === null ||
+        secret.expiresAt > context.now() + OAUTH_REFRESH_WINDOW_MS))
+  ) {
+    return null;
+  }
+  return secret;
+}
+
+export async function fetchOAuthRefresh(
+  context: Pick<AdapterSecretContext, "fetch" | "now">,
+  url: string,
+  body: Record<string, string>,
+): Promise<string> {
+  const signal = AbortSignal.timeout(OAUTH_REFRESH_TIMEOUT_MS);
+  let onTimeout = () => {};
+  const timedOut = new Promise<never>((_resolve, reject) => {
+    onTimeout = () => reject(signal.reason);
+    if (signal.aborted) onTimeout();
+    else signal.addEventListener("abort", onTimeout, { once: true });
+  });
+  try {
+    let response: Response;
+    try {
+      response = await Promise.race([
+        context
+          .fetch(url, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              accept: "application/json",
+            },
+            body: JSON.stringify(body),
+            signal,
+          })
+          .then((result) => {
+            if (signal.aborted)
+              void result.body?.cancel().catch(() => undefined);
+            return result;
+          }),
+        timedOut,
+      ]);
+    } catch {
+      throw new TransientOAuthRefreshError(
+        "OAuth refresh failed due to a network error or timeout.",
+        0,
+      );
+    }
+    if (!response.ok) {
+      const message = `OAuth refresh failed with HTTP ${response.status}.`;
+      const retryAfterMs = retryAfterMilliseconds(
+        response.headers.get("retry-after"),
+        context.now(),
+      );
+      void response.body?.cancel().catch(() => undefined);
+      if (response.status === 400 || response.status === 401) {
+        throw new Error(message);
+      }
+      throw new TransientOAuthRefreshError(message, retryAfterMs);
+    }
+    try {
+      return await Promise.race([response.text(), timedOut]);
+    } catch {
+      throw new TransientOAuthRefreshError(
+        "OAuth refresh response failed due to a network error or timeout.",
+        0,
+      );
+    }
+  } finally {
+    signal.removeEventListener("abort", onTimeout);
+  }
+}
+
+export function parseOAuthRefreshResponse<T>(
+  text: string,
+  schema: z.ZodType<T>,
+): T {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    payload = undefined;
+  }
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    throw new TransientOAuthRefreshError(
+      "OAuth refresh returned an unreadable response.",
+      0,
+    );
+  }
+  return parsed.data;
 }
 
 export function filterRequestHeaders(

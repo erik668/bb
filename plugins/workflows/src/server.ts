@@ -1,30 +1,17 @@
 import type { BbPluginApi, PluginAgentToolResult } from "@get-bb/plugin-sdk";
 import { z } from "zod";
-import {
-  assertWorkflowArtifactIntegrity,
-  createWorkflowArtifactService,
-  defaultWorkflowArtifactDocuments,
-  initializeWorkflowArtifactStorage,
-  type WorkflowArtifactScope,
-} from "./artifact-storage.js";
 import { registerWorkflowCli } from "./cli.js";
-import { migrations } from "./data.js";
+import { migrateWorkflowStorage } from "./migration-compatibility.js";
 import { toJsonValue } from "./json-value.js";
 import { createWorkflowService } from "./service.js";
-import { WORKFLOW_RUNS_REALTIME_CHANNEL } from "./realtime-channel.js";
 import {
   DEFAULT_WORKFLOW_SETTINGS,
   registerWorkflowSettings,
 } from "./settings.js";
 import type { JsonValue } from "./types.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
-import { checkpointToolInputSchema } from "./workflow-checkpoint.js";
-import { workflowCampaignIdSchema } from "./workflow-campaign.js";
 import { workflowUiRpcContract } from "./ui-contract.js";
-import {
-  buildWorkflowCheckpointView,
-  buildWorkflowRunView,
-} from "./ui-view.js";
+import { buildWorkflowRunView } from "./ui-view.js";
 
 const sourceInputFields = {
   script: z
@@ -72,12 +59,6 @@ const runInputSchema = z
         "Run ID of a prior BB workflow to resume from. Calls in the causally safe, longest unchanged prefix return cached results; the first edited, new, or concurrent call and everything after it run live. The prior run must be terminal and from the same project and environment.",
       )
       .default(null),
-    campaignId: workflowCampaignIdSchema
-      .nullable()
-      .describe(
-        "Stable build-campaign ID. Reuse it when a later top-level run continues the same human-visible build story. Child and resumed runs inherit it and reject conflicts.",
-      )
-      .default(null),
   })
   .strict();
 const resultInputSchema = z
@@ -99,9 +80,7 @@ function errorResult(error: string): PluginAgentToolResult {
 export default async function plugin(bb: BbPluginApi) {
   const settings = registerWorkflowSettings(bb);
   const db = bb.storage.database();
-  initializeWorkflowArtifactStorage(db);
-  bb.storage.migrate(db, migrations);
-  assertWorkflowArtifactIntegrity(db);
+  migrateWorkflowStorage(bb.storage, db);
   let initialSettings = DEFAULT_WORKFLOW_SETTINGS;
   try {
     initialSettings = await settings.get();
@@ -111,7 +90,6 @@ export default async function plugin(bb: BbPluginApi) {
     );
   }
   const service = createWorkflowService(bb, db, initialSettings);
-  const artifactService = createWorkflowArtifactService(bb, db);
   settings.onChange(
     (next) => service.updateSettings(next),
     (error) =>
@@ -119,7 +97,7 @@ export default async function plugin(bb: BbPluginApi) {
         `Workflow settings are invalid; the last valid values remain active: ${error.message}`,
       ),
   );
-  registerWorkflowCli(bb, service, artifactService);
+  registerWorkflowCli(bb, service);
 
   function workflowForThread(threadId: string, runId: string | null) {
     const run =
@@ -127,262 +105,31 @@ export default async function plugin(bb: BbPluginApi) {
         ? service.inspectLatestForThread(threadId)
         : service.inspect(runId);
     if (run === null) return null;
-    if (
-      run.originThreadId !== threadId &&
-      run.presentationThreadId !== threadId
-    ) {
+    if (run.originThreadId !== threadId) {
       throw new Error("This workflow run is not available in this thread");
     }
     return run;
   }
 
-  function campaignRepresentative(
-    run: ReturnType<typeof workflowForThread>,
-    threadId: string,
-  ) {
-    if (run === null) return null;
-    if (run.presentationThreadId !== threadId) return run;
-    const campaign = service.inspectCampaign(run.id);
-    if (campaign === null) return run;
-    const active = campaign.runs.filter(
-      (entry) =>
-        entry.run.status === "queued" || entry.run.status === "running",
-    );
-    const representative = (active.at(-1) ?? campaign.runs.at(-1))?.run;
-    return representative === undefined
-      ? run
-      : (service.inspect(representative.id) ?? run);
-  }
-
-  function artifactScope(
-    run: NonNullable<ReturnType<typeof workflowForThread>>,
-  ): WorkflowArtifactScope {
-    return {
-      campaignId: run.campaignId,
-      projectId: run.projectId,
-      environmentId: run.environmentId,
-      presentationThreadId: run.presentationThreadId,
-      originRunId: run.rootRunId,
-    };
-  }
-
-  function requireArtifactRun(threadId: string, runId: string | null) {
-    const run = workflowForThread(threadId, runId);
-    if (run === null)
-      throw new Error("No workflow run is available for artifact review");
-    return run;
-  }
-
-  function publishArtifactsChanged(threadId: string): void {
-    bb.realtime.publish(WORKFLOW_RUNS_REALTIME_CHANNEL, { threadId });
-  }
-
   bb.rpc.register(workflowUiRpcContract, {
     workflowActiveRuns({ threadId }) {
-      const seenCampaigns = new Set<string>();
       return {
         runs: service
           .inspectActiveForThread(threadId)
-          .filter((run) => {
-            if (seenCampaigns.has(run.campaignId)) return false;
-            seenCampaigns.add(run.campaignId);
-            return true;
-          })
           .map(buildWorkflowRunView),
       };
     },
     workflowRunView({ threadId, runId }) {
-      const run = campaignRepresentative(
-        workflowForThread(threadId, runId),
-        threadId,
-      );
-      return { run: run === null ? null : buildWorkflowRunView(run) };
-    },
-    workflowRunDetails({ threadId, runId }) {
       const run = workflowForThread(threadId, runId);
-      const campaign =
-        run !== null && run.presentationThreadId === threadId
-          ? service.inspectCampaign(run.id)
-          : null;
-      return {
-        checkpoints:
-          run === null
-            ? []
-            : service
-                .inspectCheckpoints(run.id)
-                .map(buildWorkflowCheckpointView),
-        campaign:
-          campaign === null
-            ? null
-            : {
-                id: campaign.campaignId,
-                detailedRunLimit: campaign.detailedRunLimit,
-                omittedCheckpointRunCount: campaign.omittedCheckpointRunCount,
-                coverage: campaign.coverage,
-                coverageTruncated: campaign.coverageTruncated,
-                runs: campaign.runs.map((entry) => ({
-                  run: entry.run,
-                  checkpoints: entry.checkpoints.map(
-                    buildWorkflowCheckpointView,
-                  ),
-                  checkpointsOmitted: entry.checkpointsOmitted,
-                })),
-              },
-      };
+      return { run: run === null ? null : buildWorkflowRunView(run) };
     },
     async workflowStopRun({ threadId, runId }) {
       const run = workflowForThread(threadId, runId);
       if (run === null) throw new Error(`Unknown workflow run ${runId}`);
-      if (run.originThreadId !== threadId) {
-        throw new Error(
-          "Only the workflow origin thread can stop this workflow run",
-        );
-      }
       const stopped = await service.stop(run.id);
       const latest = workflowForThread(threadId, run.id);
       if (latest === null) throw new Error(`Unknown workflow run ${runId}`);
       return { stopped, run: buildWorkflowRunView(latest) };
-    },
-    workflowApproveAmendment({ threadId, runId, acceptanceId }) {
-      const run = workflowForThread(threadId, runId);
-      if (run === null) throw new Error(`Unknown workflow run ${runId}`);
-      // Same boundary as stopping: the run's own thread is the human side of
-      // this campaign, and the panel only offers the control there.
-      if (run.originThreadId !== threadId) {
-        throw new Error(
-          "Only the workflow origin thread can approve this amendment",
-        );
-      }
-      // Projected, not spread: the service also returns the canonical body it
-      // bound to, and this contract's output is strict. The panel reads the
-      // body from the coverage it refetches.
-      const approval = service.approveAmendment({
-        runId: run.id,
-        acceptanceId,
-        approvedByThreadId: threadId,
-        surface: "panel",
-      });
-      return {
-        acceptanceId: approval.acceptanceId,
-        supersedes: approval.supersedes,
-        newlyApproved: approval.newlyApproved,
-      };
-    },
-    workflowArtifactList({ threadId, runId }) {
-      const run = workflowForThread(threadId, runId);
-      return {
-        artifacts: run === null ? [] : artifactService.list(artifactScope(run)),
-      };
-    },
-    workflowArtifactSeed({ threadId, runId, documents, clientMutationId }) {
-      const run = requireArtifactRun(threadId, runId);
-      const runView = buildWorkflowRunView(run);
-      const result = artifactService.seed(
-        artifactScope(run),
-        documents ??
-          defaultWorkflowArtifactDocuments({
-            campaignName: run.name,
-            description: runView.description,
-            campaignId: run.campaignId,
-          }),
-        clientMutationId,
-      );
-      publishArtifactsChanged(run.presentationThreadId);
-      return result;
-    },
-    workflowArtifactRead({ threadId, runId, artifactId, revision }) {
-      const run = requireArtifactRun(threadId, runId);
-      const scope = artifactScope(run);
-      const detail = artifactService.read(
-        scope,
-        artifactId,
-        revision ?? undefined,
-      );
-      for (const annotation of detail.annotations) {
-        if (annotation.assistance?.status === "pending") {
-          void artifactService
-            .draftDecision(scope, run.name, annotation.id)
-            .then(() => publishArtifactsChanged(run.presentationThreadId))
-            .catch((error) =>
-              bb.log.warn(
-                `Artifact decision assistance recovery failed: ${error instanceof Error ? error.message : String(error)}`,
-              ),
-            );
-        }
-        const change = annotation.decision?.change;
-        if (change?.assistance?.status === "pending") {
-          void artifactService
-            .draftArchitecture(scope, run.name, change.id)
-            .then(() => publishArtifactsChanged(run.presentationThreadId))
-            .catch((error) =>
-              bb.log.warn(
-                `Artifact architecture assistance recovery failed: ${error instanceof Error ? error.message : String(error)}`,
-              ),
-            );
-        }
-      }
-      return detail;
-    },
-    workflowArtifactAnnotate({ threadId, runId, ...input }) {
-      const run = requireArtifactRun(threadId, runId);
-      const result = artifactService.addAnnotation(artifactScope(run), input);
-      publishArtifactsChanged(run.presentationThreadId);
-      void artifactService
-        .draftDecision(artifactScope(run), run.name, result.annotationId)
-        .then(() => publishArtifactsChanged(run.presentationThreadId))
-        .catch((error) =>
-          bb.log.warn(
-            `Artifact decision assistance failed: ${error instanceof Error ? error.message : String(error)}`,
-          ),
-        );
-      return result;
-    },
-    workflowArtifactReply({ threadId, runId, ...input }) {
-      const run = requireArtifactRun(threadId, runId);
-      const result = artifactService.reply(artifactScope(run), input);
-      publishArtifactsChanged(run.presentationThreadId);
-      return result;
-    },
-    workflowArtifactDecide({ threadId, runId, ...input }) {
-      const run = requireArtifactRun(threadId, runId);
-      const result = artifactService.decide(artifactScope(run), input);
-      publishArtifactsChanged(run.presentationThreadId);
-      if (
-        input.outcome === "accepted" &&
-        input.semanticClass !== "editorial" &&
-        result.changeId !== null
-      ) {
-        void artifactService
-          .draftArchitecture(artifactScope(run), run.name, result.changeId)
-          .then(() => publishArtifactsChanged(run.presentationThreadId))
-          .catch((error) =>
-            bb.log.warn(
-              `Artifact architecture assistance failed: ${error instanceof Error ? error.message : String(error)}`,
-            ),
-          );
-      }
-      return result;
-    },
-    workflowArtifactAssessChange({ threadId, runId, ...input }) {
-      const run = requireArtifactRun(threadId, runId);
-      const result = artifactService.assessChange(artifactScope(run), input);
-      publishArtifactsChanged(run.presentationThreadId);
-      return result;
-    },
-    workflowArtifactConfirmChange({ threadId, runId, ...input }) {
-      const run = requireArtifactRun(threadId, runId);
-      const result = artifactService.confirmChange(artifactScope(run), input);
-      publishArtifactsChanged(run.presentationThreadId);
-      return result;
-    },
-    async workflowArtifactEnsureSteward({ threadId, runId }) {
-      const run = requireArtifactRun(threadId, runId);
-      const result = await artifactService.ensureSteward(
-        artifactScope(run),
-        run.name,
-      );
-      publishArtifactsChanged(run.presentationThreadId);
-      return result;
     },
   });
 
@@ -404,14 +151,12 @@ export default async function plugin(bb: BbPluginApi) {
           source: prepared.source,
           args: toJsonValue(input.args, "args"),
           resumedFromRunId: input.resumeRunId,
-          campaignId: input.campaignId,
         });
         const previewDirective = `::workflow-preview{run="${run.id}"}`;
         return jsonResult({
           runId: run.id,
           status: run.status,
           name: run.name,
-          campaignId: run.campaignId,
           previewDirective,
         });
       } catch (error) {
@@ -419,18 +164,6 @@ export default async function plugin(bb: BbPluginApi) {
           error instanceof Error ? error.message : String(error),
         );
       }
-    },
-  });
-
-  bb.agents.registerTool({
-    name: "bb_workflow_checkpoint",
-    description:
-      "Report durable structured progress for the active workflow call. Use stable checkpoint IDs so later calls update the same plan, work item, verification, or transition row. Report only state the worker actually knows; do not infer test results or changed files.",
-    parameters: checkpointToolInputSchema,
-    execute({ checkpoint }, ctx) {
-      const result = service.submitCheckpoint(ctx.threadId, checkpoint);
-      if (result.ok) return jsonResult({ accepted: true });
-      return errorResult(result.error);
     },
   });
 
@@ -466,19 +199,15 @@ export default async function plugin(bb: BbPluginApi) {
     const worker = service.agentConfiguration(context.thread.id);
     if (worker !== null) {
       return {
-        tools: worker.terminal
-          ? []
-          : [
-              "bb_workflow_checkpoint",
-              ...(worker.resultParameters === null
-                ? []
-                : [
-                    {
-                      name: "bb_workflow_result",
-                      parameters: worker.resultParameters,
-                    },
-                  ]),
-            ],
+        tools:
+          worker.terminal || worker.resultParameters === null
+            ? []
+            : [
+                {
+                  name: "bb_workflow_result",
+                  parameters: worker.resultParameters,
+                },
+              ],
         skills: [],
         ...(worker.instructions === null
           ? {}
@@ -487,10 +216,10 @@ export default async function plugin(bb: BbPluginApi) {
     }
     if (context.origin.pluginId === bb.pluginId) {
       return {
-        tools: ["bb_workflow_checkpoint", "bb_workflow_result"],
+        tools: ["bb_workflow_result"],
         skills: [],
         instructions:
-          "You are starting as a BB workflow worker. Follow the workflow prompt. When the prompt assigns stable plan, work-item, verification, or transition IDs, report truthful progress with bb_workflow_checkpoint. Your final text IS the return value, not a human-facing message. If the prompt requests structured output, call bb_workflow_result exactly once at the end of your response.",
+          "You are starting as a BB workflow worker. Follow the workflow prompt. Your final text IS the return value, not a human-facing message. If the prompt requests structured output, call bb_workflow_result exactly once at the end of your response.",
       };
     }
     return {
@@ -502,13 +231,18 @@ export default async function plugin(bb: BbPluginApi) {
   });
 
   bb.events.on("thread.idle", ({ thread, lastAssistantText }) => {
-    return service.onThreadIdle(thread.id, lastAssistantText);
+    service.onThreadIdle(thread.id, lastAssistantText);
   });
   bb.events.on("thread.failed", ({ thread, error }) => {
     service.onThreadFailed(thread.id, error);
   });
-  bb.events.on("thread.deleted", ({ thread }) => {
+  bb.events.on("thread.archived", ({ thread }) => {
+    service.onThreadArchived(thread.id);
+    return service.onOriginUnavailable(thread.id);
+  });
+  bb.events.on("thread.deleted", async ({ thread }) => {
     service.onThreadDeleted(thread.id);
+    await service.onOriginUnavailable(thread.id);
   });
 
   bb.background.service("workflow-worker", {

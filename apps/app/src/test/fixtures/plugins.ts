@@ -32,8 +32,10 @@ export function makePluginRegistrationSet(
     pendingInteractions: [],
     sidebarFooterActions: [],
     experimentalSidebarNavigations: [],
+    experimentalSidebarHeaders: [],
     threadLists: [],
     threadHeaderActions: [],
+    browserToolbarActions: [],
     fileOpeners: [],
     sourceCodeRenderers: [],
     diffRenderers: [],
@@ -67,6 +69,7 @@ export function makePluginListItem(
     provenance: "direct",
     isOrphanedBuiltin: false,
     catalogEntryId: null,
+    catalogMarketplaceName: null,
     publisherLabel: null,
     sourceDisplay: "path · /plugins/plugin-test",
     updateState: {

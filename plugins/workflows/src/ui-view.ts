@@ -1,36 +1,20 @@
 import { parseWorkflowSource } from "./parser.js";
-import type {
-  WorkflowCheckpointInspection,
-  WorkflowRunInspection,
-} from "./service.js";
+import type { WorkflowRunInspection } from "./service.js";
+import { displayWidth, truncateToWidth } from "./text-measure.js";
 import type {
   WorkflowCallView,
-  WorkflowCheckpointView,
   WorkflowPhaseView,
   WorkflowRunView,
 } from "./ui-contract.js";
 
-export function buildWorkflowCheckpointView(
-  inspection: WorkflowCheckpointInspection,
-): WorkflowCheckpointView {
-  return {
-    id: inspection.id,
-    checkpoint: inspection.checkpoint,
-    phase: inspection.phase,
-    childThreadId: inspection.childThreadId,
-    createdAt: inspection.createdAt,
-    updatedAt: inspection.updatedAt,
-  };
-}
-
-const MAX_FALLBACK_LABEL_LENGTH = 80;
+const MAX_FALLBACK_LABEL_WIDTH = 80;
 
 function fallbackCallLabel(prompt: string, index: number): string {
   const normalized = prompt.replace(/\s+/g, " ").trim();
   if (normalized.length === 0) return `Agent ${index + 1}`;
-  return normalized.length <= MAX_FALLBACK_LABEL_LENGTH
+  return displayWidth(normalized) <= MAX_FALLBACK_LABEL_WIDTH
     ? normalized
-    : `${normalized.slice(0, MAX_FALLBACK_LABEL_LENGTH - 1)}…`;
+    : `${truncateToWidth(normalized, MAX_FALLBACK_LABEL_WIDTH - 1)}…`;
 }
 
 function callView(
@@ -47,13 +31,6 @@ function callView(
     reasoningLevel: call.execution.reasoningLevel,
     cached: call.source === "cached",
     childThreadId: call.childThreadId,
-    promptBytes: call.promptBytes,
-    contextMinimumTokens:
-      call.options.contextRequirement?.minimumTokens ?? null,
-    contextFit: call.contextFit,
-    observedContextUsedTokens: call.observedContextUsedTokens,
-    observedModelContextWindow: call.observedModelContextWindow,
-    contextUsageEstimated: call.contextUsageEstimated,
     providerRetryAttempts: call.providerRetryAttempts,
     repairAttempts: call.repairAttempts,
     error: call.error,
@@ -105,11 +82,6 @@ export function buildWorkflowRunView(
 
   return {
     id: run.id,
-    originThreadId: run.originThreadId,
-    presentationThreadId: run.presentationThreadId,
-    parentRunId: run.parentRunId,
-    rootRunId: run.rootRunId,
-    campaignId: run.campaignId,
     name: run.name,
     description: metadata.description,
     status: run.status,

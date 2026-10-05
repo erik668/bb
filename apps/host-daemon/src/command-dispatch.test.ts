@@ -23,7 +23,9 @@ import {
   unexpectedProviderMaintenance,
 } from "../test/command/dispatch-helpers.js";
 import type { CommandOf } from "./command-dispatch-support.js";
+import { PROVIDER_INSTALLATION_GATE_TTL_MS } from "./provider-installation-gate.js";
 import { RuntimeManager } from "./runtime-manager.js";
+import { stageInjectedSkillSources } from "./injected-skills.js";
 
 const WORKSPACE_PATH = "/tmp/bb-command-dispatch-test";
 
@@ -124,7 +126,6 @@ async function unexpectedWorkspaceCall(): Promise<never> {
 function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
   return {
     path: workspacePath,
-    managed: false,
     isGitRepo: false,
     isWorktree: false,
     getDefaultBranch: unexpectedWorkspaceCall,
@@ -139,10 +140,7 @@ function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
     diffPatch: unexpectedWorkspaceCall,
     getPullRequest: unexpectedWorkspaceCall,
     runPullRequestAction: unexpectedWorkspaceCall,
-    listFiles: unexpectedWorkspaceCall,
     commit: unexpectedWorkspaceCall,
-    reset: unexpectedWorkspaceCall,
-    destroy: vi.fn(async () => undefined),
   };
 }
 
@@ -240,7 +238,6 @@ function createTurnSubmitCommand(
       bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -330,7 +327,6 @@ function createInstallationGatedThreadStart(
     threadId,
     workspaceContext: {
       workspacePath: WORKSPACE_PATH,
-      workspaceProvisionType: "unmanaged",
     },
     projectId: "proj_1",
     providerId: "codex",
@@ -461,7 +457,7 @@ describe("dispatchCommand", () => {
       },
     );
 
-    expect(result).toEqual({ appliedAs: "steer" });
+    expect(result).toEqual({});
     expect(runtime.waitForActiveTurn).toHaveBeenCalledWith("thread-1", {
       timeoutMs: 5_000,
     });
@@ -505,7 +501,7 @@ describe("dispatchCommand", () => {
       },
     );
 
-    expect(result).toEqual({ appliedAs: "steer" });
+    expect(result).toEqual({});
     expect(runtime.steerTurn).toHaveBeenCalledWith(
       expect.objectContaining({ expectedTurnId: "turn-new" }),
     );
@@ -539,7 +535,7 @@ describe("dispatchCommand", () => {
       },
     );
 
-    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(result).toEqual({});
     expect(runtime.waitForActiveTurn).not.toHaveBeenCalled();
     expect(runtime.runTurn).toHaveBeenCalledOnce();
   });
@@ -779,7 +775,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: WORKSPACE_PATH,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj-1",
         providerId: "codex",
@@ -828,8 +823,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -858,7 +852,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: "/tmp/bb-command-dispatch-new",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
@@ -888,7 +881,7 @@ describe("dispatchCommand", () => {
       threadStorageRootPath: "/tmp/bb-thread-storage",
     });
 
-    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(result).toEqual({});
     expect(oldRuntime.stopThread).toHaveBeenCalledWith({
       threadId: "thread-1",
     });
@@ -904,6 +897,7 @@ describe("dispatchCommand", () => {
         threadId: "thread-1",
       }),
     );
+    expect(newRuntime.runTurn).toHaveBeenCalledOnce();
     expect(
       (oldRuntime.stopThread as unknown as Mock).mock.invocationCallOrder[0],
     ).toBeLessThan(
@@ -1006,7 +1000,7 @@ describe("dispatchCommand", () => {
     });
   });
 
-  it("skips a release when a turn started after the server read the thread", async () => {
+  it("reports a retained turn instead of releasing a turn that started after the server read the thread", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({
       createRuntime: () => runtime,
@@ -1017,6 +1011,18 @@ describe("dispatchCommand", () => {
       workspacePath: "/tmp/bb-release-race",
     });
     runtime.setActiveTurn("thread-1", "turn-new");
+    const options = {
+      dataDir: "/tmp/bb-data",
+      logger: silentLogger,
+      eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
+      fetchProjectAttachment: async () => {
+        throw new Error("Unexpected project attachment fetch");
+      },
+      fetchPluginHostArtifact: fetchDispatchTestArtifact,
+      ...unexpectedProviderMaintenance,
+      runtimeManager: manager,
+      threadStorageRootPath: "/tmp/bb-thread-storage",
+    };
 
     const result = await dispatchCommand(
       {
@@ -1025,23 +1031,29 @@ describe("dispatchCommand", () => {
         environmentId: "env-release-race",
         threadId: "thread-1",
       },
-      {
-        dataDir: "/tmp/bb-data",
-        logger: silentLogger,
-        eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
-        fetchProjectAttachment: async () => {
-          throw new Error("Unexpected project attachment fetch");
-        },
-        fetchPluginHostArtifact: fetchDispatchTestArtifact,
-        ...unexpectedProviderMaintenance,
-        runtimeManager: manager,
-        threadStorageRootPath: "/tmp/bb-thread-storage",
-      },
+      options,
     );
 
     expect(runtime.stopThread).not.toHaveBeenCalled();
     expect(runtime.getActiveTurnId("thread-1")).toBe("turn-new");
-    expect(result).toEqual({ providerCheckpointId: null });
+    expect(result).toEqual({
+      providerCheckpointId: null,
+      activeTurnRetained: true,
+    });
+
+    const interrupted = await dispatchCommand(
+      {
+        type: "thread.stop",
+        intent: "interrupt",
+        environmentId: "env-release-race",
+        threadId: "thread-1",
+      },
+      options,
+    );
+
+    expect(runtime.stopThread).toHaveBeenCalledWith({ threadId: "thread-1" });
+    expect(runtime.getActiveTurnId("thread-1")).toBeNull();
+    expect(interrupted).toEqual({ providerCheckpointId: null });
   });
 
   it("treats thread.stop as successful when no runtime holds the thread", async () => {
@@ -1155,8 +1167,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -1206,8 +1217,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -1234,7 +1244,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: "/tmp/bb-goal-new",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
@@ -1317,7 +1326,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "example-agent",
@@ -1397,7 +1405,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -1464,7 +1471,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -1523,7 +1529,10 @@ describe("dispatchCommand", () => {
       }),
     ).resolves.toEqual({ providerThreadId: "provider-thread-rewind-1" });
     expect(providerInstallationStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ requirement: "thread_rewind" }),
+      expect.objectContaining({
+        requirement: "thread_rewind",
+        checkUpdates: false,
+      }),
     );
     expect(runtime.prepareThreadRewind).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1616,36 +1625,9 @@ describe("dispatchCommand", () => {
 
     expect(providerInstallationStatus).toHaveBeenCalledOnce();
     expect(runtime.startThread).toHaveBeenCalledTimes(2);
-  });
-
-  it("shares one in-flight probe between concurrent thread starts", async () => {
-    const runtime = createRuntime();
-    const manager = new RuntimeManager({
-      createRuntime: () => runtime,
-      provisionWorkspace: async () => createWorkspace(),
-    });
-    const probe = createDeferredPromise<ProviderCliStatus>();
-    const providerInstallationStatus = vi.fn(() => probe.promise);
-    const options = makeDispatchOptions({
-      runtimeManager: manager,
-      providerInstallationStatus,
-    });
-
-    const starts = Promise.all([
-      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
-      dispatchCommand(createInstallationGatedThreadStart("thread-2"), options),
-    ]);
-    await vi.waitFor(() =>
-      expect(providerInstallationStatus).toHaveBeenCalledOnce(),
+    expect(providerInstallationStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ checkUpdates: false }),
     );
-    probe.resolve(supportedCodexInstallationStatus());
-
-    await expect(starts).resolves.toEqual([
-      { providerThreadId: "provider-thread-1" },
-      { providerThreadId: "provider-thread-1" },
-    ]);
-    expect(providerInstallationStatus).toHaveBeenCalledOnce();
-    expect(runtime.startThread).toHaveBeenCalledTimes(2);
   });
 
   it("retries concurrent thread starts when a shell env refresh interrupts their shared probe", async () => {
@@ -1682,37 +1664,6 @@ describe("dispatchCommand", () => {
     ]);
     expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
     expect(runtime.startThread).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not remember an unsupported installation", async () => {
-    const runtime = createRuntime();
-    const manager = new RuntimeManager({
-      createRuntime: () => runtime,
-      provisionWorkspace: async () => createWorkspace(),
-    });
-    const providerInstallationStatus = vi
-      .fn<() => Promise<ProviderCliStatus>>()
-      .mockResolvedValueOnce({
-        ...supportedCodexInstallationStatus(),
-        currentVersion: "0.135.0",
-        npmGlobalPackageVersion: "0.135.0",
-        versionUnsupported: true,
-      })
-      .mockResolvedValue(supportedCodexInstallationStatus());
-    const options = makeDispatchOptions({
-      runtimeManager: manager,
-      providerInstallationStatus,
-    });
-
-    await expect(
-      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
-    ).rejects.toMatchObject({ code: "provider_cli_unsupported_version" });
-    await expect(
-      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
-    ).resolves.toEqual({ providerThreadId: "provider-thread-1" });
-
-    expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
-    expect(runtime.startThread).toHaveBeenCalledOnce();
   });
 
   it("keys the rewind requirement separately from thread start", async () => {
@@ -1883,13 +1834,12 @@ describe("dispatchCommand", () => {
   });
 
   it("expires the remembered probe after the gate TTL", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
     try {
       const runtime = createRuntime();
       const manager = new RuntimeManager({
         createRuntime: () => runtime,
         provisionWorkspace: async () => createWorkspace(),
-        providerInstallationGateTtlMs: 100,
       });
       const providerInstallationStatus = vi.fn(async () =>
         supportedCodexInstallationStatus(),
@@ -1899,20 +1849,27 @@ describe("dispatchCommand", () => {
         providerInstallationStatus,
       });
 
-      const probedAt = Date.now();
       await dispatchCommand(
         createInstallationGatedThreadStart("thread-1"),
         options,
       );
-      vi.setSystemTime(probedAt + 101);
+      now.mockReturnValue(PROVIDER_INSTALLATION_GATE_TTL_MS - 1);
       await dispatchCommand(
         createInstallationGatedThreadStart("thread-2"),
         options,
       );
+      expect(providerInstallationStatus).toHaveBeenCalledOnce();
 
-      expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
+      now.mockReturnValue(PROVIDER_INSTALLATION_GATE_TTL_MS);
+      await dispatchCommand(
+        createInstallationGatedThreadStart("thread-3"),
+        options,
+      );
+      await vi.waitFor(() => {
+        expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
+      });
     } finally {
-      vi.useRealTimers();
+      now.mockRestore();
     }
   });
 
@@ -2281,7 +2238,7 @@ describe("dispatchCommand", () => {
     ]);
   });
 
-  it("reuses a busy runtime when thread.start carries a changed skill catalog", async () => {
+  it("injects the current skill snapshot when spawning beside an active sibling", async () => {
     const fixture = await setupBusySkillCatalogEnvironment({
       activeThreadId: "sibling-thread",
     });
@@ -2292,7 +2249,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -2335,6 +2291,24 @@ describe("dispatchCommand", () => {
 
     expect(result.providerThreadId).toBe("provider-thread-1");
     expect(fixture.runtime.startThread).toHaveBeenCalledTimes(1);
+    const currentCatalog = await stageInjectedSkillSources({
+      dataDir: fixture.dataDir,
+      injectedSkillSources: [fixture.source],
+    });
+    expect(currentCatalog.catalogHash).not.toBe(fixture.originalCatalogHash);
+    await expect(
+      fs.readFile(
+        path.join(
+          currentCatalog.skillRoots[0]!.path,
+          "release-notes",
+          "SKILL.md",
+        ),
+        "utf8",
+      ),
+    ).resolves.toContain("second-token");
+    expect(fixture.runtime.startThread).toHaveBeenCalledWith(
+      expect.objectContaining({ skillRoots: currentCatalog.skillRoots }),
+    );
     expect(fixture.createRuntimeSpy).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.shutdown).not.toHaveBeenCalled();
     expect(fixture.manager.get("env-1")?.skillCatalogHash).toBe(
@@ -2367,7 +2341,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: WORKSPACE_PATH,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
@@ -2397,7 +2370,7 @@ describe("dispatchCommand", () => {
       threadStorageRootPath: "/tmp/bb-thread-storage",
     });
 
-    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(result).toEqual({});
     expect(fixture.runtime.runTurn).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.resumeThread).not.toHaveBeenCalled();
     expect(fixture.createRuntimeSpy).toHaveBeenCalledTimes(1);

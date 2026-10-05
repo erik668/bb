@@ -2,7 +2,6 @@ import type {
   PermissionMode,
   AvailableModel,
   ClientTurnRequestId,
-  ConditionalThreadStopOutcome,
   DynamicTool,
   InstructionMode,
   JsonObject,
@@ -29,9 +28,10 @@ export type AgentRuntimeShellEnvironment = Record<string, string>;
 export interface AgentRuntimeContributedEnvEntry {
   name: string;
   value: string | { serverPath: string };
-  source: { plugin: string };
+  source:
+    | { plugin: string }
+    | { core: "machine-git" | "machine-environment" | "project-environment" };
   reason: string;
-  secret: boolean;
 }
 
 export type AgentRuntimeExecutionOptions = RuntimeThreadExecutionOptions;
@@ -74,7 +74,10 @@ export interface AgentRuntimeOptions {
 
   onEvent: (event: ThreadEvent) => void;
 
-  onToolCall: (request: ToolCallRequest) => Promise<ToolCallResponse>;
+  onToolCall: (
+    request: ToolCallRequest,
+    signal?: AbortSignal,
+  ) => Promise<ToolCallResponse>;
 
   onInteractiveRequest?: (
     request: PendingInteractionCreate,
@@ -113,11 +116,13 @@ export interface AgentRuntimeBridgeLaunch {
 
 export interface EnsureProviderArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   providerId: string;
 }
 
 export interface StartThreadArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   environmentId: string;
   threadId: string;
   projectId: string;
@@ -125,11 +130,9 @@ export interface StartThreadArgs {
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
   clientRequestId?: ClientTurnRequestId;
   input?: PromptInput[];
-  inputGroups?: PromptInput[][];
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
-  disallowedTools?: readonly string[];
   instructionMode?: InstructionMode;
   fork?: {
     sourceProviderThreadId: string;
@@ -143,6 +146,7 @@ export interface StartThreadResult {
 
 interface PrepareThreadRewindArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   environmentId: string;
   threadId: string;
   leaseId: string;
@@ -154,7 +158,6 @@ interface PrepareThreadRewindArgs {
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
-  disallowedTools?: readonly string[];
   instructionMode?: InstructionMode;
 }
 
@@ -168,6 +171,7 @@ interface DiscardThreadRewindArgs {
 
 export interface ResumeThreadArgs {
   bridgeLaunch: AgentRuntimeBridgeLaunch;
+  skillRoots?: readonly AgentRuntimeSkillRoot[];
   environmentId: string;
   threadId: string;
   projectId?: string;
@@ -177,7 +181,6 @@ export interface ResumeThreadArgs {
   options: AgentRuntimeExecutionOptions;
   instructions?: string;
   dynamicTools?: DynamicTool[];
-  disallowedTools?: readonly string[];
   instructionMode?: InstructionMode;
 }
 
@@ -188,7 +191,6 @@ export interface ResumeThreadResult {
 export interface RunTurnArgs {
   threadId: string;
   input: PromptInput[];
-  inputGroups?: PromptInput[][];
   clientRequestId: ClientTurnRequestId;
   options: AgentRuntimeExecutionOptions;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
@@ -199,7 +201,6 @@ export interface SteerTurnArgs {
   threadId: string;
   expectedTurnId: string;
   input: PromptInput[];
-  inputGroups?: PromptInput[][];
   clientRequestId: ClientTurnRequestId;
   options: AgentRuntimeExecutionOptions;
   contributedEnv?: readonly AgentRuntimeContributedEnvEntry[];
@@ -219,12 +220,10 @@ export type SteerTurnResult = SteerTurnAppliedResult | SteerTurnStaleResult;
 
 export interface StopThreadArgs {
   threadId: string;
-  expectedTurnId?: string;
 }
 
 export interface StopThreadResult {
   providerCheckpointId: string | null;
-  condition?: ConditionalThreadStopOutcome;
 }
 
 export interface AgentRuntimeProviderSession {
@@ -293,6 +292,7 @@ interface ProviderMaintenanceArgs {
 
 interface ProviderInstallationStatusArgs extends ProviderMaintenanceArgs {
   requirement?: "thread_rewind";
+  checkUpdates?: boolean;
 }
 
 export interface AgentRuntime {

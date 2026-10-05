@@ -112,7 +112,15 @@ decision. `provider/installation/status` returns that state plus a display-only
 command. A status request may include a typed operation requirement such as
 `thread_rewind`; the bridge owns the minimum provider version needed for that
 operation and reports it through the ordinary installation status. When the
-host daemon gates a thread start or rewind on that status, it remembers the
+status request includes `checkUpdates: false`, Codex, Claude Code, and Pi only probe
+the local executable and version, without npm registry, global-package, or
+doctor discovery. `latestVersion` and `npmGlobalPackageVersion` are unknown
+(`null`); `versionUnsupported` still identifies a known unsupported local version.
+Omitting `checkUpdates` defaults to full discovery for Settings and install/update
+actions. The daemon sends `false` for startup compatibility gates. This optional
+bridge-only field preserves older bridges' passthrough request parsing; older
+providers can still perform a full probe. Server/daemon wire fields are unchanged.
+When the host daemon gates a thread start or rewind on that status, it remembers the
 answer per provider, bridge launch, and requirement for a few minutes rather
 than probing before every thread, and forgets it after an install or update
 it ran itself or a shell-environment change. An answer with
@@ -201,6 +209,35 @@ reasoningSummary | plan, text }` synthesizes the channel's `item/started`
   `session.reset`. The context meter is always the separate `contextWindow`
   delta, which may name a vouched `providerTurnId` (codex sends one beside
   each `usage`).
+  The breakdown preserves legacy provider semantics: `inputTokens` excludes
+  cache reads/writes for Claude and Pi and is inclusive for Codex;
+  `cachedInputTokens` is read + write for Claude/Pi and the reported cached
+  count for Codex. `outputTokens`, `reasoningOutputTokens`, and `totalTokens`
+  retain provider behavior; reasoning is not an extra amount to add to output.
+  Claude totals input + output + legacy cached tokens. Pi keeps a positive
+  provider total, otherwise uses that same sum. Codex forwards totals verbatim.
+
+  `cacheReadInputTokens` and `cacheWriteInputTokens` independently preserve
+  finite nonnegative reported counts. Omission means unreported, including
+  historical events; explicit zero means reported zero. Pi treats invalid
+  cache counts as unavailable at the provider boundary, preserving valid
+  usage, reply text, errors, and turn completion. Claude maps
+  `cache_read_input_tokens` / `cache_creation_input_tokens`, Pi maps
+  `cacheRead` / `cacheWrite`, and Codex maps `cachedInputTokens` /
+  `cacheWriteInputTokens`. Older Codex versions may omit writes.
+  `addTokenUsage` sums each reported field independently, leaving it absent
+  until first reported. With mixed reporting, these are reported subtotals,
+  not a guarantee of complete coverage. Do not infer missing counts as zero
+  or use legacy cached totals as universally billable cache reads.
+
+  Cache counts are translated at the provider boundary and retained through
+  shared event validation, daemon forwarding, stored JSON, and SDK/CLI event
+  reads. They do not change the separate context meter or provider-reported
+  account usage/cost windows. Pricing requires provider/model rates, cache
+  duration and reporting coverage that this breakdown does not establish.
+  The additive fields require host-daemon protocol 209 because older daemon
+  schemas strip them; old stored events remain readable without a migration.
+
 - **Streamed-text batching.** Coalescing is assembler policy, not bridge
   policy: within a per-stream flush window (`textDeltaFlushMs`, 100ms
   default, 0 disables) consecutive streamed-text events — assistant/
@@ -231,6 +268,8 @@ range is what gates a bridge: every bridge in this repo reports
 `grammarVersions: [3, 3]`.
 
 - **Core item shapes** `fileRead`, `search` (`mode: content | path | list`),
+  `imageGeneration` (`prompt`, `path`, optional retained `result`, `error`, and
+  `transparentBackground`),
   `delegation` (`childRef`, `label`, `background`, `summary?`; one shape for
   codex `spawnAgent`/`wait`, the Claude `Agent` tool, and backgrounded
   agents, which replaced `thread/openWork`), and `planSteps` (a structured plan
@@ -293,13 +332,13 @@ may do about it. The `provider/error` delta beside it still carries the
 user-visible row; the hint carries the action. The runtime keys on `kind`
 only and never consults the provider id:
 
-| `kind` | Runtime action |
-| --- | --- |
-| `sessionArchived` | `thread/unarchive` the session, then retry the rejected request once (`retryable: true`). |
-| `authRequired` | Reject the request with a typed `auth_required` error (no text match anywhere downstream) and forward the hint so the host can re-check provider health. |
+| `kind`               | Runtime action                                                                                                                                                                                                                                                                                                                          |
+| -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sessionArchived`    | `thread/unarchive` the session, then retry the rejected request once (`retryable: true`).                                                                                                                                                                                                                                               |
+| `authRequired`       | Reject the request with a typed `auth_required` error (no text match anywhere downstream) and forward the hint so the host can re-check provider health.                                                                                                                                                                                |
 | `restartRecommended` | Stop the bridge process the thread runs on and resume the thread on a fresh one — right away when the thread is idle, otherwise before its next turn. The restart waits while another thread on the same process is mid-turn or holds open background work, and never re-resumes a sibling the host already resumed on the replacement. |
-| `staleTurn` | Drop the steer: the turn it targeted is gone, and the runtime reports the steer as stale instead of failing it. |
-| `rateLimited` | With `retryable: true` on a rejected request: retry on a short bounded ladder and surface the last failure. With `retryable: false` (a turn that already failed): forward only; the runtime never re-runs a user's turn on its own. |
+| `staleTurn`          | Drop the steer: the turn it targeted is gone, and the runtime reports the steer as stale instead of failing it.                                                                                                                                                                                                                         |
+| `rateLimited`        | With `retryable: true` on a rejected request: retry on a short bounded ladder and surface the last failure. With `retryable: false` (a turn that already failed): forward only; the runtime never re-runs a user's turn on its own.                                                                                                     |
 
 The action follows the hint whichever attempt it arrives on: a rung of the
 rate-limit ladder or the retry after an unarchive that is rejected with
@@ -327,13 +366,23 @@ both for one event. `data` is optional and additive; a response without it,
 or with a malformed one, is a plain failure, and a request that times out or
 whose bridge exits has no response and therefore no hint.
 
+A launch that fails because the provider's own CLI is not installed is a
+classification, not a recovery hint: the bridge rejects the request by passing
+`MISSING_EXECUTABLE` (-32004) to `sendError` instead of the generic
+`BRIDGE_ERROR`. The host daemon reports that rejection as `missing_executable`
+without reading the message, so the picker can say the CLI is missing whatever
+prose the bridge chose. A bridge that keeps using `BRIDGE_ERROR` is classified
+generically, as before.
+
 A bridge that can heal itself does not ask the runtime to: the codex bridge
 rebuilds a thread's `codex app-server` child before the next turn after a
 terminal account error, and the claude bridge replaces its CLI child the same
 way; both still emit `authRequired`/`rateLimited` so the failure is typed.
 
-The assembler builds every v3 core kind: `fileRead`, `search` and
-`planSteps` open pending and settle from the terminal shape like `command`;
+The assembler builds every v3 core kind: `fileRead`, `search`,
+`imageGeneration` and `planSteps` open pending and settle from the terminal
+shape like `command`; an image generation's terminal `result` is preserved
+for retained-output storage while its prompt and path remain timeline metadata;
 a foreground `delegation` settles through the turn-scoped `item/completed`,
 and a `background: true` delegation is thread-attached like a background
 task — its `item.progress` snapshots and its `item.close` ride the
@@ -362,6 +411,12 @@ Three identifier families, three owners:
 | `providerThreadId`                      | the provider                | Its session handle (rollout id, session id). Returned on the `thread/start`/`thread/resume`/`thread/fork` result (required) and echoed by `thread/identity`; never used to scope bb events directly. |
 | turn ids and item ids on `ThreadEvent`s | **the runtime's assembler** | Never the provider, never the bridge.                                                                                                                                                                |
 
+A `providerThreadId` is a durable handle: bb persists it and sends it to a new
+bridge process to resume the session after a restart. It must name exactly one
+provider session among all of that provider's sessions on the host, so never
+mint it from a per-process counter. bb refuses to resume a handle that another
+thread announced first, or announced in the same millisecond.
+
 The central-minting rule is the #1320 lesson made structural: a provider can
 inject arbitrary identifiers on its own wire, but the ids that reach bb's
 persistence are always minted by bb-owned assembler code. Bridges forward
@@ -386,7 +441,13 @@ it:
    so correlation is explicit and the runtime never guesses which user
    message opened a turn; the assembler queues it until a turn opens (or
    emits into the already-open turn for steers) and constructs
-   `turn/input/accepted` itself. Settlement rides `turn.boundary
+   `turn/input/accepted` itself. Claude emits `turn.open` together with
+   acceptance once the SDK consumes the prompt, before waiting for model
+   output. Follow-up input can then steer into that turn during provider
+   preparation. SDK consumption failure must not open a turn; stopping after
+   consumption must settle it even if no output arrived. A recovered task
+   notification cannot settle this accepted user turn before its response
+   begins. Settlement rides `turn.boundary
 { status }`; a boundary with `claimIfIdle: true` owns a turn only when
    accepted input is pending, so a provider-terminal fallback signal on an
    idle thread settles nothing. A prompt the provider handles without doing
@@ -601,7 +662,10 @@ carries one, and they assemble to the same pinned counts as the recordings.
 The conformance kit runs the same recordings as its recorded-traffic
 scenario set: `checkRecordedCellReplay` replays a bridge's cells and
 `checkRecordedCellReplay` reports `recorded/<cell>/{replays,
-events-schema-valid, grammar, turn-lifecycle, not-empty}` per cell. Each
-first-party bridge has a `bridge.recorded-conformance.test.ts` beside its
-scripted suite, so conformance reflects the real dialect as well as the
-protocol.
+events-schema-valid, grammar, turn-lifecycle, not-empty}` per cell. The ACP
+bridge's `bridge.recorded-conformance.test.ts` sits beside its scripted suite.
+The pi, Claude Code, and Codex plugins' tests use only public dependencies,
+so they cannot read the committed recordings; `packages/provider-parity`
+replays their cells instead (`pi-recorded-conformance.test.ts` and
+`recorded-conformance.test.ts`). Conformance reflects the real dialect as
+well as the protocol.

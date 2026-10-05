@@ -1,11 +1,14 @@
 import type {
   SystemExecutionOptionsResponse,
-  ProviderProbeRequest,
-  ProviderProbeResponse,
   SystemProviderInfo,
+  SystemProviderCatalogEntry,
   SystemProvidersQuery,
 } from "@bb/server-contract";
-import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
+import {
+  readExecutionOptions,
+  signalRequestArgs,
+  type CreateSdkAreaArgs,
+} from "./common.js";
 
 export type ProviderHostRoutingArgs =
   | { environmentId: string; hostId?: never }
@@ -25,9 +28,11 @@ export type ProviderListResult = SystemProviderInfo[];
 export type ProviderModelsResult = SystemExecutionOptionsResponse;
 
 export interface ProvidersArea {
-  experimental_probe(
-    args: ProviderProbeRequest,
-  ): Promise<ProviderProbeResponse>;
+  catalog(): Promise<SystemProviderCatalogEntry[]>;
+  setEnabled(args: {
+    providerId: string;
+    enabled: boolean;
+  }): Promise<SystemProviderCatalogEntry[]>;
   list(args?: ProviderListArgs): Promise<ProviderListResult>;
   models(args?: ProviderModelsArgs): Promise<ProviderModelsResult>;
 }
@@ -35,9 +40,17 @@ export interface ProvidersArea {
 export function createProvidersArea(args: CreateSdkAreaArgs): ProvidersArea {
   const { transport } = args;
   return {
-    async experimental_probe(input) {
+    async catalog() {
       return transport.readJson(
-        transport.api.v1.system["provider-probe"].$post({ json: input }),
+        transport.api.v1.system.providers.catalog.$get(),
+      );
+    },
+    async setEnabled(input) {
+      return transport.readJson(
+        transport.api.v1.system.providers[":id"].enabled.$put({
+          param: { id: input.providerId },
+          json: { enabled: input.enabled },
+        }),
       );
     },
     async list(input = {}) {
@@ -55,18 +68,7 @@ export function createProvidersArea(args: CreateSdkAreaArgs): ProvidersArea {
       );
     },
     async models(input = {}) {
-      return transport.readJson(
-        transport.api.v1.system["execution-options"].$get(
-          {
-            query: {
-              environmentId: input.environmentId,
-              hostId: input.hostId,
-              providerId: input.providerId,
-            },
-          },
-          ...signalRequestArgs(input.signal),
-        ),
-      );
+      return readExecutionOptions(transport, input);
     },
   };
 }

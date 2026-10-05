@@ -14,7 +14,8 @@ export const reasoningLevelValues = [
 export const reasoningLevelSchema = z.enum(reasoningLevelValues);
 export type ReasoningLevel = z.infer<typeof reasoningLevelSchema>;
 
-export const serviceTierSchema = z.enum(["fast", "default"]);
+export const DEFAULT_SERVICE_TIER = "default";
+export const serviceTierSchema = z.string().min(1);
 export type ServiceTier = z.infer<typeof serviceTierSchema>;
 
 export const instructionModeValues = ["append", "replace"] as const;
@@ -84,7 +85,7 @@ const promptMentionPathEntryKindSchema = z.enum(
   promptMentionPathEntryKindValues,
 );
 
-export const promptMentionCommandTriggerValues = ["/"] as const;
+export const promptMentionCommandTriggerValues = ["/", "$"] as const;
 export const promptMentionCommandTriggerSchema = z.enum(
   promptMentionCommandTriggerValues,
 );
@@ -205,6 +206,16 @@ export const promptInputSchema = z.discriminatedUnion("type", [
   }),
 ]);
 export type PromptInput = z.infer<typeof promptInputSchema>;
+
+export function flattenPromptInputGroups(
+  inputGroups: readonly PromptInput[][],
+): PromptInput[] {
+  return inputGroups.flatMap((group, index) =>
+    index === 0
+      ? group
+      : [{ type: "text" as const, text: "\n\n", mentions: [] }, ...group],
+  );
+}
 
 interface PromptCommandSelector {
   trigger: PromptMentionCommandTrigger;

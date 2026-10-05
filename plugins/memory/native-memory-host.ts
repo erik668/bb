@@ -20,8 +20,6 @@ import {
   type NativeMemoryLayout,
   type NativeMemorySource,
 } from "./native-memory-contract.js";
-
-/** The layout this scanner implements: Claude Code's on-disk memory tree. */
 const LAYOUT: NativeMemoryLayout = "claude-memory-dir";
 
 const execFile = promisify(nodeExecFile);

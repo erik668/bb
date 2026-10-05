@@ -1,4 +1,4 @@
-import { threadScope } from "@bb/domain";
+import { threadScope, turnScope } from "@bb/domain";
 import { describe, expect, it, vi } from "vitest";
 import { createEventSink, type CreateEventSinkOptions } from "./event-sink.js";
 import { ServerResponseError } from "./server-client.js";
@@ -43,23 +43,40 @@ function systemErrorEvent(threadId: string) {
 }
 
 describe("event sink", () => {
-  it("posts emitted events", async () => {
-    const postEvents = acceptingPostEvents();
+  it("drains successfully skipped diffs without requiring allocated sequences", async () => {
+    const postEvents = vi.fn<CreateEventSinkOptions["postEvents"]>(
+      async () => ({
+        acceptedEvents: [],
+        rejectedEvents: [],
+      }),
+    );
     const sink = createEventSink({
       isSessionOpen: () => true,
       logger: createLogger(),
       postEvents,
     });
-
+    sink.emit({
+      threadId: "thr_1",
+      event: {
+        type: "turn/diff/updated",
+        threadId: "thr_1",
+        providerThreadId: "provider-1",
+        scope: turnScope("turn-1"),
+        diff: "discarded snapshot",
+      },
+    });
+    await sink.flush();
+    await sink.flush();
+    expect(postEvents).toHaveBeenCalledTimes(1);
     sink.emit({ threadId: "thr_1", event: systemErrorEvent("thr_1") });
     await sink.flush();
-
-    expect(postEvents).toHaveBeenCalledWith([
+    expect(postEvents).toHaveBeenCalledTimes(2);
+    expect(postEvents).toHaveBeenLastCalledWith([
       { threadId: "thr_1", event: systemErrorEvent("thr_1") },
     ]);
   });
 
-  it("holds events while the session is closed and delivers them once it reopens", async () => {
+  it("holds events while the session is closed, reports their threads, and delivers them once it reopens", async () => {
     let sessionOpen = false;
     const postEvents = acceptingPostEvents();
     const sink = createEventSink({
@@ -69,8 +86,11 @@ describe("event sink", () => {
     });
 
     sink.emit({ threadId: "thr_1", event: systemErrorEvent("thr_1") });
+    sink.emit({ threadId: "thr_2", event: systemErrorEvent("thr_2") });
+    sink.emit({ threadId: "thr_1", event: systemErrorEvent("thr_1") });
     await sink.flush();
     expect(postEvents).not.toHaveBeenCalled();
+    expect(sink.listUndeliveredThreadIds()).toEqual(["thr_1", "thr_2"]);
 
     sessionOpen = true;
     await sink.flush();
@@ -78,7 +98,10 @@ describe("event sink", () => {
     expect(postEvents).toHaveBeenCalledTimes(1);
     expect(postEvents).toHaveBeenCalledWith([
       { threadId: "thr_1", event: systemErrorEvent("thr_1") },
+      { threadId: "thr_2", event: systemErrorEvent("thr_2") },
+      { threadId: "thr_1", event: systemErrorEvent("thr_1") },
     ]);
+    expect(sink.listUndeliveredThreadIds()).toEqual([]);
   });
 
   it("keeps events queued after a post failure and redelivers them on the next flush", async () => {

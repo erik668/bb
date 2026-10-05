@@ -17,11 +17,6 @@ const INTEGER_FIELDS = Object.freeze({
     minimum: 1,
     maximum: 32,
   },
-  maxGlobalConcurrentAgents: {
-    label: "Global agent concurrency",
-    minimum: 1,
-    maximum: 64,
-  },
   maxConcurrentAgents: {
     label: "Per-run agent concurrency",
     minimum: 1,
@@ -60,9 +55,6 @@ function boundedIntegerSchema(field: IntegerField) {
 
 const workflowSettingsSchema = z.object({
   maxActiveRuns: boundedIntegerSchema(INTEGER_FIELDS.maxActiveRuns),
-  maxGlobalConcurrentAgents: boundedIntegerSchema(
-    INTEGER_FIELDS.maxGlobalConcurrentAgents,
-  ),
   maxConcurrentAgents: boundedIntegerSchema(INTEGER_FIELDS.maxConcurrentAgents),
   maxAgentCalls: boundedIntegerSchema(INTEGER_FIELDS.maxAgentCalls),
   totalRunTimeoutMs: boundedIntegerSchema(INTEGER_FIELDS.totalRunTimeoutMs),
@@ -81,14 +73,6 @@ export const WORKFLOW_SETTING_DESCRIPTORS = {
     description: "Concurrent workflow runs across the plugin (1-32).",
     experimental_schema: workflowSettingsSchema.shape.maxActiveRuns,
     default: 4,
-  },
-  maxGlobalConcurrentAgents: {
-    type: "number",
-    label: "Global agent concurrency",
-    description:
-      "Agent calls that all workflow runs may execute concurrently (1-64). This is host admission control, not a spend budget.",
-    experimental_schema: workflowSettingsSchema.shape.maxGlobalConcurrentAgents,
-    default: 2,
   },
   maxConcurrentAgents: {
     type: "number",
@@ -136,21 +120,12 @@ type DeclaredWorkflowSettings = PluginSettingsValues<
 export const DEFAULT_WORKFLOW_SETTINGS: Readonly<WorkflowSettings> =
   Object.freeze({
     maxActiveRuns: 4,
-    maxGlobalConcurrentAgents: 2,
     maxConcurrentAgents: 8,
     maxAgentCalls: 100,
     totalRunTimeoutMs: 24 * 60 * 60 * 1_000,
     retentionDays: 7,
     maxNotificationBytes: 16 * 1_024,
   });
-
-export function workflowRunSettingsSnapshot(
-  settings: WorkflowSettings,
-): Omit<WorkflowSettings, "maxGlobalConcurrentAgents"> {
-  const { maxGlobalConcurrentAgents: _globalAdmission, ...runSettings } =
-    settings;
-  return runSettings;
-}
 
 export function validateWorkflowSettings(
   values: Readonly<DeclaredWorkflowSettings>,
@@ -167,11 +142,8 @@ export function parseStoredWorkflowSettings(value: unknown): WorkflowSettings {
   const object = value as Record<string, unknown>;
   const expected = Object.keys(INTEGER_FIELDS);
   const actual = Object.keys(object);
-  const additiveDefaults = new Set(["maxGlobalConcurrentAgents"]);
   if (
-    expected.some(
-      (key) => !Object.hasOwn(object, key) && !additiveDefaults.has(key),
-    ) ||
+    expected.some((key) => !Object.hasOwn(object, key)) ||
     actual.some(
       (key) =>
         !Object.hasOwn(INTEGER_FIELDS, key) &&
@@ -182,9 +154,7 @@ export function parseStoredWorkflowSettings(value: unknown): WorkflowSettings {
   }
   const stored = Object.fromEntries(
     expected.map((key) => {
-      const value = Object.hasOwn(object, key)
-        ? object[key]
-        : DEFAULT_WORKFLOW_SETTINGS[key as keyof WorkflowSettings];
+      const value = object[key];
       if (typeof value !== "number" || !Number.isSafeInteger(value)) {
         throw new Error(`Workflow settings snapshot.${key} must be an integer`);
       }
@@ -194,7 +164,7 @@ export function parseStoredWorkflowSettings(value: unknown): WorkflowSettings {
   return validateWorkflowSettings(stored);
 }
 
-export interface WorkflowSettingsHandle {
+interface WorkflowSettingsHandle {
   get(): Promise<WorkflowSettings>;
   onChange(
     listener: (next: WorkflowSettings, previous: WorkflowSettings) => void,

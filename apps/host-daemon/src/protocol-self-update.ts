@@ -2,7 +2,9 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { promisify } from "node:util";
+import { calculateExponentialBackoffDelay } from "@bb/domain";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
+import { execPortableFile } from "@bb/process-utils";
 import type { HostDaemonLogger } from "./logger.js";
 import type { FetchFn } from "./server-client.js";
 import { usesSecureInternalFetchTransport } from "./server-client.js";
@@ -76,13 +78,6 @@ function parseUpdateVersion(value: unknown): UpdateVersion {
   };
 }
 
-function retryDelayMs(attemptCount: number): number {
-  return Math.min(
-    SELF_UPDATE_INITIAL_RETRY_DELAY_MS * 2 ** Math.max(0, attemptCount - 1),
-    SELF_UPDATE_MAX_RETRY_DELAY_MS,
-  );
-}
-
 async function readLastAttempt(path: string): Promise<UpdateAttempt | null> {
   try {
     const parsed: unknown = JSON.parse(await readFile(path, "utf8"));
@@ -148,18 +143,28 @@ function responseArtifactDigest(response: Response): string | null {
     : null;
 }
 
-const defaultRunProcess: SelfUpdateProcessRunner = async (
+const SELF_UPDATE_PROCESS_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
+
+export const defaultRunProcess: SelfUpdateProcessRunner = async (
   command,
   args,
   options,
 ) => {
+  if (process.platform === "win32") {
+    await execPortableFile(command, args, {
+      cwd: process.cwd(),
+      env: options.env,
+      maxBuffer: SELF_UPDATE_PROCESS_MAX_BUFFER_BYTES,
+    });
+    return;
+  }
   await execFileAsync(command, args, options);
 };
 
 const BB_APP_ALLOW_SCRIPTS_ARG =
   "--allow-scripts=better-sqlite3,node-pty,@parcel/watcher";
 
-async function defaultInstallTarball(
+export async function defaultInstallTarball(
   tarballPath: string,
   runProcess: SelfUpdateProcessRunner,
 ): Promise<void> {
@@ -255,7 +260,11 @@ export function createProtocolSelfUpdater(
         const delayMs =
           previousAttempt === null
             ? 0
-            : retryDelayMs(previousAttempt.attemptCount);
+            : calculateExponentialBackoffDelay({
+                attempt: previousAttempt.attemptCount,
+                baseDelayMs: SELF_UPDATE_INITIAL_RETRY_DELAY_MS,
+                maxDelayMs: SELF_UPDATE_MAX_RETRY_DELAY_MS,
+              });
         const retryAt =
           previousAttempt === null
             ? attemptedAt

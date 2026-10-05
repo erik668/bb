@@ -74,6 +74,11 @@ export const PLUGIN_CATALOG_CATEGORIES = [
       "Add, choose, configure, route, or coordinate who runs a thread.",
   },
   {
+    id: "environments",
+    displayName: "Environments",
+    description: "Create and manage the places where threads run.",
+  },
+  {
     id: "token-usage-and-limits",
     displayName: "Token Usage & Limits",
     description:
@@ -123,18 +128,8 @@ export const PLUGIN_CATALOG_CATEGORIES = [
     description: "Plan, track, route, schedule, or automate work.",
   },
 ] as const;
-
-export type PluginCatalogCategoryId = z.infer<
-  typeof pluginCatalogCategoryIdSchema
->;
 export type PluginMarketplaceCategory = z.infer<
   typeof pluginMarketplaceCategorySchema
->;
-export type PluginMarketplaceCollectionId = z.infer<
-  typeof pluginMarketplaceCollectionIdSchema
->;
-export type PluginMarketplaceCollectionPluginId = z.infer<
-  typeof pluginMarketplaceCollectionPluginIdSchema
 >;
 export type PluginMarketplaceCollection = z.infer<
   typeof pluginMarketplaceCollectionSchema

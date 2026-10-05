@@ -1,3 +1,4 @@
+import { hostPathEquals } from "./host-path-sql.js";
 import { and, asc, desc, eq, isNull } from "drizzle-orm";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type {
@@ -120,7 +121,7 @@ function getPublicProjectWithLocalPathSource(
           publicProjectFilter(),
           eq(projectSources.type, source.type),
           eq(projectSources.hostId, source.hostId),
-          eq(projectSources.path, source.path),
+          hostPathEquals(projectSources.path, source.path),
         ),
       )
       .orderBy(asc(projects.sortKey), asc(projects.id))
@@ -257,14 +258,6 @@ export function ensurePersonalProject(db: DbConnection) {
     throw new Error("Personal project row was not created");
   }
   return project;
-}
-
-export function listProjects(db: DbConnection) {
-  return db
-    .select()
-    .from(projects)
-    .orderBy(asc(projects.sortKey), asc(projects.id))
-    .all();
 }
 
 export interface UpdateProjectInput {

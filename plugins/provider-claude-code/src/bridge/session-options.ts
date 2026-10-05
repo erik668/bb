@@ -1,14 +1,13 @@
 import {
   type InstructionMode,
-  type PermissionEscalation,
   type ReasoningLevel,
+  type ServiceTier,
   type RuntimePermissionScope,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import { accessSync, constants, statSync } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { Options, Settings } from "@anthropic-ai/claude-agent-sdk";
 import type { ClaudePermissionMode } from "../interactive-contract.js";
-import { buildReadonlyBashUpdatedInput } from "./readonly-bash-policy.js";
 import type {
   ClaudeMutableFlagSettings,
   ClaudeSdkReasoningEffort,
@@ -19,20 +18,27 @@ export interface BuildSessionOptionsArgs {
   additionalWorkspaceWriteRoots?: readonly string[];
   baseInstructions?: string;
   cwd: string;
-  disallowedTools?: readonly string[];
   instructionMode: InstructionMode;
   model?: string;
-  getPermissionEscalation: (
-    context: PermissionEscalationWorkContext,
-  ) => PermissionEscalation | null;
   permissionMode: ClaudePermissionMode;
   permissionScope: RuntimePermissionScope;
   plugins?: Options["plugins"];
   reasoningLevel?: ReasoningLevel;
+  serviceTier: ServiceTier;
   workflowsEnabled: boolean;
   chromeEnabled: boolean;
+  disable1MContext: boolean;
+  sandboxEnabled: boolean;
   memoryEnabled?: boolean;
 }
+
+type WorkspaceWriteSandboxArgs = Pick<
+  BuildSessionOptionsArgs,
+  | "additionalWorkspaceWriteRoots"
+  | "permissionMode"
+  | "permissionScope"
+  | "sandboxEnabled"
+>;
 
 export interface PermissionEscalationWorkContext {
   agentId?: string;
@@ -49,17 +55,6 @@ interface ResolveClaudeCodeExecutableArgs {
   env: NodeJS.ProcessEnv;
 }
 
-const READONLY_ALLOWED_TOOLS = new Set([
-  "Agent",
-  "Glob",
-  "Grep",
-  "LS",
-  "Read",
-  "TodoRead",
-]);
-const READONLY_BASH_TOOL_NAME = "Bash";
-const READONLY_ASK_REASON =
-  "bb readonly mode requires approval before using tools that can modify state, run commands, access network, or perform non-read actions.";
 const SUMMARIZED_ADAPTIVE_THINKING = {
   type: "adaptive",
   display: "summarized",
@@ -80,6 +75,7 @@ function buildFlagSettings(params: BuildSessionOptionsArgs): Settings {
     autoMemoryEnabled: params.memoryEnabled ?? true,
     enableWorkflows: params.workflowsEnabled,
     ultracode: params.reasoningLevel === "ultracode",
+    fastMode: params.serviceTier === "fast",
   };
 }
 
@@ -93,6 +89,7 @@ export function buildMutableFlagSettings(args: {
   memoryEnabled: boolean;
   reasoningLevel: ReasoningLevel | undefined;
   workflowsEnabled: boolean;
+  serviceTier: ServiceTier;
 }): ClaudeMutableFlagSettings {
   return {
     autoMemoryEnabled: args.memoryEnabled,
@@ -101,6 +98,7 @@ export function buildMutableFlagSettings(args: {
       ? { effortLevel: toSdkEffort(args.reasoningLevel) }
       : {}),
     ultracode: args.reasoningLevel === "ultracode",
+    fastMode: args.serviceTier === "fast",
   };
 }
 
@@ -112,76 +110,7 @@ export function buildWorkspaceWriteDenialMessage(): string {
   return "bb's workspace sandbox allows work inside the current workspace only. Stay inside the workspace or explain why extra access is needed.";
 }
 
-function buildReadonlyHooks(
-  params: BuildSessionOptionsArgs,
-): Options["hooks"] | undefined {
-  if (
-    params.permissionMode !== "default" &&
-    params.permissionMode !== "dontAsk"
-  ) {
-    return undefined;
-  }
-
-  const getPermissionEscalation = params.getPermissionEscalation;
-
-  return {
-    PreToolUse: [
-      {
-        hooks: [
-          async (input) => {
-            if (
-              input.hook_event_name !== "PreToolUse" ||
-              READONLY_ALLOWED_TOOLS.has(input.tool_name)
-            ) {
-              return { continue: true };
-            }
-            if (input.tool_name === READONLY_BASH_TOOL_NAME) {
-              const updatedInput = buildReadonlyBashUpdatedInput(
-                input.tool_input,
-              );
-              if (updatedInput) {
-                return {
-                  continue: true,
-                  hookSpecificOutput: {
-                    hookEventName: "PreToolUse",
-                    permissionDecision: "allow",
-                    updatedInput,
-                  },
-                };
-              }
-            }
-
-            const permissionDecision =
-              getPermissionEscalation({
-                ...(input.agent_id !== undefined
-                  ? { agentId: input.agent_id }
-                  : {}),
-                ...(input.prompt_id !== undefined
-                  ? { promptId: input.prompt_id }
-                  : {}),
-                toolUseId: input.tool_use_id,
-              }) === "deny"
-                ? "deny"
-                : "ask";
-            return {
-              continue: true,
-              hookSpecificOutput: {
-                hookEventName: "PreToolUse",
-                permissionDecision,
-                permissionDecisionReason:
-                  permissionDecision === "deny"
-                    ? buildReadonlyDenialMessage()
-                    : READONLY_ASK_REASON,
-              },
-            };
-          },
-        ],
-      },
-    ],
-  };
-}
-
-function usesWorkspaceSandbox(params: BuildSessionOptionsArgs): boolean {
+function isWorkspaceWriteSession(params: WorkspaceWriteSandboxArgs): boolean {
   return (
     params.permissionScope === "workspace" &&
     (params.permissionMode === "acceptEdits" ||
@@ -189,10 +118,10 @@ function usesWorkspaceSandbox(params: BuildSessionOptionsArgs): boolean {
   );
 }
 
-function buildWorkspaceWriteSandbox(
-  params: BuildSessionOptionsArgs,
+export function buildWorkspaceWriteSandbox(
+  params: WorkspaceWriteSandboxArgs,
 ): Options["sandbox"] | undefined {
-  if (!usesWorkspaceSandbox(params)) {
+  if (!params.sandboxEnabled || !isWorkspaceWriteSession(params)) {
     return undefined;
   }
 
@@ -208,6 +137,8 @@ function buildWorkspaceWriteSandbox(
       : {}),
   };
 }
+
+const CLAUDE_WINDOWS_EXECUTABLE_NAME = "claude.exe";
 
 function isExecutableFile(candidatePath: string): boolean {
   try {
@@ -242,6 +173,12 @@ function wellKnownClaudeExecutablePaths(env: NodeJS.ProcessEnv): string[] {
   if (process.getuid?.() === 0) {
     return [];
   }
+  if (process.platform === "win32") {
+    const userProfile = env.USERPROFILE?.trim();
+    return userProfile
+      ? [join(userProfile, ".local", "bin", CLAUDE_WINDOWS_EXECUTABLE_NAME)]
+      : [];
+  }
   const candidatePaths: string[] = [];
   const home = env.HOME?.trim();
   if (home) {
@@ -271,8 +208,9 @@ export function resolveClaudeCodeExecutable(
   }
 
   const executableOnPath = resolveExecutableOnPath({
-    executableName: "claude",
-    pathEnv: args.env.PATH,
+    executableName:
+      process.platform === "win32" ? CLAUDE_WINDOWS_EXECUTABLE_NAME : "claude",
+    pathEnv: args.env.PATH ?? args.env.Path,
   });
   if (executableOnPath) {
     return executableOnPath;
@@ -303,8 +241,7 @@ export function buildSessionOptions(
         };
   const model = params.model;
   const sandbox = buildWorkspaceWriteSandbox(params);
-  const hooks = buildReadonlyHooks(params);
-  const additionalDirectories = usesWorkspaceSandbox(params)
+  const additionalDirectories = isWorkspaceWriteSession(params)
     ? (params.additionalWorkspaceWriteRoots ?? [])
     : [];
   const pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ env });
@@ -315,8 +252,12 @@ export function buildSessionOptions(
     cwd: params.cwd,
     systemPrompt,
     model,
-    env,
+    env: {
+      ...env,
+      CLAUDE_CODE_DISABLE_1M_CONTEXT: params.disable1MContext ? "1" : "0",
+    },
     permissionMode: params.permissionMode,
+    allowBypassPermissions: params.permissionScope === "full",
     ...(params.reasoningLevel
       ? { effort: toSdkEffort(params.reasoningLevel) }
       : {}),
@@ -328,12 +269,8 @@ export function buildSessionOptions(
     ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
     ...(params.plugins ? { plugins: params.plugins } : {}),
     ...(sandbox ? { sandbox } : {}),
-    ...(hooks ? { hooks } : {}),
     ...(additionalDirectories.length > 0
       ? { additionalDirectories: [...additionalDirectories] }
-      : {}),
-    ...(params.disallowedTools && params.disallowedTools.length > 0
-      ? { disallowedTools: [...params.disallowedTools] }
       : {}),
   };
 }

@@ -7,7 +7,6 @@ import {
   RAW_THREAD_ID_PATTERN_SOURCE,
   type PromptTextMention,
 } from "@bb/domain";
-import type { TimelineTitleLink } from "@bb/thread-view";
 import {
   PromptMentionPill,
   resolveThreadMentionResource,
@@ -21,13 +20,14 @@ import {
   useSidebarThreadMentionResource,
   useThreadMentionResource,
 } from "@/components/thread/ThreadTitleMentions.js";
-import type { TimelineTitleLinkResolver } from "@/components/thread/timeline/TimelineTitleView.js";
+import { replaceTextMatches } from "./markdown-text-matches.js";
 
 const THREAD_MENTION_PATTERN = new RegExp(
   `@thread:([A-Za-z0-9_-]+)|(${RAW_THREAD_ID_PATTERN_SOURCE})`,
   "gu",
 );
 const RAW_THREAD_ID_PATTERN = new RegExp(RAW_THREAD_ID_PATTERN_SOURCE, "gu");
+const CHARACTER_REFERENCE_PATTERN = /&(?:#\d+|#x[\da-f]+|[a-z][a-z\d]*);/iu;
 const THREAD_MENTION_PREFIX = "@thread";
 const THREAD_MENTION_ID_PATTERN = /^[A-Za-z0-9_-]+$/u;
 
@@ -103,11 +103,7 @@ function splitTextNodeOnMentions(
   context: PhrasingTextContext | undefined,
 ): PhrasingContent[] {
   const { value } = node;
-  THREAD_MENTION_PATTERN.lastIndex = 0;
-  const replacements: PhrasingContent[] = [];
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  while ((match = THREAD_MENTION_PATTERN.exec(value)) !== null) {
+  return replaceTextMatches(node, THREAD_MENTION_PATTERN, (match) => {
     const serializedThreadId = match[1];
     const rawThreadId = match[2];
     const threadId = serializedThreadId ?? rawThreadId;
@@ -127,24 +123,10 @@ function splitTextNodeOnMentions(
         ? isMentionEndBoundary(value, matchEnd)
         : isRawThreadIdEndBoundary(boundaryText ?? value, boundaryEnd))
     ) {
-      continue;
+      return null;
     }
-    if (match.index > cursor) {
-      replacements.push({
-        type: "text",
-        value: value.slice(cursor, match.index),
-      });
-    }
-    replacements.push(threadMentionNode(threadId, rawThreadId !== undefined));
-    cursor = match.index + match[0].length;
-  }
-  if (replacements.length === 0) {
-    return [node];
-  }
-  if (cursor < value.length) {
-    replacements.push({ type: "text", value: value.slice(cursor) });
-  }
-  return replacements;
+    return threadMentionNode(threadId, rawThreadId !== undefined);
+  });
 }
 
 interface ParsedTextDirective {
@@ -242,8 +224,27 @@ function isDirectiveMentionEndBoundary(parent: Parent, index: number): boolean {
   return next?.type !== "text" || isMentionEndBoundary(next.value, 0);
 }
 
+function markdownMayContainThreadMention(markdown: string): boolean {
+  if (CHARACTER_REFERENCE_PATTERN.test(markdown)) {
+    return true;
+  }
+  const unescaped = markdown.includes("\\")
+    ? markdown.replaceAll("\\", "")
+    : markdown;
+  return (
+    unescaped.includes(THREAD_MENTION_PREFIX) ||
+    unescaped.search(RAW_THREAD_ID_PATTERN) !== -1
+  );
+}
+
 export function remarkThreadMentions() {
-  return (tree: Nodes): void => {
+  return (tree: Nodes, file: { value: unknown }): void => {
+    if (
+      typeof file.value === "string" &&
+      !markdownMayContainThreadMention(file.value)
+    ) {
+      return;
+    }
     const authoredMarkdownLinkNodes = collectAuthoredMarkdownLinkNodes(tree);
     const phrasingTextContexts = collectPhrasingTextContexts(tree);
     visit(
@@ -339,7 +340,6 @@ export function remarkThreadMentions() {
 
 interface BuildThreadMentionComponentArgs {
   mentions: readonly PromptTextMention[];
-  resolveSegmentLinkHref?: TimelineTitleLinkResolver;
 }
 
 interface ThreadMentionElementProps {
@@ -356,20 +356,8 @@ declare module "react" {
   }
 }
 
-function resolveThreadMentionHref(
-  threadId: string,
-  resolveSegmentLinkHref: TimelineTitleLinkResolver | undefined,
-): string | undefined {
-  if (!resolveSegmentLinkHref) {
-    return undefined;
-  }
-  const link: TimelineTitleLink = { kind: "thread", threadId };
-  return resolveSegmentLinkHref(link) ?? undefined;
-}
-
 export function buildThreadMentionComponent({
   mentions,
-  resolveSegmentLinkHref,
 }: BuildThreadMentionComponentArgs): ComponentType<ThreadMentionElementProps> {
   function RawThreadMentionPillWithQuery({
     inlineCode,
@@ -399,7 +387,6 @@ export function buildThreadMentionComponent({
       <PromptMentionPill
         resource={resource}
         serializedText={`@thread:${threadId}`}
-        linkHref={resolveThreadMentionHref(threadId, resolveSegmentLinkHref)}
       />
     );
   }
@@ -432,7 +419,6 @@ export function buildThreadMentionComponent({
       <PromptMentionPill
         resource={resource}
         serializedText={`@thread:${threadId}`}
-        linkHref={resolveThreadMentionHref(threadId, resolveSegmentLinkHref)}
       />
     );
   }

@@ -13,9 +13,13 @@ the built-in `bb-plugin-authoring` skill synchronized with those declarations.
 
 Composer UI extensions register through `app.composer.customize(...)`. A
 `ComposerCustomization` can contribute React action and banner components,
-host-rendered `ComposerPlusMenuItem` rows, and `ComposerRichTextSpec` rules.
-Mounted components use `useComposer()` for writes, effects, and input locking,
-and `useComposerView()` for the reactive scope, layout, draft, and run state.
+host-rendered `ComposerPlusMenuItem` and `ComposerSendMenuItem` rows, and
+`ComposerRichTextSpec` rules. Mounted components use `useComposer()`: one
+stable handle for the composer's text, mentions, picker selection, scope,
+layout, run and submit state, writes, effects, and input locking. Selection is
+reactive and is `null` for composers without pickers. Panels and pages that
+write into a composer the user picks use `useComposers()`, one handle per
+composer on screen.
 Any mounted plugin component can use
 `useBbNavigate().openThreadPanel(...)` to request one of the
 same plugin's registered thread-panel actions; it returns false when the
@@ -70,7 +74,7 @@ app-wide floating React UI. BB mounts the component once per app window through
 the normal plugin slot boundary, so SDK hooks and plugin CSS work and React
 context survives portals. This app-level boundary includes the sidebar thread
 data and action hooks. Hooks whose contract requires a particular surface,
-including `useComposer` and `useComposerView`, remain limited to that surface.
+including `useComposer`, remain limited to that surface.
 The plugin owns the overlay's chrome, positioning, visibility, focus, and
 responsive behavior; a crashing overlay is hidden without affecting siblings.
 Use a content script for app-wide DOM behavior that does not need React context.
@@ -110,7 +114,7 @@ with the test stack used by your plugin (the peer dependencies are optional so
 headless plugins do not install a browser harness):
 
 ```sh
-npm install --save-dev @get-bb/plugin-sdk vitest better-sqlite3 zod cron-parser hono
+npm install --save-dev @get-bb/plugin-sdk vitest better-sqlite3 cron-parser hono
 npm install --save-dev react react-dom @testing-library/react jsdom # frontend tests
 ```
 
@@ -137,7 +141,8 @@ await host.harness.lifecycle.dispose();
 ```
 
 `makePluginAgentConfigurationContext`, `makeMessageDispatchHookContext`,
-`makeThreadResponse`, `makeQueueEntry`, and `makeTurnFailedEvent` return
+`makeHostResponse`, `makeThreadResponse`, `makeQueueEntry`, and
+`makeTurnFailedEvent` return
 complete deterministic SDK objects. Pass partial overrides so a behavioral
 test shows only the values relevant to its scenario. Nested context
 members merge partial overrides against complete defaults, so required contract
@@ -177,13 +182,15 @@ slot.lifecycle.unmount();
 await scripts.lifecycle.dispose();
 ```
 
-`loadPluginApp` installs the runtime before a thunk import and validates all
-registrations. `mountPluginContentScripts` mirrors the host's ordered mount,
+`loadPluginApp` installs the runtime and validates all registrations; pass the
+imported module or a thunk. `@get-bb/plugin-sdk/app` exports look the runtime
+up when they are called or rendered, so a static import of `app.tsx` or of
+components works too. `mountPluginContentScripts` mirrors the host's ordered mount,
 rollback, independent per-window signal, and exact-once disposal. `renderSlot` supplies
 RPC, realtime, settings, navigation, context, and scoped composer behavior,
 then returns Testing Library queries plus the same behavior/inspection/lifecycle
-split. Use a setup-file `installTestPluginRuntime()` only when a static app
-import is unavoidable.
+split; it installs the runtime too. Call `installTestPluginRuntime()` yourself
+only when a test renders plugin components without `renderSlot`.
 
 ## Fidelity boundaries
 
@@ -209,8 +216,9 @@ multi-plugin arbitration; use a live BB test for those boundaries.
 The complete root declaration flattens the unpublished BB workspace contracts.
 The testing declarations reuse that public `@get-bb/plugin-sdk` root instead of
 embedding a second copy, and no declaration depends on unpublished `@bb/*`
-packages. Genuine npm types (`hono`, `better-sqlite3`, `zod`, React, and Testing
-Library) remain peer imports. Scaffolded plugins depend on this package —
+packages. Genuine npm types (`hono`, `better-sqlite3`, React, and Testing
+Library) remain peer imports. Zod is a runtime dependency of the SDK, so
+plugins only declare it when their own source imports it. Scaffolded plugins depend on this package —
 `bb plugin new` pins it exactly in `devDependencies` — and read the root/app
 declarations straight from `node_modules/@get-bb/plugin-sdk/bundled-types/`,
 the same files the testing subpaths reuse. Plugins scaffolded before that

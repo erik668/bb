@@ -1,6 +1,5 @@
 import type { DiscoveredWorkspaceProperties } from "@bb/domain";
 import {
-  getPersonalWorkspaceRoot,
   provisionWorkspace,
   type HostWorkspace,
   type ProvisionWorkspaceArgs,
@@ -17,7 +16,6 @@ import type {
   WorkspaceStatusWatchChangeKind,
   WorkspaceWatchError,
 } from "@bb/host-watcher";
-import { reconnectProvisionArgsFromWorkspaceContext } from "./workspace-provision-target.js";
 import { userExecutableProcessOptions } from "./user-executable-env.js";
 
 type StopWatching = () => void | Promise<void>;
@@ -51,7 +49,6 @@ interface RefreshWorkspaceArgs {
 }
 
 export interface WatchManagerOptions {
-  dataDir?: string;
   hostWatcher?: HostWatcher;
   provisionWorkspace?: (
     options: ProvisionWorkspaceArgs,
@@ -98,9 +95,7 @@ function sameWorkspaceTarget(
   return (
     current.environmentId === next.environmentId &&
     current.workspaceContext.workspacePath ===
-      next.workspaceContext.workspacePath &&
-    current.workspaceContext.workspaceProvisionType ===
-      next.workspaceContext.workspaceProvisionType
+      next.workspaceContext.workspacePath
   );
 }
 
@@ -144,12 +139,6 @@ export class WatchManager {
   ): Promise<void> {
     await this.enqueueWatchSetMutation(async () => {
       await this.applyWatchSet(watchSet);
-    });
-  }
-
-  async removeEnvironmentWorkspaceWatch(environmentId: string): Promise<void> {
-    await this.enqueueWatchSetMutation(async () => {
-      await this.removeWorkspaceWatch(environmentId);
     });
   }
 
@@ -231,19 +220,9 @@ export class WatchManager {
     }
 
     try {
-      const workspace = await this.provisionWorkspace(
-        reconnectProvisionArgsFromWorkspaceContext({
-          environmentId: target.environmentId,
-          ...(this.options.dataDir
-            ? {
-                personalWorkspaceRoot: getPersonalWorkspaceRoot(
-                  this.options.dataDir,
-                ),
-              }
-            : {}),
-          workspaceContext: target.workspaceContext,
-        }),
-      );
+      const workspace = await this.provisionWorkspace({
+        path: target.workspaceContext.workspacePath,
+      });
       const entry: WorkspaceWatchEntry = {
         stopWatchingStatus: STOP_WATCHING,
         target,
@@ -434,17 +413,7 @@ export class WatchManager {
     if (entry.workspace.isGitRepo) {
       return;
     }
-    const provision = reconnectProvisionArgsFromWorkspaceContext({
-      environmentId: entry.target.environmentId,
-      ...(this.options.dataDir
-        ? {
-            personalWorkspaceRoot: getPersonalWorkspaceRoot(
-              this.options.dataDir,
-            ),
-          }
-        : {}),
-      workspaceContext: entry.target.workspaceContext,
-    });
+    const provision = { path: entry.target.workspaceContext.workspacePath };
     const workspace = await this.refreshWorkspace({
       environmentId: entry.target.environmentId,
       provision,
@@ -478,15 +447,6 @@ export class WatchManager {
     const stopWatchingStatus = entry.stopWatchingStatus;
     entry.stopWatchingStatus = STOP_WATCHING;
     await stopWatchingStatus();
-  }
-
-  private async removeWorkspaceWatch(environmentId: string): Promise<void> {
-    const entry = this.workspaceEntries.get(environmentId);
-    if (!entry) {
-      return;
-    }
-    this.workspaceEntries.delete(environmentId);
-    await this.stopWorkspaceWatch(entry);
   }
 
   private ensureThreadStorageWatcher(): void {

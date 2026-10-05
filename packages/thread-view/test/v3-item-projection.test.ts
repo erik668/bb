@@ -6,25 +6,16 @@ import {
   buildTimelineActivityIntentTitles,
   buildTimelineRowTitle,
   buildTimelineViewRows,
-  timelineRowActivityIntents,
 } from "../src/index.js";
+import { timelineRowActivityIntents } from "../src/timeline-activity-intents.js";
 import {
   createTimelineEventFactory,
+  flattenTimelineRows,
   renderTimelineFixture,
 } from "./timeline-test-harness.js";
 
-function flattenRows(rows: readonly TimelineRow[]): TimelineRow[] {
-  return rows.flatMap((row) =>
-    row.kind === "turn" && row.children
-      ? [row, ...flattenRows(row.children)]
-      : row.kind === "work" && row.workKind === "delegation"
-        ? [row, ...flattenRows(row.childRows)]
-        : [row],
-  );
-}
-
 function workRows(rows: readonly TimelineRow[]): TimelineWorkRow[] {
-  return flattenRows(rows).filter(
+  return flattenTimelineRows(rows).filter(
     (row): row is TimelineWorkRow => row.kind === "work",
   );
 }
@@ -92,8 +83,8 @@ const SANDBOX_ESCAPED_COMMAND_PRESENTATION: ThreadEventItemPresentation = {
   title: "ls -la ~/.claude/ide",
   badge: {
     glyph: "SquareUnlock02",
-    label: "sandbox off",
-    hint: "Ran outside of sandbox",
+    label: "Outside of sandbox",
+    hint: "Outside of sandbox",
     tone: "destructive",
   },
 };
@@ -296,7 +287,7 @@ describe("v3 item projection", () => {
 
     const row = workRow(rendered.rows, "command", "cmd-1");
     expect(row.presentation).toEqual(SANDBOX_ESCAPED_COMMAND_PRESENTATION);
-    expect(plainTitle(row)).toContain("(sandbox off)");
+    expect(plainTitle(row)).toContain("(Outside of sandbox)");
   });
 
   it("groups v3 exploration rows into one exploration bundle like legacy reads", () => {

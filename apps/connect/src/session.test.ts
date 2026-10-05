@@ -6,7 +6,7 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth/minimal";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONNECT_SESSION_EXPIRES_IN_SECONDS,
   CONNECT_SESSION_UPDATE_AGE_SECONDS,
@@ -16,6 +16,7 @@ import {
   schema,
   server,
   session,
+  sha256Hex,
   user,
 } from "@bb/connect-db";
 
@@ -24,7 +25,6 @@ import {
   markMachineSeen,
   resolveLabel,
   verifyMachineCredentialDetails,
-  verifySessionCookie,
   verifySessionCookieDetails,
 } from "./session.js";
 import { refreshAccountSessionCookies } from "./account-session.js";
@@ -429,6 +429,7 @@ describe("account session refresh", () => {
         db,
       ),
     ).resolves.toEqual({
+      sessionId: `id-${freshToken}`,
       userId: `user-${freshToken}`,
       needsRefresh: false,
     });
@@ -439,6 +440,7 @@ describe("account session refresh", () => {
         db,
       ),
     ).resolves.toEqual({
+      sessionId: `id-${dueToken}`,
       userId: `user-${dueToken}`,
       needsRefresh: true,
     });
@@ -635,12 +637,12 @@ describe("single-flight gate caches", () => {
 
     const verified = await Promise.all(
       Array.from({ length: 6 }, () =>
-        verifySessionCookie(cookieValue, secret, counted.db),
+        verifySessionCookieDetails(cookieValue, secret, counted.db),
       ),
     );
 
     expect(counted.counts.select).toBe(1);
-    expect(verified).toEqual(
+    expect(verified.map((details) => details?.userId)).toEqual(
       Array.from({ length: 6 }, () => "acct-cookie-flight"),
     );
   });
@@ -650,13 +652,7 @@ describe("machine credential presence", () => {
   it("verifies the owning machine and throttles lastSeenAt writes", async () => {
     seedUser("acct-machine");
     const credential = `bbcm_${crypto.randomUUID()}`;
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(credential),
-    );
-    const credentialHash = [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
+    const credentialHash = await sha256Hex(credential);
     db.insert(machine)
       .values({
         id: "machine-presence",
@@ -705,5 +701,101 @@ describe("machine credential presence", () => {
         10_000 + MACHINE_LAST_SEEN_WRITE_INTERVAL_MS,
       ),
     ).toBe(true);
+  });
+});
+
+describe("machine credential cache", () => {
+  async function seedMachine(id: string): Promise<string> {
+    seedUser(`acct-${id}`);
+    const credential = `bbcm_${crypto.randomUUID()}`;
+    db.insert(machine)
+      .values({
+        id,
+        userId: `acct-${id}`,
+        credentialHash: await sha256Hex(credential),
+        createdAt: new Date(0),
+      })
+      .run();
+    return credential;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("answers a burst of daemon requests with one D1 lookup", async () => {
+    const credential = await seedMachine("machine-burst");
+    const counted = countingDb(db);
+
+    const verified = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        verifyMachineCredentialDetails(credential, counted.db),
+      ),
+    );
+    await verifyMachineCredentialDetails(credential, counted.db);
+
+    expect(counted.counts.select).toBe(1);
+    expect(verified).toEqual(
+      Array.from({ length: 6 }, () => ({
+        machineId: "machine-burst",
+        userId: "acct-machine-burst",
+      })),
+    );
+  });
+
+  it("caches an unknown credential so retries do not reach D1", async () => {
+    const counted = countingDb(db);
+    const unknown = `bbcm_${crypto.randomUUID()}`;
+
+    expect(await verifyMachineCredentialDetails(unknown, counted.db)).toBe(
+      null,
+    );
+    expect(await verifyMachineCredentialDetails(unknown, counted.db)).toBe(
+      null,
+    );
+    expect(counted.counts.select).toBe(1);
+  });
+
+  it("stops honoring a revoked credential once its entry expires", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const credential = await seedMachine("machine-revoked");
+    expect(await verifyMachineCredentialDetails(credential, db)).toEqual({
+      machineId: "machine-revoked",
+      userId: "acct-machine-revoked",
+    });
+
+    db.update(machine)
+      .set({ revokedAt: new Date() })
+      .where(eq(machine.id, "machine-revoked"))
+      .run();
+    vi.setSystemTime(1_000_000 + 19_999);
+    expect(await verifyMachineCredentialDetails(credential, db)).not.toBe(null);
+
+    vi.setSystemTime(1_000_000 + 20_000);
+    expect(await verifyMachineCredentialDetails(credential, db)).toBe(null);
+  });
+
+  it("does not cache a failed D1 lookup", async () => {
+    const credential = await seedMachine("machine-flaky");
+    let failNext = true;
+    const flaky = new Proxy(db, {
+      get(target, prop) {
+        if (prop === "select" && failNext) {
+          failNext = false;
+          throw new Error("D1_ERROR: D1 DB is overloaded.");
+        }
+        const value = Reflect.get(target, prop);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+
+    await expect(
+      verifyMachineCredentialDetails(credential, flaky),
+    ).rejects.toThrow("overloaded");
+    expect(await verifyMachineCredentialDetails(credential, flaky)).toEqual({
+      machineId: "machine-flaky",
+      userId: "acct-machine-flaky",
+    });
   });
 });

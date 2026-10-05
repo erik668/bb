@@ -21,6 +21,7 @@ export function makeThreadResponse(
   return {
     ...thread,
     activeBackgroundAgentCount: 0,
+    canRestoreEnvironment: false,
     canSpawnChild: true,
     queuedMessageCount: 0,
     ...overrides,
@@ -34,6 +35,7 @@ export function makeThreadTimelineResponse(
   const response: ThreadTimelineResponse = {
     rows: [],
     contextBoundarySeq: null,
+    completedTurnDisplay: "collapse",
     activePromptMode: null,
     activeThinking: null,
     activeWorkflows: [],

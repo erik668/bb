@@ -100,6 +100,12 @@ export const createTerminalRequestSchema = z
             command: z.string().trim().min(1).max(10_000),
           })
           .strict(),
+        z
+          .object({
+            mode: z.literal("argv"),
+            argv: z.array(z.string().max(10_000)).min(1).max(256),
+          })
+          .strict(),
       ])
       .optional(),
     target: terminalCreateTargetSchema,
@@ -176,6 +182,9 @@ export const terminalOutputResponseSchema = z
     chunks: z.array(terminalOutputChunkSchema),
     nextSeq: z.number().int().nonnegative(),
     truncated: z.boolean(),
+    status: terminalSessionStatusSchema,
+    exitCode: z.number().int().nullable(),
+    closeReason: terminalSessionCloseReasonSchema.nullable(),
   })
   .strict();
 export type TerminalOutputResponse = z.infer<
@@ -194,12 +203,6 @@ export const terminalClientMessageSchema = z.discriminatedUnion("type", [
       type: z.literal("resize"),
       cols: terminalColsSchema,
       rows: terminalRowsSchema,
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal("close"),
-      reason: z.literal("user"),
     })
     .strict(),
   z

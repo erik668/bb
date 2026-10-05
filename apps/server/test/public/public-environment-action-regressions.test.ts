@@ -25,6 +25,8 @@ function rawPullRequest(
     baseRefName: "main",
     headRefName: "bb/pr-actions",
     updatedAt: "2026-06-16T12:30:00Z",
+    autoMerge: false,
+    inMergeQueue: false,
     checks: [],
     reviewDecision: null,
     reviewRequestCount: 0,
@@ -66,8 +68,7 @@ describe("public environment action regressions", () => {
       const environment = seedEnvironment(harness.deps, {
         hostId: host.id,
         projectId: project.id,
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "git-worktree",
         path: "/tmp/thread-target",
       });
 
@@ -184,8 +185,7 @@ describe("public environment action regressions", () => {
       const environment = seedEnvironment(harness.deps, {
         hostId: host.id,
         projectId: project.id,
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "git-worktree",
         path: "/tmp/pr-ready-env",
       });
 
@@ -242,8 +242,7 @@ describe("public environment action regressions", () => {
       const environment = seedEnvironment(harness.deps, {
         hostId: host.id,
         projectId: project.id,
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "git-worktree",
         path: "/tmp/pr-draft-env",
       });
 
@@ -300,8 +299,7 @@ describe("public environment action regressions", () => {
       const environment = seedEnvironment(harness.deps, {
         hostId: host.id,
         projectId: project.id,
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "git-worktree",
         path: "/tmp/pr-blocked-env",
       });
 
@@ -350,8 +348,7 @@ describe("public environment action regressions", () => {
       const environment = seedEnvironment(harness.deps, {
         hostId: host.id,
         projectId: project.id,
-        managed: true,
-        workspaceProvisionType: "managed-worktree",
+        environmentProviderId: "git-worktree",
         path: "/tmp/pr-merge-env",
       });
 

@@ -1,3 +1,5 @@
+import { MobileAppSection } from "@/components/settings/MobileAppSection";
+import { CliSkillsSettingsSectionContent } from "@/components/settings/CliSkillsSettingsSection";
 import { useEffect, useRef, useState } from "react";
 import { Route, Routes, useNavigate } from "react-router-dom";
 import {
@@ -5,23 +7,21 @@ import {
   defaultExperiments,
   type AppTheme,
   type Experiments,
-  type Host,
   defaultAppSettings,
   type AppSettings,
 } from "@bb/domain";
-import { makeHost } from "@bb/test-helpers/domain-fixtures";
 import type {
-  ProviderUsage,
   WorkspaceOpenTarget,
   WorkspaceOpenTargetId,
 } from "@bb/host-daemon-contract";
-import { UsageLimitsSettingsSectionContent } from "@/components/settings/UsageLimitsSettingsSection";
 import { VoiceInputSettingsSectionContent } from "@/components/settings/VoiceInputSettingsSection";
 import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedThreadsSettingsSection";
 import { CommunitySettingsSection } from "@/components/settings/CommunitySettingsSection";
 import { KeyboardSettingsSection } from "@/components/settings/KeyboardSettingsSection";
 import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
+import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsSection";
+import { ProjectsSettingsSection } from "@/components/settings/ProjectsSettingsSection";
 import {
   SettingsStoryChrome,
   type SettingsStoryRoute,
@@ -34,16 +34,20 @@ import {
 import type { ThemePreference } from "@/hooks/useTheme";
 import type { AudioInputDeviceOption } from "@/hooks/useAudioInputDevices";
 import type { PreferredAudioInputDeviceId } from "@/lib/audio-input-device-preference";
-import { SETTINGS_MACHINE_ROUTE_PATH } from "@/lib/route-paths";
+import {
+  SETTINGS_MACHINE_ROUTE_PATH,
+  SETTINGS_PROJECT_ROUTE_PATH,
+} from "@/lib/route-paths";
 import {
   AppearanceSettingsSection,
-  DebugSettingsSection,
+  PrivacySettingsSection,
   ExperimentsSettingsSection,
   GeneralSettingsSection,
   LocalOpenTargetSettingsSection,
   type LocalOpenTargetSettingsSectionProps,
 } from "./SettingsView";
 import { MachineSettingsView } from "./MachineSettingsView";
+import { ProjectDetailSettingsView } from "./ProjectDetailSettingsView";
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
 
 export default {
@@ -104,86 +108,6 @@ const connectedTargets: WorkspaceOpenTarget[] = [
   defaultAppTarget,
 ];
 
-function futureIso(minutesFromNow: number): string {
-  return new Date(Date.now() + minutesFromNow * 60_000).toISOString();
-}
-
-const usageFixture: {
-  codex: ProviderUsage;
-  "claude-code": ProviderUsage;
-  "acp-cursor": ProviderUsage;
-} = {
-  codex: {
-    status: "ok",
-    accountEmail: "sawyer@example.com",
-    planLabel: "Pro",
-    windows: [
-      {
-        label: "Current session",
-        resetsAt: futureIso(136),
-        usedPercent: 35,
-      },
-      {
-        label: "Weekly limit",
-        resetsAt: futureIso(48),
-        usedPercent: 74,
-      },
-    ],
-  },
-  "claude-code": {
-    status: "ok",
-    accountEmail: "sawyer@example.com",
-    planLabel: "Max (20x)",
-    windows: [
-      {
-        label: "Current session",
-        resetsAt: futureIso(179),
-        usedPercent: 3,
-      },
-      {
-        label: "Weekly limit",
-        resetsAt: futureIso(4 * 24 * 60),
-        usedPercent: 26,
-      },
-    ],
-  },
-  "acp-cursor": {
-    status: "ok",
-    accountEmail: "sawyer@example.com",
-    planLabel: "Pro",
-    windows: [
-      {
-        label: "Plan usage",
-        resetsAt: futureIso(14 * 24 * 60),
-        usedPercent: 72,
-      },
-      {
-        label: "On-demand spend",
-        resetsAt: futureIso(14 * 24 * 60),
-        usedPercent: 25,
-        cost: { usedUsdCents: 1_250, limitUsdCents: 5_000 },
-      },
-    ],
-  },
-};
-
-const usageHosts: Host[] = [
-  makeHost({
-    id: "host-macbook",
-    name: "MacBook Pro",
-    lastSeenAt: Date.now(),
-    createdAt: 1,
-    updatedAt: 1,
-  }),
-  makeHost({
-    id: "host-studio",
-    name: "Mac Studio",
-    lastSeenAt: Date.now(),
-    createdAt: 1,
-    updatedAt: 1,
-  }),
-];
-
 function useSettingsStoryState() {
   const [themePreference, setThemePreference] =
     useState<ThemePreference>("system");
@@ -198,12 +122,13 @@ function useSettingsStoryState() {
   const [richTextEditing, setRichTextEditing] = useState(false);
   const [steerActiveThreadOnEnter, setSteerActiveThreadOnEnter] =
     useState(false);
+  const [confirmThreadArchive, setConfirmThreadArchive] = useState(true);
   const [streamerMode, setStreamerMode] = useState(false);
+  const [telemetryEnabled, setTelemetryEnabled] = useState(true);
   const [managedBranchPrefix, setManagedBranchPrefix] = useState(
     defaultAppSettings.managedBranchPrefix,
   );
-  const [showUnhandledProviderEvents, setShowUnhandledProviderEvents] =
-    useState(false);
+  const [showDiagnosticEvents, setShowDiagnosticEvents] = useState(false);
   const [preferredAudioInputDeviceId, setPreferredAudioInputDeviceId] =
     useState<PreferredAudioInputDeviceId>("studio-mic");
   const [directoryTargetId, setDirectoryTargetId] =
@@ -225,8 +150,12 @@ function useSettingsStoryState() {
     rewriteLocalhostLinks,
     richTextEditing,
     steerActiveThreadOnEnter,
+    confirmThreadArchive,
+    setConfirmThreadArchive,
     streamerMode,
-    showUnhandledProviderEvents,
+    telemetryEnabled,
+    setTelemetryEnabled,
+    showDiagnosticEvents,
     setAppearance,
     setDirectoryTargetId,
     setExperiments,
@@ -239,7 +168,7 @@ function useSettingsStoryState() {
     setRichTextEditing,
     setSteerActiveThreadOnEnter,
     setStreamerMode,
-    setShowUnhandledProviderEvents,
+    setShowDiagnosticEvents,
     setThemePreference,
     themePreference,
   };
@@ -271,9 +200,11 @@ function GeneralSettingsStory({
   return (
     <>
       <GeneralSettingsSection
+        confirmThreadArchive={state.confirmThreadArchive}
+        onConfirmThreadArchiveChange={state.setConfirmThreadArchive}
         desktopBrowserAvailable={desktopBrowserAvailable}
+        generalSettingsDisabled={false}
         managedBranchPrefix={state.managedBranchPrefix}
-        managedBranchPrefixDisabled={false}
         onManagedBranchPrefixChange={state.setManagedBranchPrefix}
         navigateToThreadAfterCreate={state.navigateToThreadAfterCreate}
         onNavigateToThreadAfterCreateChange={
@@ -283,19 +214,26 @@ function GeneralSettingsStory({
         onRewriteLocalhostLinksChange={state.setRewriteLocalhostLinks}
         onRichTextEditingChange={state.setRichTextEditing}
         onSteerActiveThreadOnEnterChange={state.setSteerActiveThreadOnEnter}
-        onStreamerModeChange={state.setStreamerMode}
         openLinksInAppBrowser={state.openLinksInAppBrowser}
         rewriteLocalhostLinks={state.rewriteLocalhostLinks}
         richTextEditing={state.richTextEditing}
         steerActiveThreadOnEnter={state.steerActiveThreadOnEnter}
-        steerActiveThreadOnEnterDisabled={false}
-        streamerMode={state.streamerMode}
-        streamerModeDisabled={false}
       />
-      <DebugSettingsSection
+      <CliSkillsSettingsSectionContent
+        hasConnectedMachine={false}
+        onOpenPicker={() => {}}
+        pending={false}
+        statusBadge={null}
+      />
+      <VoiceInputStory />
+      <PrivacySettingsSection
+        onStreamerModeChange={state.setStreamerMode}
+        telemetryEnabled={state.telemetryEnabled}
+        onTelemetryEnabledChange={state.setTelemetryEnabled}
+        streamerMode={state.streamerMode}
         disabled={false}
-        enabled={state.showUnhandledProviderEvents}
-        onEnabledChange={state.setShowUnhandledProviderEvents}
+        enabled={state.showDiagnosticEvents}
+        onEnabledChange={state.setShowDiagnosticEvents}
       />
     </>
   );
@@ -314,6 +252,8 @@ function AppearanceSettingsStory() {
       onAppearanceThemeChange={(themeId) =>
         state.setAppearance((current) => ({ ...current, themeId }))
       }
+      onAppearanceThemePrefetch={() => undefined}
+      onAppearanceThemePreview={() => undefined}
       onCreatePalette={() => undefined}
       onFaviconColorChange={(faviconColor) =>
         state.setAppearance((current) => ({ ...current, faviconColor }))
@@ -354,65 +294,11 @@ function ExperimentsStory() {
 
   return (
     <ExperimentsSettingsSection
-      changelogPreviewEnabled={state.experiments.changelogPreview}
       disabled={false}
-      editMessagesEnabled={state.experiments.editMessages}
-      mobileAppEnabled={state.experiments.mobileApp}
-      sidebarProgressiveDisclosureEnabled={
-        state.experiments.sidebarProgressiveDisclosure
+      experiments={state.experiments}
+      onExperimentChange={(key, enabled) =>
+        state.setExperiments((current) => ({ ...current, [key]: enabled }))
       }
-      timelineWindowingEnabled={state.experiments.timelineWindowing}
-      onChangelogPreviewEnabledChange={(enabled) =>
-        state.setExperiments((current) => ({
-          ...current,
-          changelogPreview: enabled,
-        }))
-      }
-      onEditMessagesEnabledChange={(enabled) =>
-        state.setExperiments((current) => ({
-          ...current,
-          editMessages: enabled,
-        }))
-      }
-      onMobileAppEnabledChange={(enabled) =>
-        state.setExperiments((current) => ({
-          ...current,
-          mobileApp: enabled,
-        }))
-      }
-      onSidebarProgressiveDisclosureEnabledChange={(enabled) =>
-        state.setExperiments((current) => ({
-          ...current,
-          sidebarProgressiveDisclosure: enabled,
-        }))
-      }
-      onTimelineWindowingEnabledChange={(enabled) =>
-        state.setExperiments((current) => ({
-          ...current,
-          timelineWindowing: enabled,
-        }))
-      }
-    />
-  );
-}
-
-function UsageLimitsStory() {
-  const [isFetching, setIsFetching] = useState(false);
-  const [selectedHostId, setSelectedHostId] = useState("host-macbook");
-
-  return (
-    <UsageLimitsSettingsSectionContent
-      usage={usageFixture}
-      isLoading={false}
-      isError={false}
-      isFetching={isFetching}
-      onRefresh={() => {
-        setIsFetching(true);
-        window.setTimeout(() => setIsFetching(false), 500);
-      }}
-      hosts={usageHosts}
-      selectedHostId={selectedHostId}
-      onSelectHost={setSelectedHostId}
     />
   );
 }
@@ -440,6 +326,16 @@ function SettingsStoryContent({ route }: { route: SettingsStoryRoute }) {
       </Routes>
     );
   }
+  if (route.kind === "project") {
+    return (
+      <Routes>
+        <Route
+          path={SETTINGS_PROJECT_ROUTE_PATH}
+          element={<ProjectDetailSettingsView />}
+        />
+      </Routes>
+    );
+  }
 
   switch (route.id) {
     case "providers":
@@ -448,14 +344,18 @@ function SettingsStoryContent({ route }: { route: SettingsStoryRoute }) {
       return <AppearanceSettingsStory />;
     case "keyboard":
       return <KeyboardSettingsSection />;
-    case "usage":
-      return <UsageLimitsStory />;
     case "files":
       return <FilePreferencesStory />;
+    case "projects":
+      return <ProjectsSettingsSection />;
     case "machines":
       return <MachinesSettingsSection />;
+    case "environment-variables":
+      return <MachineEnvironmentSettings />;
     case "updates":
       return <SettingsUpdatesStory />;
+    case "mobile":
+      return <MobileAppSection />;
     case "experiments":
       return <ExperimentsStory />;
     case "marketplaces":
@@ -468,7 +368,6 @@ function SettingsStoryContent({ route }: { route: SettingsStoryRoute }) {
       return (
         <>
           <GeneralSettingsStory desktopBrowserAvailable />
-          <VoiceInputStory />
         </>
       );
   }
@@ -491,7 +390,7 @@ export function FullPage() {
 
   return (
     <SettingsStoryFixtures>
-      <SettingsStoryChrome contentOwnsPageShell={route.kind === "machine"}>
+      <SettingsStoryChrome contentOwnsPageShell={route.kind !== "section"}>
         <SettingsStoryContent route={route} />
       </SettingsStoryChrome>
     </SettingsStoryFixtures>

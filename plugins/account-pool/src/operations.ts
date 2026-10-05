@@ -46,6 +46,9 @@ export class PoolOperations {
     private readonly onAccountEnabled: (
       accountId: string,
     ) => Promise<void> = async () => {},
+    private readonly parentStatus: () => Promise<
+      PoolStatus["parent"]
+    > = async () => null,
   ) {}
 
   async add(input: AccountAddInput): Promise<Account> {
@@ -187,6 +190,11 @@ export class PoolOperations {
     return account;
   }
 
+  async reorder(provider: PoolProvider, accountIds: string[]): Promise<void> {
+    await this.accounts.reorder(provider, accountIds);
+    this.onAccountsChanged();
+  }
+
   async refreshUsage(id: string): Promise<AccountSummary | null> {
     if ((await this.accounts.get(id)) === null) return null;
     await this.hub.refreshUsage(id, true);
@@ -209,10 +217,7 @@ export class PoolOperations {
   async status(): Promise<PoolStatus> {
     const hosts = await this.listHosts();
     await this.hubTokens.prune(hosts.map((host) => host.id));
-    const [status, routedThreadsWithoutLocalLogin] = await Promise.all([
-      this.hub.status(),
-      this.routedThreadsWithoutLocalLogin(),
-    ]);
+    const status = await this.hub.status();
     const hostNames = new Map(hosts.map((host) => [host.id, host.name]));
     const [claude, codex] = await Promise.all([
       this.routing.isProviderEnabled("claude"),
@@ -232,7 +237,7 @@ export class PoolOperations {
             : (hostNames.get(account.lastUsedHostId) ?? null),
       })),
       routing: { claude, codex },
-      routedThreadsWithoutLocalLogin,
+      parent: await this.parentStatus(),
     };
   }
 
@@ -263,13 +268,9 @@ export class PoolOperations {
     return { threadId, bypassed };
   }
 
-  async hasUsableEnabledAccount(provider?: PoolProvider): Promise<boolean> {
+  async hasUsableEnabledAccount(provider: PoolProvider): Promise<boolean> {
     for (const account of await this.accounts.list()) {
-      if (
-        !account.enabled ||
-        (provider !== undefined && account.provider !== provider)
-      )
-        continue;
+      if (!account.enabled || account.provider !== provider) continue;
       try {
         await this.accounts.readSecret(account.id);
         return true;

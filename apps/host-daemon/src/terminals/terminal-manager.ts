@@ -1,3 +1,4 @@
+import { operationEnvironment } from "../operation-environment.js";
 import { accessSync, chmodSync, constants, existsSync } from "node:fs";
 import { access, stat } from "node:fs/promises";
 import { createRequire } from "node:module";
@@ -6,22 +7,31 @@ import path from "node:path";
 import { spawn as spawnPty } from "node-pty";
 import type { TerminalSessionCloseReason } from "@bb/domain";
 import type { HostDaemonDaemonWsMessage } from "@bb/host-daemon-contract";
+import { HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS } from "@bb/host-daemon-contract/protocol";
 import {
   killProcessGroup,
   sanitizeInheritedChildProcessEnv,
 } from "@bb/process-utils";
+import { displayWidth, truncateToWidth } from "@bb/text-utils";
 import type { HostDaemonServerTerminalMessage } from "../server-connection-support.js";
 import type { HostDaemonLogger } from "../logger.js";
 import { RuntimeManager } from "../runtime-manager.js";
 import { runtimeErrorLogFields } from "../error-utils.js";
 import { requireResolvedWorkspaceForCommand } from "../workspace-resolution.js";
 import { ExpectedCommandDispatchError } from "../command-dispatch-support.js";
+import {
+  resolveWindowsTerminalShell,
+  terminalShellArgs,
+  terminalShellTitle,
+} from "./terminal-shell.js";
 
 const DEFAULT_SCROLLBACK_MAX_BYTES = 4 * 1024 * 1024;
 const DEFAULT_SCROLLBACK_MAX_CHUNKS = 10_000;
 const MAX_OUTPUT_CHUNK_BYTES = 64 * 1024;
 const DEFAULT_OUTPUT_BATCH_DELAY_MS = 4;
 const DEFAULT_TERMINAL_CLOSE_GRACE_PERIOD_MS = 2_000;
+const DEFAULT_MAX_EXITED_TERMINALS = 32;
+const DEFAULT_MAX_EXITED_SCROLLBACK_BYTES = 16 * 1024 * 1024;
 const PRIMARY_DEVICE_ATTRIBUTES_QUERY_PATTERN = /\u001b\[(?:0)?c/g;
 const PRIMARY_DEVICE_ATTRIBUTES_RESPONSE = "\u001b[?1;2c";
 const MAX_PRIMARY_DEVICE_ATTRIBUTES_REPLIES_PER_CHUNK = 8;
@@ -79,9 +89,10 @@ type TerminalAttachMessage = Extract<
 
 export interface TerminalManagerOptions {
   closeGracePeriodMs?: number;
-  dataDir?: string;
+  exitedRetentionMs?: number;
   logger: HostDaemonLogger;
-  platform?: NodeJS.Platform;
+  maxExitedScrollbackBytes?: number;
+  maxExitedTerminals?: number;
   ptyAdapter?: TerminalPtyAdapter;
   resolveShell?: ResolveTerminalShell;
   runtimeManager: RuntimeManager;
@@ -94,6 +105,14 @@ interface ScrollbackEntry {
     HostDaemonDaemonWsMessage,
     { type: "terminal.output" }
   >["chunk"];
+}
+
+interface ExitedTerminalSession {
+  expiryTimeout: ReturnType<typeof setTimeout> | null;
+  nextSeq: number;
+  scrollback: ScrollbackEntry[];
+  scrollbackBytes: number;
+  terminalId: string;
 }
 
 interface TerminalSession {
@@ -138,11 +157,6 @@ interface CloseTerminalArgs {
   terminalId: string;
 }
 
-interface CloseEnvironmentTerminalsArgs {
-  environmentId: string;
-  reason: TerminalSessionCloseReason;
-}
-
 interface ShutdownTerminalArgs {
   reason: TerminalSessionCloseReason;
   terminalId: string;
@@ -168,6 +182,12 @@ interface FinishTerminalSessionArgs {
   closeReason: TerminalSessionCloseReason;
   exitCode: number | null;
   session: TerminalSession;
+}
+
+interface SendTerminalReplayArgs {
+  message: TerminalAttachMessage;
+  nextSeq: number;
+  scrollback: readonly ScrollbackEntry[];
 }
 
 type TerminalOperation = () => Promise<void> | void;
@@ -207,11 +227,16 @@ const nodePtyAdapter: TerminalPtyAdapter = {
     });
     return {
       dispose: () => disposeNodePty(pty),
-      kill: (signal) =>
+      kill: (signal) => {
+        if (process.platform === "win32") {
+          pty.kill();
+          return;
+        }
         killProcessGroup({
           child: { pid: pty.pid, kill: (groupSignal) => pty.kill(groupSignal) },
           signal: signal ?? "SIGHUP",
-        }),
+        });
+      },
       onData: (listener) => pty.onData(listener),
       onExit: (listener) =>
         pty.onExit((event) =>
@@ -328,6 +353,12 @@ function isNonEmptyString(value: string | undefined): value is string {
 }
 
 async function resolveDefaultTerminalShell(): Promise<string> {
+  if (process.platform === "win32") {
+    return resolveWindowsTerminalShell({
+      env: process.env,
+      fileExists: pathIsExecutable,
+    });
+  }
   const candidates = [
     process.env.SHELL,
     "/bin/zsh",
@@ -357,25 +388,12 @@ function buildTerminalEnv(args: BuildTerminalEnvArgs): NodeJS.ProcessEnv {
   };
 }
 
-function terminalTitleFromShell(shell: string): string {
-  return path.basename(shell) || "Terminal";
-}
-
 function terminalTitleFromCommand(command: string): string {
   const normalized = command.trim().replace(/\s+/g, " ");
-  if (normalized.length <= 80) {
+  if (displayWidth(normalized) <= 80) {
     return normalized;
   }
-  return `${normalized.slice(0, 77)}...`;
-}
-
-function terminalSpawnArgsForStart(message: TerminalOpenMessage): string[] {
-  switch (message.start.mode) {
-    case "shell":
-      return [];
-    case "command":
-      return ["-lc", message.start.command];
-  }
+  return `${truncateToWidth(normalized, 77)}...`;
 }
 
 function terminalTitleForStart(
@@ -384,18 +402,12 @@ function terminalTitleForStart(
 ): string {
   switch (message.start.mode) {
     case "shell":
-      return terminalTitleFromShell(shell);
+      return terminalShellTitle(shell);
     case "command":
       return terminalTitleFromCommand(message.start.command);
+    case "argv":
+      return terminalTitleFromCommand(message.start.argv.join(" "));
   }
-}
-
-function terminalEnvironmentIdFromOpenMessage(
-  message: TerminalOpenMessage,
-): string | null {
-  return message.target.kind === "workspace"
-    ? message.target.environmentId
-    : null;
 }
 
 async function requireTerminalCwd(cwd: string | null): Promise<string> {
@@ -452,22 +464,34 @@ function consumePrimaryDeviceAttributesQueries(
 
 export class TerminalManager {
   private readonly closeGracePeriodMs: number;
-  private readonly platform: NodeJS.Platform;
+  private readonly exitedRetentionMs: number;
+  private readonly maxExitedScrollbackBytes: number;
+  private readonly maxExitedTerminals: number;
   private readonly ptyAdapter: TerminalPtyAdapter;
   private readonly resolveShell: ResolveTerminalShell;
   private readonly terminalOperations = new Map<string, Promise<void>>();
-  private readonly openingTerminalEnvironmentIds = new Map<
-    string,
-    string | null
-  >();
+  private readonly openingTerminalIds = new Set<string>();
   private readonly sessions = new Map<string, TerminalSession>();
+  private readonly exitedSessions = new Map<string, ExitedTerminalSession>();
+  private exitedScrollbackBytes = 0;
 
   constructor(private readonly options: TerminalManagerOptions) {
     this.closeGracePeriodMs =
       options.closeGracePeriodMs ?? DEFAULT_TERMINAL_CLOSE_GRACE_PERIOD_MS;
-    this.platform = options.platform ?? process.platform;
+    this.exitedRetentionMs =
+      options.exitedRetentionMs ?? HOST_DAEMON_TERMINAL_EXIT_RETENTION_MS;
+    this.maxExitedScrollbackBytes =
+      options.maxExitedScrollbackBytes ?? DEFAULT_MAX_EXITED_SCROLLBACK_BYTES;
+    this.maxExitedTerminals =
+      options.maxExitedTerminals ?? DEFAULT_MAX_EXITED_TERMINALS;
     this.ptyAdapter = options.ptyAdapter ?? nodePtyAdapter;
     this.resolveShell = options.resolveShell ?? resolveDefaultTerminalShell;
+  }
+
+  dispose(): void {
+    for (const terminalId of [...this.exitedSessions.keys()]) {
+      this.forgetExitedSession(terminalId);
+    }
   }
 
   async handleMessage(message: HostDaemonServerTerminalMessage): Promise<void> {
@@ -506,41 +530,12 @@ export class TerminalManager {
     }
   }
 
-  async closeEnvironmentTerminals(
-    args: CloseEnvironmentTerminalsArgs,
-  ): Promise<void> {
-    const terminalIds = new Set<string>();
-    for (const session of this.sessions.values()) {
-      if (session.environmentId === args.environmentId) {
-        terminalIds.add(session.terminalId);
-      }
-    }
-    for (const [terminalId, openingEnvironmentId] of this
-      .openingTerminalEnvironmentIds) {
-      if (openingEnvironmentId === args.environmentId) {
-        terminalIds.add(terminalId);
-      }
-    }
-    await Promise.all(
-      [...terminalIds].map((terminalId) =>
-        this.runTerminalOperation({
-          operation: () =>
-            this.closeTerminal({
-              reason: args.reason,
-              terminalId,
-            }),
-          terminalId,
-        }),
-      ),
-    );
-  }
-
   async shutdownAll(
     reason: TerminalSessionCloseReason = "daemon-disconnect",
   ): Promise<void> {
     const terminalIds = new Set([
       ...this.sessions.keys(),
-      ...this.openingTerminalEnvironmentIds.keys(),
+      ...this.openingTerminalIds,
     ]);
     await Promise.all(
       [...terminalIds].map((terminalId) =>
@@ -563,32 +558,21 @@ export class TerminalManager {
       return;
     }
 
-    if (this.platform === "win32") {
-      this.sendTerminalError({
-        code: "unsupported_platform",
-        message: "Native Windows terminals are not supported",
-        requestId: message.requestId,
-        terminalId: message.terminalId,
-      });
-      return;
-    }
-
-    const openingEnvironmentId = terminalEnvironmentIdFromOpenMessage(message);
-    this.openingTerminalEnvironmentIds.set(
-      message.terminalId,
-      openingEnvironmentId,
-    );
+    this.openingTerminalIds.add(message.terminalId);
     try {
       const target = await this.resolveTerminalOpenTarget(message);
       const shell = await this.resolveShell();
       const pty = this.ptyAdapter.spawn({
-        args: terminalSpawnArgsForStart(message),
+        args: terminalShellArgs({ shell, start: message.start }),
         cols: message.cols,
         cwd: target.cwd,
-        env: buildTerminalEnv({
-          shellEnv: this.options.runtimeManager.getShellEnv(),
-          terminalId: message.terminalId,
-        }),
+        env: operationEnvironment(
+          message.contributedEnv,
+          buildTerminalEnv({
+            shellEnv: this.options.runtimeManager.getShellEnv(),
+            terminalId: message.terminalId,
+          }),
+        ),
         file: shell,
         logger: this.options.logger,
         rows: message.rows,
@@ -662,12 +646,7 @@ export class TerminalManager {
         terminalId: message.terminalId,
       });
     } finally {
-      if (
-        this.openingTerminalEnvironmentIds.get(message.terminalId) ===
-        openingEnvironmentId
-      ) {
-        this.openingTerminalEnvironmentIds.delete(message.terminalId);
-      }
+      this.openingTerminalIds.delete(message.terminalId);
     }
   }
 
@@ -677,7 +656,6 @@ export class TerminalManager {
     switch (message.target.kind) {
       case "workspace": {
         const entry = await requireResolvedWorkspaceForCommand({
-          dataDir: this.options.dataDir,
           environmentId: message.target.environmentId,
           runtimeManager: this.options.runtimeManager,
           workspaceContext: message.target.workspaceContext,
@@ -697,25 +675,43 @@ export class TerminalManager {
 
   private attachTerminal(message: TerminalAttachMessage): void {
     const session = this.sessions.get(message.terminalId);
-    if (!session) {
-      this.sendTerminalError({
-        code: "terminal_not_found",
-        message: "Terminal session is not open",
-        requestId: message.requestId,
-        terminalId: message.terminalId,
+    if (session) {
+      this.flushTerminalOutput(session);
+      this.sendTerminalReplay({
+        message,
+        nextSeq: session.nextSeq,
+        scrollback: session.scrollback,
       });
       return;
     }
 
-    this.flushTerminalOutput(session);
-    const replayEntries = session.scrollback.filter(
-      (entry) => entry.chunk.seq >= message.sinceSeq,
+    const exited = this.exitedSessions.get(message.terminalId);
+    if (exited) {
+      this.sendTerminalReplay({
+        message,
+        nextSeq: exited.nextSeq,
+        scrollback: exited.scrollback,
+      });
+      return;
+    }
+
+    this.sendTerminalError({
+      code: "terminal_not_found",
+      message: "Terminal session is not open",
+      requestId: message.requestId,
+      terminalId: message.terminalId,
+    });
+  }
+
+  private sendTerminalReplay(args: SendTerminalReplayArgs): void {
+    const replayEntries = args.scrollback.filter(
+      (entry) => entry.chunk.seq >= args.message.sinceSeq,
     );
     let replayBytes = replayEntries.reduce(
       (total, entry) => total + entry.byteLength,
       0,
     );
-    while (replayEntries.length > 1 && replayBytes > message.tailBytes) {
+    while (replayEntries.length > 1 && replayBytes > args.message.tailBytes) {
       const removed = replayEntries.shift();
       if (removed) {
         replayBytes -= removed.byteLength;
@@ -724,11 +720,11 @@ export class TerminalManager {
     const chunks = replayEntries.map((entry) => entry.chunk);
     this.options.sendMessage({
       type: "terminal.replay",
-      requestId: message.requestId,
-      terminalId: message.terminalId,
+      requestId: args.message.requestId,
+      terminalId: args.message.terminalId,
       chunks,
-      replayStartSeq: chunks[0]?.seq ?? session.nextSeq,
-      nextSeq: session.nextSeq,
+      replayStartSeq: chunks[0]?.seq ?? args.nextSeq,
+      nextSeq: args.nextSeq,
     });
   }
 
@@ -959,6 +955,7 @@ export class TerminalManager {
       args.session.closeTimeout = null;
     }
     this.sessions.delete(args.session.terminalId);
+    this.retainExitedSession(args.session);
     if (args.session.environmentId !== null) {
       this.options.runtimeManager.markTerminalInactive(
         args.session.environmentId,
@@ -985,6 +982,56 @@ export class TerminalManager {
       exitCode: args.exitCode,
       closeReason: args.closeReason,
     });
+  }
+
+  private retainExitedSession(session: TerminalSession): void {
+    if (this.maxExitedTerminals < 1 || this.exitedRetentionMs <= 0) {
+      return;
+    }
+    this.forgetExitedSession(session.terminalId);
+    const exited: ExitedTerminalSession = {
+      expiryTimeout: null,
+      nextSeq: session.nextSeq,
+      scrollback: session.scrollback,
+      scrollbackBytes: session.scrollbackBytes,
+      terminalId: session.terminalId,
+    };
+    const expiryTimeout = setTimeout(() => {
+      exited.expiryTimeout = null;
+      this.forgetExitedSession(exited.terminalId);
+    }, this.exitedRetentionMs);
+    expiryTimeout.unref();
+    exited.expiryTimeout = expiryTimeout;
+    this.exitedSessions.set(exited.terminalId, exited);
+    this.exitedScrollbackBytes += exited.scrollbackBytes;
+    this.evictExitedSessions();
+  }
+
+  private evictExitedSessions(): void {
+    while (
+      this.exitedSessions.size > this.maxExitedTerminals ||
+      (this.exitedSessions.size > 1 &&
+        this.exitedScrollbackBytes > this.maxExitedScrollbackBytes)
+    ) {
+      const oldest = this.exitedSessions.keys().next();
+      if (oldest.done) {
+        return;
+      }
+      this.forgetExitedSession(oldest.value);
+    }
+  }
+
+  private forgetExitedSession(terminalId: string): void {
+    const exited = this.exitedSessions.get(terminalId);
+    if (!exited) {
+      return;
+    }
+    if (exited.expiryTimeout !== null) {
+      clearTimeout(exited.expiryTimeout);
+      exited.expiryTimeout = null;
+    }
+    this.exitedSessions.delete(terminalId);
+    this.exitedScrollbackBytes -= exited.scrollbackBytes;
   }
 
   private sendTerminalError(args: SendTerminalErrorArgs): void {

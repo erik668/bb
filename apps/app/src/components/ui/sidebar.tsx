@@ -6,31 +6,27 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { Button } from "@bb/shared-ui/button";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
-import { Skeleton } from "@bb/shared-ui/skeleton";
 import { Icon } from "@bb/shared-ui/icon";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@bb/shared-ui/tooltip";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
 import { setCompactSidebarDrawerShowing } from "./sidebar-mobile-drawer-visibility.js";
+import { usePanelShelfState } from "./secondary-panel-shelf-visibility.js";
 import {
-  getCompactSecondaryPanelPresentation,
-  subscribeCompactSecondaryPanelShelfShowing,
-} from "./secondary-panel-shelf-visibility.js";
+  findTouchById,
+  hasTextSelectionWithin,
+  isHorizontallyScrollableElement,
+} from "./gesture-dom.js";
 import { useHorizontalDismissDrag } from "./use-horizontal-dismiss-drag.js";
 
 const SIDEBAR_WIDTH = "16rem";
 const SIDEBAR_MOBILE_VIEWPORT_FRACTION = 0.76;
 const SIDEBAR_WIDTH_MOBILE = `min(${SIDEBAR_MOBILE_VIEWPORT_FRACTION * 100}vw, 320px)`;
-const SIDEBAR_WIDTH_ICON = "3rem";
 const SIDEBAR_MOBILE_SWIPE_BROWSER_EDGE_GUARD_PX = 24;
 const SIDEBAR_MOBILE_SWIPE_OPEN_EDGE_ZONE_PX = 72;
 const SIDEBAR_MOBILE_SWIPE_OPEN_INTENT_PX = 12;
 const SIDEBAR_MOBILE_SWIPE_OPEN_RATIO = 0.33;
 const SIDEBAR_MOBILE_SWIPE_OPEN_FLING_MIN_RATIO = 0.12;
 const SIDEBAR_MOBILE_SWIPE_OPEN_FLING_VELOCITY_PX_PER_SEC = 450;
+const SIDEBAR_MOBILE_SWIPE_OPEN_FLING_MAX_IDLE_MS = 100;
 const SIDEBAR_MOBILE_DRAG_SETTLE_MS = 220;
 const SIDEBAR_MOBILE_REALIZE_TIMEOUT_MS = 1000;
 const SIDEBAR_MOBILE_DRAG_SETTLE_EASING = "cubic-bezier(0.32, 0.72, 0, 1)";
@@ -39,13 +35,9 @@ const SIDEBAR_MOBILE_SHELF_BACKDROP_SETTLE_TRANSITION = `opacity ${SIDEBAR_MOBIL
 const SIDEBAR_MOBILE_WHEEL_SWIPE_OPEN_DISTANCE_PX = 90;
 const SIDEBAR_MOBILE_WHEEL_SWIPE_RESET_MS = 250;
 const SIDEBAR_MOBILE_SHELF_INSET_TRANSITION_CLASS =
-  "max-md:[transition:translate_220ms_cubic-bezier(0.32,0.72,0,1)]";
+  "max-md:[transition:translate_220ms_cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none!";
 const SIDEBAR_MOBILE_BACKDROP_TRANSITION_CLASS =
   "[transition:opacity_220ms_cubic-bezier(0.32,0.72,0,1),translate_220ms_cubic-bezier(0.32,0.72,0,1)]";
-const SIDEBAR_GROUP_LABEL_BASE_CLASS =
-  "duration-200 flex shrink-0 items-center rounded-md px-1 text-xs font-medium text-sidebar-foreground/75 outline-none ring-sidebar-ring transition-[margin,opa] ease-linear focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0";
-const SIDEBAR_GROUP_LABEL_COLLAPSED_CLASS =
-  "group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0";
 
 type SidebarMobileWidthStyle = React.CSSProperties & {
   "--sidebar-width-mobile": string;
@@ -168,6 +160,7 @@ function createSidebarInsetSwipeSession({
   id,
   startX,
   startY,
+  startTimeMs,
   selectionRoot,
   startTarget,
   canPreventDefault,
@@ -176,11 +169,11 @@ function createSidebarInsetSwipeSession({
   id: number;
   startX: number;
   startY: number;
+  startTimeMs: number;
   selectionRoot: Element | null;
   startTarget: Element | null;
   canPreventDefault: boolean;
 }): SidebarInsetSwipeSession {
-  const nowMs = Date.now();
   return {
     kind,
     id,
@@ -189,7 +182,7 @@ function createSidebarInsetSwipeSession({
     panelWidth: getSidebarMobilePanelWidth(),
     lastProgress: 0,
     lastClientX: startX,
-    lastTimeMs: nowMs,
+    lastTimeMs: startTimeMs,
     velocityX: 0,
     isDragging: false,
     selectionRoot,
@@ -207,30 +200,16 @@ function isSidebarSwipeEdgeZoneTouch(clientX: number): boolean {
 
 function shouldOpenSidebarMobileSwipe(
   session: SidebarInsetSwipeSession,
+  releaseTimeMs: number,
 ): boolean {
   return (
     session.lastProgress >= SIDEBAR_MOBILE_SWIPE_OPEN_RATIO ||
     (session.lastProgress >= SIDEBAR_MOBILE_SWIPE_OPEN_FLING_MIN_RATIO &&
-      session.velocityX >= SIDEBAR_MOBILE_SWIPE_OPEN_FLING_VELOCITY_PX_PER_SEC)
+      session.velocityX >=
+        SIDEBAR_MOBILE_SWIPE_OPEN_FLING_VELOCITY_PX_PER_SEC &&
+      releaseTimeMs - session.lastTimeMs <=
+        SIDEBAR_MOBILE_SWIPE_OPEN_FLING_MAX_IDLE_MS)
   );
-}
-
-function isHorizontallyScrollableElement(element: Element): boolean {
-  const view = element.ownerDocument.defaultView;
-  if (view === null || !(element instanceof view.HTMLElement)) {
-    return false;
-  }
-
-  const overflowX = view.getComputedStyle(element).overflowX;
-  if (
-    overflowX !== "auto" &&
-    overflowX !== "scroll" &&
-    overflowX !== "overlay"
-  ) {
-    return false;
-  }
-
-  return element.scrollWidth > element.clientWidth + 1;
 }
 
 function isInsideHorizontalScrollRegion(target: Element): boolean {
@@ -258,18 +237,6 @@ function getSidebarSwipeSelectionRoot(
     : null;
 }
 
-function hasExpandedTextSelectionWithin(root: Element): boolean {
-  const selection = root.ownerDocument.getSelection();
-  if (selection === null || selection.isCollapsed) {
-    return false;
-  }
-
-  return (
-    (selection.anchorNode !== null && root.contains(selection.anchorNode)) ||
-    (selection.focusNode !== null && root.contains(selection.focusNode))
-  );
-}
-
 function shouldIgnoreSidebarSwipeTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) {
     return false;
@@ -295,9 +262,7 @@ function shouldIgnoreSidebarSwipeTarget(target: EventTarget | null): boolean {
   }
 
   const selectionRoot = getSidebarSwipeSelectionRoot(target);
-  return (
-    selectionRoot !== null && hasExpandedTextSelectionWithin(selectionRoot)
-  );
+  return selectionRoot !== null && hasTextSelectionWithin(selectionRoot);
 }
 
 function isSidebarInsetSwipeTarget(target: EventTarget | null): boolean {
@@ -324,26 +289,13 @@ function isSidebarInsetSwipeTarget(target: EventTarget | null): boolean {
   );
 }
 
-function getTouchByIdentifier(
-  touches: TouchList,
-  identifier: number,
-): Touch | null {
-  for (let index = 0; index < touches.length; index += 1) {
-    const touch = touches.item(index);
-    if (touch?.identifier === identifier) {
-      return touch;
-    }
-  }
-  return null;
-}
-
 function getTrackedSwipeTouch(
   event: TouchEvent,
   identifier: number,
 ): Touch | null {
   return (
-    getTouchByIdentifier(event.touches, identifier) ??
-    getTouchByIdentifier(event.changedTouches, identifier)
+    findTouchById(event.touches, identifier) ??
+    findTouchById(event.changedTouches, identifier)
   );
 }
 
@@ -422,13 +374,6 @@ const SidebarContext = React.createContext<SidebarContext | null>(null);
 const SidebarWidthContext = React.createContext<string>(SIDEBAR_WIDTH);
 
 const SidebarShowingContext = React.createContext<boolean | null>(null);
-
-const SidebarContentElementContext =
-  React.createContext<React.RefObject<HTMLDivElement | null> | null>(null);
-
-function useSidebarContentElementRef() {
-  return React.useContext(SidebarContentElementContext);
-}
 
 function useSidebar() {
   const context = React.useContext(SidebarContext);
@@ -658,25 +603,22 @@ const SidebarProvider = React.forwardRef<
         <SidebarShowingContext.Provider value={isSidebarShowing}>
           <SidebarWidthContext.Provider value={width}>
             {}
-            <TooltipProvider delayDuration={300} disableHoverableContent>
-              <div
-                style={
-                  {
-                    "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
-                    ...sidebarMobileWidthStyle,
-                    ...style,
-                  } as React.CSSProperties
-                }
-                className={cn(
-                  "group/sidebar-wrapper flex h-full min-h-0 w-full has-[[data-variant=inset]]:bg-sidebar max-md:overflow-clip",
-                  className,
-                )}
-                ref={ref}
-                {...props}
-              >
-                {children}
-              </div>
-            </TooltipProvider>
+            <div
+              style={
+                {
+                  ...sidebarMobileWidthStyle,
+                  ...style,
+                } as React.CSSProperties
+              }
+              className={cn(
+                "group/sidebar-wrapper flex h-full min-h-0 w-full max-md:overflow-clip",
+                className,
+              )}
+              ref={ref}
+              {...props}
+            >
+              {children}
+            </div>
           </SidebarWidthContext.Provider>
         </SidebarShowingContext.Provider>
       </SidebarContext.Provider>
@@ -767,8 +709,6 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div">>(
           className={cn(
             "relative hidden h-full w-(--sidebar-width) bg-transparent transition-[width] duration-200 ease-linear md:block",
             "group-data-[collapsible=offcanvas]:w-0",
-            "group-data-[side=right]:rotate-180",
-            "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
           )}
         />
         <div
@@ -777,7 +717,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div">>(
             "fixed inset-y-0 z-10 flex h-(--bb-shell-height) w-(--sidebar-width) select-none flex-col bg-sidebar text-sidebar-foreground [transition:left_200ms_linear,right_200ms_linear,width_200ms_linear,visibility_0s_linear_0s]",
             "group-data-[collapsible=offcanvas]:invisible group-data-[collapsible=offcanvas]:[transition:left_200ms_linear,right_200ms_linear,width_200ms_linear,visibility_0s_linear_200ms]",
             "left-0 group-data-[collapsible=offcanvas]:left-[calc(var(--sidebar-width)*-1)]",
-            "group-data-[collapsible=icon]:w-(--sidebar-width-icon) border-border-seam group-data-[side=left]:border-r group-data-[side=right]:border-l",
+            "border-border-seam group-data-[side=left]:border-r",
             className,
           )}
           style={{ ...widthStyle, ...style }}
@@ -785,7 +725,7 @@ const Sidebar = React.forwardRef<HTMLDivElement, React.ComponentProps<"div">>(
         >
           <div
             data-sidebar="sidebar"
-            className="flex h-full w-full flex-col bg-sidebar pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow"
+            className="flex h-full w-full flex-col bg-sidebar pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
           >
             {children}
           </div>
@@ -1008,7 +948,7 @@ const SidebarMobilePanel = React.forwardRef<
           data-vaul-drawer-direction="left"
           className={cn(
             "group fixed inset-y-0 left-0 z-0 flex h-(--bb-shell-height) w-(--sidebar-width-mobile) touch-pan-y select-none flex-col bg-sidebar text-sidebar-foreground outline-none",
-            "border-border-seam data-[side=left]:border-r data-[side=right]:border-l",
+            "border-border-seam data-[side=left]:border-r",
             className,
           )}
           style={
@@ -1023,7 +963,7 @@ const SidebarMobilePanel = React.forwardRef<
         >
           <div
             data-sidebar="sidebar"
-            className="flex h-full w-full flex-col bg-sidebar pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] group-data-[variant=floating]:rounded-lg group-data-[variant=floating]:border group-data-[variant=floating]:border-sidebar-border group-data-[variant=floating]:shadow"
+            className="flex h-full w-full flex-col bg-sidebar pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)]"
           >
             {children}
           </div>
@@ -1098,6 +1038,21 @@ const SidebarInset = React.forwardRef<
       mobileDragSettleTimeoutRef.current = null;
     }
   }, []);
+
+  const recoverInterruptedMobileSwipe = React.useCallback(() => {
+    clearSwipeSession();
+    clearMobileDragSettleTimeout();
+    flushSync(() => {
+      setSuppressMobileCloseAnimation(true);
+      setOpenMobile(false);
+    });
+    clearSidebarMobileDragStyles();
+  }, [
+    clearMobileDragSettleTimeout,
+    clearSwipeSession,
+    setOpenMobile,
+    setSuppressMobileCloseAnimation,
+  ]);
 
   const clearWheelSwipe = React.useCallback(() => {
     wheelSwipeDeltaRef.current = 0;
@@ -1181,7 +1136,6 @@ const SidebarInset = React.forwardRef<
       const deltaY = clientY - session.startY;
       const absDeltaX = Math.abs(deltaX);
       const absDeltaY = Math.abs(deltaY);
-      const nowMs = Date.now();
 
       if (
         !session.isDragging &&
@@ -1228,12 +1182,12 @@ const SidebarInset = React.forwardRef<
         event.preventDefault();
       }
 
-      const elapsedMs = nowMs - session.lastTimeMs;
-      if (elapsedMs > 0) {
+      const elapsedMs = event.timeStamp - session.lastTimeMs;
+      if (elapsedMs > 0 && clientX !== session.lastClientX) {
         session.velocityX =
           ((clientX - session.lastClientX) / elapsedMs) * 1000;
         session.lastClientX = clientX;
-        session.lastTimeMs = nowMs;
+        session.lastTimeMs = event.timeStamp;
       }
       session.lastProgress = progress;
       applySidebarMobileDragStyles({ progress, settling: false });
@@ -1281,7 +1235,7 @@ const SidebarInset = React.forwardRef<
       }
 
       suppressNextSwipeClick();
-      settleMobileSwipe(shouldOpenSidebarMobileSwipe(session));
+      settleMobileSwipe(shouldOpenSidebarMobileSwipe(session, event.timeStamp));
     },
     [clearSwipeSession, settleMobileSwipe, suppressNextSwipeClick],
   );
@@ -1297,9 +1251,12 @@ const SidebarInset = React.forwardRef<
         return;
       }
 
+      if (event.type === "pointerup") {
+        continueSwipe(event.clientX, event.clientY, event);
+      }
       finishMobileSwipe(event);
     },
-    [finishMobileSwipe],
+    [continueSwipe, finishMobileSwipe],
   );
 
   const handleTouchMove = React.useCallback(
@@ -1326,13 +1283,17 @@ const SidebarInset = React.forwardRef<
         return;
       }
 
-      if (getTrackedSwipeTouch(event, session.id) === null) {
+      const touch = findTouchById(event.changedTouches, session.id);
+      if (touch === null) {
         return;
       }
 
+      if (event.type === "touchend") {
+        continueSwipe(touch.clientX, touch.clientY, event);
+      }
       finishMobileSwipe(event);
     },
-    [finishMobileSwipe],
+    [continueSwipe, finishMobileSwipe],
   );
 
   const startTouchSwipe = React.useCallback(
@@ -1340,7 +1301,6 @@ const SidebarInset = React.forwardRef<
       if (
         event.defaultPrevented ||
         !isCompactViewport ||
-        openMobile ||
         event.touches.length !== 1 ||
         !isSidebarInsetSwipeTarget(event.target) ||
         shouldIgnoreSidebarSwipeTarget(event.target)
@@ -1356,11 +1316,12 @@ const SidebarInset = React.forwardRef<
         return;
       }
 
-      const currentSession = swipeSessionRef.current;
-      if (currentSession !== null) {
-        if (currentSession.kind !== "pointer") {
+      if (openMobile) {
+        if (!swipeSessionRef.current?.isDragging) {
           return;
         }
+        recoverInterruptedMobileSwipe();
+      } else {
         clearSwipeSession();
       }
 
@@ -1370,6 +1331,7 @@ const SidebarInset = React.forwardRef<
         id: touch.identifier,
         startX: touch.clientX,
         startY: touch.clientY,
+        startTimeMs: event.timeStamp,
         selectionRoot: getSidebarSwipeSelectionRoot(event.target),
         startTarget: event.target instanceof Element ? event.target : null,
         canPreventDefault,
@@ -1393,6 +1355,7 @@ const SidebarInset = React.forwardRef<
       handleTouchMove,
       isCompactViewport,
       openMobile,
+      recoverInterruptedMobileSwipe,
     ],
   );
 
@@ -1401,22 +1364,30 @@ const SidebarInset = React.forwardRef<
       if (
         event.defaultPrevented ||
         !isCompactViewport ||
-        openMobile ||
         event.pointerType !== "touch" ||
+        !event.isPrimary ||
         event.button !== 0 ||
         event.clientX < SIDEBAR_MOBILE_SWIPE_BROWSER_EDGE_GUARD_PX ||
-        swipeSessionRef.current !== null ||
         !isSidebarInsetSwipeTarget(event.target) ||
         shouldIgnoreSidebarSwipeTarget(event.target)
       ) {
         return;
       }
 
+      if (openMobile) {
+        if (!swipeSessionRef.current?.isDragging) {
+          return;
+        }
+        recoverInterruptedMobileSwipe();
+      } else {
+        clearSwipeSession();
+      }
       swipeSessionRef.current = createSidebarInsetSwipeSession({
         kind: "pointer",
         id: event.pointerId,
         startX: event.clientX,
         startY: event.clientY,
+        startTimeMs: event.timeStamp,
         selectionRoot: getSidebarSwipeSelectionRoot(event.target),
         startTarget: event.target instanceof Element ? event.target : null,
         canPreventDefault: true,
@@ -1434,18 +1405,31 @@ const SidebarInset = React.forwardRef<
       window.addEventListener("pointercancel", handleSwipeEnd);
       removeSwipeListenersRef.current = removeListeners;
     },
-    [handleSwipeEnd, handleSwipeMove, isCompactViewport, openMobile],
+    [
+      clearSwipeSession,
+      handleSwipeEnd,
+      handleSwipeMove,
+      isCompactViewport,
+      openMobile,
+      recoverInterruptedMobileSwipe,
+    ],
   );
 
   React.useEffect(() => {
     const cancelSwipeForTextSelection = () => {
-      const selectionRoot = swipeSessionRef.current?.selectionRoot;
+      const session = swipeSessionRef.current;
+      const selectionRoot = session?.selectionRoot;
       if (
+        session !== null &&
         selectionRoot !== null &&
         selectionRoot !== undefined &&
-        hasExpandedTextSelectionWithin(selectionRoot)
+        hasTextSelectionWithin(selectionRoot)
       ) {
-        clearSwipeSession();
+        if (session.isDragging) {
+          recoverInterruptedMobileSwipe();
+        } else {
+          clearSwipeSession();
+        }
       }
     };
 
@@ -1470,7 +1454,12 @@ const SidebarInset = React.forwardRef<
         cancelSwipeForTextSelection,
       );
     };
-  }, [clearSwipeSession, startPointerSwipe, startTouchSwipe]);
+  }, [
+    clearSwipeSession,
+    recoverInterruptedMobileSwipe,
+    startPointerSwipe,
+    startTouchSwipe,
+  ]);
 
   const handleWheelSwipe = React.useCallback(
     (event: WheelEvent) => {
@@ -1573,20 +1562,15 @@ const SidebarInset = React.forwardRef<
     }
   }, [clearSwipeSession, isCompactViewport, openMobile]);
 
-  const secondaryPanelPresentation = React.useSyncExternalStore(
-    subscribeCompactSecondaryPanelShelfShowing,
-    getCompactSecondaryPanelPresentation,
-    () => "closed" as const,
-  );
   const shelfState = isCompactViewport
     ? openMobile
       ? "open"
       : "closed"
     : undefined;
-  const panelShelfState =
-    isCompactViewport && !openMobile
-      ? secondaryPanelPresentation
-      : undefined;
+  const panelShelfState = usePanelShelfState({
+    isCompactViewport,
+    isSidebarDrawerOpen: openMobile,
+  });
 
   return (
     <main
@@ -1600,12 +1584,10 @@ const SidebarInset = React.forwardRef<
           : undefined
       }
       className={cn(
-        "group/page-inset relative flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background max-md:z-30",
+        "relative flex h-full min-h-0 min-w-0 flex-1 flex-col bg-background max-md:z-30",
         SIDEBAR_MOBILE_SHELF_INSET_TRANSITION_CLASS,
         "data-[sidebar-shelf=open]:translate-x-(--sidebar-width-mobile) data-[sidebar-shelf]:will-change-[translate]",
-        "data-[panel-shelf=shelf]:-translate-x-(--secondary-panel-width-mobile) data-[panel-shelf]:will-change-[translate]",
-        "data-[panel-shelf=full]:-translate-x-full",
-        "md:peer-data-[variant=inset]:m-2 md:peer-data-[variant=inset]:ml-0 md:peer-data-[variant=inset]:rounded-xl md:peer-data-[variant=inset]:shadow",
+        "data-[panel-shelf=full]:-translate-x-full data-[panel-shelf]:will-change-[translate]",
         className,
       )}
       {...props}
@@ -1629,132 +1611,23 @@ const SidebarFooter = React.forwardRef<
 });
 SidebarFooter.displayName = "SidebarFooter";
 
-const SIDEBAR_CONTENT_SELECTOR = '[data-sidebar="content"]';
-
 const SidebarContent = React.forwardRef<
   HTMLDivElement,
   React.ComponentProps<"div">
->(({ className, children, ...props }, ref) => {
-  const contentRef = React.useRef<HTMLDivElement | null>(null);
-  const setContentRef = React.useCallback(
-    (node: HTMLDivElement | null) => {
-      contentRef.current = node;
-      if (typeof ref === "function") {
-        ref(node);
-      } else if (ref) {
-        ref.current = node;
-      }
-    },
-    [ref],
-  );
-
+>(({ className, ...props }, ref) => {
   return (
     <div
-      ref={setContentRef}
+      ref={ref}
       data-sidebar="content"
       className={cn(
-        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto bg-sidebar group-data-[collapsible=icon]:overflow-hidden",
+        "flex min-h-0 flex-1 flex-col gap-2 overflow-auto bg-sidebar",
         className,
       )}
       {...props}
-    >
-      <SidebarContentElementContext.Provider value={contentRef}>
-        {children}
-      </SidebarContentElementContext.Provider>
-    </div>
+    />
   );
 });
 SidebarContent.displayName = "SidebarContent";
-
-type SidebarStickyTierKind = "label" | "project" | "parent";
-
-type SidebarStickyStackProps = React.ComponentProps<"div">;
-
-interface SidebarStickyTierProps extends React.ComponentProps<"div"> {
-  tier: SidebarStickyTierKind;
-  level?: number;
-}
-
-type SidebarStickyParentLevelStyle = React.CSSProperties & {
-  "--bb-sidebar-sticky-parent-level": number;
-};
-
-const SidebarStickyStack = React.forwardRef<
-  HTMLDivElement,
-  SidebarStickyStackProps
->(({ className, ...props }, ref) => {
-  return (
-    <div
-      ref={ref}
-      data-sidebar="group"
-      data-sidebar-sticky-stack=""
-      className={cn("relative flex w-full min-w-0 flex-col", className)}
-      {...props}
-    />
-  );
-});
-SidebarStickyStack.displayName = "SidebarStickyStack";
-
-const SidebarStickyTier = React.forwardRef<
-  HTMLDivElement,
-  SidebarStickyTierProps
->(({ children, className, tier, level, style, ...props }, ref) => {
-  const tierStyle =
-    tier === "parent" && level !== undefined
-      ? ({
-          ...style,
-          "--bb-sidebar-sticky-parent-level": level,
-        } satisfies SidebarStickyParentLevelStyle)
-      : style;
-  return (
-    <div
-      ref={ref}
-      {...props}
-      style={tierStyle}
-      data-sidebar={tier === "label" ? "group-label" : undefined}
-      data-sidebar-sticky-tier={tier}
-      className={cn(
-        tier === "label" && SIDEBAR_GROUP_LABEL_BASE_CLASS,
-        tier === "label" && SIDEBAR_GROUP_LABEL_COLLAPSED_CLASS,
-        "bg-sidebar",
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
-});
-SidebarStickyTier.displayName = "SidebarStickyTier";
-
-type SidebarStickyGroupProps = React.ComponentProps<"div">;
-
-const SidebarStickyGroup = React.forwardRef<
-  HTMLDivElement,
-  SidebarStickyGroupProps
->(({ className, ...props }, ref) => {
-  return (
-    <div
-      ref={ref}
-      data-sidebar-sticky-group=""
-      className={cn(className)}
-      {...props}
-    />
-  );
-});
-SidebarStickyGroup.displayName = "SidebarStickyGroup";
-
-const SidebarGroupContent = React.forwardRef<
-  HTMLDivElement,
-  React.ComponentProps<"div">
->(({ className, ...props }, ref) => (
-  <div
-    ref={ref}
-    data-sidebar="group-content"
-    className={cn("w-full text-sm", className)}
-    {...props}
-  />
-));
-SidebarGroupContent.displayName = "SidebarGroupContent";
 
 const SidebarMenu = React.forwardRef<
   HTMLUListElement,
@@ -1783,7 +1656,7 @@ const SidebarMenuItem = React.forwardRef<
 SidebarMenuItem.displayName = "SidebarMenuItem";
 
 const SIDEBAR_MENU_BUTTON_CLASS =
-  "flex h-8 w-full cursor-pointer items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-none ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground group-data-[collapsible=icon]:!size-8 group-data-[collapsible=icon]:!p-2 [&>span:last-child]:truncate [&>svg]:size-4 [&>svg]:shrink-0";
+  "flex h-8 w-full cursor-pointer items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm outline-none ring-sidebar-ring transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 active:bg-sidebar-accent active:text-sidebar-accent-foreground disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 data-[state=open]:hover:bg-sidebar-accent data-[state=open]:hover:text-sidebar-accent-foreground [&>span:last-child]:truncate [&>[data-icon-root]]:size-4 [&>[data-icon-root]]:shrink-0";
 
 const SidebarMenuButton = React.forwardRef<
   HTMLButtonElement,
@@ -1822,60 +1695,18 @@ const SidebarMenuButton = React.forwardRef<
 });
 SidebarMenuButton.displayName = "SidebarMenuButton";
 
-const SidebarMenuSkeleton = React.forwardRef<
-  HTMLDivElement,
-  React.ComponentProps<"div">
->(({ className, ...props }, ref) => {
-  const skeletonId = React.useId();
-
-  const width = React.useMemo(() => {
-    let hash = 0;
-    for (let index = 0; index < skeletonId.length; index += 1) {
-      hash = (hash + skeletonId.charCodeAt(index) * (index + 1)) % 40;
-    }
-    return `${hash + 50}%`;
-  }, [skeletonId]);
-
-  return (
-    <div
-      ref={ref}
-      data-sidebar="menu-skeleton"
-      className={cn("rounded-md h-8 flex gap-2 px-2 items-center", className)}
-      {...props}
-    >
-      <Skeleton
-        className="h-4 flex-1 max-w-[--skeleton-width]"
-        data-sidebar="menu-skeleton-text"
-        style={
-          {
-            "--skeleton-width": width,
-          } as React.CSSProperties
-        }
-      />
-    </div>
-  );
-});
-SidebarMenuSkeleton.displayName = "SidebarMenuSkeleton";
-
 export {
-  SIDEBAR_CONTENT_SELECTOR,
   Sidebar,
   SidebarContent,
   SidebarFooter,
-  SidebarGroupContent,
   SidebarInset,
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
-  SidebarMenuSkeleton,
   SidebarProvider,
-  SidebarStickyGroup,
-  SidebarStickyStack,
-  SidebarStickyTier,
   SidebarTrigger,
   useCloseMobileSidebar,
   useIsSidebarShowing,
   useOptionalIsSidebarShowing,
   useSidebar,
-  useSidebarContentElementRef,
 };

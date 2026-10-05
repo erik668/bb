@@ -8,6 +8,7 @@ import type { WSContext, WSMessageReceive, WSEvents } from "hono/ws";
 import type {
   ExperimentalPluginWebSocket,
   ExperimentalPluginWebSocketHandlers,
+  PluginCliExecutionResult,
 } from "@get-bb/plugin-sdk";
 import type { ServerRuntimeConfig } from "../types.js";
 import { ApiError } from "../errors.js";
@@ -24,15 +25,21 @@ import type {
   PluginWebSocketRouteRecord,
 } from "../services/plugins/plugin-api.js";
 import { PluginSettingsValidationError } from "../services/plugins/plugin-settings.js";
+import { PLUGIN_RPC_CALLER_HEADER } from "../services/plugins/plugin-rpc-caller.js";
 import {
   createAppAssetCompressionCache,
   type AppAssetCompressionCache,
 } from "../services/plugins/app-asset-compression-cache.js";
 import { rankAcceptedAssetEncodings } from "../asset-content-encoding.js";
-import { pluginImageResponse } from "./plugin-image-response.js";
+import {
+  hashedAssetCacheControl,
+  pluginImageResponse,
+} from "./plugin-image-response.js";
 import {
   pluginApplyUpdateRequestSchema,
+  pluginRpcDiscoveryQuerySchema,
   pluginInstallRequestSchema,
+  pluginSafeModeRequestSchema,
   pluginSettingsUpdateRequestSchema,
   pluginTokenRequestSchema,
   pluginUpdateCheckRequestSchema,
@@ -47,6 +54,63 @@ type WireAuthProblem = BrowserRequestProblem | { status: 401; error: string };
 type UpgradeWebSocket = ReturnType<
   typeof createNodeWebSocket
 >["upgradeWebSocket"];
+
+const PLUGIN_CLI_KEEPALIVE_MS = 10_000;
+const PLUGIN_CLI_KEEPALIVE_BYTES = new TextEncoder().encode("\n");
+
+export async function pluginCliResponse(
+  result: Promise<PluginCliExecutionResult>,
+  keepaliveMs: number,
+): Promise<Response> {
+  const settled = result.then(
+    (value) => value,
+    (error: unknown): PluginCliExecutionResult => ({
+      exitCode: 1,
+      stdout: "",
+      stderr: error instanceof Error ? error.message : String(error),
+    }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const early = await Promise.race([
+    settled,
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), keepaliveMs);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (early !== null) {
+    return Response.json(early);
+  }
+  let interval: ReturnType<typeof setInterval> | undefined;
+  let cancelled = false;
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(PLUGIN_CLI_KEEPALIVE_BYTES);
+      interval = setInterval(() => {
+        controller.enqueue(PLUGIN_CLI_KEEPALIVE_BYTES);
+      }, keepaliveMs);
+      void settled.then((value) => {
+        clearInterval(interval);
+        if (cancelled) return;
+        controller.enqueue(
+          new TextEncoder().encode(`${JSON.stringify(value)}\n`),
+        );
+        controller.close();
+      });
+    },
+    cancel() {
+      cancelled = true;
+      clearInterval(interval);
+    },
+  });
+  return new Response(body, {
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store, no-transform",
+      "x-accel-buffering": "no",
+    },
+  });
+}
 
 const compressBrotli = promisify(brotliCompress);
 const compressGzip = promisify(gzip);
@@ -169,6 +233,14 @@ async function tokenAuthProblem(
     };
   }
   return null;
+}
+
+function pluginHttpSubPath(context: Context, id: string): string {
+  const prefix = `/api/v1/plugins/${id}/http`;
+  const requestPath = context.req.path;
+  return requestPath.startsWith(prefix)
+    ? requestPath.slice(prefix.length) || "/"
+    : "/";
 }
 
 function notRunningError(
@@ -308,11 +380,7 @@ export function registerPluginRoutes(
   );
   const upgradePluginWebSocket = upgradeWebSocket?.(async (context) => {
     const id = context.req.param("id");
-    const prefix = `/api/v1/plugins/${id}/http`;
-    const requestPath = context.req.path;
-    const subPath = requestPath.startsWith(prefix)
-      ? requestPath.slice(prefix.length) || "/"
-      : "/";
+    const subPath = pluginHttpSubPath(context, id);
     const lookup = plugins.getWebSocketRoute(id, subPath);
     if (lookup.outcome === "unknown-plugin") {
       throw new ApiError(404, "unknown_plugin", `unknown plugin "${id}"`);
@@ -371,6 +439,13 @@ export function registerPluginRoutes(
       plugins,
       route: fresh.value,
     });
+  });
+
+  app.get("/plugins/rpc", (context) => {
+    const query = pluginRpcDiscoveryQuerySchema.safeParse(context.req.query());
+    if (!query.success)
+      return context.json({ error: "Invalid RPC discovery query" }, 400);
+    return context.json(plugins.discoverRpc(query.data));
   });
 
   app.get("/plugins", (context) => context.json({ plugins: plugins.list() }));
@@ -443,18 +518,51 @@ export function registerPluginRoutes(
     if (typeof body?.threadId === "string") ctx.threadId = body.threadId;
     if (typeof body?.projectId === "string") ctx.projectId = body.projectId;
     ctx.signal = context.req.raw.signal;
-    const result = await plugins.runCliCommand(
-      context.req.param("id"),
-      argv,
-      ctx,
+    return pluginCliResponse(
+      plugins.runCliCommand(context.req.param("id"), argv, ctx),
+      PLUGIN_CLI_KEEPALIVE_MS,
     );
-    return context.json(result);
   });
 
   const APP_ASSET_CONTENT_TYPES = {
     "app.js": { kind: "js", contentType: "text/javascript; charset=utf-8" },
     "app.css": { kind: "css", contentType: "text/css; charset=utf-8" },
   } as const;
+
+  app.get("/plugin-app-assets/:hash/:file", async (context) => {
+    const file = context.req.param("file");
+    const spec =
+      file === "app.js" || file === "app.css"
+        ? APP_ASSET_CONTENT_TYPES[file]
+        : undefined;
+    if (!spec) {
+      return context.json({ ok: false, error: "unknown plugin asset" }, 404);
+    }
+    const hash = context.req.param("hash");
+    if (!/^[a-f0-9]{16}$/u.test(hash)) {
+      return context.json({ ok: false, error: "unknown plugin asset" }, 404);
+    }
+    const asset = plugins.getAppAssetByHash(hash, spec.kind);
+    if (!asset) {
+      return context.json(
+        { ok: false, error: "plugin has no loadable frontend bundle" },
+        404,
+      );
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(asset.path);
+    } catch {
+      return context.json({ ok: false, error: "bundle file missing" }, 404);
+    }
+    return appAssetResponse(context, bytes, {
+      assetKey: `${hash}:${spec.kind}`,
+      cache: appAssetCompressionCache,
+      contentType: spec.contentType,
+      cacheControl: "public, max-age=31536000, immutable",
+      contentHash: asset.hash,
+    });
+  });
 
   app.get("/plugins/:id/assets/icons/:file", (context) => {
     const file = context.req.param("file");
@@ -469,9 +577,7 @@ export function registerPluginRoutes(
     return pluginImageResponse(
       context,
       asset,
-      context.req.query("h") === asset.hash
-        ? "public, max-age=31536000, immutable"
-        : "no-store",
+      hashedAssetCacheControl(context.req.query("h"), asset.hash),
     );
   });
 
@@ -488,9 +594,7 @@ export function registerPluginRoutes(
       return pluginImageResponse(
         context,
         asset,
-        context.req.query("h") === asset.hash
-          ? "public, max-age=31536000, immutable"
-          : "no-store",
+        hashedAssetCacheControl(context.req.query("h"), asset.hash),
       );
     }
     const spec =
@@ -513,10 +617,10 @@ export function registerPluginRoutes(
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
-    const cacheControl =
-      context.req.query("h") === asset.hash
-        ? "public, max-age=31536000, immutable"
-        : "no-store";
+    const cacheControl = hashedAssetCacheControl(
+      context.req.query("h"),
+      asset.hash,
+    );
     return appAssetResponse(context, bytes, {
       assetKey: `${context.req.param("id")}:${spec.kind}`,
       cache: appAssetCompressionCache,
@@ -633,6 +737,22 @@ export function registerPluginRoutes(
     return context.json(outcome);
   });
 
+  app.get("/plugins/safe-mode", (context) =>
+    context.json({ enabled: plugins.getSafeMode() }),
+  );
+
+  app.put("/plugins/safe-mode", async (context) => {
+    const json: unknown = await context.req.json().catch(() => null);
+    const body = pluginSafeModeRequestSchema.safeParse(json);
+    if (!body.success) {
+      return context.json(
+        { ok: false, error: "expected { enabled: boolean }" },
+        400,
+      );
+    }
+    return context.json(await plugins.setSafeMode(body.data.enabled));
+  });
+
   app.post("/plugins/:id/enable", async (context) => {
     const plugin = await plugins.setEnabled(context.req.param("id"), true);
     if (!plugin)
@@ -736,11 +856,7 @@ export function registerPluginRoutes(
 
   app.all("/plugins/:id/http/*", async (context) => {
     const id = context.req.param("id");
-    const prefix = `/api/v1/plugins/${id}/http`;
-    const requestPath = context.req.path;
-    const subPath = requestPath.startsWith(prefix)
-      ? requestPath.slice(prefix.length) || "/"
-      : "/";
+    const subPath = pluginHttpSubPath(context, id);
     const lookup = plugins.getHttpRoute(id, context.req.method, subPath);
     if (lookup.outcome === "unknown-plugin") {
       return context.json({ ok: false, error: `unknown plugin "${id}"` }, 404);
@@ -786,9 +902,22 @@ export function registerPluginRoutes(
   app.post("/plugins/:id/rpc/:method", async (context) => {
     const id = context.req.param("id");
     const method = context.req.param("method");
+    context.header("Cache-Control", "no-store");
     const problem = localAuthProblem(context, deps);
     if (problem) {
       return context.json({ ok: false, error: problem.error }, problem.status);
+    }
+    const callerResolution = plugins.resolveRpcCaller(
+      context.req.header(PLUGIN_RPC_CALLER_HEADER),
+    );
+    if (!callerResolution.ok) {
+      return context.json(
+        {
+          ok: false,
+          error: `the ${PLUGIN_RPC_CALLER_HEADER} token isn't a running plugin's caller token`,
+        },
+        403,
+      );
     }
     const rawBody = await context.req.text();
     let input: unknown;
@@ -835,6 +964,7 @@ export function registerPluginRoutes(
       method,
       lookup.value,
       input,
+      callerResolution.caller,
     );
     if (!outcome.ok) {
       return context.json(

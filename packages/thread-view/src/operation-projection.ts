@@ -6,6 +6,7 @@ import type {
   EventProjectionOperationMessage,
   EventProjectionPermissionGrantLifecycleMessage,
   EventProjectionUserQuestionLifecycleMessage,
+  EventProjectionPluginFormLifecycleMessage,
 } from "./event-projection-types.js";
 import type { CompactionLifecycleEvent } from "./compaction-lifecycle.js";
 import type { EventMeta } from "./event-decode.js";
@@ -49,6 +50,10 @@ export interface OperationProjectionState {
     string,
     EventProjectionUserQuestionLifecycleMessage
   >;
+  pluginFormsByInteractionId: Map<
+    string,
+    EventProjectionPluginFormLifecycleMessage
+  >;
   threadOperationsById: Map<string, EventProjectionOperationMessage>;
 }
 
@@ -62,6 +67,7 @@ export function createOperationProjectionState(
     provisioningOperationsByKey: new Map(),
     permissionGrantsByInteractionId: new Map(),
     userQuestionsByInteractionId: new Map(),
+    pluginFormsByInteractionId: new Map(),
     threadOperationsById: new Map(),
     fileEditsByCallId: new Map(),
     fileEditStdoutBuffersByScopedCallKey: new Map(),
@@ -96,7 +102,8 @@ type LifecycleStatus = Extract<
 type LifecycleEventProjectionMessage =
   | EventProjectionOperationMessage
   | EventProjectionPermissionGrantLifecycleMessage
-  | EventProjectionUserQuestionLifecycleMessage;
+  | EventProjectionUserQuestionLifecycleMessage
+  | EventProjectionPluginFormLifecycleMessage;
 type EventProjectionMessageScopeFields = ReturnType<
   | typeof eventProjectionMessageThreadScopeFields
   | typeof eventProjectionMessageTurnScopeFields
@@ -293,6 +300,35 @@ export function upsertUserQuestionLifecycleMessage(
     mergeExisting: mergeUserQuestionLifecycleMessage,
     state,
   });
+}
+
+export function upsertPluginFormLifecycleMessage(
+  state: OperationProjectionState,
+  incoming: EventProjectionPluginFormLifecycleMessage,
+): void {
+  upsertKeyedLifecycleMessage({
+    index: state.pluginFormsByInteractionId,
+    incoming,
+    key: incoming.interactionId,
+    mergeExisting: mergePluginFormLifecycleMessage,
+    state,
+  });
+}
+
+function mergePluginFormLifecycleMessage(
+  existing: EventProjectionPluginFormLifecycleMessage,
+  incoming: EventProjectionPluginFormLifecycleMessage,
+): void {
+  const wasTerminal = isTerminalLifecycleStatus(existing.status);
+  existing.status = mergeLifecycleStatus(existing.status, incoming.status);
+  if (wasTerminal) {
+    return;
+  }
+  existing.lifecycle = incoming.lifecycle;
+  existing.title = incoming.title;
+  existing.statusReason = incoming.statusReason;
+  existing.presentation = incoming.presentation;
+  existing.payload = incoming.payload;
 }
 
 function mergeUserQuestionLifecycleMessage(
@@ -818,6 +854,8 @@ export function onCompactionBegin(
     existing.status = "pending";
     existing.title = "Compacting context";
     existing.detail = payload.detail ?? existing.detail;
+    existing.parentToolCallId =
+      payload.parentToolCallId ?? existing.parentToolCallId;
     return;
   }
 
@@ -836,6 +874,9 @@ export function onCompactionBegin(
     opType: "compaction",
     title: "Compacting context",
     detail: payload.detail,
+    ...(payload.parentToolCallId
+      ? { parentToolCallId: payload.parentToolCallId }
+      : {}),
     status: "pending",
   };
   state.openCompactionsByKey.set(payload.key, message);
@@ -857,6 +898,8 @@ export function onCompactionEnd(
     existing.status = "completed";
     existing.title = "Context compacted";
     existing.detail = payload.detail ?? existing.detail;
+    existing.parentToolCallId =
+      payload.parentToolCallId ?? existing.parentToolCallId;
     state.openCompactionsByKey.delete(payload.key);
     state.finalizedCompactionKeys.add(payload.key);
     return;
@@ -881,6 +924,9 @@ export function onCompactionEnd(
     opType: "compaction",
     title: "Context compacted",
     detail: payload.detail,
+    ...(payload.parentToolCallId
+      ? { parentToolCallId: payload.parentToolCallId }
+      : {}),
     status: "completed",
   });
   state.finalizedCompactionKeys.add(payload.key);

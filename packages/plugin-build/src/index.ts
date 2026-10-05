@@ -8,18 +8,23 @@ export {
   PLUGIN_SERVER_EXTERNALS,
 } from "./build-plugin-server.js";
 export { buildPluginHost } from "./build-plugin-host.js";
+export { resolveBundledNpmCli, resolveBundledNpxCli } from "./npm-cli.js";
 export * from "./plugin-dev-loop.js";
 export {
   PLUGIN_TOOLCHAIN_PINS,
-  pluginBuildCacheContract,
-  inspectCachedPluginBuildToolchain,
   resolvePluginBuildToolchain,
   type PluginBuildToolchain,
 } from "./toolchain.js";
 export {
   assertValidPluginCompactIconSvg,
   assertValidPluginIconSvg,
-  assertValidPluginLogoSvg,
 } from "./svg-asset.js";
 
-export { resolveManifestPath } from "./plugin-manifest.js";
+export {
+  readPluginPackageJsonFile,
+  resolveManifestAssetFile,
+  resolveManifestEntryFile,
+  resolveManifestPath,
+} from "./plugin-manifest.js";
+
+export { copyPluginRuntime } from "./prepare-plugin-runtime.js";

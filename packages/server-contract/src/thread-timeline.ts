@@ -142,6 +142,7 @@ export type TimelineConversationRow = z.infer<
 
 export const timelineSystemOperationKindValues = [
   "generic",
+  "reasoning",
   "compaction",
   "context-clear",
   "parent-change",
@@ -157,16 +158,8 @@ export const timelineSystemOperationKindSchema = z.enum(
 export type TimelineSystemOperationKind = z.infer<
   typeof timelineSystemOperationKindSchema
 >;
-const timelineGenericSystemOperationKindSchema = z.enum([
-  "generic",
-  "compaction",
-  "context-clear",
-  "thread-provisioning",
-  "thread-interrupted",
-  "provider-unhandled",
-  "warning",
-  "deprecation",
-] as const);
+const timelineGenericSystemOperationKindSchema =
+  timelineSystemOperationKindSchema.exclude(["parent-change"]);
 
 export const timelineParentChangeActionValues = [
   "assign",
@@ -205,6 +198,7 @@ export const timelineGenericOperationSystemRowSchema =
   timelineSystemRowBaseSchema.extend({
     systemKind: z.literal("operation"),
     operationKind: timelineGenericSystemOperationKindSchema,
+    reasoningId: z.string().optional(),
     completedAt: z.number().nullable(),
   });
 
@@ -267,8 +261,14 @@ const timelineRowPresentationField = {
 };
 
 export const timelineOutputPreviewSchema = z.object({
+  experimental_fullOutputAvailability: z.enum([
+    "available",
+    "detail-limit",
+    "retention-expired",
+  ]),
   totalChars: z.number().int().nonnegative(),
 });
+export type TimelineOutputPreview = z.infer<typeof timelineOutputPreviewSchema>;
 
 export const timelineCommandWorkRowSchema = timelineWorkRowBaseSchema.extend({
   workKind: z.literal("command"),
@@ -349,6 +349,21 @@ export const timelineImageViewWorkRowSchema = timelineWorkRowBaseSchema.extend({
 });
 export type TimelineImageViewWorkRow = z.infer<
   typeof timelineImageViewWorkRowSchema
+>;
+
+export const timelineImageGenerationWorkRowSchema =
+  timelineWorkRowBaseSchema.extend({
+    workKind: z.literal("image-generation"),
+    callId: z.string(),
+    prompt: z.string().nullable(),
+    path: z.string().nullable(),
+    error: z.string().nullable(),
+    transparentBackground: z.boolean(),
+    completedAt: z.number().nullable(),
+    ...timelineRowPresentationField,
+  });
+export type TimelineImageGenerationWorkRow = z.infer<
+  typeof timelineImageGenerationWorkRowSchema
 >;
 
 export const timelineFileReadWorkRowSchema = timelineWorkRowBaseSchema.extend({
@@ -463,6 +478,25 @@ export type TimelineApprovalWorkRow = z.infer<
   typeof timelineApprovalWorkRowSchema
 >;
 
+export const timelineFormLifecycleValues = [
+  "pending",
+  "submitted",
+  "cancelled",
+] as const;
+
+export const timelineFormWorkRowSchema = timelineWorkRowBaseSchema.extend({
+  workKind: z.literal("form"),
+  interactionId: z.string(),
+  pluginId: z.string(),
+  rendererId: z.string(),
+  title: z.string(),
+  lifecycle: z.enum(timelineFormLifecycleValues),
+  statusReason: z.string().nullable(),
+  presentation: timelineRowPresentationSchema,
+  payload: jsonValueSchema.nullable(),
+});
+export type TimelineFormWorkRow = z.infer<typeof timelineFormWorkRowSchema>;
+
 export const timelineQuestionWorkRowSchema = timelineWorkRowBaseSchema.extend({
   workKind: z.literal("question"),
   interactionId: z.string(),
@@ -529,6 +563,7 @@ export type TimelineWorkRow =
   | TimelineFileChangeWorkRow
   | TimelineWebSearchWorkRow
   | TimelineWebFetchWorkRow
+  | TimelineImageGenerationWorkRow
   | TimelineImageViewWorkRow
   | TimelineFileReadWorkRow
   | TimelineSearchWorkRow
@@ -536,6 +571,7 @@ export type TimelineWorkRow =
   | TimelineExtensionWorkRow
   | TimelineApprovalWorkRow
   | TimelineQuestionWorkRow
+  | TimelineFormWorkRow
   | TimelineDelegationWorkRow
   | TimelineWorkflowWorkRow;
 
@@ -545,6 +581,7 @@ export const timelineWorkRowSchema: z.ZodType<TimelineWorkRow> = z.union([
   timelineFileChangeWorkRowSchema,
   timelineWebSearchWorkRowSchema,
   timelineWebFetchWorkRowSchema,
+  timelineImageGenerationWorkRowSchema,
   timelineImageViewWorkRowSchema,
   timelineFileReadWorkRowSchema,
   timelineSearchWorkRowSchema,
@@ -552,6 +589,7 @@ export const timelineWorkRowSchema: z.ZodType<TimelineWorkRow> = z.union([
   timelineExtensionWorkRowSchema,
   timelineApprovalWorkRowSchema,
   timelineQuestionWorkRowSchema,
+  timelineFormWorkRowSchema,
   timelineDelegationWorkRowSchema,
   timelineWorkflowWorkRowSchema,
 ]);

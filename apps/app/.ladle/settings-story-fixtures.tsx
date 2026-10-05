@@ -11,8 +11,10 @@ import type { ProviderCliStatusResponse } from "@bb/host-daemon-contract";
 import {
   hostProviderCliStatusQueryKey,
   hostsQueryKey,
+  machineEnvironmentQueryKey,
   pluginListQueryKey,
   pluginMarketplacesQueryKey,
+  serverMoveStatusQueryKey,
   sidebarNavigationQueryKey,
   systemConfigQueryKey,
   systemProvidersQueryKey,
@@ -24,6 +26,11 @@ import {
 } from "../src/hooks/useUpdateInventory";
 import { createAppQueryClient } from "../src/lib/query-client";
 import { makeSystemConfig } from "../src/test/fixtures/system-config";
+import { systemMachineProvidersQueryKey } from "../src/hooks/queries/query-keys";
+import {
+  MANUAL_MACHINE_PROVIDER,
+  MODAL_MACHINE_PROVIDER,
+} from "./machine-story-fixtures";
 import { makeProviderInfo } from "@bb/test-helpers/domain-fixtures";
 import { getSettingsRoutePath } from "../src/lib/route-paths";
 import {
@@ -37,14 +44,32 @@ import {
   HOST_IDS,
   HOST_NAMES,
   PROJECT_IDS,
+  PROJECT_NAMES,
   STORY_PROJECT_SOURCES,
   makeHost,
   makeProject,
+  makeThreadListEntry,
   makeProviderCliStatus,
 } from "./story-fixtures";
 import codexLogoUrl from "../../../plugins/provider-codex/icons/codex.svg";
 import claudeCodeLogoUrl from "../../../plugins/provider-claude-code/icons/claude-code.svg";
 import cursorLogoUrl from "../../../plugins/provider-acp/icons/cursor.svg";
+
+const STORY_GIT_HEALTH = {
+  status: "logged in" as const,
+  statusMessage: "gh is authenticated",
+};
+
+const STORY_GLOBAL_VARIABLES = [
+  { name: "ANTHROPIC_API_KEY", value: null, secret: true as const, note: null },
+  {
+    name: "DATABASE_URL",
+    value: null,
+    secret: true as const,
+    note: "Points at the staging replica, not production.",
+  },
+  { name: "SENTRY_DSN", value: null, secret: true as const, note: null },
+];
 
 const SETTINGS_STORY_NOW = Date.parse("2026-08-19T08:00:00.000Z");
 
@@ -111,7 +136,31 @@ const remoteProviderStatus = {
 
 const project = makeProject({
   id: PROJECT_IDS.bb,
+  gitRemoteUrl: "git@github.com:get-bb/bb.git",
   sources: [...STORY_PROJECT_SOURCES],
+});
+const pierreProject = makeProject({
+  id: PROJECT_IDS.pierre,
+  name: PROJECT_NAMES.pierre,
+  gitRemoteUrl: "https://github.com/get-bb/pierre.git",
+  sources: [
+    {
+      id: "src_pierre_remote",
+      projectId: PROJECT_IDS.pierre,
+      type: "local_path",
+      hostId: HOST_IDS.remote,
+      path: "/home/michael/pierre",
+      isDefault: true,
+      createdAt: 0,
+      updatedAt: 0,
+    },
+  ],
+});
+const ingestProject = makeProject({
+  id: PROJECT_IDS.ingest,
+  name: PROJECT_NAMES.ingest,
+  gitRemoteUrl: null,
+  sources: [],
 });
 const personalProject = makeProject({
   id: PERSONAL_PROJECT_ID,
@@ -122,7 +171,28 @@ const personalProject = makeProject({
 
 const sidebarNavigation = {
   sections: [],
-  projects: [{ ...project, defaultExecutionOptions: null, threads: [] }],
+  projects: [
+    {
+      ...project,
+      defaultExecutionOptions: null,
+      threads: [
+        makeThreadListEntry({ id: "thr_bb_1", projectId: PROJECT_IDS.bb }),
+        makeThreadListEntry({ id: "thr_bb_2", projectId: PROJECT_IDS.bb }),
+        makeThreadListEntry({ id: "thr_bb_3", projectId: PROJECT_IDS.bb }),
+      ],
+    },
+    {
+      ...pierreProject,
+      defaultExecutionOptions: null,
+      threads: [
+        makeThreadListEntry({
+          id: "thr_pierre_1",
+          projectId: PROJECT_IDS.pierre,
+        }),
+      ],
+    },
+    { ...ingestProject, defaultExecutionOptions: null, threads: [] },
+  ],
   personalProject: {
     ...personalProject,
     defaultExecutionOptions: null,
@@ -198,6 +268,7 @@ export function SettingsUpdatesStory() {
       <MachineUpdatesSection
         machine={settingsUpdateMachine}
         isThisMachine={false}
+        showServerBadge={false}
       >
         <BbAppUpdateRows
           systemVersion={systemVersion}
@@ -231,11 +302,29 @@ function createSettingsStoryQueryClient() {
     },
   });
   queryClient.setQueryData(hostsQueryKey(), SETTINGS_STORY_HOSTS);
+  queryClient.setQueryData(hostsQueryKey(true), SETTINGS_STORY_HOSTS);
   queryClient.setQueryData(systemConfigQueryKey(), systemConfig);
   queryClient.setQueryData(systemProvidersQueryKey(), systemProviders);
   queryClient.setQueryData(systemVersionQueryKey(), systemVersion);
   queryClient.setQueryData(sidebarNavigationQueryKey(), sidebarNavigation);
   queryClient.setQueryData(pluginMarketplacesQueryKey(), []);
+  queryClient.setQueryData(machineEnvironmentQueryKey(null), {
+    builtInGit: STORY_GIT_HEALTH,
+    variables: STORY_GLOBAL_VARIABLES,
+    inheritedVariables: [],
+  });
+  queryClient.setQueryData(machineEnvironmentQueryKey(PROJECT_IDS.bb), {
+    builtInGit: STORY_GIT_HEALTH,
+    variables: [
+      {
+        name: "DATABASE_URL",
+        value: null,
+        secret: true,
+        note: "Points at the bb sandbox.",
+      },
+    ],
+    inheritedVariables: STORY_GLOBAL_VARIABLES,
+  });
   queryClient.setQueryData(
     hostProviderCliStatusQueryKey(HOST_IDS.local),
     localProviderStatus,
@@ -245,6 +334,14 @@ function createSettingsStoryQueryClient() {
     remoteProviderStatus,
   );
   queryClient.setQueryData(pluginListQueryKey(true), []);
+  queryClient.setQueryData(serverMoveStatusQueryKey(), {
+    move: null,
+    lastMove: null,
+  });
+  queryClient.setQueryData(systemMachineProvidersQueryKey(), [
+    MANUAL_MACHINE_PROVIDER,
+    MODAL_MACHINE_PROVIDER,
+  ]);
   return queryClient;
 }
 

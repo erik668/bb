@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Button } from "@bb/shared-ui/button";
 import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import {
@@ -22,6 +23,10 @@ import {
   useAudioInputDevicePreference,
   type PreferredAudioInputDeviceId,
 } from "@/lib/audio-input-device-preference";
+import {
+  SETTINGS_DROPDOWN_CONTENT_CLASS,
+  SETTINGS_DROPDOWN_TRIGGER_CLASS,
+} from "./settings-dropdown";
 
 interface VoiceInputSettingsSectionContentProps {
   devices: readonly AudioInputDeviceOption[];
@@ -33,10 +38,6 @@ interface VoiceInputSettingsSectionContentProps {
   preferredDeviceId: PreferredAudioInputDeviceId;
 }
 
-const SETTINGS_DROPDOWN_TRIGGER_CLASS =
-  "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs sm:w-44";
-const SETTINGS_DROPDOWN_CONTENT_CLASS =
-  "min-w-[var(--radix-dropdown-menu-trigger-width)]";
 const SYSTEM_DEFAULT_MICROPHONE_LABEL = "System default";
 const MICROPHONE_SETTING_LABEL = "Microphone";
 
@@ -57,7 +58,7 @@ function selectedMicrophoneLabel({
   }
   return (
     devices.find((device) => device.deviceId === preferredDeviceId)?.label ??
-    "Unavailable microphone"
+    SYSTEM_DEFAULT_MICROPHONE_LABEL
   );
 }
 
@@ -67,13 +68,15 @@ function microphoneSettingDescription({
   isLoading,
   isSupported,
   preferredDeviceId,
+  onRequestAccess,
 }: {
   devices: readonly AudioInputDeviceOption[];
+  onRequestAccess: () => void;
   errorMessage: string | null;
   isLoading: boolean;
   isSupported: boolean;
   preferredDeviceId: PreferredAudioInputDeviceId;
-}): string {
+}): ReactNode {
   if (!isSupported) {
     return "This browser does not expose microphone devices.";
   }
@@ -83,14 +86,25 @@ function microphoneSettingDescription({
   if (errorMessage !== null) {
     return errorMessage;
   }
+  if (devices.length === 0) {
+    return (
+      <>
+        <button
+          type="button"
+          className="rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          onClick={onRequestAccess}
+        >
+          Check microphone access
+        </button>{" "}
+        to see available devices.
+      </>
+    );
+  }
   if (
     preferredDeviceId !== null &&
     devices.every((device) => device.deviceId !== preferredDeviceId)
   ) {
-    return "Selected microphone is unavailable.";
-  }
-  if (devices.length === 0) {
-    return "No microphones found.";
+    return "Preferred microphone is disconnected. Using the system default until it reconnects.";
   }
   return "Used for prompt voice input.";
 }
@@ -140,6 +154,7 @@ export function VoiceInputSettingsSectionContent({
       <SettingsWithControl
         label={MICROPHONE_SETTING_LABEL}
         description={microphoneSettingDescription({
+          onRequestAccess: () => onRefresh(true),
           devices,
           errorMessage,
           isLoading,

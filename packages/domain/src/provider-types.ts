@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { completedTurnDisplaySchema } from "./completed-turn-display.js";
 import {
   permissionModeSchema,
   promptMentionCommandTriggerSchema,
   reasoningLevelSchema,
+  serviceTierSchema,
 } from "./shared-types.js";
 import { extensionKindSchema } from "./provider-extension-kind.js";
 import { threadEventItemPresentationSchema } from "./item-presentation.js";
@@ -13,6 +15,13 @@ export const modelReasoningEffortSchema = z.object({
 });
 export type ModelReasoningEffort = z.infer<typeof modelReasoningEffortSchema>;
 
+export const modelServiceTierSchema = z.object({
+  id: serviceTierSchema,
+  label: z.string().min(1).optional(),
+  description: z.string().min(1).optional(),
+});
+export type ModelServiceTier = z.infer<typeof modelServiceTierSchema>;
+
 export const availableModelSchema = z.object({
   id: z.string(),
   model: z.string(),
@@ -21,6 +30,7 @@ export const availableModelSchema = z.object({
   description: z.string(),
   supportedReasoningEfforts: z.array(modelReasoningEffortSchema),
   defaultReasoningEffort: reasoningLevelSchema,
+  supportedServiceTiers: z.array(modelServiceTierSchema).optional(),
   isDefault: z.boolean(),
 });
 export type AvailableModel = z.infer<typeof availableModelSchema>;
@@ -82,7 +92,6 @@ export const providerStringsSchema = z.object({
     .object({ light: z.string().min(1), dark: z.string().min(1) })
     .optional(),
 });
-export type ProviderStrings = z.infer<typeof providerStringsSchema>;
 
 export const providerOptionDescriptorSchema = z.object({
   id: z.string().min(1),
@@ -120,6 +129,7 @@ export const providerInfoSchema = z.object({
   }),
   capabilities: providerCapabilitiesSchema,
   composerActions: z.array(providerComposerActionSchema),
+  completedTurnDisplay: completedTurnDisplaySchema,
   available: z.boolean(),
   strings: providerStringsSchema.optional(),
   serviceTiers: z.array(providerOptionDescriptorSchema).optional(),

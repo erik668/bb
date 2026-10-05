@@ -44,7 +44,7 @@ test("release target uses the declared platform and architecture and rejects mis
     { arch: 999 },
     { arch: "arm64" },
     { electronPlatformName: undefined },
-    { electronPlatformName: "win32" },
+    { electronPlatformName: "unknown" },
   ])
     await assert.rejects(resolveAfterPackTarget({ ...context, ...changed }), {
       code: "PACKAGING_TARGET_INVALID",
@@ -64,8 +64,18 @@ test("release target uses the declared platform and architecture and rejects mis
   });
   assert.equal(linux.executable, join(context.appOutDir, "bb-nightly"));
   assert.equal(linux.arch, "x64");
+  const windows = await resolveAfterPackTarget({
+    ...context,
+    arch: Arch.x64,
+    electronPlatformName: "win32",
+    packager: { appInfo: { productFilename: "BB Test" } },
+  });
+  assert.equal(windows.executable, join(context.appOutDir, "BB Test.exe"));
+  assert.equal(windows.platform, "win32");
+  assert.equal(windows.arch, "x64");
   assert.equal(await configuredDesktopArchitecture("darwin"), "arm64");
   assert.equal(await configuredDesktopArchitecture("linux"), "x64");
+  assert.equal(await configuredDesktopArchitecture("win32"), "x64");
   await assert.rejects(configuredDesktopArchitecture("unknown"), {
     code: "PACKAGING_TARGET_INVALID",
   });

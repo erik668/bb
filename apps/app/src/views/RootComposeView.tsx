@@ -1,17 +1,21 @@
+import { appendQuoteAndAttachmentsToDraft } from "@bb/client-core";
+import type { ComposerAttachment } from "@get-bb/plugin-sdk";
+import { createCoreComposerActions } from "@/lib/plugin-composer-handle";
+
+import {
+  readThreadCreationPlacement,
+  DEFAULT_THREAD_CREATION_PLACEMENT,
+} from "@/lib/thread-creation-placement";
+import { useRootComposePlacement } from "@/lib/root-compose-selection";
+import { useInitialPromptDraft } from "@/components/promptbox/mentions/initial-prompt-draft";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { useQueryClient } from "@tanstack/react-query";
-import {
-  findCachedProviderInfo,
-  useSystemProviders,
-} from "@/hooks/queries/system-queries";
+import { useSystemProviders } from "@/hooks/queries/system-queries";
 import {
   findLocalPathProjectSourceForHost,
   type EnvironmentStatus,
   type Host,
   type ProviderInfo,
-  type ReasoningLevel,
-  type ServiceTier,
   type ThreadListEntry,
 } from "@bb/domain";
 import type {
@@ -23,15 +27,19 @@ import {
   type NewThreadComposerState,
   type NewThreadComposerSubmission,
 } from "@/components/promptbox/NewThreadComposer";
-import { ProviderCliVersionBanner } from "@/components/promptbox/banner/ProviderCliVersionBanner";
+import {
+  ProviderCliBanner,
+  providerCliBlockedReason,
+} from "@/components/promptbox/banner/ProviderCliBanner";
 import {
   buildProviderCliIssue,
   hasProviderCliAction,
   useProviderCliInstallRunner,
 } from "@/components/provider-cli/provider-cli-install";
 import { providerCliJobKey } from "@/components/provider-cli/provider-cli-install-store";
+import { PROJECT_CHECKOUT_ENVIRONMENT_PROVIDER_ID } from "@bb/client-core";
 import {
-  encodeHostValue,
+  encodeProviderValue,
   encodeReuseValue,
 } from "@/components/pickers/environment-picker-value";
 import {
@@ -59,7 +67,7 @@ import { Button } from "@bb/shared-ui/button";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
 import { COARSE_POINTER_COMPACT_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
-import { PluginIcon } from "@/components/plugin/PluginIcon";
+import { PluginItemIcon } from "@/components/plugin/PluginIcon";
 import type { FileOpenerOverride } from "@/lib/plugin-slot-resolvers";
 import { usePluginNewThreadPanelActions } from "@/components/plugin/PluginPanelActions";
 import { usePluginSlots } from "@/lib/plugin-slots";
@@ -81,16 +89,6 @@ import {
 import { PluginComposerHostProvider } from "@/components/plugin/plugin-composer-host";
 import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
 import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
-import type { PromptDraftAttachment } from "@bb/client-core";
-import {
-  buildForkThreadRequest,
-  FORK_THREAD_CREATE_SEED_LOCATION_STATE_KEY,
-  type ForkThreadCreateSeed,
-} from "@bb/client-core";
-import {
-  buildThreadHandoffPromptDraft,
-  readThreadHandoffCreateSeedFromLocationState,
-} from "@bb/client-core";
 import { useNavigateToThreadAfterCreatePreference } from "@/lib/root-compose-create-preference";
 import {
   readInitialPromptFromSearch,
@@ -145,7 +143,6 @@ import {
   ROOT_COMPOSE_PINNED_PANEL_TOGGLE_POSITION_CLASS,
   RootComposeSecondaryContent,
 } from "./RootComposeSecondaryContent";
-import { resolveComposeHostId } from "./root-compose-environment-selection";
 import { RootComposeMobileRecents } from "./RootComposeMobileRecents";
 import { RootComposeEmptyWelcome } from "./RootComposeEmptyWelcome";
 import {
@@ -164,7 +161,6 @@ import {
 } from "@/components/thread/terminal/useThreadTerminalController";
 import {
   buildTerminalSyncedSecondaryFileTabs,
-  getRetainedTerminalTabId,
   syncTerminalTabsInFixedPanelState,
 } from "@/components/secondary-panel/terminalPanelTabs";
 import {
@@ -180,7 +176,14 @@ import {
   useAppCommandHandler,
   useAppCommandShortcut,
 } from "@/components/commands/AppCommandProvider";
-import { useOptionalPaneContext } from "./thread-detail/PaneContext";
+import {
+  useOptionalPaneContext,
+  usePaneContext,
+} from "./thread-detail/PaneContext";
+import {
+  PluginDetailPanelContext,
+  usePluginDetailPanelState,
+} from "@/components/plugin/plugin-detail-navigation";
 import { RootComposePanelCommandHandlers } from "./RootComposePanelCommandHandlers";
 import {
   ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
@@ -198,7 +201,7 @@ interface LegacyProjectComposeRedirectProps {
   projectId: string;
 }
 
-export function readSectionIdFromLocationState(state: unknown): string | null {
+function readSectionIdFromLocationState(state: unknown): string | null {
   if (typeof state !== "object" || state === null) {
     return null;
   }
@@ -243,11 +246,6 @@ interface BuildMobileRecentThreadsArgs {
   sidebarNavigation: SidebarBootstrapResponse | undefined;
 }
 
-interface ShouldNavigateAfterThreadCreateArgs {
-  isForkDraft: boolean;
-  navigateToThreadAfterCreate: boolean;
-}
-
 interface CanCreateRootComposeTerminalArgs {
   connectedHostIds: ReadonlySet<string>;
   environmentHostId: string | null | undefined;
@@ -274,18 +272,6 @@ export function RootComposeRightPanelToggle({
   const rightPanelLabel = isOpen ? "Hide right panel" : "Show right panel";
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
 
-  useEffect(() => {
-    if (typeof window.requestIdleCallback === "function") {
-      const idleCallback = window.requestIdleCallback(
-        preloadThreadSecondaryPanel,
-        { timeout: 1000 },
-      );
-      return () => window.cancelIdleCallback(idleCallback);
-    }
-    const timeout = window.setTimeout(preloadThreadSecondaryPanel, 1000);
-    return () => window.clearTimeout(timeout);
-  }, []);
-
   return (
     <Button
       type="button"
@@ -297,6 +283,7 @@ export function RootComposeRightPanelToggle({
       }
       aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
       aria-expanded={isOpen}
+      onPointerEnter={preloadThreadSecondaryPanel}
       onFocus={preloadThreadSecondaryPanel}
       onPointerDown={preloadThreadSecondaryPanel}
       onClick={onToggle}
@@ -320,87 +307,34 @@ function readReuseEnvironmentIdFromLocationState(
   return null;
 }
 
-export function shouldNavigateAfterThreadCreate({
-  isForkDraft,
-  navigateToThreadAfterCreate,
-}: ShouldNavigateAfterThreadCreateArgs): boolean {
-  return isForkDraft || navigateToThreadAfterCreate;
+export function readNewEnvironmentHostIdFromLocationState(
+  state: unknown,
+): string | null {
+  if (typeof state !== "object" || state === null) return null;
+  if (!("newEnvironmentHostId" in state)) return null;
+  const hostId = state.newEnvironmentHostId;
+  return typeof hostId === "string" && hostId.trim().length > 0
+    ? hostId.trim()
+    : null;
 }
 
-function readForkThreadCreateSeedFromLocationState(
+export function readRootComposeEnvironmentTargetFromLocationState(
   state: unknown,
-): ForkThreadCreateSeed | null {
-  if (!state || typeof state !== "object") return null;
-  const candidate = (state as Record<string, unknown>)[
-    FORK_THREAD_CREATE_SEED_LOCATION_STATE_KEY
-  ];
-  if (!candidate || typeof candidate !== "object") return null;
-  const value = candidate as Record<string, unknown>;
-  if (
-    typeof value.environmentId !== "string" ||
-    value.environmentId.length === 0 ||
-    typeof value.model !== "string" ||
-    value.model.length === 0 ||
-    typeof value.permissionMode !== "string" ||
-    value.permissionMode.length === 0 ||
-    typeof value.projectId !== "string" ||
-    value.projectId.length === 0 ||
-    typeof value.providerId !== "string" ||
-    value.providerId.length === 0 ||
-    typeof value.reasoningLevel !== "string" ||
-    value.reasoningLevel.length === 0 ||
-    typeof value.sourceThreadId !== "string" ||
-    value.sourceThreadId.length === 0 ||
-    typeof value.sourceThreadTitle !== "string" ||
-    value.sourceThreadTitle.trim().length === 0
-  ) {
-    return null;
-  }
-  const seedPermissionMode =
-    value.permissionMode === "workspace-write"
-      ? "accept-edits"
-      : value.permissionMode === "accept-edits" ||
-          value.permissionMode === "auto" ||
-          value.permissionMode === "full"
-        ? value.permissionMode
-        : null;
-  if (seedPermissionMode === null) {
-    return null;
-  }
-  if (
-    value.serviceTier !== undefined &&
-    typeof value.serviceTier !== "string"
-  ) {
-    return null;
-  }
-  if (
-    value.sourceSeqEnd !== undefined &&
-    (typeof value.sourceSeqEnd !== "number" ||
-      !Number.isInteger(value.sourceSeqEnd) ||
-      value.sourceSeqEnd < 0)
-  ) {
-    return null;
-  }
-  return {
-    environmentId: value.environmentId,
-    model: value.model,
-    permissionMode: seedPermissionMode,
-    projectId: value.projectId,
-    providerId: value.providerId,
-    reasoningLevel: value.reasoningLevel as ReasoningLevel,
-    serviceTier: value.serviceTier as ServiceTier | undefined,
-    sourceSeqEnd: value.sourceSeqEnd as number | undefined,
-    sourceThreadId: value.sourceThreadId,
-    sourceThreadTitle: value.sourceThreadTitle.trim(),
-  };
+):
+  | { kind: "reuse"; environmentId: string }
+  | { kind: "host"; hostId: string }
+  | null {
+  const environmentId = readReuseEnvironmentIdFromLocationState(state);
+  if (environmentId !== null) return { kind: "reuse", environmentId };
+  const hostId = readNewEnvironmentHostIdFromLocationState(state);
+  return hostId === null ? null : { kind: "host", hostId };
 }
 
 export function hasSingleUseRootComposeTargetState(state: unknown): boolean {
   return (
+    readThreadCreationPlacement(state) !== null ||
     readRootComposeSectionTargetFromLocationState(state) !== null ||
-    readReuseEnvironmentIdFromLocationState(state) !== null ||
-    readForkThreadCreateSeedFromLocationState(state) !== null ||
-    readThreadHandoffCreateSeedFromLocationState(state) !== null
+    readRootComposeEnvironmentTargetFromLocationState(state) !== null
   );
 }
 
@@ -487,28 +421,33 @@ export function LegacyProjectComposeRedirect({
   const location = useLocation();
   const navigate = useNavigate();
   const setRootComposeProjectId = useSetRootComposeProjectId();
+  const [, setPlacement] = useRootComposePlacement();
 
   useEffect(() => {
     setRootComposeProjectId(projectId);
+    setPlacement(DEFAULT_THREAD_CREATION_PLACEMENT);
     navigate(getRootComposeRoutePath(), {
       replace: true,
       state: location.state,
     });
-  }, [location.state, navigate, projectId, setRootComposeProjectId]);
+  }, [
+    location.state,
+    navigate,
+    projectId,
+    setRootComposeProjectId,
+    setPlacement,
+  ]);
 
   return <RouteLoadingSkeleton isBoundedPane={false} />;
 }
 
 export function RootComposeView() {
+  const { navigateInPane } = usePaneContext();
   const [rootComposeProjectId, setRootComposeProjectId] =
     useRootComposeProjectId();
   const location = useLocation();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const createThread = useCreateThread();
-  const [rootComposeSectionId, setRootComposeSectionId] = useState<
-    string | null
-  >(() => readSectionIdFromLocationState(location.state));
+  const [placement, setPlacement] = useRootComposePlacement();
   const [lastCreatedThreadId, setLastCreatedThreadId] = useState<string | null>(
     null,
   );
@@ -517,106 +456,45 @@ export function RootComposeView() {
   );
   const [navigateToThreadAfterCreate] =
     useNavigateToThreadAfterCreatePreference();
-  const [forkSeed, setForkSeed] = useState<ForkThreadCreateSeed | null>(() =>
-    readForkThreadCreateSeedFromLocationState(location.state),
-  );
 
-  const handleProjectChange = useCallback(
-    (projectId: string) => {
-      setForkSeed(null);
-      setRootComposeProjectId(projectId);
-    },
-    [setRootComposeProjectId],
-  );
   const handleSubmit = useCallback(
     async (request: NewThreadComposerSubmission) => {
-      const shouldNavigateToCreatedThread = shouldNavigateAfterThreadCreate({
-        isForkDraft: forkSeed !== null,
-        navigateToThreadAfterCreate,
-      });
       const { sendAt, ...requestFields } = request;
-      const createRequest =
-        forkSeed === null
-          ? {
-              ...requestFields,
-              ...(rootComposeSectionId
-                ? { sectionId: rootComposeSectionId }
-                : {}),
-            }
-          : buildForkThreadRequest({
-              ...forkSeed,
-              input: request.input,
-              model: request.model,
-              permissionMode: request.permissionMode,
-              providerSupportsFork:
-                findCachedProviderInfo(queryClient, forkSeed.providerId)
-                  ?.capabilities.supportsFork ?? false,
-              reasoningLevel: request.reasoningLevel,
-              serviceTier: request.serviceTier,
-            });
-      if (createRequest === null) return;
-      const thread = await createThread.mutateAsync(
-        sendAt === undefined ? createRequest : { ...createRequest, sendAt },
-      );
+      const thread = await createThread.mutateAsync({
+        ...requestFields,
+        ...placement,
+        ...(sendAt === undefined ? {} : { sendAt }),
+      });
       setLastCreatedThreadId(thread.id);
-      setForkSeed(null);
-      setRootComposeSectionId(null);
-      if (shouldNavigateToCreatedThread) {
-        navigate(
-          getThreadRoutePath({
-            projectId: thread.projectId,
-            threadId: thread.id,
-          }),
-        );
+      setPlacement(DEFAULT_THREAD_CREATION_PLACEMENT);
+      if (navigateToThreadAfterCreate) {
+        navigateInPane({ projectId: thread.projectId, threadId: thread.id });
       }
     },
     [
       createThread,
-      forkSeed,
-      queryClient,
-      navigate,
+      navigateInPane,
       navigateToThreadAfterCreate,
-      rootComposeSectionId,
+      placement,
+      setPlacement,
     ],
-  );
-  const composerSeed = useMemo(
-    () =>
-      forkSeed === null
-        ? undefined
-        : {
-            providerId: forkSeed.providerId,
-            model: forkSeed.model,
-            reasoningLevel: forkSeed.reasoningLevel,
-            serviceTier: forkSeed.serviceTier,
-            permissionMode: forkSeed.permissionMode,
-            environment: {
-              type: "reuse" as const,
-              environmentId: forkSeed.environmentId,
-            },
-          },
-    [forkSeed],
   );
 
   return (
     <NewThreadComposer
       projectId={rootComposeProjectId}
-      onProjectChange={handleProjectChange}
+      onProjectChange={setRootComposeProjectId}
       draftStorage={{ kind: "new-thread" }}
       selectionScope="new-thread"
-      seed={composerSeed}
-      resetKey={forkSeed?.sourceThreadId ?? null}
-      preferReadyProviderWhenUnset={forkSeed === null}
+      preferReadyProviderWhenUnset
       onSubmit={handleSubmit}
     >
       {(composer) => (
         <RootComposeSurface
           composer={composer}
-          forkSeed={forkSeed}
           lastCreatedThreadId={lastCreatedThreadId}
           rootComposeProjectId={rootComposeProjectId}
-          setForkSeed={setForkSeed}
           setRootComposeProjectId={setRootComposeProjectId}
-          setRootComposeSectionId={setRootComposeSectionId}
           setStartedComposing={setStartedComposing}
           startedComposing={startedComposing}
         />
@@ -627,31 +505,30 @@ export function RootComposeView() {
 
 interface RootComposeSurfaceProps {
   composer: NewThreadComposerState;
-  forkSeed: ForkThreadCreateSeed | null;
   lastCreatedThreadId: string | null;
   rootComposeProjectId: string;
-  setForkSeed: (seed: ForkThreadCreateSeed | null) => void;
   setRootComposeProjectId: (projectId: string) => void;
-  setRootComposeSectionId: (sectionId: string | null) => void;
   setStartedComposing: (started: boolean) => void;
   startedComposing: boolean;
 }
 
 function RootComposeSurface({
   composer,
-  forkSeed,
   lastCreatedThreadId,
   rootComposeProjectId,
-  setForkSeed,
   setRootComposeProjectId,
-  setRootComposeSectionId,
   setStartedComposing,
   startedComposing,
 }: RootComposeSurfaceProps) {
   const paneContext = useOptionalPaneContext();
   const isFocusedPane = paneContext?.isFocused ?? true;
+  const pluginDetails = usePluginDetailPanelState(
+    ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
+    isFocusedPane,
+  );
   const location = useLocation();
   const navigate = useNavigate();
+  const [, setPlacement] = useRootComposePlacement();
   const isPointerCoarse = usePointerCoarse();
   const quickCreateProject = useQuickCreateProjectController();
   const {
@@ -669,15 +546,14 @@ function RootComposeSurface({
     panelThreadId: rootPanelThreadId,
     selectedProviderId,
     promptDraft,
-    promptBoxRef,
+    focusPromptBox,
     pluginComposerHost: sharedPluginComposerHost,
     textEffects: promptTextEffects,
     isSubmitting,
     seedEnvironmentSelectionValue,
+    hostSelectionReady,
+    selectHostForNewEnvironment,
     setEnvironmentSelectionValue,
-    setProviderModelReasoning,
-    setPermissionMode,
-    setServiceTier,
     renderPromptBox,
   } = composer;
   const rootPanelEnvironmentId =
@@ -700,27 +576,36 @@ function RootComposeSurface({
     () =>
       subscribeComposerFocusRequests(promptDraft.storageKey, () => {
         setStartedComposing(true);
-        window.requestAnimationFrame(() => promptBoxRef.current?.focusEnd());
+        window.requestAnimationFrame(focusPromptBox);
       }),
-    [promptBoxRef, promptDraft.storageKey, setStartedComposing],
+    [focusPromptBox, promptDraft.storageKey, setStartedComposing],
+  );
+  const composerActions = useMemo(
+    () => createCoreComposerActions(pluginComposerHost),
+    [pluginComposerHost],
   );
   const handleRootPanelSelectionAddToChat = useCallback(
-    (text: string, attachments?: readonly PromptDraftAttachment[]) => {
-      promptDraft.addQuote(text, attachments);
-      setStartedComposing(true);
-      window.requestAnimationFrame(() => promptBoxRef.current?.focusEnd());
+    (text: string, attachments?: readonly ComposerAttachment[]) => {
+      composerActions.replace((current) =>
+        appendQuoteAndAttachmentsToDraft(current, text, attachments ?? []),
+      );
+      composerActions.focus();
     },
-    [promptBoxRef, promptDraft, setStartedComposing],
+    [composerActions],
   );
 
-  const setPromptDraft = promptDraft.setDraft;
+  const searchInitialPrompt = readInitialPromptFromSearch(location.search);
+  const stateInitialPrompt = readInitialPromptFromLocationState(location.state);
+  const searchInitialDraft = useInitialPromptDraft(searchInitialPrompt);
+  const stateInitialDraft = useInitialPromptDraft(stateInitialPrompt);
+  const setPromptDraft = composerActions.restoreDraft;
   const restorePromptDraftIfEmpty = promptDraft.restoreIfEmpty;
 
   useEffect(() => {
     const initialPrompt = readInitialPromptFromSearch(location.search);
-    if (initialPrompt === null) return;
+    if (initialPrompt === null || searchInitialDraft === undefined) return;
     setStartedComposing(true);
-    setPromptDraft({ text: initialPrompt, mentions: [], attachments: [] });
+    setPromptDraft(searchInitialDraft);
     navigate(
       getRootComposeRoutePath() + stripInitialPromptFromSearch(location.search),
       { replace: true, state: location.state },
@@ -731,75 +616,64 @@ function RootComposeSurface({
     navigate,
     setPromptDraft,
     setStartedComposing,
+    searchInitialDraft,
   ]);
   useEffect(() => {
+    if (stateInitialPrompt !== null && stateInitialDraft === undefined) return;
     const sectionTarget = readRootComposeSectionTargetFromLocationState(
       location.state,
     );
-    const reuseEnvironmentId = readReuseEnvironmentIdFromLocationState(
-      location.state,
-    );
-    const nextForkSeed = readForkThreadCreateSeedFromLocationState(
-      location.state,
-    );
-    const nextHandoffSeed = readThreadHandoffCreateSeedFromLocationState(
+    const environmentTarget = readRootComposeEnvironmentTargetFromLocationState(
       location.state,
     );
     if (!hasSingleUseRootComposeTargetState(location.state)) return;
+    if (environmentTarget?.kind === "host" && !hostSelectionReady) {
+      return;
+    }
     if (shouldStartComposingFromLocationState(location.state)) {
       setStartedComposing(true);
     }
-    if (sectionTarget?.kind === "set") {
-      setRootComposeSectionId(sectionTarget.sectionId);
-    } else if (sectionTarget?.kind === "clear") {
-      setRootComposeSectionId(null);
+    const targetPlacement = readThreadCreationPlacement(location.state);
+    if (targetPlacement !== null) {
+      setPlacement(targetPlacement);
+    } else if (sectionTarget !== null || environmentTarget !== null) {
+      setPlacement({
+        sectionId:
+          sectionTarget?.kind === "set" ? sectionTarget.sectionId : null,
+        pinned: false,
+      });
     }
-    if (reuseEnvironmentId !== null) {
-      seedEnvironmentSelectionValue(encodeReuseValue(reuseEnvironmentId));
-    }
-    if (nextForkSeed !== null && nextHandoffSeed === null) {
-      setForkSeed(nextForkSeed);
-      setRootComposeProjectId(nextForkSeed.projectId);
-      setProviderModelReasoning(nextForkSeed);
-      setPermissionMode(nextForkSeed.permissionMode);
-      setServiceTier(nextForkSeed.serviceTier);
+    if (environmentTarget?.kind === "reuse") {
       seedEnvironmentSelectionValue(
-        encodeReuseValue(nextForkSeed.environmentId),
+        encodeReuseValue(environmentTarget.environmentId),
       );
+    } else if (environmentTarget?.kind === "host") {
+      selectHostForNewEnvironment(environmentTarget.hostId);
     }
-    if (nextHandoffSeed !== null) {
-      setStartedComposing(true);
-      setRootComposeProjectId(nextHandoffSeed.projectId);
-      setForkSeed(null);
-      if (nextHandoffSeed.environmentId !== null) {
-        seedEnvironmentSelectionValue(
-          encodeReuseValue(nextHandoffSeed.environmentId),
-        );
-      }
-      setPromptDraft(buildThreadHandoffPromptDraft(nextHandoffSeed));
+    if (shouldStartComposingFromLocationState(location.state)) {
+      window.requestAnimationFrame(focusPromptBox);
     }
     navigate(getRootComposeRoutePath() + location.search, {
       replace: true,
       state: null,
     });
   }, [
+    focusPromptBox,
     location.search,
     location.state,
+    hostSelectionReady,
     navigate,
     seedEnvironmentSelectionValue,
-    setForkSeed,
-    setPermissionMode,
-    setPromptDraft,
-    setProviderModelReasoning,
-    setRootComposeProjectId,
-    setRootComposeSectionId,
-    setServiceTier,
+    selectHostForNewEnvironment,
+    setPlacement,
     setStartedComposing,
+    stateInitialPrompt,
+    stateInitialDraft,
   ]);
   useEffect(() => {
     const initialPrompt = readInitialPromptFromLocationState(location.state);
-    if (initialPrompt === null) return;
-    const nextDraft = { text: initialPrompt, mentions: [], attachments: [] };
+    if (initialPrompt === null || stateInitialDraft === undefined) return;
+    const nextDraft = stateInitialDraft;
     if (shouldReplaceInitialPromptFromLocationState(location.state)) {
       setPromptDraft(nextDraft);
     } else {
@@ -815,6 +689,7 @@ function RootComposeSurface({
     navigate,
     restorePromptDraftIfEmpty,
     setPromptDraft,
+    stateInitialDraft,
   ]);
   const shouldFocusPrompt =
     typeof location.state === "object" &&
@@ -823,11 +698,9 @@ function RootComposeSurface({
     location.state.focusPrompt === true;
   useEffect(() => {
     if (!shouldFocusPrompt || isPointerCoarse) return;
-    const handle = window.requestAnimationFrame(() => {
-      promptBoxRef.current?.focusEnd();
-    });
+    const handle = window.requestAnimationFrame(focusPromptBox);
     return () => window.cancelAnimationFrame(handle);
-  }, [isPointerCoarse, location.key, promptBoxRef, shouldFocusPrompt]);
+  }, [focusPromptBox, isPointerCoarse, location.key, shouldFocusPrompt]);
 
   const mobileRecentThreads = useMemo(
     () => buildMobileRecentThreads({ sidebarNavigation }),
@@ -854,35 +727,38 @@ function RootComposeSurface({
     return namesById;
   }, [sidebarNavigation]);
 
-  const composeHostId = resolveComposeHostId(parsedEnvironment, primaryHostId);
   const providerCliStatus = useHostProviderCliStatus({
-    hostId: composeHostId,
-    enabled: composeHostId !== null,
+    hostId: rootProjectHostId,
+    enabled: rootProjectHostId !== null,
   });
   const { queuedJobKeys, runningJobKey, startInstall } =
     useProviderCliInstallRunner();
   const selectedProviderCliStatus =
     providerCliStatus.data?.[selectedProviderId] ?? null;
-  const isProviderCliVersionBlocked =
-    selectedProviderCliStatus?.versionUnsupported === true;
+  const blockingProviderCliStatus =
+    selectedProviderCliStatus !== null &&
+    (!selectedProviderCliStatus.installed ||
+      selectedProviderCliStatus.versionUnsupported)
+      ? selectedProviderCliStatus
+      : null;
+  const isProviderCliBlocked = blockingProviderCliStatus !== null;
   const selectedProviderCliIssue = useMemo(() => {
-    if (!isProviderCliVersionBlocked || selectedProviderCliStatus === null) {
+    if (blockingProviderCliStatus === null) {
       return null;
     }
     const issue = buildProviderCliIssue({
       provider: selectedProviderId,
-      status: selectedProviderCliStatus,
+      status: blockingProviderCliStatus,
     });
     return issue && hasProviderCliAction(issue) ? issue : null;
-  }, [
-    isProviderCliVersionBlocked,
-    selectedProviderCliStatus,
-    selectedProviderId,
-  ]);
-  const handleUpdateProviderCli = useCallback(() => {
-    if (selectedProviderCliIssue === null || composeHostId === null) return;
-    startInstall({ hostId: composeHostId, issue: selectedProviderCliIssue });
-  }, [selectedProviderCliIssue, composeHostId, startInstall]);
+  }, [blockingProviderCliStatus, selectedProviderId]);
+  const handleRunProviderCliAction = useCallback(() => {
+    if (selectedProviderCliIssue === null || rootProjectHostId === null) return;
+    startInstall({
+      hostId: rootProjectHostId,
+      issue: selectedProviderCliIssue,
+    });
+  }, [selectedProviderCliIssue, rootProjectHostId, startInstall]);
 
   useFixedPanelTabsStorageMaintenance();
   const fixedPanelTabsState = useFixedPanelTabsState(
@@ -893,14 +769,6 @@ function RootComposeSurface({
   const activeFixedSecondaryTab = getActiveFixedSecondaryTab({
     fixedPanelTabsState,
   });
-  const retainedTerminalId = useMemo(
-    () =>
-      getRetainedTerminalTabId({
-        activeTab: activeFixedSecondaryTab,
-        isPanelOpen: isPersistedSecondaryPanelOpen,
-      }),
-    [activeFixedSecondaryTab, isPersistedSecondaryPanelOpen],
-  );
   const activeFixedSecondaryTabId = activeFixedSecondaryTab?.id ?? null;
   const isCompactViewport = useIsCompactViewport();
   const secondaryPanelDrawerVisibility =
@@ -908,9 +776,11 @@ function RootComposeSurface({
       isCompactViewport,
       threadId: ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
     });
-  const isSecondaryPanelOpen = isCompactViewport
+  const isWorkspacePanelOpen = isCompactViewport
     ? secondaryPanelDrawerVisibility.isDrawerVisible
     : isPersistedSecondaryPanelOpen;
+  const isSecondaryPanelOpen =
+    isWorkspacePanelOpen || pluginDetails.activePluginId !== null;
   const touchFixedPanelTabsState = useTouchFixedPanelTabsState(
     ROOT_COMPOSE_FIXED_PANEL_STATE_ID,
     null,
@@ -947,10 +817,7 @@ function RootComposeSurface({
       if (rootPanelEnvironmentId !== null) {
         return null;
       }
-      const selectedHostId = resolveComposeHostId(
-        parsedEnvironment,
-        primaryHostId,
-      );
+      const selectedHostId = rootProjectHostId;
       if (selectedHostId === null) {
         return null;
       }
@@ -970,12 +837,7 @@ function RootComposeSurface({
         hostId: source.hostId,
         cwd: source.path,
       };
-    }, [
-      parsedEnvironment,
-      primaryHostId,
-      projectSources,
-      rootPanelEnvironmentId,
-    ]);
+    }, [projectSources, rootPanelEnvironmentId, rootProjectHostId]);
   const rootPanelTerminalTarget = useMemo<RootComposeTerminalTarget | null>(
     () =>
       rootPanelEnvironmentId !== null
@@ -983,17 +845,16 @@ function RootComposeSurface({
         : rootPanelHostPathTerminalTarget,
     [rootPanelEnvironmentId, rootPanelHostPathTerminalTarget],
   );
-  const {
-    checkThreadStorageFileExists: checkRootThreadStorageFileExists,
-    threadStorageFiles: rootThreadStorageFiles,
-  } = useThreadStorageViewer({
-    fileListEnabled: shouldLoadThreadStorageFileList({
-      hasThread: rootPanelThreadId !== null,
-      isSecondaryPanelOpen,
-      secondaryTabs: fixedPanelTabsState.secondary.tabs,
-    }),
-    threadId: rootPanelThreadId ?? undefined,
-  });
+  const { threadStorageFiles: rootThreadStorageFiles } = useThreadStorageViewer(
+    {
+      fileListEnabled: shouldLoadThreadStorageFileList({
+        hasThread: rootPanelThreadId !== null,
+        isSecondaryPanelOpen,
+        secondaryTabs: fixedPanelTabsState.secondary.tabs,
+      }),
+      threadId: rootPanelThreadId ?? undefined,
+    },
+  );
   const environmentTerminalsListQuery = useEnvironmentTerminals(
     rootPanelEnvironmentId ?? "",
     {
@@ -1065,8 +926,6 @@ function RootComposeSurface({
     preserveWorkspaceTabsAcrossContexts: true,
     projectHostId: rootProjectHostId,
     projectId: isProjectless ? null : projectId,
-    retainedTerminalId,
-    storageFileExists: checkRootThreadStorageFileExists,
     storageFiles: rootThreadStorageFiles,
     terminalSessions: loadedTerminalSessions,
   });
@@ -1080,10 +939,9 @@ function RootComposeSurface({
         ? orderedSecondaryFileTabs
         : buildTerminalSyncedSecondaryFileTabs({
             orderedTabs: orderedSecondaryFileTabs,
-            retainedTerminalId,
             terminalSessions: loadedTerminalSessions,
           }),
-    [loadedTerminalSessions, orderedSecondaryFileTabs, retainedTerminalId],
+    [loadedTerminalSessions, orderedSecondaryFileTabs],
   );
   useEffect(() => {
     if (!terminalsListLoaded) {
@@ -1091,17 +949,11 @@ function RootComposeSurface({
     }
     updateFixedPanelTabsState((state) =>
       syncTerminalTabsInFixedPanelState({
-        retainedTerminalId,
         state,
         terminalSessions,
       }),
     );
-  }, [
-    retainedTerminalId,
-    terminalSessions,
-    terminalsListLoaded,
-    updateFixedPanelTabsState,
-  ]);
+  }, [terminalSessions, terminalsListLoaded, updateFixedPanelTabsState]);
   const canCreateRootTerminal = canCreateRootComposeTerminal({
     connectedHostIds,
     environmentHostId: rootPanelEnvironment?.hostId,
@@ -1144,7 +996,7 @@ function RootComposeSurface({
     openTab({ kind: "new-tab" });
   }, [closeRootSecondaryPanel, isPersistedSecondaryPanelOpen, openTab]);
   const {
-    closePanel: closeSecondaryPanel,
+    closePanel: closeWorkspacePanel,
     openCompactDrawer,
     openHostFile,
     openStorageFile,
@@ -1163,6 +1015,11 @@ function RootComposeSurface({
     openPersistedWorkspaceFile,
     togglePersistedPanel: toggleRootPersistedSecondaryPanel,
   });
+  const dismissPluginDetails = pluginDetails.dismiss;
+  const closeSecondaryPanel = useCallback(() => {
+    dismissPluginDetails();
+    closeWorkspacePanel();
+  }, [dismissPluginDetails, closeWorkspacePanel]);
   const handleOpenLiveFilePreview = useCallback(
     (intent: AppFilePreviewIntent): boolean => {
       const normalized = normalizeExperimentalFileOpenOptions(intent);
@@ -1511,6 +1368,10 @@ function RootComposeSurface({
     ],
   );
   const handleCloseWindowRequest = useCallback(() => {
+    if (pluginDetails.activePluginId !== null) {
+      pluginDetails.close(pluginDetails.activePluginId);
+      return true;
+    }
     if (!isSecondaryPanelOpen) {
       return false;
     }
@@ -1533,6 +1394,7 @@ function RootComposeSurface({
     closeTab,
     handleCloseTerminalTab,
     isSecondaryPanelOpen,
+    pluginDetails,
   ]);
   const [openLinksInAppBrowser] = useOpenLinksInAppBrowserPreference();
   const desktopBrowserAvailable = isDesktopBrowserAvailable();
@@ -1724,7 +1586,7 @@ function RootComposeSurface({
               ...shared,
               label: tab.title,
               leadingVisual: (
-                <PluginIcon
+                <PluginItemIcon
                   pluginId={tab.pluginId}
                   icon={pluginAction?.icon ?? null}
                   className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS}
@@ -1783,36 +1645,29 @@ function RootComposeSurface({
       />
     </div>
   ) : null;
-  const isForkDraft = forkSeed !== null;
   const showEmptyWelcome =
-    !isForkDraft &&
     !startedComposing &&
     projects !== undefined &&
     projects.length === 0;
-  const setPromptTextAndMentions = promptDraft.setTextAndMentions;
   const handleStartComposing = useCallback(
     (prefill?: string) => {
       if (prefill) {
-        setPromptTextAndMentions(prefill, []);
+        composerActions.replace({
+          text: prefill,
+          mentions: [],
+        });
       }
       setStartedComposing(true);
     },
-    [setPromptTextAndMentions, setStartedComposing],
+    [composerActions, setStartedComposing],
   );
   useEffect(() => {
     if (!startedComposing) return;
-    if (isProviderCliVersionBlocked) return;
+    if (isProviderCliBlocked) return;
     if (isPointerCoarse) return;
-    const handle = window.requestAnimationFrame(() => {
-      promptBoxRef.current?.focusEnd();
-    });
+    const handle = window.requestAnimationFrame(focusPromptBox);
     return () => window.cancelAnimationFrame(handle);
-  }, [
-    isProviderCliVersionBlocked,
-    isPointerCoarse,
-    promptBoxRef,
-    startedComposing,
-  ]);
+  }, [isProviderCliBlocked, isPointerCoarse, focusPromptBox, startedComposing]);
   const [machineSetupTarget, setMachineSetupTarget] =
     useState<ProjectMachineSetupDialogTarget | null>(null);
   const currentProjectName = currentProject?.name ?? null;
@@ -1833,76 +1688,51 @@ function RootComposeSurface({
   const handleMachineSetupComplete = useCallback(
     ({ hostId: setUpHostId }: ProjectMachineSetupCompletion) => {
       setMachineSetupTarget(null);
-      setEnvironmentSelectionValue(encodeHostValue(setUpHostId, "worktree"));
+      if (parsedEnvironment?.type === "provider") {
+        setEnvironmentSelectionValue(
+          encodeProviderValue(parsedEnvironment.environmentProviderId),
+          setUpHostId,
+        );
+        return;
+      }
+      setEnvironmentSelectionValue(
+        encodeProviderValue(PROJECT_CHECKOUT_ENVIRONMENT_PROVIDER_ID),
+        setUpHostId,
+      );
     },
-    [setEnvironmentSelectionValue],
+    [parsedEnvironment, setEnvironmentSelectionValue],
   );
-  const handleCancelForkDraft = useCallback(() => {
-    setForkSeed(null);
-    window.requestAnimationFrame(() => {
-      promptBoxRef.current?.focusEnd();
-    });
-  }, [promptBoxRef, setForkSeed]);
-
-  const promptHeader = useMemo(() => {
-    if (forkSeed === null) {
-      return null;
-    }
-    return (
-      <div className="flex">
-        {}
-        <div
-          aria-label={`Forking ${forkSeed.sourceThreadTitle}`}
-          className="-ml-1.5 inline-flex h-7 max-w-full items-center gap-1.5 rounded-full bg-muted py-0 pl-2.5 pr-1 text-xs font-medium text-muted-foreground"
-        >
-          <Icon name="Fork" className="size-3.5 shrink-0" aria-hidden />
-          <span className="min-w-0 truncate">
-            Forking {forkSeed.sourceThreadTitle}
-          </span>
-          <button
-            type="button"
-            aria-label="Cancel fork"
-            className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full text-muted-foreground hover:bg-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={handleCancelForkDraft}
-          >
-            <Icon name="X" className="size-3" aria-hidden />
-          </button>
-        </div>
-      </div>
-    );
-  }, [forkSeed, handleCancelForkDraft]);
-
   const promptBanner = useMemo(() => {
-    if (!isProviderCliVersionBlocked || selectedProviderCliStatus === null) {
+    if (blockingProviderCliStatus === null) {
       return null;
     }
     return (
-      <ProviderCliVersionBanner
-        displayName={selectedProviderCliStatus.displayName}
-        currentVersion={selectedProviderCliStatus.currentVersion}
+      <ProviderCliBanner
+        displayName={blockingProviderCliStatus.displayName}
+        installed={blockingProviderCliStatus.installed}
+        currentVersion={blockingProviderCliStatus.currentVersion}
         minimumSupportedVersion={
-          selectedProviderCliStatus.minimumSupportedVersion
+          blockingProviderCliStatus.minimumSupportedVersion
         }
-        canUpdate={selectedProviderCliIssue !== null}
-        updating={
-          composeHostId !== null &&
+        canRunAction={selectedProviderCliIssue !== null}
+        actionRunning={
+          rootProjectHostId !== null &&
           (runningJobKey ===
-            providerCliJobKey(composeHostId, selectedProviderId) ||
+            providerCliJobKey(rootProjectHostId, selectedProviderId) ||
             queuedJobKeys.has(
-              providerCliJobKey(composeHostId, selectedProviderId),
+              providerCliJobKey(rootProjectHostId, selectedProviderId),
             ))
         }
-        onUpdate={handleUpdateProviderCli}
+        onAction={handleRunProviderCliAction}
       />
     );
   }, [
-    composeHostId,
-    handleUpdateProviderCli,
-    isProviderCliVersionBlocked,
+    blockingProviderCliStatus,
+    rootProjectHostId,
+    handleRunProviderCliAction,
     queuedJobKeys,
     runningJobKey,
     selectedProviderCliIssue,
-    selectedProviderCliStatus,
     selectedProviderId,
   ]);
 
@@ -1926,15 +1756,17 @@ function RootComposeSurface({
     />
   );
 
+  const isCompactHomeLayout = isCompactViewport && !showEmptyWelcome;
+
   const promptBox = renderPromptBox({
     id: "root-compose-prompt",
-    autoFocus: !isProviderCliVersionBlocked,
-    allowSoftKeyboardAutoFocus: isCompactViewport,
+    autoFocus: !isProviderCliBlocked,
+    mentionMenuPlacement: isCompactHomeLayout ? "top" : "bottom",
     banner: promptBanner,
-    header: promptHeader,
-    blockedReason: isProviderCliVersionBlocked
-      ? `Update ${selectedProviderCliStatus?.displayName ?? selectedProviderId} before starting a thread.`
-      : undefined,
+    blockedReason:
+      blockingProviderCliStatus === null
+        ? undefined
+        : providerCliBlockedReason(blockingProviderCliStatus),
     resolveMentionLink,
     pluginComposerHost,
     textEffects: promptTextEffects,
@@ -1946,16 +1778,10 @@ function RootComposeSurface({
       isCreating: quickCreateProject.isCreating,
     },
     onRequestMachineSetup: handleRequestMachineSetup,
-    locks: {
-      project: isForkDraft,
-      provider: isForkDraft,
-      environment: isForkDraft,
-      branch: isForkDraft,
-    },
   });
 
   return (
-    <>
+    <PluginDetailPanelContext.Provider value={pluginDetails}>
       <RootComposePanelCommandHandlers
         isFocused={isFocusedPane}
         onClose={handleCloseWindowRequest}
@@ -1978,6 +1804,7 @@ function RootComposeSurface({
                   ? ROOT_COMPOSE_EMPTY_WELCOME_CONTENT_CLASS
                   : ROOT_COMPOSE_SIDEBAR_ACTION_ALIGNED_TOP_PADDING_CLASS
               }
+              isCompactHomeLayout={isCompactHomeLayout}
               compactScrollContent={
                 showEmptyWelcome ? null : (
                   <RootComposeMobileRecents
@@ -2032,6 +1859,6 @@ function RootComposeSurface({
           </AppNavigationHostProvider>
         </UrlOpenRoutingProvider>
       </PluginComposerHostProvider>
-    </>
+    </PluginDetailPanelContext.Provider>
   );
 }

@@ -25,7 +25,8 @@ vi.mock("@/hooks/useHostDaemon", () => ({
   }),
 }));
 
-vi.mock("@/hooks/queries/host-queries", () => ({
+vi.mock("@/hooks/queries/host-queries", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/hooks/queries/host-queries")>()),
   useHosts: () => ({ data: mocks.hosts, isPending: mocks.isLoadingHosts }),
   usePrimaryHost: () => mocks.primaryHost,
 }));
@@ -124,17 +125,6 @@ describe("useLocalPathPicker openPathEntry", () => {
     expect(mocks.pickFolder).not.toHaveBeenCalled();
   });
 
-  it("uses the native picker with one machine", () => {
-    const { result } = renderHook(() =>
-      useLocalPathPicker({ isPending: false, submit: vi.fn() }),
-    );
-
-    act(() => result.current.openPathEntry({ kind: "create" }));
-
-    expect(mocks.pickFolder).toHaveBeenCalled();
-    expect(result.current.projectPathDialog.isOpen).toBe(false);
-  });
-
   it("keeps the native picker when the only other machine is offline", () => {
     mocks.hosts = [atum, host("host_dead", "Old laptop", "disconnected")];
     const { result } = renderHook(() =>
@@ -145,6 +135,25 @@ describe("useLocalPathPicker openPathEntry", () => {
 
     expect(mocks.pickFolder).toHaveBeenCalled();
     expect(result.current.projectPathDialog.isOpen).toBe(false);
+  });
+
+  it("opens the dialog when the other connected machine came from a provider", () => {
+    mocks.hosts = [
+      atum,
+      makeHost({
+        id: "host_sandbox",
+        name: "Sandbox",
+        status: "connected",
+      }),
+    ];
+    const { result } = renderHook(() =>
+      useLocalPathPicker({ isPending: false, submit: vi.fn() }),
+    );
+
+    act(() => result.current.openPathEntry({ kind: "create" }));
+
+    expect(mocks.pickFolder).not.toHaveBeenCalled();
+    expect(result.current.projectPathDialog.isOpen).toBe(true);
   });
 
   it("opens the dialog while the machine list is still loading", () => {

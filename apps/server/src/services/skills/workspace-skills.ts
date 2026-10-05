@@ -1,9 +1,14 @@
+import { joinHostPathSegments } from "../lib/host-path.js";
 import { Buffer } from "node:buffer";
-import path from "node:path";
 import { COMMAND_TIMEOUT_MS } from "../../constants.js";
 import { ApiError } from "../../errors.js";
 import type { LoggedWorkSessionDeps } from "../../types.js";
 import { callHostRetryableOnlineRpc } from "../hosts/online-rpc.js";
+import {
+  DEFAULT_PATH_LIST_EXCLUDE_NAMES,
+  SKILL_PATH_LIST_INCLUDE_HIDDEN,
+} from "../../routes/path-list-policy.js";
+import { requireDaemonFileContentResult } from "../hosts/daemon-file-response.js";
 import {
   resolveProjectSkillSourceFromContent,
   type ProjectInjectedSkillSource,
@@ -28,8 +33,11 @@ async function readProjectSkill(
     hostId: string;
   },
 ): Promise<ProjectInjectedSkillSource | null> {
-  const candidatePath = path.join(args.skillsRootPath, args.directoryName);
-  const skillFilePath = path.join(candidatePath, SKILL_FILE_NAME);
+  const candidatePath = joinHostPathSegments(
+    args.skillsRootPath,
+    args.directoryName,
+  );
+  const skillFilePath = joinHostPathSegments(candidatePath, SKILL_FILE_NAME);
   let result;
   try {
     result = await callHostRetryableOnlineRpc(deps, {
@@ -48,7 +56,8 @@ async function readProjectSkill(
     throw error;
   }
 
-  if (result.sizeBytes > MAX_PROJECT_SKILL_FILE_BYTES) {
+  const contentResult = requireDaemonFileContentResult(result);
+  if (contentResult.sizeBytes > MAX_PROJECT_SKILL_FILE_BYTES) {
     deps.logger.warn(
       {
         candidatePath,
@@ -60,9 +69,9 @@ async function readProjectSkill(
     return null;
   }
   const content =
-    result.contentEncoding === "utf8"
-      ? result.content
-      : Buffer.from(result.content, "base64").toString("utf8");
+    contentResult.contentEncoding === "utf8"
+      ? contentResult.content
+      : Buffer.from(contentResult.content, "base64").toString("utf8");
   return resolveProjectSkillSourceFromContent(deps.logger, {
     candidatePath,
     content,
@@ -74,7 +83,11 @@ export async function resolveWorkspaceProjectSkills(
   deps: LoggedWorkSessionDeps,
   args: ResolveWorkspaceProjectSkillsArgs,
 ): Promise<ProjectInjectedSkillSource[]> {
-  const skillsRootPath = path.join(args.workspacePath, ".bb", "skills");
+  const skillsRootPath = joinHostPathSegments(
+    args.workspacePath,
+    ".bb",
+    "skills",
+  );
   const result = await callHostRetryableOnlineRpc(deps, {
     hostId: args.hostId,
     timeoutMs: COMMAND_TIMEOUT_MS,
@@ -83,6 +96,9 @@ export async function resolveWorkspaceProjectSkills(
       path: skillsRootPath,
       query: SKILL_FILE_NAME,
       limit: MAX_PROJECT_SKILLS,
+      includeHidden: SKILL_PATH_LIST_INCLUDE_HIDDEN,
+      respectGitIgnore: false,
+      excludeNames: [...DEFAULT_PATH_LIST_EXCLUDE_NAMES],
     },
   });
   if (result.truncated) {

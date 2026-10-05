@@ -11,7 +11,8 @@ import type {
   PluginSourceDetail as SdkPluginSourceDetail,
   PluginUpdateCheckEntry,
 } from "@bb/server-contract";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { invalidatePluginList } from "../cache-owners/plugin-cache-owner";
 import { createPluginsClient } from "./plugin-client";
 import { toEpochMs } from "./plugin-settings-queries";
 import {
@@ -19,6 +20,7 @@ import {
   pluginCatalogSearchQueryKey,
   pluginMarketplacesQueryKey,
   pluginSourceQueryKey,
+  pluginUpdateCheckQueryKey,
 } from "./query-keys";
 
 type FetchLike = typeof fetch;
@@ -187,6 +189,30 @@ export async function checkPluginUpdates(
   return results.map(toUpdatesEntry);
 }
 
+export function usePluginUpdateCheck(
+  pluginId: string | null,
+  options: { enabled: boolean },
+) {
+  const queryClient = useQueryClient();
+  return useQuery({
+    queryKey: pluginUpdateCheckQueryKey(pluginId),
+    queryFn: async () => {
+      const results = await checkPluginUpdates(
+        fetch,
+        pluginId === null ? {} : { id: pluginId },
+      );
+      await invalidatePluginList({ queryClient });
+      return results;
+    },
+    enabled: options.enabled,
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+    retry: false,
+  });
+}
+
 export interface PluginUpdateResult {
   applied: boolean;
   outcome: SdkPluginApplyUpdateResult["outcome"];
@@ -232,6 +258,7 @@ export interface PluginCatalogSearchEntry {
   official: boolean;
   author: PluginCatalogAuthor | null;
   installed: boolean;
+  conflictingInstallSource: string | null;
   installs: number | null;
   compatible: boolean;
   incompatibleReason: string | null;
@@ -265,6 +292,7 @@ function toPluginCatalogSearchEntry(
     official: data.official,
     author: data.author,
     installed: data.installed,
+    conflictingInstallSource: data.conflictingInstallSource,
     installs: data.installs,
     compatible: data.compatible,
     incompatibleReason: data.incompatibleReason ?? null,

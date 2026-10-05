@@ -1,12 +1,12 @@
 const { copyFile, lstat, realpath, rename, rm } = require("node:fs/promises");
 const { randomUUID } = require("node:crypto");
-const { dirname, isAbsolute, relative, resolve } = require("node:path");
+const { dirname, isAbsolute, relative, resolve, sep } = require("node:path");
 
 function within(root, file) {
   const name = relative(root, file);
   return (
     name === "" ||
-    (!isAbsolute(name) && name !== ".." && !name.startsWith("../"))
+    (!isAbsolute(name) && name !== ".." && !name.startsWith(`..${sep}`))
   );
 }
 

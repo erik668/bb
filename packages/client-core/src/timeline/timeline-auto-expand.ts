@@ -4,6 +4,7 @@ import {
   hasTimelineExplorationIntent,
   type ThreadTimelineViewRow,
   type TimelineViewWorkRow,
+  type TimelineWorkSummaryChild,
 } from "@bb/thread-view";
 
 interface CollectTimelineAutoExpansionRowIdsArgs {
@@ -20,16 +21,23 @@ export interface TimelineAutoExpansionRowIds {
   terminalFrontierRowIds: ReadonlySet<string>;
 }
 
-export function isWorkRowExpandable(row: TimelineViewWorkRow): boolean {
+function isWorkRowExpandable(row: TimelineViewWorkRow): boolean {
   switch (row.workKind) {
     case "web-search":
     case "web-fetch":
     case "approval":
       return false;
+    case "image-generation":
+      return row.status !== "pending" || Boolean(row.path || row.error);
     case "image-view":
       return true;
     case "question":
       return row.lifecycle === "answered" || row.lifecycle === "resolving";
+    case "form":
+      return (
+        row.presentation.detail !== undefined &&
+        row.presentation.detail.trim().length > 0
+      );
     case "command":
       return !hasTimelineExplorationIntent(row);
     case "tool":
@@ -76,11 +84,10 @@ export function isRowExpandable(row: ThreadTimelineViewRow): boolean {
 }
 
 export function isNonExpandableSummary(
-  children: readonly TimelineViewWorkRow[],
+  children: readonly TimelineWorkSummaryChild[],
 ): boolean {
   return (
-    children.length > 0 &&
-    children.every((child) => !isWorkRowExpandable(child))
+    children.length > 0 && children.every((child) => !isRowExpandable(child))
   );
 }
 

@@ -184,7 +184,9 @@ describe("plugin settings + storage", () => {
         "apiKey",
       );
       expect(await readFile(secretPath, "utf8")).toBe("sk-secret-123");
-      expect((await stat(secretPath)).mode & 0o777).toBe(0o600);
+      if (process.platform !== "win32") {
+        expect((await stat(secretPath)).mode & 0o777).toBe(0o600);
+      }
 
       expect(view?.values.apiKey).toEqual({ set: true });
       expect(JSON.stringify(view)).not.toContain("sk-secret-123");
@@ -553,58 +555,9 @@ describe("plugin settings + storage", () => {
         api.storage.migrate(database, [
           "CREATE TABLE items (id INTEGER PRIMARY KEY)",
           "SELECT 1",
-          "CREATE TABLE ghost (id INTEGER PRIMARY KEY)",
+          "SELECT 2",
         ]),
-      ).toThrow(/migration 2 is reserved by an unidentified legacy migration/);
-      expect(
-        database
-          .prepare(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ghost'",
-          )
-          .get(),
-      ).toBeUndefined();
-    });
-
-    it("releases a reserved legacy index when adoptIfApplied proves the effect is present", async () => {
-      const rootDir = await writePlugin(workDir, {
-        name: "bb-plugin-legacy-adoption",
-        serverSource: `export default function plugin() {}`,
-      });
-      await service.installPath(rootDir);
-
-      const api = service.getApi("legacy-adoption");
-      expect(api).toBeDefined();
-      if (!api) throw new Error("legacy-adoption plugin did not load");
-      const database = api.storage.database();
-      database.exec(
-        "CREATE TABLE items (id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL); INSERT INTO _bb_migrations VALUES (0, 1), (1, 1)",
-      );
-      api.storage.migrate(database, [
-        "CREATE TABLE items (id INTEGER PRIMARY KEY)",
-      ]);
-
-      // The `name` column is already here, applied by a build this one knows
-      // nothing about; the probe says so, and the statement never runs.
-      api.storage.migrate(database, [
-        "CREATE TABLE items (id INTEGER PRIMARY KEY)",
-        {
-          statement: "ALTER TABLE items ADD COLUMN name TEXT",
-          adoptIfApplied: (db) =>
-            db
-              .prepare<[], { name: string }>("PRAGMA table_info(items)")
-              .all()
-              .some((column) => column.name === "name"),
-        },
-      ]);
-
-      expect(
-        database
-          .prepare("SELECT id, statement_hash FROM _bb_migrations ORDER BY id")
-          .all(),
-      ).toEqual([
-        { id: 0, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
-        { id: 1, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
-      ]);
+      ).toThrow(/migration 2 does not match the recorded statement/);
     });
 
     it("returns one reused handle per plugin load instead of a connection per call", async () => {

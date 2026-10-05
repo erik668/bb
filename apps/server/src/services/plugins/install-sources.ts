@@ -15,6 +15,7 @@ import {
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import semver from "semver";
+import { resolveBundledNpmCli } from "@bb/plugin-build";
 import {
   omitNpmScriptPolicyEnv,
   spawnPortableOutputProcess,
@@ -55,6 +56,9 @@ const BUILTIN_NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 export function isCommitSha(ref: string): boolean {
   return COMMIT_SHA_PATTERN.test(ref);
 }
+
+const WINDOWS_DRIVE_PATH_PATTERN = /^([A-Za-z]):[\\/]+/u;
+const WINDOWS_LOCAL_CACHE_DIGEST_LENGTH = 12;
 
 function assertSafeSegments(value: string, label: string): void {
   const segments = value.split("/");
@@ -169,7 +173,12 @@ function parseGitSource(spec: string): ParsedPluginSource {
   } catch {
     throw new Error(`invalid git url "${urlish}"`);
   }
-  if (decodedUrlish.split("/").some((segment) => segment === "..")) {
+  const isWindowsPath = WINDOWS_DRIVE_PATH_PATTERN.test(urlish);
+  if (
+    decodedUrlish
+      .split(isWindowsPath ? /[\\/]/u : "/")
+      .some((segment) => segment === "..")
+  ) {
     throw new Error(`invalid git repository path "${urlish}"`);
   }
   if (/^https?:\/\//.test(urlish)) {
@@ -181,6 +190,20 @@ function parseGitSource(spec: string): ParsedPluginSource {
     url = urlish;
     host = "local";
     repoPath = urlish.replace(/^\/+/, "").replace(/\.git$/, "");
+  } else if (isWindowsPath) {
+    url = urlish;
+    host = "local";
+    const normalized = urlish
+      .replace(WINDOWS_DRIVE_PATH_PATTERN, "$1/")
+      .replaceAll("\\", "/")
+      .replace(/\/+$/u, "")
+      .replace(/\.git$/, "");
+    const name = normalized.slice(normalized.lastIndexOf("/") + 1);
+    const digest = createHash("sha256")
+      .update(normalized.toLowerCase())
+      .digest("hex")
+      .slice(0, WINDOWS_LOCAL_CACHE_DIGEST_LENGTH);
+    repoPath = name.length === 0 ? "" : `${name}-${digest}`;
   } else if (/^[a-z0-9]/i.test(urlish)) {
     url = `https://${urlish}`;
     const parsed = new URL(url);
@@ -301,6 +324,10 @@ export function npmInstallPrefix(
   version: string,
 ): string {
   return join(dataDir, "plugins", "npm", ...`${name}@${version}`.split("/"));
+}
+
+export function npmPackageRoot(prefix: string, packageName: string): string {
+  return join(prefix, "node_modules", ...packageName.split("/"));
 }
 
 function resolveInside(
@@ -583,9 +610,10 @@ export async function runInstallCommand(
   },
 ): Promise<string> {
   const timeoutMs = 5 * 60_000;
+  const npmCliPath = command === "npm" ? resolveBundledNpmCli() : null;
   const child = spawnPortableOutputProcess({
-    command,
-    args,
+    command: npmCliPath === null ? command : process.execPath,
+    args: npmCliPath === null ? args : [npmCliPath, ...args],
     env: omitNpmScriptPolicyEnv(process.env),
   });
   let stderr = "";
