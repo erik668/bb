@@ -1,0 +1,750 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.supportedArchitectures", "pnpm.overrides", "pnpm.patchedDependencies". See https://pnpm.io/settings for the new home of each setting.
+• turbo 2.8.3
+• Packages in scope: @bb/server
+• Running test in 1 packages
+• Remote caching disabled
+//:ensure-native-modules: cache bypass, force executing f56cacaa430909ac
+@get-bb/plugin-sdk:build:types: cache bypass, force executing d54a82f5b56a1f4e
+@bb/plugin-build:generate: cache bypass, force executing 4643dac2c4425c90
+@bb/templates:generate:plugin-scaffold: cache bypass, force executing 69a4f2413c3f45a2
+@bb/templates:generate:templates: cache bypass, force executing 66d30fe8acdec0d3
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@get-bb/plugin-sdk:build:types: 
+@get-bb/plugin-sdk:build:types: > @get-bb/plugin-sdk@0.4.28 build:types /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build:types: > node scripts/build-bundled-dts.mjs
+@get-bb/plugin-sdk:build:types: 
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: wrote /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.2.4)
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-ai-services.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-acp.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-host.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-customization-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-view.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-file-navigation-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-host-policy.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-plugin-app-collector.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-host.d.ts
+@get-bb/plugin-sdk:build: cache bypass, force executing ffa2aef327ec789a
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: > @get-bb/plugin-sdk@0.4.28 build /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build: > node scripts/build-runtime.mjs
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: Built 17 @get-bb/plugin-sdk runtime entries.
+@bb/server:test: cache bypass, force executing fcc5d27328267337
+@bb/server:test: 
+@bb/server:test: > @bb/server@0.0.1 test /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: > vitest run --config vitest.config.ts "--maxWorkers=1" "--fileParallelism=false"
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  RUN  v4.1.1 /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: 
+@bb/server:test:  ❯ |@bb/server| test/app/bb-app-artifact.test.ts (12 tests | 12 failed) 2660ms
+@bb/server:test:      × resolves and packs a structurally valid npm package 413ms
+@bb/server:test:      × rebuilds the artifact after package contents change without a version or protocol change 191ms
+@bb/server:test:      × builds a fresh artifact when the protocol changes at the same package version 200ms
+@bb/server:test:      × keeps serving the previous artifact when a rebuild fails, and retries after 187ms
+@bb/server:test:      × resolves and packs a structurally valid npm package 187ms
+@bb/server:test:      × rebuilds the artifact after package contents change without a version or protocol change 199ms
+@bb/server:test:      × builds a fresh artifact when the protocol changes at the same package version 216ms
+@bb/server:test:      × keeps serving the previous artifact when a rebuild fails, and retries after 225ms
+@bb/server:test:      × resolves and packs a structurally valid npm package 224ms
+@bb/server:test:      × rebuilds the artifact after package contents change without a version or protocol change 227ms
+@bb/server:test:      × builds a fresh artifact when the protocol changes at the same package version 198ms
+@bb/server:test:      × keeps serving the previous artifact when a rebuild fails, and retries after 192ms
+@bb/server:test: (node:84461) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/first-party-provider-plugins.test.ts (3 tests) 14612ms
+@bb/server:test:      ✓ are the sole source of the built-in providers  4802ms
+@bb/server:test:      ✓ pins the client-read ProviderInfo fields of the four core providers  4804ms
+@bb/server:test:      ✓ disabling a provider plugin removes its provider, and re-enabling restores its position  5006ms
+@bb/server:test:  ✓ |@bb/server| test/app/install-machine-script.test.ts (17 tests) 20615ms
+@bb/server:test:      ✓ uses bb-app from PATH and passes the launcher join flags verbatim  1594ms
+@bb/server:test:      ✓ accepts the daemon's normalized loopback server URL  1508ms
+@bb/server:test:      ✓ installs the server tarball even when a same-version bb-app is on PATH  1791ms
+@bb/server:test:      ✓ prefers the server-matched tarball when bb-app is absent  1731ms
+@bb/server:test:      ✓ falls back to npm only when the server artifact returns 404  1807ms
+@bb/server:test:      ✓ fails loudly when npm skipped the native add-on install scripts  790ms
+@bb/server:test:      ✓ defaults the data dir to a per-server directory under ~/.bb-machines  1896ms
+@bb/server:test:      ✓ refuses a data dir enrolled for a different host instead of faking success  436ms
+@bb/server:test:      ✓ assigns a different port when the first enrolled-daemon port is occupied  1537ms
+@bb/server:test:      ✓ atomically reserves different ports for concurrent custom data directories  473ms
+@bb/server:test:      ✓ redeems and persists a connect machine code before joining through the tunnel  1617ms
+@bb/server:test:      ✓ reports periodic progress while a host daemon is still joining  783ms
+@bb/server:test:      ✓ installs an idempotent macOS launch agent for joined state  2183ms
+@bb/server:test:      ✓ restarts an active Linux systemd user unit after replacing it  2091ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/update-resolver.test.ts (16 tests) 4161ms
+@bb/server:test:      ✓ lists only [prefix]vX.Y.Z tags, peels annotated ones, and orders them  404ms
+@bb/server:test:      ✓ asks the remote for release tags only, so unrelated tags cost nothing  342ms
+@bb/server:test:      ✓ selects the highest satisfying release and excludes prereleases  377ms
+@bb/server:test:      ✓ resolves a range for an install and reports a range with no match  375ms
+@bb/server:test:      ✓ offers newer satisfying tags and refuses a tag that moved  532ms
+@bb/server:test:      ✓ carries the selected release tag on the resolution  593ms
+@bb/server:test:      ✓ walks down to the newest release this bb can run  445ms
+@bb/server:test:      ✓ stays current and reports the blocked release when nothing newer runs  431ms
+@bb/server:test:      ✓ refuses to downgrade when the recorded range tag disappeared  421ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-events-tool-calls.test.ts (25 tests) 6926ms
+@bb/server:test:      ✓ does not notify a parent when a child thread nested turn completes  2115ms
+@bb/server:test:      ✓ notifies a parent when a hidden delegated child root turn completes  2131ms
+@bb/server:test:      ✓ does not notify a parent when a side-chat child root turn completes  2129ms
+@bb/server:test:  ✓ |@bb/server| test/threads/system-message-taxonomy-stamping.test.ts (7 tests) 8137ms
+@bb/server:test:      ✓ stamps a single completed child outcome as child-completed  2017ms
+@bb/server:test:      ✓ stamps a single failed child outcome as child-failed  2019ms
+@bb/server:test:      ✓ stamps a single interrupted child outcome as child-interrupted  2031ms
+@bb/server:test:      ✓ stamps a multi-child batch as child-outcome-batch with a count subject  2020ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-in-turn-window.test.ts (26 tests) 3968ms
+@bb/server:test:      ✓ pages a compact byte slice with hundreds of item identities  508ms
+@bb/server:test:      ✓ pages through a finished turn that exceeds the event-data byte limit  514ms
+@bb/server:test:      ✓ expands each delegated byte-budget slice with realistic parent ordering  530ms
+@bb/server:test:      ✓ gives a straddling item to exactly one byte page's details, completed  519ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/plugin-catalog-service.test.ts (36 tests) 2107ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-projects-local-host.test.ts (5 tests) 4126ms
+@bb/server:test:      ✓ creates a project when a personal thread already uses its folder  1021ms
+@bb/server:test:      ✓ returns the existing project when its local folder is added again  1014ms
+@bb/server:test:      ✓ creates projects and local sources when inspection is unavailable  2016ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-authoring-doc-examples.test.ts (1 test) 1638ms
+@bb/server:test:      ✓ resolves every SDK reference and compiles every TypeScript example  1638ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-edit-message.test.ts (42 tests) 977ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-background.test.ts (16 tests) 2320ms
+@bb/server:test:      ✓ serializes concurrent reloads so a slow-stopping service never double-starts  959ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-terminals.test.ts (36 tests) 658ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/keep-awake.test.ts (1 test) 1540ms
+@bb/server:test:      ✓ owns its configuration and reconciles it without a core adapter  1540ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-runtime-config.test.ts (30 tests) 488ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-event-append-ownership.test.ts (13 tests) 2375ms
+@bb/server:test:      ✓ notifies a parent when a child provider process exits  2033ms
+@bb/server:test:  ✓ |@bb/server| test/services/database-maintenance-sweep.test.ts (6 tests) 873ms
+@bb/server:test:      ✓ returns quickly when a WAL writer blocks incremental maintenance  312ms
+@bb/server:test:  ✓ |@bb/server| test/services/pending-interactions.test.ts (30 tests) 648ms
+@bb/server:test: Synthetic 10019-event thread: 12 pages, 1398 rows projected, full walk min 141.6 ms, p50 171 ms (samples 192.6, 171, 186.8, 152.2, 141.6)
+@bb/server:test:  ✓ |@bb/server| test/provider-corpus/timeline-perf.test.ts (1 test) 1583ms
+@bb/server:test:      ✓ projects every page of a 10000-event thread under 1500 ms  1583ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-interactions.test.ts (25 tests) 682ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-project-commands.test.ts (18 tests) 1518ms
+@bb/server:test:      ✓ returns an error response when the host is offline  1014ms
+@bb/server:test:  ✓ |@bb/server| test/system/execution-options.test.ts (36 tests) 615ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-fork.test.ts (20 tests) 547ms
+@bb/server:test:  ✓ |@bb/server| test/app/skeleton.test.ts (12 tests) 584ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-settings-storage.test.ts (14 tests) 1061ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/marketplace-publishers.test.ts (6 tests) 257ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/ask-user-question-plugin.test.ts (2 tests) 196ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-workflow-progress-window.test.ts (3 tests) 573ms
+@bb/server:test:      ✓ does not emit the spawning turn's summary on byte pages of a later turn  403ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-review-fixes.test.ts (3 tests) 319ms
+@bb/server:test:  ✓ |@bb/server| test/app/watch-interests.test.ts (10 tests) 505ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/official-plugins.test.ts (8 tests) 367ms
+@bb/server:test: ✘ [ERROR] Could not resolve "missing-host-runtime"
+@bb/server:test: 
+@bb/server:test:     ../../../../../../../../private/tmp/bb-plugin-ai-service-test-AjZcJG/bb-plugin-broken-host-ai/host.ts:1:7:
+@bb/server:test:       1 │ import "missing-host-runtime";
+@bb/server:test:         ╵        ~~~~~~~~~~~~~~~~~~~~~~
+@bb/server:test: 
+@bb/server:test:   You can mark the path "missing-host-runtime" as external to exclude it from the bundle, which will remove this error and leave the unresolved path in the bundle.
+@bb/server:test: 
+@bb/server:test: ✘ [ERROR] Could not resolve "missing-host-runtime"
+@bb/server:test: 
+@bb/server:test:     ../../../../../../../../private/tmp/bb-plugin-ai-service-test-bmVDFz/bb-plugin-dual-service-first/host.ts:1:7:
+@bb/server:test:       1 │ import "missing-host-runtime";
+@bb/server:test:         ╵        ~~~~~~~~~~~~~~~~~~~~~~
+@bb/server:test: 
+@bb/server:test:   You can mark the path "missing-host-runtime" as external to exclude it from the bundle, which will remove this error and leave the unresolved path in the bundle.
+@bb/server:test: 
+@bb/server:test: ✘ [ERROR] Could not resolve "missing-host-runtime"
+@bb/server:test: 
+@bb/server:test:     ../../../../../../../../private/tmp/bb-plugin-ai-service-test-2HzvKs/bb-plugin-dual-provider-first/host.ts:1:7:
+@bb/server:test:       1 │ import "missing-host-runtime";
+@bb/server:test:         ╵        ~~~~~~~~~~~~~~~~~~~~~~
+@bb/server:test: 
+@bb/server:test:   You can mark the path "missing-host-runtime" as external to exclude it from the bundle, which will remove this error and leave the unresolved path in the bundle.
+@bb/server:test: 
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-ai-services.test.ts (10 tests) 330ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-host-management.test.ts (10 tests) 469ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-thread-events.test.ts (11 tests) 843ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-mention-providers.test.ts (13 tests) 593ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-logo.test.ts (21 tests) 533ms
+@bb/server:test:  ✓ |@bb/server| test/app/host-shared-ports.test.ts (11 tests) 722ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/thread-runtime-display.test.ts (9 tests) 625ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-interactive-requests.test.ts (13 tests) 471ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-sdk.test.ts (8 tests) 512ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-parent.test.ts (12 tests) 365ms
+@bb/server:test:  ✓ |@bb/server| test/services/prompt-history.test.ts (9 tests) 487ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-agent-contributions.test.ts (4 tests) 195ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-provider-installations.test.ts (5 tests) 1062ms
+@bb/server:test:      ✓ preserves the host unavailable route error when the target host is offline  1015ms
+@bb/server:test:  ✓ |@bb/server| test/system/appearance.test.ts (14 tests) 148ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-event-budget.test.ts (5 tests) 329ms
+@bb/server:test: ✘ [ERROR] Could not resolve "missing-provider-runtime"
+@bb/server:test: 
+@bb/server:test:     ../../../../../../../../private/tmp/bb-plugin-provider-test-VHrwG8/bb-plugin-failed-agent/bridge.ts:1:7:
+@bb/server:test:       1 │ import "missing-provider-runtime";
+@bb/server:test:         ╵        ~~~~~~~~~~~~~~~~~~~~~~~~~~
+@bb/server:test: 
+@bb/server:test:   You can mark the path "missing-provider-runtime" as external to exclude it from the bundle, which will remove this error and leave the unresolved path in the bundle.
+@bb/server:test: 
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-provider-registration.test.ts (8 tests) 231ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-icons.test.ts (14 tests) 193ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-extension-payloads.test.ts (6 tests) 85ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-stop-runtime.test.ts (7 tests) 203ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-cli.test.ts (12 tests) 288ms
+@bb/server:test:  ✓ |@bb/server| test/security/api-origin-guard.test.ts (9 tests) 228ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-state-snapshot.test.ts (7 tests) 410ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/lifecycle-outcome.test.ts (4 tests) 216ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/plugin-catalog-routes.test.ts (6 tests) 341ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-provisioning-state.test.ts (2 tests) 107ms
+@bb/server:test:  ✓ |@bb/server| test/system/general-settings.test.ts (4 tests) 42ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/conversation-outline-performance.test.ts (2 tests) 105ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-reload-route.test.ts (2 tests) 33ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/thread-execution-plan.test.ts (10 tests) 70ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-dev-build-problems.test.ts (2 tests) 103ms
+@bb/server:test:  ✓ |@bb/server| test/internal/session-owner-runtime-status.test.ts (3 tests) 150ms
+@bb/server:test:  ✓ |@bb/server| test/system/event-pruning.test.ts (7 tests) 129ms
+@bb/server:test:  ✓ |@bb/server| test/host-join-enroll.test.ts (7 tests) 107ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-environments.test.ts (8 tests) 145ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-parenting.test.ts (11 tests) 263ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-threads.defaults.test.ts (12 tests) 176ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-threads.named-base-branch.test.ts (5 tests) 74ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-data.test.ts (2 tests) 111ms
+@bb/server:test:  ✓ |@bb/server| test/machine-auth.test.ts (4 tests) 220ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-open.test.ts (6 tests) 66ms
+@bb/server:test:  ✓ |@bb/server| test/services/entity-lookup.test.ts (5 tests) 246ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-timeline-delta.test.ts (5 tests) 74ms
+@bb/server:test:  ✓ |@bb/server| test/system/provider-routing.test.ts (5 tests) 83ms
+@bb/server:test:  ✓ |@bb/server| test/internal/background-task-reconciliation.test.ts (11 tests) 193ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-threads.execution-override.test.ts (5 tests) 65ms
+@bb/server:test:  ✓ |@bb/server| test/threads/deferred-thread-messages.test.ts (9 tests) 163ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-timeline-output-preview.test.ts (5 tests) 64ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-threads.project-default.test.ts (7 tests) 109ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-presentation-icons.test.ts (7 tests) 91ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-environment-decoupling.test.ts (5 tests) 62ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-system-usage-limits.test.ts (4 tests) 42ms
+@bb/server:test:  ✓ |@bb/server| test/files/host-file-routes.test.ts (7 tests) 84ms
+@bb/server:test:  ✓ |@bb/server| test/ai/inference.test.ts (8 tests) 89ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-live-start-handoff.test.ts (7 tests) 153ms
+@bb/server:test:  ✓ |@bb/server| test/threads/workspace-path-claims.test.ts (7 tests) 64ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-head-state.test.ts (2 tests) 125ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/heroes-phase2.test.ts (4 tests) 81ms
+@bb/server:test:  ✓ |@bb/server| test/system/install-cli-skills.test.ts (6 tests) 70ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-banner-actions.test.ts (9 tests) 106ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-project-attachments.test.ts (4 tests) 155ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-create-seed-without-run.test.ts (26 tests) 461ms
+@bb/server:test:  ✓ |@bb/server| test/services/periodic-sweeps.test.ts (6 tests) 104ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-provisioning-recovery.test.ts (6 tests) 98ms
+@bb/server:test:  ✓ |@bb/server| test/environments/environment-provisioning.test.ts (11 tests) 216ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-queue-gone-environment.test.ts (5 tests) 55ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-send-dispatch.test.ts (10 tests) 208ms
+@bb/server:test:  ✓ |@bb/server| test/system/provider-states.test.ts (3 tests) 35ms
+@bb/server:test:  ✓ |@bb/server| test/services/managed-environment-cleanup-recovery.test.ts (12 tests) 128ms
+@bb/server:test:  ✓ |@bb/server| src/services/hosts/primary-host.test.ts (3 tests) 23ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-authorization-regressions.test.ts (4 tests) 36ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-environment-action-regressions.test.ts (8 tests) 180ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-unhandled-events.test.ts (2 tests) 25ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-pinning.test.ts (4 tests) 46ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-stop-retry.test.ts (4 tests) 98ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-create-shared-workspace-path.test.ts (4 tests) 61ms
+@bb/server:test:  ✓ |@bb/server| test/system/experiments.test.ts (5 tests) 49ms
+@bb/server:test:  ✓ |@bb/server| test/threads/archive-pruned-environment.test.ts (4 tests) 42ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-environment-change.test.ts (9 tests) 87ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-search.test.ts (2 tests) 21ms
+@bb/server:test:  ✓ |@bb/server| test/system/server-url.test.ts (4 tests) 35ms
+@bb/server:test:  ✓ |@bb/server| test/security/browser-websocket-origin.test.ts (3 tests) 53ms
+@bb/server:test:  ✓ |@bb/server| test/environments/workspace-read-cache-routes.test.ts (3 tests) 173ms
+@bb/server:test:  ✓ |@bb/server| test/environments/environment-cleanup.test.ts (1 test) 17ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-manifest.test.ts (23 tests) 31ms
+@bb/server:test:  ✓ |@bb/server| test/services/providers/native-roots.test.ts (8 tests) 57ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-project-workspace-routing.test.ts (4 tests) 149ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/thread-events.test.ts (10 tests) 86ms
+@bb/server:test:  ✓ |@bb/server| test/hosts/online-rpc.test.ts (9 tests) 112ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-plugin-host-events.test.ts (2 tests) 15ms
+@bb/server:test:  ✓ |@bb/server| test/skills/submit-a-plugin.test.ts (4 tests) 137ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-tabs.test.ts (3 tests) 36ms
+@bb/server:test:  ✓ |@bb/server| test/system/provider-logo.test.ts (3 tests) 25ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-project-clone-sources.test.ts (4 tests) 92ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-event-envelope-threadid-regression.test.ts (2 tests) 22ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-session-protocol-version.test.ts (1 test) 23ms
+@bb/server:test:  ✓ |@bb/server| test/system/app-keybindings.test.ts (8 tests) 72ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-compaction.test.ts (3 tests) 48ms
+@bb/server:test:  ✓ |@bb/server| test/hosts/live-command.test.ts (1 test) 23ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-create-helpers.test.ts (10 tests) 48ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/project-execution-defaults.test.ts (3 tests) 36ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-project-attachment-content.test.ts (3 tests) 33ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-parented-pagination.test.ts (2 tests) 99ms
+@bb/server:test:  ✓ |@bb/server| test/app/static-cache.test.ts (1 test) 14ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-timeline-work-rows.test.ts (1 test) 14ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/git-source-intent.test.ts (1 test) 49ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/thread-model-recovery.test.ts (2 tests) 25ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-skill-trees.test.ts (2 tests) 21ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-provider-input.test.ts (1 test) 57ms
+@bb/server:test:  ✓ |@bb/server| test/skills/builtin-skills-copy.test.ts (2 tests) 24ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-thread-mention-resolution.test.ts (2 tests) 19ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/marketplace-schema-parity.test.ts (2 tests) 33ms
+@bb/server:test:  ✓ |@bb/server| test/system/attention.test.ts (1 test) 9ms
+@bb/server:test:  ✓ |@bb/server| test/app/api-json-compression.test.ts (5 tests) 14ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-plugin-host-artifacts.test.ts (5 tests) 15ms
+@bb/server:test:  ✓ |@bb/server| test/app/hub.test.ts (25 tests) 88ms
+@bb/server:test:  ✓ |@bb/server| test/skills/injected-skills.test.ts (14 tests) 104ms
+@bb/server:test:  ✓ |@bb/server| test/system/local-helper-ports.test.ts (1 test) 23ms
+@bb/server:test:  ✓ |@bb/server| src/static-shell.test.ts (8 tests) 19ms
+@bb/server:test:  ✓ |@bb/server| test/legacy-automations-export.test.ts (4 tests) 17ms
+@bb/server:test:  ✓ |@bb/server| test/internal/internal-tool-call-regressions.test.ts (1 test) 18ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-collection-manifest.test.ts (10 tests) 17ms
+@bb/server:test:  ✓ |@bb/server| test/system/custom-themes.test.ts (7 tests) 10ms
+@bb/server:test:  ✓ |@bb/server| src/services/projects/attachments.test.ts (11 tests) 12ms
+@bb/server:test:  ✓ |@bb/server| src/services/system/provider-maintenance-concurrency.test.ts (1 test) 37ms
+@bb/server:test:  ✓ |@bb/server| test/public/public-system-version.test.ts (1 test) 9ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-default-policy.test.ts (39 tests) 14ms
+@bb/server:test:  ✓ |@bb/server| test/app/startup-diagnostics.test.ts (4 tests) 2ms
+@bb/server:test:  ✓ |@bb/server| test/skills/shipped-skills-quality.test.ts (12 tests) 8ms
+@bb/server:test:  ✓ |@bb/server| test/app/client-protocol.test.ts (9 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/marketplace-manifest.test.ts (22 tests) 4ms
+@bb/server:test:  ✓ |@bb/server| test/providers/plugin-provider-registration.test.ts (8 tests) 3ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-authoring-docs.test.ts (19 tests) 19ms
+@bb/server:test:  ✓ |@bb/server| test/system/bb-app-managed-config.test.ts (11 tests) 6ms
+@bb/server:test:  ✓ |@bb/server| test/system/app-version.test.ts (16 tests) 2ms
+@bb/server:test:  ✓ |@bb/server| test/services/async-ttl-memo.test.ts (3 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/marketplace-http.test.ts (20 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/internal/interactive-request-blocker-summary.test.ts (3 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| test/app/hub-open-file.test.ts (2 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/skills/skill-listing.test.ts (17 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/permissions/permission-matrix.test.ts (59 tests) 2ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugin-catalog/marketplace-icons.test.ts (6 tests) 2ms
+@bb/server:test:  ✓ |@bb/server| test/threads/worktree-paths.test.ts (15 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/sdk-compat.test.ts (5 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/request-context.test.ts (3 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/child-thread-notifications.test.ts (11 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/skills/registry-parse.test.ts (26 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| src/services/environments/pull-request.test.ts (9 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-latest-rows-cache.test.ts (3 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| test/provider-corpus/row-diff-classes.test.ts (10 tests) 2ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-cache.test.ts (6 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/hosts/daemon-file-response.test.ts (5 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/thread-execution-override.test.ts (10 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/providers/provider-registry.test.ts (14 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-output-truncation.test.ts (3 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| test/services/worktree-base-branch.test.ts (4 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| src/services/environments/workspace-read-cache.test.ts (9 tests) 2ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/provider-command-typeahead.test.ts (4 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/threads/timeline-pagination.test.ts (1 test) 0ms
+@bb/server:test:  ✓ |@bb/server| test/threads/title-generation.test.ts (6 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/app-asset-compression-cache.test.ts (2 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| src/routes/diff-tiering.test.ts (18 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/services/error-log-fields.test.ts (3 tests) 1ms
+@bb/server:test:  ✓ |@bb/server| test/app/hub-plugin-signal.test.ts (1 test) 0ms
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-reasoning-policy.test.ts (2 tests) 0ms
+@bb/server:test:  ✓ |@bb/server| test/services/plugins/plugin-sdk-alias.test.ts (1 test) 0ms
+@bb/server:test:  ↓ |@bb/server| test/provider-corpus/row-snapshots.test.ts (0 test)
+@bb/server:test: (node:91295) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ❯ |@bb/server:isolated| test/services/plugins/plugin-install.test.ts (57 tests | 1 failed) 24723ms
+@bb/server:test:      ✓ parses git URLs, tracks HEAD by default, and rejects traversal 3ms
+@bb/server:test:      ✓ reads git semver ranges, explicit selectors, and tag prefixes 1ms
+@bb/server:test:      ✓ classifies omitted, exact, range, and dist-tag npm specs 0ms
+@bb/server:test:      ✓ treats bare non-URL strings and path: as local paths with no managed dir 0ms
+@bb/server:test:      ✓ enforces parsed command output limits in UTF-8 bytes 27ms
+@bb/server:test:      ✓ keeps script-policy npm config out of git/npm children 27ms
+@bb/server:test:      ✓ keeps scoped npm and nested git cache paths inside their roots 0ms
+@bb/server:test:        ✓ installs and tracks the default branch when the ref is omitted  846ms
+@bb/server:test:        ✓ stamps catalog provenance for a git official catalog entry  455ms
+@bb/server:test:        ✓ refuses a git commit that changed after marketplace confirmation 160ms
+@bb/server:test:        ✓ refuses a catalog entry whose plugin requires another plugin SDK 221ms
+@bb/server:test:        ✓ refuses a listed npm registry that is not a public https host 56ms
+@bb/server:test:        ✓ guards a listed npm registry while it resolves an install plan 59ms
+@bb/server:test:        ✓ refuses a git catalog install whose manifest id differs from the entry 202ms
+@bb/server:test:        ✓ clones a pinned tag into its exact immutable cache dir and loads it  433ms
+@bb/server:test:        ✓ resolves a semver range over release tags and tracks compatible  666ms
+@bb/server:test:        ✓ refuses a range spec that is also a ref, and honors the explicit forms  552ms
+@bb/server:test:        ✓ resolves a prefixed range and reports one with no matching tag  694ms
+@bb/server:test:        ✓ installs a catalog entry that lists a semver range  474ms
+@bb/server:test:        ✓ refuses a git plugin that shadows a builtin after materialization 263ms
+@bb/server:test:        ✓ installs a pinned commit sha via clone + checkout  594ms
+@bb/server:test:        ✓ never reuses an exact-resolution artifact owned by another plugin  846ms
+@bb/server:test:        ✓ serializes concurrent installs of the same exact resolution  447ms
+@bb/server:test:        ✓ refuses a managed reinstall and points to the update command  514ms
+@bb/server:test:        ✓ refuses a managed frontend reinstall before validating a broken new tip or creating an artifact  680ms
+@bb/server:test:        ✓ keeps the previous install intact when a reinstall fails validation  539ms
+@bb/server:test:        ✓ rebuilds a git plugin's server bundle over any committed dist  387ms
+@bb/server:test:        ✓ hard-fails install on an engines.bb mismatch and cleans up the clone 206ms
+@bb/server:test:        ✓ hard-fails managed install on an engines.bbPluginSdk mismatch 190ms
+@bb/server:test:        ✓ remove retains immutable git artifacts and never touches a path source  450ms
+@bb/server:test:        ✓ refuses a cached artifact whose engine range no longer matches  487ms
+@bb/server:test:        ✓ refuses a git url without the git binary being asked to run arbitrary flags 63ms
+@bb/server:test:        ✓ builds both bundles for a git plugin  407ms
+@bb/server:test:        ✓ builds a Git host entry without installing the SDK at runtime  442ms
+@bb/server:test:        ✓ restores a target moved aside by an interrupted promotion  5087ms
+@bb/server:test:        ✓ ignores a repository .npmrc when installing dependencies  442ms
+@bb/server:test:        ✓ inlines a git plugin's third-party dependency into its bundles  431ms
+@bb/server:test:        ✓ installs two plugins of one repository into one shared checkout  705ms
+@bb/server:test:        ✓ promotes an in-repository symlinked plugin after a sibling  723ms
+@bb/server:test:        ✓ keeps a nested sibling intact when the repository root installs too  755ms
+@bb/server:test:        ✓ refreshes a root artifact hash after a nested install  724ms
+@bb/server:test:        ✓ keeps a symlinked nested plugin when the repository root installs  763ms
+@bb/server:test:        ✓ reinstalls a nested plugin whose directory was collected  698ms
+@bb/server:test:        ✓ lists the collection entries when no plugin is selected 217ms
+@bb/server:test:        ✓ refuses an unknown entry name and an escaping subdirectory  304ms
+@bb/server:test:        ✓ installs a collection entry from a local path repository 145ms
+@bb/server:test:        ✓ refuses a collection entry whose directory leaves the repository 59ms
+@bb/server:test:        ✓ refuses a collection entry symlinked to the repository root 53ms
+@bb/server:test:        ✓ rejects an artifact whose pluginId does not match the manifest 51ms
+@bb/server:test:        ✓ rejects an unknown artifactFormatVersion 49ms
+@bb/server:test:        ✓ accepts metadata that matches the manifest and this SDK 59ms
+@bb/server:test:      ✓ keeps path installs developer-friendly while surfacing SDK incompatibility 72ms
+@bb/server:test:      ✓ registers a path install with stale backend artifact metadata 78ms
+@bb/server:test:        × installs a scoped package into the immutable cache and retains it on removal 254ms
+@bb/server:test:      ✓ refuses an npm package whose derived id shadows a builtin before install 55ms
+@bb/server:test:      ✓ refuses a path plugin whose manifest id shadows a builtin 56ms
+@bb/server:test:      ✓ the bb plugin new scaffold installs and loads through the plugin service  1551ms
+@bb/server:test:  ❯ |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts (27 tests | 2 failed) 42509ms
+@bb/server:test:      ✓ reloads when the source watcher omits the changed filename 69ms
+@bb/server:test:      ✓ keeps official plugins bundled but out of the auto-install builtins 69ms
+@bb/server:test:      ✓ gives every builtin plugin a deliberate settings icon 67ms
+@bb/server:test:      ✓ installs and loads a declared builtin on a fresh database 76ms
+@bb/server:test:      ✓ marks a persisted builtin as orphaned after it leaves the registry 56ms
+@bb/server:test:      ✓ backfills every legacy source form once while preserving registration state 69ms
+@bb/server:test:      ✓ keeps an offline legacy git ref unclassified 109ms
+@bb/server:test:      ✓ installs a default-disabled builtin without loading it 55ms
+@bb/server:test:      ✓ preserves an installed builtin's choice when its default changes 55ms
+@bb/server:test:      ✓ ships Plugin API Tester disabled on a fresh database 48ms
+@bb/server:test:      ✓ ships the File Editor (monaco-editor) disabled on a fresh database 48ms
+@bb/server:test:      ✓ ships the Plugin Guide disabled on a fresh database 50ms
+@bb/server:test:      ✓ ships Workflows disabled on a fresh database 49ms
+@bb/server:test:      ✓ ships Provider retry enabled on a fresh database 68ms
+@bb/server:test:      ✓ loads the builtin connect plugin like other builtins 51ms
+@bb/server:test:      ✓ loads the real side-chat builtin source 58ms
+@bb/server:test:      ✓ keeps a builtin tombstoned after remove and restart 54ms
+@bb/server:test:      ✓ refreshes the builtin row when the bundled package version changes 111ms
+@bb/server:test:      ✓ keeps builtin CLI and UI contributions available 55ms
+@bb/server:test:      × hot-reloads a source-layout builtin server instead of a compatible dist artifact 20078ms
+@bb/server:test:      ✓ rebuilds a source-layout builtin app changed while the server was stopped  382ms
+@bb/server:test:      × surfaces builtin app build failures in status until the next successful build 20120ms
+@bb/server:test:      ✓ rejects unknown builtin install sources clearly 64ms
+@bb/server:test:      ✓ installs and loads a packaged builtin whose source files are omitted 175ms
+@bb/server:test:      ✓ registers but does not load a packaged builtin with stale backend metadata 175ms
+@bb/server:test:      ✓ explicitly installs a packaged builtin without rebuilding its app bundle 176ms
+@bb/server:test:      ✓ copies only the runtime layout for packaged builtins 121ms
+@bb/server:test: (node:98899) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test: ✘ [ERROR] Expected identifier but found end of file
+@bb/server:test: 
+@bb/server:test:     app.tsx:2:0:
+@bb/server:test:       2 │ 
+@bb/server:test:         ╵ ^
+@bb/server:test: 
+@bb/server:test: ✘ [ERROR] Expected identifier but found end of file
+@bb/server:test: 
+@bb/server:test:     app.tsx:2:0:
+@bb/server:test:       2 │ 
+@bb/server:test:         ╵ ^
+@bb/server:test: 
+@bb/server:test:  ❯ |@bb/server:isolated| test/services/plugins/plugin-app-bundle.test.ts (13 tests | 1 failed) 1412ms
+@bb/server:test:      ✓ builds path installs at install time and serves hash-cached assets  523ms
+@bb/server:test:      ✓ reports hasApp:false for headless plugins and 404s their assets 44ms
+@bb/server:test:      ✓ erases a type-only backend RPC contract import from the frontend bundle 127ms
+@bb/server:test:      ✓ fails the install when the frontend build fails 31ms
+@bb/server:test:      ✓ rebuilds a path plugin at load when the recorded SDK version is stale 49ms
+@bb/server:test:      ✓ keeps an npm plugin's backend running with compatible:false on a major mismatch (no rebuild) 19ms
+@bb/server:test:      ✓ refreshes the served bundle hash on reload-by-id after dist changes (bb plugin dev cycle) 19ms
+@bb/server:test:      ✓ clears the served bundle and sets a status detail when a required rebuild fails 39ms
+@bb/server:test:      ✓ re-keys the bundle hash when only the meta changes (same js/css) 23ms
+@bb/server:test:      ✓ rejects malformed bundle meta (strict parse) 68ms
+@bb/server:test:      ✓ stops serving assets when the plugin is disabled 28ms
+@bb/server:test:      ✓ reports bundle:null when an npm plugin's dist is missing at load 22ms
+@bb/server:test:        × refuses npm installs without a prebuilt bundle and accepts prebuilt ones 421ms
+@bb/server:test: ✘ [ERROR] Expected ";" but found "is"
+@bb/server:test: 
+@bb/server:test:     ../../../../../../../../private/tmp/bb-plugin-update-SEm32X/data/plugins/cache/git/local/tmp/bb-plugin-update-SEm32X/repo/8f6641d4a71216b2c4e3984d4b1751c1a87fb1a1.staging/server.ts:1:47:
+@bb/server:test:       1 │ export default function plugin(bb: any) { this is not valid typescript
+@bb/server:test:         │                                                ~~
+@bb/server:test:         ╵                                                ;
+@bb/server:test: 
+@bb/server:test: (node:98950) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugins/plugin-update.test.ts (27 tests) 56781ms
+@bb/server:test:      ✓ keeps a multi-plugin check usable when one npm registry is offline  692ms
+@bb/server:test:      ✓ reports legacy retired-marketplace installs as unavailable without fetching  462ms
+@bb/server:test:      ✓ checks, reads persisted state, and updates through the exact HTTP contract  1017ms
+@bb/server:test:      ✓ checks a git candidate without installing or building it  881ms
+@bb/server:test:      ✓ checks for updates after marketplace removal converts provenance  557ms
+@bb/server:test:      ✓ returns an actionable 422 and keeps the installed commit for an incompatible candidate  626ms
+@bb/server:test:      ✓ serializes two updates for one plugin so only one applies  842ms
+@bb/server:test:      ✓ rolls back when a background service crashes during stabilization  5831ms
+@bb/server:test:      ✓ finishes an interrupted rollback before loading plugins after restart  10442ms
+@bb/server:test:      ✓ sweeps on start when a plugin was never checked, then waits out the interval across restarts  10333ms
+@bb/server:test:      ✓ shares one in-flight full sweep between concurrent callers  775ms
+@bb/server:test:      ✓ keeps the guarded registry policy for catalog installs during a check  447ms
+@bb/server:test:      ✓ retains rollback state through the grace period and collects it afterward  10432ms
+@bb/server:test:      ✓ orders removal after an in-flight update without resurrecting the plugin  1093ms
+@bb/server:test:      ✓ orders disablement after an in-flight update without re-enabling it  812ms
+@bb/server:test:      ✓ uses isolated staging directories for concurrent check and update  872ms
+@bb/server:test:      ✓ checks, updates, and rolls back a nested git plugin  1788ms
+@bb/server:test:      ✓ refuses a pinned git tag unless the source is changed explicitly  557ms
+@bb/server:test:      ✓ loads a legacy-layout plugin unchanged, then migrates lazily on update  890ms
+@bb/server:test:      ✓ offers and applies a newer tag inside a git semver range  1283ms
+@bb/server:test:      ✓ refuses to resolve a release tag that was moved to another commit  936ms
+@bb/server:test:      ✓ protects an unclassified Phase 1 exact-tag row in a full update sweep  1079ms
+@bb/server:test:      ✓ refuses to turn a legacy tag pin into a same-name branch  828ms
+@bb/server:test:      ✓ falls back to the newest compatible release in a range  1332ms
+@bb/server:test:      ✓ installs the newest compatible release from a git range  935ms
+@bb/server:test:      ✓ refuses an exact-tag install whose tag moved  966ms
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugins/plugin-service.test.ts (29 tests) 3828ms
+@bb/server:test:      ✓ times out a hung factory and reports error  2063ms
+@bb/server:test: (node:8218) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/public/public-thread-data.test.ts (79 tests) 2307ms
+@bb/server:test:      ✓ expands the newest slice when a large delegation parent completes last  327ms
+@bb/server:test: (node:8341) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/providers/echo-provider-canary.test.ts (2 tests) 2600ms
+@bb/server:test:      ✓ persists every grammar v3 capability the third-party bridge emits  1531ms
+@bb/server:test:      ✓ runs a turn with the built-in skills tier staged and sends the bridge only the requests it handles  1069ms
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugin-catalog/third-party-marketplaces.test.ts (22 tests) 2330ms
+@bb/server:test:      ✓ adds, refreshes, and removes a git marketplace read from a real checkout  467ms
+@bb/server:test: (node:9851) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugins/plugin-wire.test.ts (22 tests) 1128ms
+@bb/server:test: (node:10018) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugins/plugin-agent-tools.test.ts (19 tests) 1193ms
+@bb/server:test: (node:10025) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/public/public-project-skills.test.ts (30 tests) 537ms
+@bb/server:test: (node:10026) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/threads/generated-branch-names.test.ts (17 tests) 1716ms
+@bb/server:test: (node:10032) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/ai/voice-transcription.test.ts (9 tests) 976ms
+@bb/server:test: (node:10046) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugins/heroes.test.ts (5 tests) 346ms
+@bb/server:test: (node:10051) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server:isolated| test/ai/commit-message.test.ts (9 tests) 264ms
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/plugins/prebuilt-server-loading.test.ts (4 tests) 415ms
+@bb/server:test:  ✓ |@bb/server:isolated| test/skills/registry-skill-install.test.ts (6 tests) 35ms
+@bb/server:test:  ✓ |@bb/server:isolated| test/services/telemetry.test.ts (6 tests) 68ms
+@bb/server:test:  ✓ |@bb/server:isolated| test/system/event-loop-stall-monitor.test.ts (9 tests) 6ms
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯ Failed Tests 16 ⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-src) > resolves and packs a structurally valid npm package
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-src-UxHL2L/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-src) > rebuilds the artifact after package contents change without a version or protocol change
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-src-i9Gsk0/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-src) > builds a fresh artifact when the protocol changes at the same package version
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-src-XmFk0a/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-src) > keeps serving the previous artifact when a rebuild fails, and retries after
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-src-iPfPYY/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-dist) > resolves and packs a structurally valid npm package
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-dist-9tGRlD/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-dist) > rebuilds the artifact after package contents change without a version or protocol change
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-dist-c3iyIJ/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-dist) > builds a fresh artifact when the protocol changes at the same package version
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-dist-LwypcI/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (repo-dist) > keeps serving the previous artifact when a rebuild fails, and retries after
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-repo-dist-4zTieH/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (packaged) > resolves and packs a structurally valid npm package
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-packaged-l1vdb2/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (packaged) > rebuilds the artifact after package contents change without a version or protocol change
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-packaged-oof2xr/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (packaged) > builds a fresh artifact when the protocol changes at the same package version
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-packaged-kQ1U6S/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/app/bb-app-artifact.test.ts > bb-app artifact service (packaged) > keeps serving the previous artifact when a rebuild fails, and retries after
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-artifact-packaged-EeahmV/data/install-cache
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > hot-reloads a source-layout builtin server instead of a compatible dist artifact
+@bb/server:test: AssertionError: expected 'before' to be 'after' // Object.is equality
+@bb/server:test: 
+@bb/server:test: Expected: "after"
+@bb/server:test: Received: "before"
+@bb/server:test: 
+@bb/server:test:  ❯ test/services/plugins/builtin-plugins.test.ts:720:47
+@bb/server:test:     718|       await new Promise((resolvePromise) => setTimeout(resolvePromise,…
+@bb/server:test:     719|     }
+@bb/server:test:     720|     expect(globals.__hotBuiltinServerVersion).toBe("after");
+@bb/server:test:        |                                               ^
+@bb/server:test:     721|   }, 30_000);
+@bb/server:test:     722|
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > surfaces builtin app build failures in status until the next successful build
+@bb/server:test: AssertionError: the given combination of arguments (null and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string
+@bb/server:test:  ❯ test/services/plugins/builtin-plugins.test.ts:839:34
+@bb/server:test:     837|     }
+@bb/server:test:     838|     expect(failed?.status).toBe("running");
+@bb/server:test:     839|     expect(failed?.statusDetail).toContain("frontend bundle build fail…
+@bb/server:test:        |                                  ^
+@bb/server:test:     840|     expect(failed?.app.bundle?.hash).toBe(before?.hash);
+@bb/server:test:     841|
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server:isolated| test/services/plugins/plugin-app-bundle.test.ts > plugin app bundles (build policy, inventory, asset routes) > npm install policy > refuses npm installs without a prebuilt bundle and accepts prebuilt ones
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-server-test-A3wu9T/npm-work/pack
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/16]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server:isolated| test/services/plugins/plugin-install.test.ts > plugin install flows > npm sources > installs a scoped package into the immutable cache and retains it on removal
+@bb/server:test: Error: Command failed: npm pack --pack-destination /tmp/bb-plugin-install-wabLGh/npm-pack
+@bb/server:test: npm error code EPERM
+@bb/server:test: npm error syscall open
+@bb/server:test: npm error path /Users/erik/.npm/_cacache/tmp/18e82eed
+@bb/server:test: npm error errno -1
+@bb/server:test: npm error
+@bb/server:test: npm error Your cache folder contains root-owned files, due to a bug in
+@bb/server:test: npm error previous versions of npm which has since been addressed.
+@bb/server:test: npm error
+@bb/server:test: npm error To permanently fix this problem, please run:
+@bb/server:test: npm error   sudo chown -R 501:20 "/Users/erik/.npm"
+@bb/server:test: npm error Log files were not written due to an error writing to the directory: /Users/erik/.npm/_logs
+@bb/server:test: npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/16]⎯
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test: Vitest caught 4 unhandled errors during the test run.
+@bb/server:test: This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "hot-reloads a source-layout builtin server instead of a compatible dist artifact". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "rebuilds a source-layout builtin app changed while the server was stopped". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "rebuilds a source-layout builtin app changed while the server was stopped". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "surfaces builtin app build failures in status until the next successful build". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  Test Files  4 failed | 211 passed | 1 skipped (216)
+@bb/server:test:       Tests  16 failed | 2064 passed (2080)
+@bb/server:test:      Errors  4 errors
+@bb/server:test:    Start at  03:18:43
+@bb/server:test:    Duration  271.21s (transform 5.95s, setup 0ms, import 20.73s, tests 248.84s, environment 1ms)
+@bb/server:test: 
+@bb/server:test:  ELIFECYCLE  Test failed. See above for more details.
+@bb/server:test: ERROR: command finished with error: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run test --maxWorkers=1 --fileParallelism=false exited (1)
+@bb/server#test: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run test --maxWorkers=1 --fileParallelism=false exited (1)
+
+ Tasks:    6 successful, 7 total
+Cached:    0 cached, 7 total
+  Time:    4m54.433s 
+Failed:    @bb/server#test
+
+ ERROR  run failed: command  exited (1)

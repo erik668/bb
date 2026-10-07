@@ -1,0 +1,34 @@
+{
+  "schemaVersion": "wg-int-001-dependency-preparation-receipt/v1",
+  "commission": "WG-INT-001",
+  "checkout": {
+    "branch": "bb/wg-int001-personal-workspace-selection-exact",
+    "commit": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "tree": "f6fadacc570e7771e2474a15d1d996f5be8e1281"
+  },
+  "command": "pnpm ensure-native-modules",
+  "toolchain": {
+    "node": "v24.14.0",
+    "pnpm": "9.15.0"
+  },
+  "nativeScope": {
+    "repositoryDeclaredModule": "better-sqlite3",
+    "writeBoundary": "node_modules within this checkout only",
+    "result": "success"
+  },
+  "before": {
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "trackedStatusSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "trackedIndexSha256": "49213cba63dc235c34ece9d89d7c6fa37996bf6a74aba0012c61482d7c4e7df3"
+  },
+  "after": {
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "trackedStatusSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "trackedIndexSha256": "49213cba63dc235c34ece9d89d7c6fa37996bf6a74aba0012c61482d7c4e7df3"
+  },
+  "verification": {
+    "pnpmLockDiffSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "frozenSourceAndTestRadiusTrackedDiff": "clean",
+    "credentialsOrLiveServicesNeeded": false
+  }
+}

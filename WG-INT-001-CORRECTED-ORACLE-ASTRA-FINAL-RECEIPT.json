@@ -1,0 +1,139 @@
+{
+  "schema": "wg-int-001-corrected-oracle-astra-review-v1",
+  "verdict": "PASS",
+  "reviewer": "fresh independent Astra corrected-oracle critic",
+  "priorCriticAdmissionCredit": "zero",
+  "qualification": "WG-INT-001 local source only",
+  "report": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-CORRECTED-ORACLE-ASTRA-REPORT.md",
+    "sha256": "7d7c64fd39ea521cddc1db416a2b162e93843473a8ecae5909272c4af0a4577c"
+  },
+  "observedAt": "2026-09-05T08:04:16.053Z",
+  "candidate": {
+    "root": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source",
+    "head": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "branch": "bb/wg-int001-personal-workspace-selection-exact",
+    "diffSha256": "4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8",
+    "changedPaths": [
+      "apps/server/src/services/threads/thread-create.ts",
+      "apps/server/src/services/threads/thread-default-policy.ts",
+      "apps/server/test/threads/thread-create-seed-without-run.test.ts",
+      "apps/server/test/threads/thread-default-policy.test.ts"
+    ],
+    "inputFiles": [
+      {
+        "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/pnpm-lock.yaml",
+        "sha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+        "matchesFreeze": true
+      },
+      {
+        "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server/src/services/threads/thread-create.ts",
+        "sha256": "8048e9ac6d339b3b9802da5a5ef5104d14d9051b364c3e226dade25383471bfd",
+        "matchesFreeze": true
+      },
+      {
+        "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server/src/services/threads/thread-default-policy.ts",
+        "sha256": "f61e37ab55a4f1eb79cc506f5902744d4af08c0bbc4820ef09e38409abcaebe7",
+        "matchesFreeze": true
+      },
+      {
+        "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server/src/services/threads/thread-request-eligibility.ts",
+        "sha256": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa",
+        "matchesFreeze": true
+      },
+      {
+        "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server/test/threads/thread-default-policy.test.ts",
+        "sha256": "1cbca3f1580029b0035793f59240f8a8aa3768985bca5a6cdce19f4ba0b048ae",
+        "matchesFreeze": true
+      },
+      {
+        "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server/test/threads/thread-create-seed-without-run.test.ts",
+        "sha256": "f67bfd7cf2a28519ad9cb6b926a1dad5bc4fd05650fe091885994ceffa4d90b3",
+        "matchesFreeze": true
+      }
+    ]
+  },
+  "oracle": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-001-CORRECTED-REVIEW-ORACLE.md",
+    "sha256": "16cabc18200dfc5f5744a8c5ba6edcfb71991b937bdf642648d173c0c535e8d0"
+  },
+  "reviewFreeze": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-CORRECTED-ORACLE-REVIEW-FREEZE.json",
+    "sha256": "23c9e4940134dfaa9a04c0787587d06902c2f7c95fe7380eec32bce47774ed53"
+  },
+  "baseFreeze": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-REFREEZE-WG-INT-007-BASELINE.json",
+    "sha256": "ee618378bf020d0c09fd55f569d318110218d806a3ed2dcab5d02247348fd5d3"
+  },
+  "focused": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-SUFFIX-FOCUSED-TEST.log",
+    "sha256": "1d6f828beb7cee9f66cfa034d52950391ab82e7877a25df929aae1ba344243dc",
+    "summary": "Tests  65 passed (65)",
+    "passed": 65,
+    "total": 65
+  },
+  "typecheck": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-SUFFIX-SERVER-TYPECHECK.log",
+    "sha256": "8a9d399d2137869e14f570200077a7be18b2135024bddc078835ffcd535ca784",
+    "summary": "Tasks:    4 successful, 4 total"
+  },
+  "cleanBase": {
+    "receipt": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-007-CLEAN-BASE-CONTROL-RECEIPT.json",
+      "sha256": "6c6c6e38ee97b75a2287000e2a544b20d23d63617ede45523a480fa1354548bc"
+    },
+    "log": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-007-CLEAN-BASE-V2-BUILTIN-CONTROL.log",
+      "sha256": "6fc201677bde044e8062b798aebeef978e981152f106b186e7929385562f13da"
+    },
+    "commit": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "baseTestSha256": "f2230af43a4d4e37bcf89658c879a9c05822d6dd2ec89b09a48a1b4025abb735",
+    "baseTestMatchesReceipt": true,
+    "failedAssertions": [
+      " FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > hot-reloads a source-layout builtin server instead of a compatible dist artifact",
+      " FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > surfaces builtin app build failures in status until the next successful build"
+    ],
+    "emfileErrorCount": 4,
+    "currentControlStatus": "M apps/server/src/services/plugins/plugin-runtime.ts\n M apps/server/src/services/plugins/plugin-service-internal.ts\n M apps/server/src/services/plugins/plugin-service.ts\n M apps/server/test/services/plugins/builtin-plugins.test.ts\n M packages/plugin-build/src/plugin-dev-loop.ts",
+    "currentControlTest": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base-v2/apps/server/test/services/plugins/builtin-plugins.test.ts",
+      "sha256": "e8f3d31497fc6ff74943183596177e37958dc9fdfab32cf60fee4fa95b00a26c"
+    },
+    "summary": "Tests  2 failed | 25 passed (27)",
+    "failed": 2,
+    "passed": 25,
+    "total": 27
+  },
+  "fullSuite": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-SUFFIX-SERVER-PACKAGE-TEST-RUN-01.log",
+    "sha256": "a164ee19b75a6dbdb6a890d9109d514708bbd3d39c908efe2d8f799fcc97cb03",
+    "failedAssertions": [
+      " FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > hot-reloads a source-layout builtin server instead of a compatible dist artifact",
+      " FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > surfaces builtin app build failures in status until the next successful build"
+    ],
+    "emfileErrorCount": 4,
+    "testSummary": "Tests  2 failed | 2078 passed (2080)"
+  },
+  "expectedIdentityMatches": true,
+  "finalCandidateDiffSha256": "4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8",
+  "blockingFindings": [],
+  "watcherReview": {
+    "allowedExistingPath": "withTestHarness -> createTestAppHarness -> createApp -> createPluginService -> finally cleanup -> pluginService.stop",
+    "candidateChangesWatcherLifecycle": false,
+    "harnessBehavior": "Two added ordinary harness tests; one construction and one finally cleanup per invocation, no start call; no change to existing lifecycle counts/order.",
+    "globalEnvironmentCwdMutation": false,
+    "sourceGraphLimit": "Supplementary static literal TypeScript runtime-import traversal; node_modules excluded; not runtime execution proof."
+  },
+  "limits": [
+    "WG-INT-007 unresolved",
+    "Full server suite non-green",
+    "Clean-base reproduction verified through frozen historical receipt and log, with matching base Git test blob; current control checkout has subsequent edits",
+    "No tests rerun; no build, install, commit, live, registration-race, or sealed-eval action",
+    "No installed/live or unobserved registration-race proof"
+  ],
+  "writeScope": [
+    "WG-INT-001-CORRECTED-ORACLE-ASTRA-IN-PROGRESS.json",
+    "WG-INT-001-CORRECTED-ORACLE-ASTRA-REPORT.md",
+    "WG-INT-001-CORRECTED-ORACLE-ASTRA-FINAL-RECEIPT.json"
+  ]
+}

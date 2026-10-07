@@ -1,0 +1,83 @@
+{
+  "schema": "wg-int-001-validation-suffix-terminal-v1",
+  "commission": "WG-INT-001-BB-SOURCE-REPAIR-COMMISSION",
+  "status": "STOPPED_FULL_SERVER_SUITE_RED",
+  "createdAt": "2026-09-05T03:33:57-04:00",
+  "writeBoundary": {
+    "sourceEdits": false,
+    "allowedArtifacts": [
+      "WG-INT-001-SUFFIX-*.log",
+      ".wg-int-001-npm-cache"
+    ],
+    "globalCacheRepair": false,
+    "liveMutation": false
+  },
+  "propagationControl": {
+    "command": "npm_config_cache=/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.wg-int-001-npm-cache pnpm exec turbo run test --filter=@bb/server --force --env-mode=loose -- test/app/bb-app-artifact.test.ts",
+    "result": "1 test file passed, 12 tests passed",
+    "evidence": [
+      "The previously absent thread-local cache directory was explicitly created before the run.",
+      "The directory contains 12 npm log/update files after the run.",
+      "Global npm cache, cacache, and logs metadata were unchanged across this targeted control."
+    ],
+    "logSha256": "50a2589cb9831c1003972ee9dbb71d9692a9706ffb57dd1ad8ce3c681ddb4960"
+  },
+  "successfulChecks": [
+    {
+      "command": "pnpm exec turbo run test --filter=@bb/server --force --env-mode=loose --concurrency=1 -- test/threads/thread-default-policy.test.ts test/threads/thread-create-seed-without-run.test.ts",
+      "result": "2 test files passed, 65 tests passed",
+      "logSha256": "1d6f828beb7cee9f66cfa034d52950391ab82e7877a25df929aae1ba344243dc"
+    },
+    {
+      "command": "pnpm exec turbo run typecheck --filter=@bb/server --force --env-mode=loose --concurrency=1",
+      "result": "4 tasks successful",
+      "logSha256": "8a9d399d2137869e14f570200077a7be18b2135024bddc078835ffcd535ca784"
+    }
+  ],
+  "fullSuite": {
+    "runCount": 1,
+    "command": "npm_config_cache=/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.wg-int-001-npm-cache pace-agent-runtime heavy --name wg-int-001-suffix-server-package-test -- pnpm exec turbo run test --filter=@bb/server --force --env-mode=loose --concurrency=1 -- --maxWorkers=1 --fileParallelism=false",
+    "result": {
+      "testFiles": "1 failed, 214 passed, 1 skipped",
+      "tests": "2 failed, 2078 passed",
+      "unhandledErrors": 4,
+      "durationSeconds": 287.08
+    },
+    "remainingFailures": [
+      {
+        "file": "apps/server/test/services/plugins/builtin-plugins.test.ts",
+        "test": "hot-reloads a source-layout builtin server instead of a compatible dist artifact",
+        "assertion": "expected globals.__hotBuiltinServerVersion after; received before"
+      },
+      {
+        "file": "apps/server/test/services/plugins/builtin-plugins.test.ts",
+        "test": "surfaces builtin app build failures in status until the next successful build",
+        "assertion": "statusDetail was null where a frontend bundle build failure detail was expected"
+      },
+      {
+        "class": "environmental watcher exhaustion",
+        "evidence": "four EMFILE: too many open files, watch exceptions, all attributed by Vitest to builtin-plugins.test.ts"
+      }
+    ],
+    "resolvedFromPriorRun": "The 14 npm-pack/artifact/plugin failures did not recur under Turbo loose-env propagation.",
+    "logSha256": "a164ee19b75a6dbdb6a890d9109d514708bbd3d39c908efe2d8f799fcc97cb03"
+  },
+  "integrity": {
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "threadCreateSha256": "8048e9ac6d339b3b9802da5a5ef5104d14d9051b364c3e226dade25383471bfd",
+    "threadDefaultPolicySha256": "f61e37ab55a4f1eb79cc506f5902744d4af08c0bbc4820ef09e38409abcaebe7",
+    "threadRequestEligibilitySha256": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa",
+    "threadDefaultPolicyTestSha256": "1cbca3f1580029b0035793f59240f8a8aa3768985bca5a6cdce19f4ba0b048ae",
+    "threadCreateSeedWithoutRunTestSha256": "f67bfd7cf2a28519ad9cb6b926a1dad5bc4fd05650fe091885994ceffa4d90b3"
+  },
+  "notPerformed": [
+    "source edit",
+    "second full-suite run",
+    "refreeze",
+    "fresh Astra critic",
+    "global-cache repair",
+    "registration-race work",
+    "sealed-eval access or behavior",
+    "commit, install, or live mutation"
+  ]
+}

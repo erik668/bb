@@ -1,0 +1,611 @@
+{
+  "schemaVersion": "workflow-gates-open-defect-queue/v14",
+  "supersedesQueueSha256": "576642c5bc2eb7fcf15e0f10297f349c0a81d2d83eb92c8d05b6450fdafd58ed",
+  "queueId": "workflow-gates-open-defects-20260905",
+  "scope": "generalized workflow harness only",
+  "generatedAt": "2026-09-05",
+  "managerThreadId": "thr_vfqhedcjfx",
+  "externalCanaryConsumers": [
+    {
+      "threadId": "thr_pr3hxeaegk",
+      "scope": "sealed-eval environment feedback only",
+      "queueAuthority": false
+    }
+  ],
+  "sourceOwnerThreadId": "thr_vfqhedcjfx",
+  "installedFleet": {
+    "commit": "f633578211fe1a40517639faa636a28a302c307e",
+    "tree": "833f54917156dcd60243f471ed7d85a107b60fff",
+    "workflowGatesSubtree": "6222d68bf1b252253bad780740fc3b1383e741c9",
+    "campaignAutoAdvance": "shadow",
+    "validationReceiptReuse": "shadow"
+  },
+  "evidence": {
+    "u3Critic": {
+      "path": "/Users/erik/.bb/thread-storage/thr_gxyixp6h3e/u3-exact-source-review-v1/REVIEW-RECEIPT.json",
+      "sha256": "2a5318bcfc1ecd9c09d4b0a06d58fede73f1796134ed7e1d44ea1256c7e191d3"
+    },
+    "managerProtocolReview": {
+      "path": "/Users/erik/.bb/thread-storage/thr_7uneyur82k/manager-supervisor-fable-architecture-review-v8/verdict.json",
+      "sha256": "c5ee3c4368b0beb26b9f10a8e84fe1b34e0672ba102712d6279c8128ac51162b"
+    },
+    "managerProtocolLocalCommit": "f3ea8284954f5af740b6415ffd48ce1af07ea299",
+    "providerStartTimeoutFixture": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/u3-minimal-state-correction-astra-v1/SUPERVISOR-PROVIDER-START-TIMEOUT-FIXTURE.json",
+      "sha256": "6d0a8efd0f95c946a3c3419d30a1dca3a9caac4f3ed20d4aa2d4292c97f486ac"
+    },
+    "idleAwaitingRoutingFixture": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/u3-minimal-state-correction-astra-v1/SUPERVISOR-IDLE-AWAITING-ROUTING-FIXTURE.json",
+      "sha256": "952c58a16f74be02e4299722b0831a3de823d77cd15c0d0398a2a27f0578133b"
+    },
+    "finalReassignmentReceipt": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/u3-minimal-state-correction-astra-v1-attempt2/TERMINAL-RECEIPT.json",
+      "sha256": "0d7830500a2a81f90c8139a8730d5073a355334035193927f42f67ad9f0dfd04"
+    },
+    "workspaceRegistrationDiagnosis": {
+      "path": "/Users/erik/.bb/thread-storage/thr_nz4qe6njab/WG-INT-001-DIAGNOSIS.json",
+      "sha256": "d733f4beab12f15070a8f6f270ee6a35f0e028889ae801144c20cf3b31db2a5e",
+      "verdict": "SOURCE_BLOCKED"
+    },
+    "builtinPluginWatcherFailure": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-007-CLEAN-BASE-CONTROL-RECEIPT.json",
+      "sha256": "6c6c6e38ee97b75a2287000e2a544b20d23d63617ede45523a480fa1354548bc",
+      "classification": "same two assertions and four EMFILE watcher errors reproduced on exact clean base"
+    },
+    "nativeWatchCapabilityIncident": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-011-NATIVE-WATCH-CAPABILITY-DIAGNOSIS.json",
+      "classification": "one fresh Node process failed a single watch with EMFILE while later fresh processes succeeded; shared-host capability must be gated before source judgment"
+    },
+    "providerBridgeInventoryStop": {
+      "inventoryPath": "/Users/erik/.bb/thread-storage/thr_vpp2n9kwzx/WG-ORCH-004-CAPABILITY-INVENTORY.md",
+      "inventorySha256": "82a5b30c4ca1120d61be446413fce8d4c9522742deb8da46f1ed7b81fb3c3441",
+      "receiptPath": "/Users/erik/.bb/thread-storage/thr_vpp2n9kwzx/INVENTORY-RECEIPT.json",
+      "receiptSha256": "f33163914a98d9f4997dfc2a4130954661eb5772f7eeedfe207318406cce8912",
+      "classification": "task intake pinned the then-current queue, but final verification incorrectly compared against a mutable campaign-head path after a legitimate queue revision"
+    },
+    "orch003FullDesignReview": {
+      "reviewPath": "/Users/erik/.bb/thread-storage/thr_n6cgfy6mpa/WG-ORCH-003-FULL-DESIGN-REVIEW.json",
+      "reviewSha256": "ee80f293d5d24d58204fd4e612b2d6e6bfc27c6111cc651b44919f18793fe8a4",
+      "receiptPath": "/Users/erik/.bb/thread-storage/thr_n6cgfy6mpa/WG-ORCH-003-FULL-DESIGN-REVIEW-RECEIPT.json",
+      "receiptSha256": "5fc7dfcef0ab40728929f415f4ead2ce003d32b9299095ecc16dae550b9390de",
+      "classification": "candidate-authored transition denominator missed authority, read-generation, replacement, deadline, and consumer-coverage obligations"
+    },
+    "worktreeBaseIdentityIncident": {
+      "firstThreadId": "thr_zt3xqk2gpx",
+      "firstFailure": "target project could not resolve local branch bb/wg-wave1-r1-supervisor",
+      "secondThreadId": "thr_m686if54bk",
+      "secondFailure": "target project could not resolve exact commit c5e60bdcd6067f710816b3960e387fb3ed17f037",
+      "classification": "project/source repository identity mismatch before provider start; both attempts performed zero analysis and produced no design artifacts"
+    },
+    "handoffHashRelayIncident": {
+      "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-008-HANDOFF-HASH-RELAY-INCIDENT.json",
+      "sha256": "d1c6980b546a9d94af750f2569947b8b8b6e57fd50694a9a24fce7a3dc5303f6"
+    },
+    "sevenDayProfile": {
+      "receiptHits": 0,
+      "successfulMisses": 0,
+      "brokerAdoptionPercent": 0,
+      "secondsAvoided": 0,
+      "codexWaits": 18,
+      "codexValidationRuns": 21,
+      "codexSameTurnValidationRepeats": 5
+    }
+  },
+  "queuePolicy": {
+    "dedupeKey": "id",
+    "states": ["BLOCKED", "READY", "EVIDENCE_REQUIRED", "DEFERRED"],
+    "priorityOrder": ["P0", "P1", "P2", "P3"],
+    "autoAdvanceOnlyWhen": "all prerequisites and a deterministic acceptance predicate are satisfied",
+    "modelPolicy": "deterministic checks use no model; architecture uses Fable 5.1 only when critical; independent review uses gpt-6-astra/high",
+    "productLiveAuthority": false
+  },
+  "items": [
+    {
+      "id": "WG-ORCH-001",
+      "title": "Detect provider-accepted turns that never start",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "supervisor-runtime",
+      "dependsOn": [],
+      "evidenceRefs": ["providerStartTimeoutFixture"],
+      "acceptance": "A provider_turn_start_timeout moves the child to ORCH_BLOCKED, persists a typed receipt, wakes the manager once, and performs no model poll or automatic retry beyond policy."
+    },
+    {
+      "id": "WG-ORCH-002",
+      "title": "Detect active children with no provider item or artifact progress",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "supervisor-runtime",
+      "dependsOn": [],
+      "evidenceRefs": ["idleAwaitingRoutingFixture", "finalReassignmentReceipt"],
+      "acceptance": "An active child with durable STARTED state, no active provider item, and no event/artifact progress past its deadline becomes a single manager exception without unbounded polling."
+    },
+    {
+      "id": "WG-ORCH-004",
+      "title": "Preflight provider and model bridge availability before dispatch",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "supervisor-runtime",
+      "dependsOn": ["WG-ORCH-005"],
+      "evidenceRefs": [
+        "thr_yqpdshj4nt provisioning failure: Provider claude has no bridge to run on",
+        "providerBridgeInventoryStop"
+      ],
+      "acceptance": "Before creating a worker, the supervisor verifies that the requested provider, model, and execution bridge are callable; unavailable capability yields one durable typed CAPABILITY_BLOCKED result with zero worker/model work, and a fallback occurs only when the task policy names an exact allowed fallback and records the lineage."
+    },
+    {
+      "id": "WG-ORCH-005",
+      "title": "Bind active tasks to immutable campaign input revisions",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "manager-protocol",
+      "dependsOn": [],
+      "evidenceRefs": ["providerBridgeInventoryStop"],
+      "acceptance": "At task admission, the manager persists an immutable content-addressed input snapshot and stable task identity. Final verification rehashes that snapshot, never a mutable campaign-head path. A newer queue revision is reconciled afterward as applied, still-applicable, or superseded without repinning, rerunning, or crediting stale results; a one-property snapshot mutation fails closed."
+    },
+    {
+      "id": "WG-ORCH-003",
+      "title": "Integrate stable task IDs, durable STARTED receipts, and bounded deterministic reassignment",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "supervisor-source-owner",
+      "dependsOn": ["WG-ORCH-001", "WG-ORCH-002"],
+      "evidenceRefs": ["finalReassignmentReceipt", "orch003FullDesignReview"],
+      "acceptance": "A task persists pending->started->terminal attempt lineage, reassigns at most the declared bound with the same idempotency key, credits no unpersisted reasoning, and preserves the aggregate ORCH_BLOCKED diagnostic at exhaustion."
+    },
+    {
+      "id": "WG-INTEGRATE-001",
+      "title": "Join reviewed manager/supervisor V8 with the installed f633578 fleet",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "sole-fleet-source-owner",
+      "dependsOn": ["WG-ORCH-003", "WG-U3-001", "WG-U3-002", "WG-U3-003", "WG-U3-004", "WG-U3-005", "WG-U3-006", "WG-U3-007", "WG-U3-008", "WG-U3-009", "WG-U3-010", "WG-U3-011"],
+      "evidenceRefs": ["managerProtocolReview", "managerProtocolLocalCommit"],
+      "acceptance": "A fresh integration worktree joins local reviewed commit f3ea828 with installed f633578, preserves U1/U2 and envelope-v4 behavior, passes focused/full tests and independent Astra review, and is promoted by exact commit/tree/subtree."
+    },
+    {
+      "id": "WG-U3-001",
+      "title": "Preserve exact version-1 OFF behavior",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["u3Critic:F01"],
+      "acceptance": "Version-1 replay produces byte-identical receipts, outputs, and error precedence to the pinned base; every new classification and recovery branch is gated to version 2."
+    },
+    {
+      "id": "WG-U3-002",
+      "title": "Make wake delivery recoverable without duplicate sends",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["u3Critic:F02"],
+      "acceptance": "Persist attempted/unknown before wake; restart performs readbackWake before resend; found, absent, and indeterminate are explicit and bounded; one stable key produces at most one accepted wake."
+    },
+    {
+      "id": "WG-U3-003",
+      "title": "Recover an owned launch claim after a pre-effect crash",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["u3Critic:F03"],
+      "acceptance": "A confirmed-absent owned launch resumes once with the same operation identity; ambiguous or found readback never duplicates the launch; exhaustion remains visibly blocked."
+    },
+    {
+      "id": "WG-U3-004",
+      "title": "Persist and validate exact U2 result bytes on every path",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["u3Critic:F04"],
+      "acceptance": "Every production and injected U2 result is schema-validated, retained byte-for-byte, independently rehashable, and bound to resultSha256; malformed or throwing results fail closed with zero preservation and launches."
+    },
+    {
+      "id": "WG-U3-005",
+      "title": "Admit a valid second drift observation after prior supersession",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "u3-component-design",
+      "dependsOn": ["WG-U3-007"],
+      "evidenceRefs": ["u3Critic:F05", "finalReassignmentReceipt"],
+      "acceptance": "A second event is accepted only when exact receipt identity, artifact hashes, applied-history entry, and invalidating-decision preimage prove admission before supersession; U2 receives a deterministic applied-only historical view and returns COMPONENT_REDESIGN."
+    },
+    {
+      "id": "WG-U3-006",
+      "title": "Remove unreachable amendment-successor semantics from U3",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "u3-component-design",
+      "dependsOn": [],
+      "evidenceRefs": ["u3Critic:F06"],
+      "acceptance": "U3 contains no transition or test requiring AUTHORIZED_AMENDMENT, RELAUNCH_SUCCESSOR, or T12; PROPOSED_AMENDMENT remains evidence metadata and any legitimate objective successor uses the separately governed manager revision path."
+    },
+    {
+      "id": "WG-U3-007",
+      "title": "Replace snapshot-trusting journal recovery with a closed total aggregate",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "u3-component-design",
+      "dependsOn": ["WG-ORCH-003"],
+      "evidenceRefs": ["u3Critic:F07", "finalReassignmentReceipt"],
+      "acceptance": "The design uses immutable raw capture plus closed per-record aggregates and source-checked atomic transitions; every declared state is reachable, every nonterminal has forward/recovery handling, unspecified pairs fail closed, and no terminal revives."
+    },
+    {
+      "id": "WG-U3-008",
+      "title": "Prevent duplicate capture claimants from parsing",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": ["WG-U3-007"],
+      "evidenceRefs": ["u3Critic:F08"],
+      "acceptance": "The atomic claim winner alone parses; losers read and verify the winner or report a collision; restart recovery remains possible without concurrent double processing."
+    },
+    {
+      "id": "WG-U3-009",
+      "title": "Route every version-2 finalizer through receipt-first capture",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": ["WG-U3-007", "WG-U3-008"],
+      "evidenceRefs": ["u3Critic:F09"],
+      "acceptance": "Typed, prework, generic, result, and drift finalizers either durably capture raw bytes with an out-of-band stable key before parse or are rejected before launch; legacy routes remain byte-identical."
+    },
+    {
+      "id": "WG-U3-010",
+      "title": "Preserve running supersession and cancellation intent",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": ["WG-U3-003", "WG-U3-007"],
+      "evidenceRefs": ["u3Critic:F10"],
+      "acceptance": "Every actually launched unresolved attempt remains superseded_running with cancellationRequested and immutable attempt identity; late receipts cannot revive it and completed work stays correctly classified."
+    },
+    {
+      "id": "WG-U3-011",
+      "title": "Expose and test deterministic directory-order injection",
+      "priority": "P1",
+      "state": "READY",
+      "ownerRole": "u3-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["u3Critic:F11"],
+      "acceptance": "An authority-owned readdir permutation seam executes four distinct orderings and preserves decision, operation, and action identities without relying on source-local assertions."
+    },
+    {
+      "id": "WG-MGR-001",
+      "title": "Bound and sanitize publisher-controlled text",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-1"],
+      "acceptance": "terminalState and threadId use closed short patterns; exception and rejection detail has a fixed byte budget; injected payload text cannot enlarge or enter the manager brief."
+    },
+    {
+      "id": "WG-MGR-002",
+      "title": "Reject duplicate campaign IDs under one manager",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-2"],
+      "acceptance": "Registry/watchdog loading rejects duplicate managerThreadId+campaignId pairs and reports an error rather than Set-collapsing them."
+    },
+    {
+      "id": "WG-MGR-003",
+      "title": "Make reconciliation lock ownership atomic",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-3"],
+      "acceptance": "A crash cannot leave an ownerless permanent lock; acquisition atomically publishes ownership or a bounded stale-owner rule recovers it with deterministic diagnostics."
+    },
+    {
+      "id": "WG-MGR-004",
+      "title": "Persist launch binding immediately after spawn",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": ["WG-U3-003"],
+      "evidenceRefs": ["managerProtocolReview:FU-4"],
+      "acceptance": "The worker binding is atomically persisted immediately after spawn and before later reconciliation work, reducing dependence on title adoption after a crash."
+    },
+    {
+      "id": "WG-MGR-005",
+      "title": "Keep raw payloads out of the manager path",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": ["WG-MGR-001"],
+      "evidenceRefs": ["managerProtocolReview:FU-5"],
+      "acceptance": "Wake text points only to manager-brief; manager-facing CLI/dashboard surfaces omit raw receipt payloads; a marker falsifier proves no payload enters manager context."
+    },
+    {
+      "id": "WG-MGR-006",
+      "title": "Make dry-run semantics truthful and non-mutating",
+      "priority": "P1",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-6"],
+      "acceptance": "A non-apply reconcile either performs no persisted transition or the CLI explicitly stops calling it side-effect-free; tests bind the chosen contract."
+    },
+    {
+      "id": "WG-MGR-007",
+      "title": "Retire predecessor campaigns when a successor is initialized",
+      "priority": "P1",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-7"],
+      "acceptance": "A manager-authorized successor makes the predecessor unsendable through an immutable supersededBy join or registry enforcement; both revisions cannot launch concurrently."
+    },
+    {
+      "id": "WG-MGR-008",
+      "title": "Detect a worker thread bound across campaigns",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": ["WG-MGR-002"],
+      "evidenceRefs": ["managerProtocolReview:FU-8"],
+      "acceptance": "The watchdog reports duplicate worker threadId bindings across a manager's campaigns as an error before accepting results or launching successors."
+    },
+    {
+      "id": "WG-MGR-009",
+      "title": "Correct the legacy compatibility claim",
+      "priority": "P2",
+      "state": "READY",
+      "ownerRole": "manager-protocol-doc-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-9"],
+      "acceptance": "Documentation names the exact preserved behaviors and the deliberate pre-binding, receipt-precedence, wake-text, and additive-field deltas; known external wake consumers are enumerated."
+    },
+    {
+      "id": "WG-MGR-010",
+      "title": "Bound watchdog run-receipt growth",
+      "priority": "P2",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-10"],
+      "acceptance": "Watchdog receipts follow a deterministic count/age retention policy and a long-run test proves disk growth is bounded."
+    },
+    {
+      "id": "WG-MGR-011",
+      "title": "Document or strengthen the cooperative-thread threat model",
+      "priority": "P2",
+      "state": "READY",
+      "ownerRole": "manager-protocol-security-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-11"],
+      "acceptance": "The docs state that actor and thread identity are consistency-checked, not cryptographically authenticated, and explicitly bound the supported same-user BB threat model."
+    },
+    {
+      "id": "WG-MGR-012",
+      "title": "Use locale-independent code-point ordering",
+      "priority": "P2",
+      "state": "READY",
+      "ownerRole": "manager-protocol-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-12"],
+      "acceptance": "All final deterministic tiebreaks use explicit code-point comparison and pass under multiple locale settings."
+    },
+    {
+      "id": "WG-MGR-013",
+      "title": "Bound wake-marker history reads",
+      "priority": "P1",
+      "state": "READY",
+      "ownerRole": "bb-adapter-source-owner",
+      "dependsOn": [],
+      "evidenceRefs": ["managerProtocolReview:FU-13"],
+      "acceptance": "Wake dedupe uses a bounded cursor/tail or durable local marker; cost does not grow with the full manager transcript and no delivery is lost."
+    },
+    {
+      "id": "WG-INT-001",
+      "title": "Eliminate personal-workspace environment registration races",
+      "priority": "P0",
+      "state": "EVIDENCE_REQUIRED",
+      "ownerRole": "bb-platform-integration",
+      "dependsOn": [],
+      "evidenceRefs": ["workspaceRegistrationDiagnosis", "historical 409 personal workspace reuse failures"],
+      "acceptance": "A workflow resolves/reuses the personal workspace before spawn, concurrent registrations converge idempotently, and a 409 becomes a deterministic adoption/retry decision without cancelling the campaign."
+    },
+    {
+      "id": "WG-INT-002",
+      "title": "Generate consumer CLI invocations from the installed parser",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "adapter-tooling",
+      "dependsOn": [],
+      "evidenceRefs": ["missing --out", "unsupported --validation-control-root", "unsafe verifier path", "walking-skeleton form failures"],
+      "acceptance": "A data-only adapter generator emits parser-valid argv, exact executable, exact output roots, and absence predicates; missing/extra/unsupported flag controls fail before freeze or model calls."
+    },
+    {
+      "id": "WG-INT-003",
+      "title": "Preflight exact runtime and dependency resolution",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "adapter-tooling",
+      "dependsOn": [],
+      "evidenceRefs": ["tool.node failure", "critic ajv unavailable", "R1 and R2 exact-base worktrees missing ajv"],
+      "acceptance": "Before one-shot work, the gate resolves and pins Node and all review dependencies, proves the exact command in the target environment, and returns one typed capability blocker with zero candidate calls."
+    },
+    {
+      "id": "WG-INT-006",
+      "title": "Type and canonically digest installed dependency receipts",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "adapter-tooling",
+      "dependsOn": [],
+      "evidenceRefs": ["R2 lockfile-versus-installed-tree digest mismatch"],
+      "acceptance": "Dependency preflight emits a schema-versioned receipt naming the object kind, root, canonical enumeration algorithm, toolchain, lockfile digest, installed-tree digest, and required-module resolution; consumers cannot compare digests of different object kinds and no source/static work begins on mismatch."
+    },
+    {
+      "id": "WG-INT-011",
+      "title": "Gate transient native-watch capacity before watcher-dependent validation",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "validation-runtime",
+      "dependsOn": [],
+      "evidenceRefs": [
+        "nativeWatchCapabilityIncident",
+        "builtinPluginWatcherFailure"
+      ],
+      "acceptance": "Under serialized heavy ownership, a preflight creates exactly one non-recursive native watcher, observes one change, reports error and close, and records exact Node identity plus resource counts. Failure emits a durable typed CAPABILITY_BLOCKED receipt and performs no source judgment; a later successful probe cannot erase the earlier failure. A one-property forced-watch-failure control proves attribution, and a passing gate releases watcher-dependent validation without weakening its native anchor."
+    },
+    {
+      "id": "WG-INT-012",
+      "title": "Resolve worktree base identity in the target project before thread creation",
+      "priority": "P0",
+      "state": "READY",
+      "ownerRole": "bb-platform-integration",
+      "dependsOn": [],
+      "evidenceRefs": ["worktreeBaseIdentityIncident"],
+      "acceptance": "Before a thread record is created, BB resolves the requested branch/commit in the exact target project's repository and records repository identity plus resolved object ID. A source object that exists only in another checkout yields one typed pre-creation routing error with the exact source and target repository identities and suggests an existing compatible environment or explicit transfer; no provider start or orphan thread occurs. Branch and raw-SHA controls each pass in the owning repository and fail deterministically in a non-owning repository."
+    },
+    {
+      "id": "WG-INT-007",
+      "title": "Make builtin-plugin package validation hermetic and bounded",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "test-infrastructure",
+      "dependsOn": ["WG-INT-011"],
+      "evidenceRefs": [
+        "builtinPluginWatcherFailure",
+        "thr_rmujfj4jtd DESIGN_BLOCKED: clean-base reload/disposal lacks bounded termination or acknowledged cancellation",
+        "thr_t8fdymhd6h reload/termination capability inventory"
+      ],
+      "acceptance": "Without claiming production plugin-runtime quiescence, watcher-heavy validation runs in an owned child process with a parent-side bound and actual child-close acknowledgement; deterministic test doubles account for every created/closed watcher; one isolated native-watch control preserves real delivery/error coverage; timeout or missing close is a typed test failure, never a pass; and the complete server inventory runs with isolated npm state, no EMFILE/unhandled errors, gaps, or duplicate execution."
+    },
+    {
+      "id": "WG-INT-010",
+      "title": "Design bounded production plugin reload and teardown isolation",
+      "priority": "P1",
+      "state": "EVIDENCE_REQUIRED",
+      "ownerRole": "bb-platform-integration",
+      "dependsOn": [],
+      "evidenceRefs": [
+        "thr_t8fdymhd6h 22-row reload/termination capability inventory",
+        "thr_rmujfj4jtd DESIGN_BLOCKED",
+        "thr_axm4v276d8 ARCHITECTURE_BLOCKED"
+      ],
+      "acceptance": "Enumerate the complete synchronous plugin API, artifact-reader/writer, runtime identity, DB/resource, CLI, server, daemon, and SDK migration required to move all load-bearing reload/factory/dispose work behind a parent-owned killable process boundary, or explicitly ratify a conditional degraded-stop contract. The selected design must preserve immutable generation publication, require actual child close for termination credit, retain uncertain external effects, and pass independent architecture review before source work."
+    },
+    {
+      "id": "WG-INT-008",
+      "title": "Eliminate hand-authored artifact hashes from cross-thread handoffs",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "supervisor-runtime",
+      "dependsOn": ["WG-INT-004"],
+      "evidenceRefs": ["handoffHashRelayIncident"],
+      "acceptance": "A handoff command derives attachment path, object kind, and digest from one observed artifact receipt; the durable inbox carries that binding without manual transcription; the receiver independently rehashes before admission; wrong-path, stale-hash, and byte-changed controls fail without repinning or model work."
+    },
+    {
+      "id": "WG-INT-004",
+      "title": "Move authority identity adaptation into harness-owned derivation",
+      "priority": "P0",
+      "state": "BLOCKED",
+      "ownerRole": "authority-tooling",
+      "dependsOn": ["WG-INT-002"],
+      "evidenceRefs": ["raw-file versus target-manifest mismatch", "subject mismatch", "candidate/evidence overlap", "canonical serializer mismatch"],
+      "acceptance": "The harness derives subject and target-manifest identities once, exposes them as typed outputs, rejects mismatches during compile, and prevents issuers from hand-serializing objects that gates recompute."
+    },
+    {
+      "id": "WG-INT-005",
+      "title": "Standardize issuer-owned compile/preflight control labs",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "authority-tooling",
+      "dependsOn": ["WG-INT-002", "WG-INT-003", "WG-INT-004"],
+      "evidenceRefs": ["unobserved negative controls", "non-isolated controls", "output-root placement failures"],
+      "acceptance": "Before authority freeze, one generated lab executes every passing baseline, one-property mutant, intended-rule attribution, exact restoration, output-topology control, and consumer command under the installed gates."
+    },
+    {
+      "id": "WG-INT-009",
+      "title": "Reconcile plugin filesystem access with the no-node:fs boundary",
+      "priority": "P1",
+      "state": "EVIDENCE_REQUIRED",
+      "ownerRole": "bb-platform-integration",
+      "dependsOn": [],
+      "evidenceRefs": [
+        "WG-INT-007-FREEZE-RECEIPT.json sha256 5a5aec6cefc4fcd325f975bd88629f7efd68abba866c1c9c6e4ec7bc937585b6",
+        "exact clean base and WG-INT-007 candidate emit the same four node:fs restriction diagnostics"
+      ],
+      "acceptance": "Inventory every direct plugin-runtime filesystem operation, its root, caller, and required capability; migrate workspace access to the host-daemon boundary or explicitly authorize only proven server-local state under a reviewed threat model; the changed-scope oxlint gate then passes without a blanket suppression, while unrelated no-node:fs enforcement remains intact."
+    },
+    {
+      "id": "WG-DRIFT-001",
+      "title": "Complete the legitimate contract-drift successor path outside U2",
+      "priority": "P1",
+      "state": "BLOCKED",
+      "ownerRole": "manager-protocol",
+      "dependsOn": ["WG-INTEGRATE-001", "WG-U3-006", "WG-MGR-007"],
+      "evidenceRefs": ["managerProtocolReview claim 4", "installed U2 emits PROPOSED_AMENDMENT but not authorization"],
+      "acceptance": "U2 only classifies and proposes; a manager-owned explicit decision creates a distinct +1 objective/campaign revision with exact predecessor joins, selective invalidation, predecessor retirement, and no historical mutation."
+    },
+    {
+      "id": "WG-ADOPT-001",
+      "title": "Make validation-receipt broker use deterministic for eligible checks",
+      "priority": "P0",
+      "state": "EVIDENCE_REQUIRED",
+      "ownerRole": "runtime-adoption",
+      "dependsOn": ["WG-INTEGRATE-001"],
+      "evidenceRefs": ["sevenDayProfile"],
+      "acceptance": "Every eligible source/static validation enters through the broker by construction; over at least 50 eligible validations broker use exceeds 80%, false hits remain zero, and hits report avoided wall time and cost."
+    },
+    {
+      "id": "WG-ADOPT-002",
+      "title": "Promote deterministic campaign auto-advance from shadow",
+      "priority": "P1",
+      "state": "EVIDENCE_REQUIRED",
+      "ownerRole": "runtime-adoption",
+      "dependsOn": ["WG-INTEGRATE-001", "WG-ORCH-001", "WG-ORCH-002", "WG-ORCH-003"],
+      "evidenceRefs": ["installedFleet"],
+      "acceptance": "A no-product cohort proves declared deterministic transitions advance without model calls, ambiguous/error/blocked outcomes wake the manager, no false transitions occur, and rollback to shadow is exact."
+    },
+    {
+      "id": "WG-METRIC-001",
+      "title": "Run matched successful-campaign cohort for time, tokens, cycles, and cost",
+      "priority": "P0",
+      "state": "EVIDENCE_REQUIRED",
+      "ownerRole": "workflow-evaluation",
+      "dependsOn": ["WG-ADOPT-001", "WG-ADOPT-002"],
+      "evidenceRefs": ["sevenDayProfile"],
+      "acceptance": "Comparable successful tasks run with and without the integrated harness; report prework calls/tokens/wall time, total tokens/cost, repair cycles, idle time, cache hit rate, and confidence intervals with no product-quality regression."
+    },
+    {
+      "id": "WG-CACHE-001",
+      "title": "Publish a shared immutable artifact and decision index across threads",
+      "priority": "P2",
+      "state": "BLOCKED",
+      "ownerRole": "supervisor-runtime",
+      "dependsOn": ["WG-ORCH-003", "WG-INT-004"],
+      "evidenceRefs": ["repeated cross-thread hash and authority reconstruction"],
+      "acceptance": "Threads resolve immutable inputs, decisions, terminal receipts, and supersession from a content-addressed campaign index with acknowledged delivery; cached facts never substitute for live/provider/test evidence."
+    }
+  ],
+  "closedItemsNotReopened": [
+    "single stable-object contract support",
+    "nested compile output parent creation",
+    "full-verifier non-execution during preflight",
+    "authority-root write confinement",
+    "validation-state versus evidence-root topology checks",
+    "acceptance-envelope v4 byte-and-pin identity",
+    "manager versus supervisor role architecture",
+    "change-radius and severity fields in critic output"
+  ],
+  "summary": {
+    "totalItems": 47,
+    "p0": 28,
+    "p1": 14,
+    "p2": 5,
+    "blocked": 17,
+    "ready": 24,
+    "evidenceRequired": 6,
+    "deferred": 0
+  }
+}

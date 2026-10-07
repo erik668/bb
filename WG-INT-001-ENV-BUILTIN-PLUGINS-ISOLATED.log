@@ -1,0 +1,162 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.supportedArchitectures", "pnpm.overrides", "pnpm.patchedDependencies". See https://pnpm.io/settings for the new home of each setting.
+• turbo 2.8.3
+• Packages in scope: @bb/server
+• Running test in 1 packages
+• Remote caching disabled
+@bb/plugin-build:generate: cache bypass, force executing dc758e77f25c1b9f
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: wrote /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.2.4)
+@bb/templates:generate:plugin-scaffold: cache bypass, force executing e4e3c4a50928d249
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+//:ensure-native-modules: cache bypass, force executing f43c90d655806ca7
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@bb/templates:generate:templates: cache bypass, force executing 987bf88ffe06966a
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@get-bb/plugin-sdk:build:types: cache bypass, force executing 36fc01b05f34ee6c
+@get-bb/plugin-sdk:build:types: 
+@get-bb/plugin-sdk:build:types: > @get-bb/plugin-sdk@0.4.28 build:types /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build:types: > node scripts/build-bundled-dts.mjs
+@get-bb/plugin-sdk:build:types: 
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-ai-services.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-acp.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-host.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-customization-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-view.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-file-navigation-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-host-policy.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-plugin-app-collector.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-host.d.ts
+@get-bb/plugin-sdk:build: cache bypass, force executing 4a47288821e7ba0c
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: > @get-bb/plugin-sdk@0.4.28 build /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build: > node scripts/build-runtime.mjs
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: Built 17 @get-bb/plugin-sdk runtime entries.
+@bb/server:test: cache bypass, force executing 10749aab2e9d42a8
+@bb/server:test: 
+@bb/server:test: > @bb/server@0.0.1 test /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: > vitest run --config vitest.config.ts "test/services/plugins/builtin-plugins.test.ts" "--maxWorkers=1" "--fileParallelism=false"
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  RUN  v4.1.1 /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: 
+@bb/server:test:  ❯ |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts (27 tests | 2 failed) 43415ms
+@bb/server:test:      × hot-reloads a source-layout builtin server instead of a compatible dist artifact 20080ms
+@bb/server:test:      × surfaces builtin app build failures in status until the next successful build 20133ms
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > hot-reloads a source-layout builtin server instead of a compatible dist artifact
+@bb/server:test: AssertionError: expected 'before' to be 'after' // Object.is equality
+@bb/server:test: 
+@bb/server:test: Expected: "after"
+@bb/server:test: Received: "before"
+@bb/server:test: 
+@bb/server:test:  ❯ test/services/plugins/builtin-plugins.test.ts:720:47
+@bb/server:test:     718|       await new Promise((resolvePromise) => setTimeout(resolvePromise,…
+@bb/server:test:     719|     }
+@bb/server:test:     720|     expect(globals.__hotBuiltinServerVersion).toBe("after");
+@bb/server:test:        |                                               ^
+@bb/server:test:     721|   }, 30_000);
+@bb/server:test:     722|
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server:isolated| test/services/plugins/builtin-plugins.test.ts > builtin plugin reconciliation > surfaces builtin app build failures in status until the next successful build
+@bb/server:test: AssertionError: the given combination of arguments (null and string) is invalid for this assertion. You can use an array, a map, an object, a set, a string, or a weakset instead of a string
+@bb/server:test:  ❯ test/services/plugins/builtin-plugins.test.ts:839:34
+@bb/server:test:     837|     }
+@bb/server:test:     838|     expect(failed?.status).toBe("running");
+@bb/server:test:     839|     expect(failed?.statusDetail).toContain("frontend bundle build fail…
+@bb/server:test:        |                                  ^
+@bb/server:test:     840|     expect(failed?.app.bundle?.hash).toBe(before?.hash);
+@bb/server:test:     841|
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯ Unhandled Errors ⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test: Vitest caught 4 unhandled errors during the test run.
+@bb/server:test: This might cause false positive tests. Resolve unhandled errors to make sure your tests are not affected.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "hot-reloads a source-layout builtin server instead of a compatible dist artifact". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "rebuilds a source-layout builtin app changed while the server was stopped". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "rebuilds a source-layout builtin app changed while the server was stopped". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯ Uncaught Exception ⎯⎯⎯⎯⎯
+@bb/server:test: Error: EMFILE: too many open files, watch
+@bb/server:test:  ❯ FSEvent.FSWatcher._handle.onchange node:internal/fs/watchers:267:21
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: Serialized Error: { errno: -24, syscall: 'watch', code: 'EMFILE', filename: null }
+@bb/server:test: This error originated in "test/services/plugins/builtin-plugins.test.ts" test file. It doesn't mean the error was thrown inside the file itself, but while it was running.
+@bb/server:test: The latest test that might've caused the error is "surfaces builtin app build failures in status until the next successful build". It might mean one of the following:
+@bb/server:test: - The error was thrown, while Vitest was running this test.
+@bb/server:test: - If the error occurred after the test had been completed, this was the last documented test before it was thrown.
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  Test Files  1 failed (1)
+@bb/server:test:       Tests  2 failed | 25 passed (27)
+@bb/server:test:      Errors  4 errors
+@bb/server:test:    Start at  03:37:01
+@bb/server:test:    Duration  48.59s (transform 2.90s, setup 0ms, import 5.01s, tests 43.41s, environment 0ms)
+@bb/server:test: 
+@bb/server:test:  ELIFECYCLE  Test failed. See above for more details.
+@bb/server:test: ERROR: command finished with error: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run test test/services/plugins/builtin-plugins.test.ts --maxWorkers=1 --fileParallelism=false exited (1)
+@bb/server#test: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run test test/services/plugins/builtin-plugins.test.ts --maxWorkers=1 --fileParallelism=false exited (1)
+
+ Tasks:    6 successful, 7 total
+Cached:    0 cached, 7 total
+  Time:    1m41.686s 
+Failed:    @bb/server#test
+
+ ERROR  run failed: command  exited (1)

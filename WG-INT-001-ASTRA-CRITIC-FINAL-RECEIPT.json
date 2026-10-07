@@ -1,0 +1,17 @@
+{
+  "criticIdentity": "/root/astra_critic",
+  "verdict": "CHANGES REQUIRED",
+  "status": "STOPPED_NON_PASS",
+  "baseCommit": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+  "baseTree": "f6fadacc570e7771e2474a15d1d996f5be8e1281",
+  "candidateFreezeSha256": "76aed3207ea9e513fb3c58cd15e56b97fdabe2cf65d20fe32a9740a3a0b11701",
+  "candidateDiffSha256": "14232d4424af2c62de5204022ef5c53cfe5c80dc06c60f3c1f00f4b3228310cf",
+  "reportPath": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-ASTRA-CRITIC-REPORT.md",
+  "reportSha256": "f89958b54aae4cabaa499e0e0794322fb4d0f14120d40836546b3045e1d7e754",
+  "finding": "Ready personal-parent empty path is admitted for implicit reuse at thread-default-policy.ts:146 although the existing create boundary rejects it at thread-create.ts:723.",
+  "sourceEdits": false,
+  "candidateFreezeEdits": false,
+  "liveCalls": false,
+  "sealedEvalAccess": false,
+  "registrationRaceProven": false
+}

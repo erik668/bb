@@ -1,0 +1,7 @@
+{
+  "status": "IN_PROGRESS",
+  "critic": "/root/astra_refreeze_critic",
+  "candidateDiffSha256Expected": "4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8",
+  "scope": "Independent read-only candidate and recorded evidence review; critic artifacts only",
+  "prohibited": ["source edits", "test edits", "dependency edits", "installs", "full tests", "live actions", "sealed-eval actions"]
+}

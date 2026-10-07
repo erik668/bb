@@ -1,0 +1,45 @@
+{
+  "schemaVersion": "wg-int-001-source-stop-receipt/v1",
+  "commission": "WG-INT-001",
+  "verdict": "STOPPED_UNAPPROVED_NATIVE_MUTATION",
+  "state": "PRE_RED_TEST_STOP",
+  "repository": {
+    "branch": "bb/wg-int001-personal-workspace-selection-exact",
+    "commit": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "tree": "f6fadacc570e7771e2474a15d1d996f5be8e1281"
+  },
+  "verifiedInputs": {
+    "sourceDiagnosisSha256": "ff56bfe8c6fb7c4f3c07f5ac64b738f832e0207328d11f1447ea844c57cd4cb1",
+    "workflowHarnessQueueSha256": "3fbf66621ab107ef040cb05d9cab102465031e8ae3b511423d67d9e2c06008e5",
+    "pnpmLockSha256AfterPermittedInstall": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1"
+  },
+  "allowedDependencyAction": {
+    "command": "pnpm install --frozen-lockfile --ignore-scripts",
+    "result": "completed",
+    "lockfileChanged": false
+  },
+  "blockingAction": {
+    "command": "pnpm exec turbo run test --filter=@bb/server -- test/threads/thread-default-policy.test.ts test/threads/thread-create-seed-without-run.test.ts",
+    "observed": "Turbo invoked ensure-native-modules, which attempted a better-sqlite3 native rebuild after its prebuilt lookup failed.",
+    "commissionRule": "Stop if tests require an unapproved native/environment mutation.",
+    "testResult": "not reached"
+  },
+  "sourceAndTestEdits": [],
+  "unchangedVerifiedPaths": [
+    "apps/server/src/services/threads/thread-default-policy.ts",
+    "apps/server/src/services/threads/thread-create.ts",
+    "apps/server/src/services/threads/thread-request-eligibility.ts",
+    "apps/server/test/threads/thread-default-policy.test.ts",
+    "apps/server/test/threads/thread-create-seed-without-run.test.ts",
+    "pnpm-lock.yaml"
+  ],
+  "notPerformed": [
+    "red-first regression edit or execution",
+    "source repair",
+    "sealed-eval access",
+    "registration-race implementation or claim",
+    "live BB/server mutation",
+    "independent Astra critic, because no candidate source SHA exists"
+  ],
+  "nextAuthorityRequired": "Explicit authorization for the repository's native dependency preparation or a supplied approved prebuilt environment, followed by a fresh red-first source-repair continuation."
+}

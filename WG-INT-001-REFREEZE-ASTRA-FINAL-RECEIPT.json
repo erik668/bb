@@ -1,0 +1,91 @@
+{
+  "schema": "wg-int-001-refreeze-astra-critic/v1",
+  "verdict": "CHANGES_REQUIRED",
+  "critic": "/root/astra_refreeze_critic",
+  "independentFromAuthor": true,
+  "createdAt": "2026-09-05T07:58:35.136Z",
+  "head": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+  "tree": "f6fadacc570e7771e2474a15d1d996f5be8e1281",
+  "branch": "bb/wg-int001-personal-workspace-selection-exact",
+  "candidateDiffSha256": "4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8",
+  "hashes": {
+    "apps/server/src/services/threads/thread-create.ts": "8048e9ac6d339b3b9802da5a5ef5104d14d9051b364c3e226dade25383471bfd",
+    "apps/server/src/services/threads/thread-default-policy.ts": "f61e37ab55a4f1eb79cc506f5902744d4af08c0bbc4820ef09e38409abcaebe7",
+    "apps/server/test/threads/thread-create-seed-without-run.test.ts": "f67bfd7cf2a28519ad9cb6b926a1dad5bc4fd05650fe091885994ceffa4d90b3",
+    "apps/server/test/threads/thread-default-policy.test.ts": "1cbca3f1580029b0035793f59240f8a8aa3768985bca5a6cdce19f4ba0b048ae",
+    "apps/server/src/services/threads/thread-request-eligibility.ts": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa",
+    "pnpm-lock.yaml": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "WG-INT-001-REFREEZE-WG-INT-007-BASELINE.json": "ee618378bf020d0c09fd55f569d318110218d806a3ed2dcab5d02247348fd5d3",
+    "WG-INT-001-SUFFIX-FOCUSED-TEST.log": "1d6f828beb7cee9f66cfa034d52950391ab82e7877a25df929aae1ba344243dc",
+    "WG-INT-001-SUFFIX-SERVER-TYPECHECK.log": "8a9d399d2137869e14f570200077a7be18b2135024bddc078835ffcd535ca784",
+    "WG-INT-001-SUCCESSOR-EMPTY-PATH-RED.log": "316616e30722e1a20a385eb738f0379709569c4579a64ed4ed72a81d63b3ba28",
+    "WG-INT-001-REFREEZE-ASTRA-REPORT.md": "9e3210971b360463b4904390889b8a84725e423f03c44a22d523b90185a12aa5",
+    "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-001-BB-SOURCE-REPAIR-COMMISSION.md": "0a296689a98072b8a01611036424015f14722fc4a255a712824bbed227630735",
+    "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-007-CLEAN-BASE-CONTROL-RECEIPT.json": "6c6c6e38ee97b75a2287000e2a544b20d23d63617ede45523a480fa1354548bc",
+    "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-007-CLEAN-BASE-V2-BUILTIN-CONTROL.log": "6fc201677bde044e8062b798aebeef978e981152f106b186e7929385562f13da"
+  },
+  "candidateRoot": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source",
+  "qualification": "Not admitted under frozen mandate. Parent-selection behavior supported; mandatory all-four-path watcher import/runtime absence is contradicted by pre-existing test harness.",
+  "findings": [
+    {
+      "severity": "blocking",
+      "lens": "pre-handoff spec conformance / code-review",
+      "file": "apps/server/test/threads/thread-create-seed-without-run.test.ts",
+      "line": 36,
+      "claim": "All four changed paths have no import/runtime reachability to builtin watcher lifecycle",
+      "result": "FALSE",
+      "importPath": [
+        "thread-create-seed-without-run.test.ts:36",
+        "test/helpers/test-app.ts:9",
+        "src/server.ts:25-27",
+        "src/services/plugins/plugin-service.ts:1348-1428"
+      ],
+      "runtimePath": [
+        "withTestHarness",
+        "createTestAppHarness",
+        "createApp",
+        "createPluginService",
+        "harness.cleanup",
+        "pluginService.stop",
+        "builtinSourceWatchers.splice(0) and watcher.close"
+      ],
+      "preExisting": true,
+      "candidateCausationEstablished": false,
+      "fix": "Separate authorized successor must distinguish pre-existing reachability from candidate-introduced watcher behavior; preserve frozen candidate and receipts."
+    }
+  ],
+  "evidence": {
+    "focused": {
+      "passed": 65,
+      "total": 65,
+      "filesPassed": 2,
+      "verification": "hash-matching recorded log inspected; not rerun"
+    },
+    "typecheck": {
+      "successfulTasks": 4,
+      "totalTasks": 4,
+      "verification": "hash-matching recorded log inspected; not rerun"
+    },
+    "diffCheck": "PASS",
+    "baseline": {
+      "id": "WG-INT-007",
+      "classification": "Historical exact-base reproduction separately recorded",
+      "failures": 2,
+      "passes": 25,
+      "emfileErrors": 4,
+      "receiptAndLogHashesMatch": true,
+      "baseTestBlobMatchesReceipt": true,
+      "currentControlTrackedState": "dirty: apps/server/test/services/plugins/builtin-plugins.test.ts",
+      "currentControlTestSha256": "80442355b5d6711a2efde3fa47c3afb836a97e7c1aa91dab6ad883a61d140109",
+      "fullServerSuiteGreen": false
+    }
+  },
+  "inspectionLimits": [
+    "No source/test/dependency edits or installs",
+    "No tests/build/typecheck rerun",
+    "No exhaustive compiler-derived import graph or dynamic tracing; concrete counterexample disproves absolute absence",
+    "No live/installed-bundle/sealed-eval validation",
+    "Registration race and concurrency correctness unproven and excluded"
+  ],
+  "stop": "CHANGES_REQUIRED; no candidate admission"
+}

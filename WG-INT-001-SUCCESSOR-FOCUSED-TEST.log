@@ -1,0 +1,78 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.supportedArchitectures", "pnpm.overrides", "pnpm.patchedDependencies". See https://pnpm.io/settings for the new home of each setting.
+• turbo 2.8.3
+• Packages in scope: @bb/server
+• Running test in 1 packages
+• Remote caching disabled
+//:ensure-native-modules: cache bypass, force executing 7410e1494c4acb6e
+@get-bb/plugin-sdk:build:types: cache bypass, force executing 6b502caa4e56ec2a
+@bb/plugin-build:generate: cache bypass, force executing 77de5863532eede8
+@bb/templates:generate:templates: cache bypass, force executing aed1b59e59b302e4
+@bb/templates:generate:plugin-scaffold: cache bypass, force executing 9d20412ae0f400cd
+@get-bb/plugin-sdk:build:types: 
+@get-bb/plugin-sdk:build:types: > @get-bb/plugin-sdk@0.4.28 build:types /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build:types: > node scripts/build-bundled-dts.mjs
+@get-bb/plugin-sdk:build:types: 
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: wrote /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.2.4)
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-ai-services.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-acp.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-host.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-customization-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-view.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-file-navigation-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-host-policy.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-plugin-app-collector.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-host.d.ts
+@get-bb/plugin-sdk:build: cache bypass, force executing 02be5eb09bd0056e
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: > @get-bb/plugin-sdk@0.4.28 build /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build: > node scripts/build-runtime.mjs
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: Built 17 @get-bb/plugin-sdk runtime entries.
+@bb/server:test: cache bypass, force executing 74f5c9e2d9b74279
+@bb/server:test: 
+@bb/server:test: > @bb/server@0.0.1 test /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: > vitest run --config vitest.config.ts "test/threads/thread-default-policy.test.ts" "test/threads/thread-create-seed-without-run.test.ts"
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  RUN  v4.1.1 /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: 
+@bb/server:test: (node:55045) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-default-policy.test.ts (39 tests) 44ms
+@bb/server:test: (node:55046) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ✓ |@bb/server| test/threads/thread-create-seed-without-run.test.ts (26 tests) 628ms
+@bb/server:test: 
+@bb/server:test:  Test Files  2 passed (2)
+@bb/server:test:       Tests  65 passed (65)
+@bb/server:test:    Start at  03:17:03
+@bb/server:test:    Duration  3.34s (transform 2.04s, setup 0ms, import 4.16s, tests 672ms, environment 0ms)
+@bb/server:test: 
+
+ Tasks:    7 successful, 7 total
+Cached:    0 cached, 7 total
+  Time:    23.031s 
+

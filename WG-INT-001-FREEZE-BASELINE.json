@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "wg-int-001-source-freeze/v1",
+  "commission": "WG-INT-001",
+  "stage": "PRE_EDIT",
+  "repository": {
+    "branch": "bb/wg-int001-personal-workspace-selection-exact",
+    "commit": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "tree": "f6fadacc570e7771e2474a15d1d996f5be8e1281",
+    "initialStatus": "clean"
+  },
+  "authorityInputs": {
+    "sourceDiagnosisSha256": "ff56bfe8c6fb7c4f3c07f5ac64b738f832e0207328d11f1447ea844c57cd4cb1",
+    "workflowHarnessQueueSha256": "3fbf66621ab107ef040cb05d9cab102465031e8ae3b511423d67d9e2c06008e5"
+  },
+  "frozenRadius": {
+    "source": {
+      "apps/server/src/services/threads/thread-create.ts": "0b21bb06f08ed627577ecaff53fe420c628ee65e64fc13e15df6eeba5ebfd0f5",
+      "apps/server/src/services/threads/thread-default-policy.ts": "66533acce6a9d4941af46c5432f2fb610dff30277f6273c5714881b491e0ceab",
+      "apps/server/src/services/threads/thread-request-eligibility.ts": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa"
+    },
+    "tests": {
+      "apps/server/test/threads/thread-default-policy.test.ts": "654dd59be06c594d3aca1d95a205aa9e09f31e9e9217bdbb6640153a680857bf",
+      "apps/server/test/threads/thread-create-seed-without-run.test.ts": "6a2c4a3fd1b3405d44ed8fcdcd3de83e8affc23fb6c7b89c902ad779de8d08d6"
+    },
+    "unchangedEligibilityGuard": "apps/server/src/services/threads/thread-request-eligibility.ts"
+  },
+  "dependencyInputs": {
+    "apps/server/package.json": "d97d81791b70410dbb84ba6d5e52d870f37a0e006bae058f719492843e104e77",
+    "pnpm-lock.yaml": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1"
+  },
+  "excluded": [
+    "sealed-eval behavior and evidence",
+    "workflow plugin or adapter source",
+    "concurrent environment registration or retry behavior",
+    "live BB/server/product/provider/cloud/database/deploy systems"
+  ]
+}

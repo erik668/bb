@@ -1,0 +1,37 @@
+{
+  "schemaVersion": "wg-int-001-candidate-freeze/v1",
+  "commission": "WG-INT-001",
+  "base": {
+    "branch": "bb/wg-int001-personal-workspace-selection-exact",
+    "commit": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "tree": "f6fadacc570e7771e2474a15d1d996f5be8e1281"
+  },
+  "candidateDiffSha256": "14232d4424af2c62de5204022ef5c53cfe5c80dc06c60f3c1f00f4b3228310cf",
+  "changedPaths": {
+    "apps/server/src/services/threads/thread-create.ts": "8048e9ac6d339b3b9802da5a5ef5104d14d9051b364c3e226dade25383471bfd",
+    "apps/server/src/services/threads/thread-default-policy.ts": "4428ab3b8fe9ea845a4fdb028d2241ff7a784c5c1c776608d22270eeafece1c3",
+    "apps/server/test/threads/thread-default-policy.test.ts": "6c05c696126721ed9e41957931f429f78efc1487ebd949821622f035ddddaf8a",
+    "apps/server/test/threads/thread-create-seed-without-run.test.ts": "f67bfd7cf2a28519ad9cb6b926a1dad5bc4fd05650fe091885994ceffa4d90b3"
+  },
+  "unchangedPins": {
+    "apps/server/src/services/threads/thread-request-eligibility.ts": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa",
+    "pnpm-lock.yaml": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1"
+  },
+  "redGreen": {
+    "red": "focused selector/create tests: 8 intended failures on baseline",
+    "green": "focused selector/create tests: 64 passed after repair",
+    "manualMutation": "inverted personal-kind check: 4 selector failures; exact source restored"
+  },
+  "validation": {
+    "typecheck": "pnpm exec turbo run typecheck --filter=@bb/server: passed",
+    "focusedTests": "pnpm exec turbo run test --filter=@bb/server -- test/threads/thread-default-policy.test.ts test/threads/thread-create-seed-without-run.test.ts: passed",
+    "packageTests": "pnpm exec turbo run test --filter=@bb/server: 2063 passed; 16 failures in unrelated plugin/artifact tests caused by ~/.npm EPERM and EMFILE watcher limits; modified test files passed",
+    "packageLog": "WG-INT-001-SERVER-PACKAGE-TEST.log"
+  },
+  "scopeExclusions": [
+    "sealed-eval behavior",
+    "registration-race implementation or retry",
+    "thread-request-eligibility source changes",
+    "live BB/server/product/provider/cloud/database/deploy systems"
+  ]
+}

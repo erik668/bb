@@ -1,0 +1,60 @@
+{
+  "schema": "wg-int-001-environmental-suffix-terminal-v1",
+  "commission": "WG-INT-001-BB-SOURCE-REPAIR-COMMISSION",
+  "status": "STOPPED_PREEXISTING_WATCHER_TEST_HARNESS_DEFECT",
+  "createdAt": "2026-09-05T03:38:06-04:00",
+  "writeBoundary": {
+    "sourceEdits": false,
+    "allowedArtifacts": [
+      "WG-INT-001-ENV-BUILTIN-PLUGINS-ISOLATED.log"
+    ],
+    "globalCacheRepair": false,
+    "liveMutation": false
+  },
+  "isolatedControl": {
+    "file": "apps/server/test/services/plugins/builtin-plugins.test.ts",
+    "command": "npm_config_cache=/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.wg-int-001-npm-cache pace-agent-runtime heavy --name wg-int-001-builtin-plugins-isolated -- pnpm exec turbo run test --filter=@bb/server --force --env-mode=loose --concurrency=1 -- test/services/plugins/builtin-plugins.test.ts --maxWorkers=1 --fileParallelism=false",
+    "result": {
+      "testFiles": "1 failed",
+      "tests": "2 failed, 25 passed",
+      "unhandledErrors": 4,
+      "durationSeconds": 48.59
+    },
+    "failures": [
+      {
+        "test": "hot-reloads a source-layout builtin server instead of a compatible dist artifact",
+        "assertion": "expected globals.__hotBuiltinServerVersion after; received before",
+        "line": "test/services/plugins/builtin-plugins.test.ts:720"
+      },
+      {
+        "test": "surfaces builtin app build failures in status until the next successful build",
+        "assertion": "failed.statusDetail was null where a frontend bundle build failure detail was expected",
+        "line": "test/services/plugins/builtin-plugins.test.ts:839"
+      }
+    ],
+    "watcherEvidence": "Vitest reported four unhandled EMFILE: too many open files, watch exceptions and attributed each to builtin-plugins.test.ts, despite Turbo task concurrency 1 and Vitest maxWorkers=1/fileParallelism=false.",
+    "classification": "Pre-existing builtin-plugin watcher/test-harness defect, independently reproduced outside the personal-parent selector test surface.",
+    "logSha256": "21acc7b7e3f44d3310f4035c88051a603b65c4b4328e07b23f98504a008b73a2"
+  },
+  "notRun": [
+    "four inventory shards",
+    "shard-union proof",
+    "refreeze",
+    "fresh Astra critic"
+  ],
+  "integrity": {
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "threadCreateSha256": "8048e9ac6d339b3b9802da5a5ef5104d14d9051b364c3e226dade25383471bfd",
+    "threadDefaultPolicySha256": "f61e37ab55a4f1eb79cc506f5902744d4af08c0bbc4820ef09e38409abcaebe7",
+    "threadRequestEligibilitySha256": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa",
+    "threadDefaultPolicyTestSha256": "1cbca3f1580029b0035793f59240f8a8aa3768985bca5a6cdce19f4ba0b048ae",
+    "threadCreateSeedWithoutRunTestSha256": "f67bfd7cf2a28519ad9cb6b926a1dad5bc4fd05650fe091885994ceffa4d90b3"
+  },
+  "notPerformed": [
+    "source edit",
+    "global-cache repair",
+    "registration-race work",
+    "sealed-eval access or behavior",
+    "commit, install, or live mutation"
+  ]
+}

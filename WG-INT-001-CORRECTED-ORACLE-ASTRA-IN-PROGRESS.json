@@ -1,0 +1,11 @@
+{
+  "workItem": "WG-INT-001",
+  "status": "IN_PROGRESS",
+  "reviewer": "fresh independent corrected-oracle Astra critic",
+  "oraclePath": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-001-CORRECTED-REVIEW-ORACLE.md",
+  "expectedOracleSha256": "16cabc18200dfc5f5744a8c5ba6edcfb71991b937bdf642648d173c0c535e8d0",
+  "expectedCandidateDiffSha256": "4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8",
+  "priorCriticAdmissionCredit": false,
+  "writeScope": ["WG-INT-001-CORRECTED-ORACLE-ASTRA-IN-PROGRESS.json", "WG-INT-001-CORRECTED-ORACLE-ASTRA-REPORT.md", "WG-INT-001-CORRECTED-ORACLE-ASTRA-FINAL-RECEIPT.json"],
+  "limits": ["No source or test changes", "No tests or installs", "No live, sealed-eval, or registration-race actions", "PASS qualifies WG-INT-001 local source only"]
+}

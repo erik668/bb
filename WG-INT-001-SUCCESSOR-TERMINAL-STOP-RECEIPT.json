@@ -1,0 +1,74 @@
+{
+  "schema": "wg-int-001-successor-terminal-stop-v1",
+  "commission": "WG-INT-001-BB-SOURCE-REPAIR-COMMISSION",
+  "successor": "ready-personal-parent-empty-path",
+  "status": "STOPPED_FULL_SERVER_SUITE_RED",
+  "createdAt": "2026-09-05T03:23:41-04:00",
+  "admissionCredit": "zero-prior-credit; no refreeze; no critic commissioned",
+  "repair": {
+    "changedFiles": [
+      "apps/server/src/services/threads/thread-default-policy.ts",
+      "apps/server/test/threads/thread-default-policy.test.ts"
+    ],
+    "invariant": "A ready same-project personal parent with path empty string does not synthesize reuse; the original requested personal host is preserved."
+  },
+  "successfulChecks": [
+    {
+      "command": "pnpm exec turbo run test --filter=@bb/server --force -- test/threads/thread-default-policy.test.ts",
+      "result": "red regression before repair: 1 failed, 38 passed; received reuse instead of the requested host"
+    },
+    {
+      "command": "pnpm exec turbo run test --filter=@bb/server --force -- test/threads/thread-default-policy.test.ts test/threads/thread-create-seed-without-run.test.ts",
+      "result": "2 test files passed, 65 tests passed"
+    },
+    {
+      "command": "pnpm exec turbo run typecheck --filter=@bb/server --force",
+      "result": "4 tasks successful"
+    },
+    {
+      "command": "pnpm exec oxfmt apps/server/src/services/threads/thread-default-policy.ts apps/server/test/threads/thread-default-policy.test.ts --check",
+      "result": "passed"
+    },
+    {
+      "command": "git diff --check",
+      "result": "passed"
+    }
+  ],
+  "requiredFullSuite": {
+    "status": "failed; run once after heavy-lock preflight confirmed availability",
+    "command": "npm_config_cache=/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.wg-int-001-npm-cache pace-agent-runtime heavy --name wg-int-001-successor-server-package-test -- pnpm exec turbo run test --filter=@bb/server --force -- --maxWorkers=1 --fileParallelism=false",
+    "controls": {
+      "threadLocalNpmCache": "requested path; no directory was created",
+      "vitest": "maxWorkers=1 and fileParallelism=false",
+      "serialization": "pace-agent-runtime heavy"
+    },
+    "result": {
+      "testFiles": "4 failed, 211 passed, 1 skipped",
+      "tests": "16 failed, 2064 passed",
+      "unhandledErrors": 4,
+      "durationSeconds": 271.21
+    },
+    "classification": [
+      "14 artifact/plugin tests failed because child npm pack processes attempted to write /Users/erik/.npm despite the parent thread-local npm_config_cache; the global cache reports EPERM/root-owned files.",
+      "2 builtin-plugin reconciliation assertions failed while the run also emitted four EMFILE filesystem watcher exceptions.",
+      "No failure names or stack locations intersect the authorized selector or its focused tests."
+    ],
+    "log": "WG-INT-001-SUCCESSOR-SERVER-PACKAGE-TEST-RUN-01.log"
+  },
+  "integrity": {
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "threadCreateSha256": "8048e9ac6d339b3b9802da5a5ef5104d14d9051b364c3e226dade25383471bfd",
+    "threadDefaultPolicySha256": "f61e37ab55a4f1eb79cc506f5902744d4af08c0bbc4820ef09e38409abcaebe7",
+    "threadRequestEligibilitySha256": "6d532bb58d1ce49a36a150f0a1a6e1a940443715433a9c20986a442fc908d2aa",
+    "threadDefaultPolicyTestSha256": "1cbca3f1580029b0035793f59240f8a8aa3768985bca5a6cdce19f4ba0b048ae",
+    "threadCreateSeedWithoutRunTestSha256": "f67bfd7cf2a28519ad9cb6b926a1dad5bc4fd05650fe091885994ceffa4d90b3"
+  },
+  "notPerformed": [
+    "a second full-suite run",
+    "refreeze",
+    "fresh Astra critic",
+    "registration-race work",
+    "sealed-eval access or behavior",
+    "commit, install, live mutation, or global-cache repair"
+  ]
+}

@@ -1,0 +1,22 @@
+0 verbose cli /Users/erik/.local/share/mise/installs/node/24.14.0/bin/node /Users/erik/.local/share/mise/installs/node/24.14.0/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.9.0
+2 info using node@v24.14.0
+3 silly config load:file:/Users/erik/.local/share/mise/installs/node/24.14.0/lib/node_modules/npm/npmrc
+4 silly config load:file:/private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-update-xgRPpS/data/plugins/cache/git/local/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-update-xgRPpS/tagged/ffd63902c21938cf8a2ab92ac51b7deea6acfecb.staging/.npmrc
+5 silly config load:file:/Users/erik/.npmrc
+6 silly config load:file:/private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-update-xgRPpS/data/plugins/cache/git/local/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-update-xgRPpS/tagged/ffd63902c21938cf8a2ab92ac51b7deea6acfecb.staging/etc/npmrc
+7 verbose title npm install
+8 verbose argv "install" "--prefix" "/private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-update-xgRPpS/data/plugins/cache/git/local/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-update-xgRPpS/tagged/ffd63902c21938cf8a2ab92ac51b7deea6acfecb.staging" "--ignore-scripts" "--omit" "dev" "--omit" "optional" "--no-audit" "--no-fund"
+9 verbose logfile logs-max:10 dir:/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.wg-int-001-npm-cache/_logs/2026-09-05T07_33_03_586Z-
+10 verbose logfile /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.wg-int-001-npm-cache/_logs/2026-09-05T07_33_03_586Z-debug-0.log
+11 silly logfile start cleaning logs, removing 1 files
+12 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+13 silly logfile done cleaning log files
+14 silly idealTree buildDeps
+15 silly reify moves {}
+16 verbose cwd /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+17 verbose os Darwin 25.6.0
+18 verbose node v24.14.0
+19 verbose npm  v11.9.0
+20 verbose exit 0
+21 info ok

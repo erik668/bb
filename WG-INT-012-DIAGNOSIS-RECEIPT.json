@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "wg-int-source-diagnosis-receipt/v1",
+  "workItem": "WG-INT-012",
+  "state": "REPAIR_CONTRACT_READY",
+  "startedAt": "2026-09-05T00:00:00Z",
+  "commission": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-012-SOURCE-DIAGNOSIS-COMMISSION.md",
+    "sha256": "ed1a0d65f9cfa9e7c4a3990a4098aa5e2d05d34e7d59ba22807801d49611a2a0"
+  },
+  "intakeSnapshot": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/.WG-INT-012-INTAKE-SNAPSHOT.json",
+    "sourcePathAtCapture": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WORKFLOW-GATES-OPEN-DEFECT-QUEUE-20260905.json",
+    "sha256": "1ec55802a3b050129a4752dbcf82f32ba56c112e17ae7e5a07a6a87609c175cb",
+    "byteLength": 33497
+  },
+  "sourceIdentity": {
+    "commit": "82f3abe46b7241b2a96d9655ea0d26f11aa584bc",
+    "tree": "1806e5f72fa24092bbdef5bd826758fcfb90dc88"
+  },
+  "writeBoundary": [
+    ".WG-INT-012-INTAKE-SNAPSHOT.json",
+    "WG-INT-012-SOURCE-DIAGNOSIS.md",
+    "WG-INT-012-DIAGNOSIS-RECEIPT.json"
+  ],
+  "prohibitions": [
+    "source edits",
+    "worktree or environment creation",
+    "provider invocation",
+    "sealed-eval inspection"
+  ],
+  "completed": {
+    "diagnosisPath": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-012-SOURCE-DIAGNOSIS.md",
+    "diagnosisSha256": "dd9cd4b69c651b6b9095666f20d796e2aca069cbb51d9e8c9dda36d8a622192f",
+    "sourceCommit": "82f3abe46b7241b2a96d9655ea0d26f11aa584bc",
+    "sourceTree": "1806e5f72fa24092bbdef5bd826758fcfb90dc88",
+    "controlsEstablished": [
+      "target-local branch and raw-SHA resolution",
+      "typed non-owning repository refusal before thread persistence",
+      "canonical common-Git-directory repository identity",
+      "persisted peeled-commit pin and post-fetch race refusal",
+      "zero provider call and zero orphan-record assertions"
+    ],
+    "notExecutedByCommission": [
+      "source changes",
+      "test suite",
+      "provider or live probe"
+    ]
+  }
+}

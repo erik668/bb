@@ -1,0 +1,44 @@
+{
+  "schema": "wg-int-001-corrected-oracle-review-freeze-v1",
+  "oracle": {
+    "path": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-001-CORRECTED-REVIEW-ORACLE.md",
+    "sha256": "16cabc18200dfc5f5744a8c5ba6edcfb71991b937bdf642648d173c0c535e8d0"
+  },
+  "priorReview": {
+    "receipt": "WG-INT-001-REFREEZE-ASTRA-FINAL-RECEIPT.json",
+    "sha256": "51d549f384dcdd4442c91377b442631d0ea3119439cfdf9149b971e25a8d5027",
+    "admissionCredit": "zero",
+    "supersededClaim": "blanket absence of transitive test-harness watcher lifecycle reachability"
+  },
+  "candidate": {
+    "head": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "branch": "bb/wg-int001-personal-workspace-selection-exact",
+    "diffSha256": "4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8",
+    "baseFreeze": "WG-INT-001-REFREEZE-WG-INT-007-BASELINE.json",
+    "baseFreezeSha256": "ee618378bf020d0c09fd55f569d318110218d806a3ed2dcab5d02247348fd5d3"
+  },
+  "boundEvidence": {
+    "focused": {
+      "log": "WG-INT-001-SUFFIX-FOCUSED-TEST.log",
+      "sha256": "1d6f828beb7cee9f66cfa034d52950391ab82e7877a25df929aae1ba344243dc",
+      "result": "2 files, 65 tests passed"
+    },
+    "typecheck": {
+      "log": "WG-INT-001-SUFFIX-SERVER-TYPECHECK.log",
+      "sha256": "8a9d399d2137869e14f570200077a7be18b2135024bddc078835ffcd535ca784",
+      "result": "4 tasks successful"
+    },
+    "cleanBaseBlocker": {
+      "receipt": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/WG-INT-007-CLEAN-BASE-CONTROL-RECEIPT.json",
+      "sha256": "6c6c6e38ee97b75a2287000e2a544b20d23d63617ede45523a480fa1354548bc",
+      "status": "separate unresolved baseline blocker; full server suite is non-green"
+    }
+  },
+  "reviewPredicate": "Allow the pre-existing withTestHarness -> createApp -> createPluginService -> stop cleanup path. Reject only a candidate change to watcher creation, start, configuration, retention, timing, races, closure; plugin-service construction/cleanup counts or ordering; process globals/environment/cwd used by watcher tests; or source imported by watcher lifecycle.",
+  "prohibitions": [
+    "source, test, lockfile, oracle, or candidate edits",
+    "test reruns",
+    "install, commit, live, sealed-eval, or registration-race actions",
+    "claiming full suite green"
+  ]
+}

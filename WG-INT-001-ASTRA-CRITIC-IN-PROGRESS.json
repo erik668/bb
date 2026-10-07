@@ -1,0 +1,9 @@
+{
+  "status": "IN_PROGRESS",
+  "criticIdentity": "/root/astra_critic",
+  "criticRole": "independent source-repair critic",
+  "candidateFreezePath": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/WG-INT-001-CANDIDATE-FREEZE.json",
+  "candidateFreezeSha256": "76aed3207ea9e513fb3c58cd15e56b97fdabe2cf65d20fe32a9740a3a0b11701",
+  "sourceInspectedBeforeReceipt": false,
+  "writeScope": ["WG-INT-001-ASTRA-CRITIC-IN-PROGRESS.json", "WG-INT-001-ASTRA-CRITIC-REPORT.md"]
+}

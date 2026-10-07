@@ -1,0 +1,148 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.supportedArchitectures", "pnpm.overrides", "pnpm.patchedDependencies". See https://pnpm.io/settings for the new home of each setting.
+• turbo 2.8.3
+• Packages in scope: @bb/server
+• Running test in 1 packages
+• Remote caching disabled
+@get-bb/plugin-sdk:build:types: cache bypass, force executing c4e1fe3ee167af82
+@bb/templates:generate:templates: cache bypass, force executing dd636f7761b5f34d
+@bb/templates:generate:plugin-scaffold: cache bypass, force executing 65b4557eedf4c210
+@bb/plugin-build:generate: cache bypass, force executing 030a9fdc022f0b2a
+//:ensure-native-modules: cache bypass, force executing e79c5767e6dc0bf4
+@get-bb/plugin-sdk:build:types: 
+@get-bb/plugin-sdk:build:types: > @get-bb/plugin-sdk@0.4.28 build:types /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build:types: > node scripts/build-bundled-dts.mjs
+@get-bb/plugin-sdk:build:types: 
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: wrote /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.2.4)
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-ai-services.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-provider-bridge-acp.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-host.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-customization-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-composer-view.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-file-navigation-validation.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-host-policy.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-internal-plugin-app-collector.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-app.d.ts
+@get-bb/plugin-sdk:build:types: Unchanged bundled-types/bb-plugin-sdk-testing-host.d.ts
+@get-bb/plugin-sdk:build: cache bypass, force executing 4cf41ef55cae10cc
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: > @get-bb/plugin-sdk@0.4.28 build /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-sdk
+@get-bb/plugin-sdk:build: > node scripts/build-runtime.mjs
+@get-bb/plugin-sdk:build: 
+@get-bb/plugin-sdk:build: Built 17 @get-bb/plugin-sdk runtime entries.
+@bb/server:test: cache bypass, force executing 8ad715619e325d01
+@bb/server:test: 
+@bb/server:test: > @bb/server@0.0.1 test /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: > vitest run --config vitest.config.ts "test/threads/thread-default-policy.test.ts"
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  RUN  v4.1.1 /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:test: 
+@bb/server:test: (node:54579) ExperimentalWarning: SQLite is an experimental feature and might change at any time
+@bb/server:test: (Use `node --trace-warnings ...` to show where the warning was created)
+@bb/server:test:  ❯ |@bb/server| test/threads/thread-default-policy.test.ts (39 tests | 1 failed) 23ms
+@bb/server:test:      ✓ uses the picker's first provider without pinning a model 1ms
+@bb/server:test:      ✓ honors the user's default provider and picker order 6ms
+@bb/server:test:      ✓ discards stored defaults when the resolved provider changes 0ms
+@bb/server:test:      ✓ reuses matching stored defaults 0ms
+@bb/server:test:      ✓ skips unavailable providers when choosing the product default 5ms
+@bb/server:test:      ✓ rejects an explicitly selected unavailable provider 5ms
+@bb/server:test:      ✓ defaults implicit child host environments to managed worktrees 0ms
+@bb/server:test:      ✓ defaults a child under a parent from another project to a managed worktree 0ms
+@bb/server:test:      ✓ keeps explicit same-environment reuse for child threads 0ms
+@bb/server:test:      ✓ does not reuse a personal parent environment from another project 0ms
+@bb/server:test:      ✓ defaults personal child threads to the parent environment 0ms
+@bb/server:test:      ✓ does not synthesize reuse from an unmanaged personal parent 0ms
+@bb/server:test:      ✓ preserves an explicit personal host that differs from the parent host 0ms
+@bb/server:test:      ✓ preserves personal creation when 'the environment belongs to another pr…' 0ms
+@bb/server:test:      ✓ preserves personal creation when 'the environment is not personal' 0ms
+@bb/server:test:      × preserves personal creation when 'the ready environment has an empty pa…' 4ms
+@bb/server:test:      ✓ preserves personal creation when 'the ready environment has no path' 0ms
+@bb/server:test:      ✓ preserves personal creation when 'the environment is unavailable' 0ms
+@bb/server:test:      ✓ reuses a compatible provisioning personal parent 0ms
+@bb/server:test:      ✓ passes through 'requests without a parent thread' 0ms
+@bb/server:test:      ✓ passes through 'deleted parents' 0ms
+@bb/server:test:      ✓ passes through 'explicit unmanaged paths' 0ms
+@bb/server:test:      ✓ uses the auto permission default for non-agent providers 0ms
+@bb/server:test:      ✓ uses full for Pi threads 0ms
+@bb/server:test:      ✓ uses full for ACP threads when the Auto default is unsupported 0ms
+@bb/server:test:      ✓ uses auto for Codex threads 0ms
+@bb/server:test:      ✓ honors the permission snapshot requested for a side chat 0ms
+@bb/server:test:      ✓ prefers requested permission modes over every fallback 0ms
+@bb/server:test:      ✓ maps a legacy readonly execution to Accept Edits for future work 0ms
+@bb/server:test:      ✓ maps a legacy readonly parent execution before inheriting it 0ms
+@bb/server:test:      ✓ uses project permission defaults for child threads without parent execution history 0ms
+@bb/server:test:      ✓ never upgrades an inherited mode past the parent for provider support 0ms
+@bb/server:test:      ✓ clamps an explicitly requested mode to the parent's mode 0ms
+@bb/server:test:      ✓ clamps the child's recorded mode to the parent's current mode 0ms
+@bb/server:test:      ✓ clamps a child in another project to its parent's mode 0ms
+@bb/server:test:      ✓ keeps an explicit full request under a full parent 0ms
+@bb/server:test:      ✓ allows a child to run below its parent's mode 0ms
+@bb/server:test:      ✓ uses root-thread defaults when the parent reference is not live 0ms
+@bb/server:test:      ✓ still uses project permission defaults for root threads 0ms
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+@bb/server:test: 
+@bb/server:test:  FAIL  |@bb/server| test/threads/thread-default-policy.test.ts > resolveCreateThreadEnvironment > preserves personal creation when 'the ready environment has an empty pa…'
+@bb/server:test: AssertionError: expected { type: 'reuse', …(1) } to deeply equal { Object (type, hostId, ...) }
+@bb/server:test: 
+@bb/server:test: - Expected
+@bb/server:test: + Received
+@bb/server:test: 
+@bb/server:test:   {
+@bb/server:test: -   "hostId": "host-1",
+@bb/server:test: -   "type": "host",
+@bb/server:test: -   "workspace": {
+@bb/server:test: -     "type": "personal",
+@bb/server:test: -   },
+@bb/server:test: +   "environmentId": "env-parent-1",
+@bb/server:test: +   "type": "reuse",
+@bb/server:test:   }
+@bb/server:test: 
+@bb/server:test:  ❯ test/threads/thread-default-policy.test.ts:368:7
+@bb/server:test:     366|         requestedEnvironment,
+@bb/server:test:     367|       }),
+@bb/server:test:     368|     ).toEqual(requestedEnvironment);
+@bb/server:test:        |       ^
+@bb/server:test:     369|   });
+@bb/server:test:     370|
+@bb/server:test: 
+@bb/server:test: ⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+@bb/server:test: 
+@bb/server:test: 
+@bb/server:test:  Test Files  1 failed (1)
+@bb/server:test:       Tests  1 failed | 38 passed (39)
+@bb/server:test:    Start at  03:16:28
+@bb/server:test:    Duration  1.89s (transform 1.07s, setup 0ms, import 1.75s, tests 23ms, environment 0ms)
+@bb/server:test: 
+@bb/server:test:  ELIFECYCLE  Test failed. See above for more details.
+@bb/server:test: ERROR: command finished with error: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run test test/threads/thread-default-policy.test.ts exited (1)
+@bb/server#test: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run test test/threads/thread-default-policy.test.ts exited (1)
+
+ Tasks:    6 successful, 7 total
+Cached:    0 cached, 7 total
+  Time:    23.25s 
+Failed:    @bb/server#test
+
+ ERROR  run failed: command  exited (1)

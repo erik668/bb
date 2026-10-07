@@ -1,0 +1,41 @@
+SHA: 7cdd77ba9cd23f71f7833bd989d63565128c6fea
+VERDICT: CHANGES REQUIRED
+CRITIC: /root/astra_refreeze_critic
+
+The frozen candidate's parent-selection repair is supported by the inspected source and recorded focused evidence. Qualification cannot PASS under the frozen review mandate: its required absence of import/runtime reachability to builtin watcher lifecycle is contradicted by an existing test-harness path. This is an acceptance-claim defect, not a demonstrated candidate regression or evidence that WG-INT-001 causes WG-INT-007.
+
+## Finding
+
+**Blocking — pre-handoff spec conformance / code-review.** The freeze requires: “Verify the four changed paths have no import/runtime reachability to builtin watcher lifecycle.” This is false for `apps/server/test/threads/thread-create-seed-without-run.test.ts:36`: it imports `withTestHarness` from `test/helpers/test-app.ts`, which imports `createApp` from `src/server.ts:9` (import location in the helper). `server.ts:25-27` imports `createPluginService` from `services/plugins/plugin-service.ts`. That module implements builtin watcher creation at lines 1348-1420 and watcher shutdown at lines 1427-1428. The helper constructs the service through `createApp` at `test-app.ts:272`, and calls `pluginService.stop()` at line 283. Therefore there is both a transitive runtime import path to the watcher-owning module and a statically visible runtime call into its cleanup lifecycle.
+
+The path predates this diff. The helper does not call `pluginService.start()` in the inspected setup; reaching cleanup does not prove a watcher was created or an EMFILE error occurred. No candidate changes touch watcher configuration, start, stop, or resource handling. Fix the acceptance statement in a separately authorized successor to distinguish pre-existing reachability from candidate-introduced watcher behavior, then review under that corrected mandate. Do not modify this frozen candidate or baseline artifacts to make an absolute absence claim appear true.
+
+## Behavior and test review
+
+Commission requirement: “`resolveCreateThreadEnvironment` may implicitly reuse a personal parent's environment only after authority-owned environment facts establish same project, `workspaceProvisionType=personal`, compatible requested host, and usable lifecycle/path semantics at the existing server boundary.” Supported: `thread-create.ts:606-619` loads the parent environment by its actual ID; `thread-default-policy.ts:127-149,271-303` checks project, workspace kind, requested host, live parent, and status/path. A ready empty or null path fails the new predicate and returns the original request at line 314. The empty-path regression at `thread-default-policy.test.ts:342-368` retains the explicit host. The recorded red log shows that case failing before the truthiness repair.
+
+Commission requirement: “A personal parent attached to a same-project unmanaged environment must not be rewritten into an invalid reuse request. Preserve the caller's requested personal-host intent so normal creation/selection proceeds through existing authority.” Supported by the predicate and policy regression at line 295; the DB-backed integration at `thread-create-seed-without-run.test.ts:104` checks a different, personal child environment on the requested host.
+
+Commission requirement: “An explicit personal host request must not silently discard a different requested host in favor of the parent.” Supported by the explicit host comparison, policy regression at line 314, and DB-backed integration at line 150 of the seed test.
+
+Commission requirement: “Preserve explicit environment-ID reuse, exact fork-source unmanaged exception, standard-project managed-worktree isolation, and the existing eligibility guard. Do not add a blanket unmanaged bypass or a global personal project/host singleton.” Supported by unchanged explicit-request fallback and unchanged eligibility file. Policy controls at lines 205, 223 and 242 cover standard isolation and explicit reuse. Ready nonempty reuse is covered at line 275; provisioning at line 371. The existing retiring integration at seed test line 881 exercises cancellation and reuse; the exact unmanaged fork integration at line 942 remains intact. Fork exemption identity remains unchanged at `thread-create.ts:597-608`, and eligibility rechecks project, kind and host at `thread-request-eligibility.ts:160-190`.
+
+Commission requirement: “Return typed bounded compatibility/selection diagnostics where the existing contract supports them. Do not parse error-message text and do not retry a possibly accepted thread create.” Supported: no new diagnostic contract, retry, or error-text classification is introduced; existing typed ApiError boundaries remain in place.
+
+Commission requirement: “Feature-off or unaffected legacy paths must remain observationally unchanged.” No new feature flag is introduced by this bounded repair. The unchanged standard, explicit reuse, fork exception, and unmanaged-path branches were inspected with their controls; this is not a claim of exhaustive observational equivalence across every product execution.
+
+Applied code-standards, code-review, test-reviewer and its construction rubric, simplify (reuse/quality/efficiency), and relevant OWASP access-control lenses. No additional candidate correctness finding was identified. Tests use domain-typed fixtures and the real in-memory SQLite harness, assert returned values and persisted environment identity, and retain existing assertions. The new fact lookup is bounded by a single parent environment ID. Project and host checks remain authoritative downstream; no grant mutation, tenant model, wire contract, CLI surface or architectural boundary is introduced. Concurrency/registration-race correctness is unproven and excluded. Missing/undefined parent facts and archived/deleted-parent combinations were inspected statically but not independently exercised by this critic.
+
+## Identity and evidence
+
+HEAD/tree/branch match the commission. Binary diff SHA-256 is `4ca0ddb7927a364865579f8a6ed5671ec147822f02fa84fdd45541533a0acbe8`. Freeze SHA-256 is `ee618378bf020d0c09fd55f569d318110218d806a3ed2dcab5d02247348fd5d3`. All four candidate paths, the unchanged eligibility file, lockfile, commission, and qualified logs match the freeze. `git diff HEAD --check` passed. Exact file digests are in the final receipt.
+
+The hash-matching focused log records 2 files and 65/65 tests passed; the typecheck log records 4/4 tasks successful. These are inspected author execution artifacts, not critic reruns. The successor empty-path red log records 1 failed and 38 passed policy tests before the repair.
+
+WG-INT-007 receipt SHA-256 `6c6c6e38ee97b75a2287000e2a544b20d23d63617ede45523a480fa1354548bc` and its log SHA-256 `6fc201677bde044e8062b798aebeef978e981152f106b186e7929385562f13da` match. The log records the two named builtin-plugin failures, 25 passes, and four EMFILE watcher errors. The receipt's test-file digest matches `git show HEAD:apps/server/test/services/plugins/builtin-plugins.test.ts` on the exact base. This supports the recorded historical exact-base reproduction as separate evidence. The control worktree is now dirty in that test file, with current digest `80442355b5d6711a2efde3fa47c3afb836a97e7c1aa91dab6ad883a61d140109`; its current contents are not the historical clean-base input. This critic neither reran that control nor changed it.
+
+The full server suite is not green. WG-INT-007 remains a separate known baseline blocker; it is not admission evidence for this candidate.
+
+## Inspection limits and stop
+
+Read-only source/diff/recorded-log review with critic-artifact writes only. No source/test/lockfile/dependency edits, installs, test reruns, build/typecheck reruns, live actions, sealed-eval access, commits, pushes or registration-race work. A concrete counterexample disproves the all-four-path absence mandate; no exhaustive compiler-derived import graph or dynamic runtime tracing was performed, and no absence assertion is made for the other three transitive closures. No live application or installed-bundle validation is claimed. Candidate is not admitted under the frozen mandate. Stop with CHANGES_REQUIRED; preserve prior frozen bytes.

@@ -1,0 +1,32 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.supportedArchitectures", "pnpm.overrides", "pnpm.patchedDependencies". See https://pnpm.io/settings for the new home of each setting.
+• turbo 2.8.3
+• Packages in scope: @bb/server
+• Running typecheck in 1 packages
+• Remote caching disabled
+@bb/templates:generate:plugin-scaffold: cache bypass, force executing c24dbc453917496b
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:templates: cache bypass, force executing f3345ffdf76b86ff
+@bb/templates:generate:templates: 
+@bb/templates:generate:templates: > @bb/templates@0.0.1 generate:templates /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/templates
+@bb/templates:generate:templates: > node ./scripts/generate-templates.mjs
+@bb/templates:generate:templates: 
+@bb/plugin-build:generate: cache bypass, force executing 1001bf029082c46a
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: plugin-theme.generated.ts up to date
+@bb/plugin-build:generate: wrote /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/packages/plugin-build/src/generated/runtime-export-manifest.generated.ts (react@19.2.4)
+@bb/server:typecheck: cache bypass, force executing c8708efa2330750c
+@bb/server:typecheck: 
+@bb/server:typecheck: > @bb/server@0.0.1 typecheck /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/apps/server
+@bb/server:typecheck: > tsc --noEmit
+@bb/server:typecheck: 
+
+ Tasks:    4 successful, 4 total
+Cached:    0 cached, 4 total
+  Time:    4.848s 
+
