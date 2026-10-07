@@ -10,7 +10,6 @@ import {
   existsSync,
   readFileSync,
   realpathSync,
-  type FSWatcher,
 } from "node:fs";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { dirname, extname, join, resolve, sep } from "node:path";
@@ -72,6 +71,7 @@ import {
   type PluginThreadEventPayloads,
 } from "./plugin-api.js";
 import type {
+  BuiltinPluginSourceWatcher,
   LoadedPlugin,
   PluginHandlerStats,
   PluginRuntimeStatus,
@@ -312,7 +312,7 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
   const withPluginOperationLock = createKeyedLock();
   const REGISTRATION_MUTATION_KEY = "plugin-registration-mutations";
   const disposingPluginIds = new Set<string>();
-  const builtinSourceWatchers: FSWatcher[] = [];
+  const builtinSourceWatchers: BuiltinPluginSourceWatcher[] = [];
   const ownedRootUrls = new Set<string>();
 
   const statuses = new Map<

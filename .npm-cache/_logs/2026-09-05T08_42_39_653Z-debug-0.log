@@ -1,0 +1,35 @@
+0 verbose cli /Users/erik/.local/share/mise/installs/node/24.14.0/bin/node /Users/erik/.local/share/mise/installs/node/24.14.0/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.9.0
+2 info using node@v24.14.0
+3 silly config load:file:/Users/erik/.local/share/mise/installs/node/24.14.0/lib/node_modules/npm/npmrc
+4 silly config load:file:/private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-install-Ka8YSU/npm-fixture/.npmrc
+5 silly config load:file:/Users/erik/.npmrc
+6 silly config load:file:/Users/erik/.local/share/mise/installs/node/24.14.0/etc/npmrc
+7 verbose title npm pack
+8 verbose argv "pack" "--pack-destination" "/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-install-Ka8YSU/npm-pack"
+9 verbose logfile logs-max:10 dir:/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base-v2/.npm-cache/_logs/2026-09-05T08_42_39_653Z-
+10 verbose logfile /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base-v2/.npm-cache/_logs/2026-09-05T08_42_39_653Z-debug-0.log
+11 silly logfile start cleaning logs, removing 1 files
+12 silly logfile done cleaning log files
+13 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+14 notice
+15 notice 📦  @acme/bb-plugin-npmhero@0.1.0
+16 notice Tarball Contents
+17 notice 178B package.json
+17 notice 66B server.ts
+18 notice Tarball Details
+19 notice name: @acme/bb-plugin-npmhero
+20 notice version: 0.1.0
+21 notice filename: acme-bb-plugin-npmhero-0.1.0.tgz
+22 notice package size: 298 B
+23 notice unpacked size: 244 B
+24 notice shasum: 5b118bf46b114f8dc96e4de2df8a008e1fb53c44
+25 notice integrity: sha512-ULQ74hp45/Gh/[...]C1hcMbqiIHt6A==
+26 notice total files: 2
+27 notice
+28 verbose cwd /private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-plugin-install-Ka8YSU/npm-fixture
+29 verbose os Darwin 25.6.0
+30 verbose node v24.14.0
+31 verbose npm  v11.9.0
+32 verbose exit 0
+33 info ok

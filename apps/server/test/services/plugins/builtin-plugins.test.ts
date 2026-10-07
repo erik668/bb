@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createConnection,
   getInstalledPluginRegistration,
@@ -23,6 +23,7 @@ import type { Logger } from "@bb/logger";
 import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
 import {
   createPluginService,
+  createBuiltinPluginSourceWatcher,
   dispatchPluginSourceWatchChange,
   type PluginService,
 } from "../../../src/services/plugins/plugin-service.js";
@@ -154,8 +155,12 @@ function createService(args: {
   pluginId?: string;
   rootDir?: string;
   watchBuiltinPluginSources?: boolean;
+  createBuiltinPluginSourceWatcher?: (args: {
+    rootDir: string;
+    onChange: (filename: string | null) => Promise<boolean>;
+  }) => ControlledBuiltinPluginSourceWatcher;
 }): PluginService {
-  return createPluginService({
+  const deps = {
     aiServices: createAiServiceRegistry(),
     telemetry: createNoopTelemetryService(),
     db: args.db,
@@ -181,7 +186,95 @@ function createService(args: {
           ],
     watchBuiltinPluginSources: args.watchBuiltinPluginSources,
     loadTimeoutMs: 2000,
-  });
+  };
+  return createPluginService(
+    args.createBuiltinPluginSourceWatcher === undefined
+      ? deps
+      : Object.assign(deps, {
+          createBuiltinPluginSourceWatcher:
+            args.createBuiltinPluginSourceWatcher,
+        }),
+  );
+}
+
+class ControlledBuiltinPluginSourceWatcher {
+  private closeListener: (() => void) | undefined;
+  private readonly errorListeners: Array<(error: Error) => void> = [];
+  closed = false;
+
+  constructor(
+    private readonly onChange: (filename: string | null) => Promise<boolean>,
+  ) {}
+
+  emitChange(filename: string | null): Promise<boolean> {
+    return this.onChange(filename);
+  }
+
+  emitError(error: Error): void {
+    for (const listener of this.errorListeners) listener(error);
+  }
+
+  onClose(listener: () => void): void {
+    this.closeListener = listener;
+  }
+
+  onError(listener: (error: Error) => void): void {
+    this.errorListeners.push(listener);
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+    this.closeListener?.();
+  }
+}
+
+class NoCloseAfterErrorWatcher extends ControlledBuiltinPluginSourceWatcher {
+  constructor(
+    onChange: (filename: string | null) => Promise<boolean>,
+    private readonly onCloseAttempt: () => void,
+  ) {
+    super(onChange);
+  }
+
+  override close(): Promise<void> {
+    this.onCloseAttempt();
+    return new Promise(() => {});
+  }
+}
+
+class NoCloseNativeWatcher {
+  private readonly closeListeners: Array<() => void> = [];
+  private readonly errorListeners: Array<(error: Error) => void> = [];
+  closeAttempts = 0;
+
+  close(): void {
+    this.closeAttempts += 1;
+  }
+
+  onClose(listener: () => void): void {
+    this.closeListeners.push(listener);
+  }
+
+  onError(listener: (error: Error) => void): void {
+    this.errorListeners.push(listener);
+  }
+
+  emitError(error: Error): void {
+    for (const listener of this.errorListeners) listener(error);
+  }
+}
+
+function createControlledBuiltinPluginSourceWatcherFactory(
+  watchers: ControlledBuiltinPluginSourceWatcher[],
+): (args: {
+  rootDir: string;
+  onChange: (filename: string | null) => Promise<boolean>;
+}) => ControlledBuiltinPluginSourceWatcher {
+  return (args) => {
+    const watcher = new ControlledBuiltinPluginSourceWatcher(args.onChange);
+    watchers.push(watcher);
+    return watcher;
+  };
 }
 
 describe("builtin plugin reconciliation", () => {
@@ -192,7 +285,10 @@ describe("builtin plugin reconciliation", () => {
   it("reloads when the source watcher omits the changed filename", () => {
     const changes: string[] = [];
 
-    dispatchPluginSourceWatchChange((path) => changes.push(path), null);
+    void dispatchPluginSourceWatchChange((path) => {
+      changes.push(path);
+      return Promise.resolve(true);
+    }, null);
 
     expect(changes).toEqual(["."]);
   });
@@ -250,6 +346,7 @@ describe("builtin plugin reconciliation", () => {
 
   afterEach(async () => {
     await service?.stop();
+    vi.useRealTimers();
     db.$client.close();
     await rm(workDir, { recursive: true, force: true });
   });
@@ -666,6 +763,7 @@ describe("builtin plugin reconciliation", () => {
 
   it("hot-reloads a source-layout builtin server instead of a compatible dist artifact", async () => {
     const mutableRoot = join(workDir, "bb-plugin-hot-server-builtin");
+    const watchers: ControlledBuiltinPluginSourceWatcher[] = [];
     await mkdir(join(mutableRoot, "dist"), { recursive: true });
     await writeFile(
       join(mutableRoot, "package.json"),
@@ -702,6 +800,8 @@ describe("builtin plugin reconciliation", () => {
       builtinName: "hot-server",
       rootDir: mutableRoot,
       watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher:
+        createControlledBuiltinPluginSourceWatcherFactory(watchers),
     });
     await service.start();
     expect(globals.__hotBuiltinServerVersion).toBe("before");
@@ -710,18 +810,108 @@ describe("builtin plugin reconciliation", () => {
       join(mutableRoot, "server.ts"),
       'export default function plugin() { globalThis.__hotBuiltinServerVersion = "after"; }\n',
     );
-    let deadline = Date.now() + 20_000;
-    while (
-      globals.__hotBuiltinServerVersion !== "after" &&
-      Date.now() < deadline
-    ) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-    }
+    await watchers[0]?.emitChange("server.ts");
     expect(globals.__hotBuiltinServerVersion).toBe("after");
-  }, 30_000);
+  });
+
+  it("processes a queued builtin source change before its watcher closes", async () => {
+    const mutableRoot = join(workDir, "bb-plugin-owned-watcher-builtin");
+    await cp(fixtureRoot, mutableRoot, { recursive: true });
+    await writeFile(
+      join(mutableRoot, "server.ts"),
+      'export default function plugin() { globalThis.__hotBuiltinServerVersion = "before"; }\n',
+    );
+    const watchers: ControlledBuiltinPluginSourceWatcher[] = [];
+    service = createService({
+      db,
+      dataDir: join(workDir, "data"),
+      builtinName: "owned-watcher",
+      rootDir: mutableRoot,
+      watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher:
+        createControlledBuiltinPluginSourceWatcherFactory(watchers),
+    });
+    await service.start();
+    await writeFile(
+      join(mutableRoot, "server.ts"),
+      'export default function plugin() { globalThis.__hotBuiltinServerVersion = "after"; }\n',
+    );
+
+    watchers[0]?.emitChange("server.ts");
+    await service.stop();
+
+    expect(watchers).toHaveLength(1);
+    expect(watchers[0]?.closed).toBe(true);
+    expect(globals.__hotBuiltinServerVersion).toBe("after");
+  });
+
+  it("reports builtin source watcher errors", async () => {
+    const watchers: ControlledBuiltinPluginSourceWatcher[] = [];
+    const warn = vi.spyOn(logger, "warn");
+    service = createService({
+      db,
+      dataDir: join(workDir, "data"),
+      builtinName: "watcher-error",
+      watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher:
+        createControlledBuiltinPluginSourceWatcherFactory(watchers),
+    });
+    await service.start();
+
+    watchers[0]?.emitError(new Error("watch failure"));
+
+    expect(warn).toHaveBeenCalledWith(
+      "plugin builtin-fixture: builtin source watcher error: watch failure",
+    );
+    warn.mockRestore();
+  });
+
+  it("settles stop after a watcher error without a native close event", async () => {
+    let signalCloseAttempt: (() => void) | undefined;
+    let watcher: NoCloseAfterErrorWatcher | undefined;
+    const closeAttempted = new Promise<void>((resolve) => {
+      signalCloseAttempt = resolve;
+    });
+    service = createService({
+      db,
+      dataDir: join(workDir, "data"),
+      watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher: (args) => {
+        watcher = new NoCloseAfterErrorWatcher(args.onChange, () => {
+          signalCloseAttempt?.();
+        });
+        return watcher;
+      },
+    });
+    await service.start();
+    watcher?.emitError(new Error("native watcher closed after EMFILE"));
+
+    const stopped = service.stop().then(() => "stopped" as const);
+    const firstTerminalSignal = await Promise.race([
+      closeAttempted.then(() => "close-attempt" as const),
+      stopped,
+    ]);
+    service = undefined;
+
+    expect(firstTerminalSignal).toBe("stopped");
+  });
+
+  it("settles a native watcher close after an error without a close event", async () => {
+    const nativeWatcher = new NoCloseNativeWatcher();
+    const watcher = createBuiltinPluginSourceWatcher(nativeWatcher);
+    const errors: string[] = [];
+    watcher.onError((error) => errors.push(error.message));
+
+    nativeWatcher.emitError(new Error("EMFILE"));
+    await watcher.close();
+
+    expect(errors).toEqual(["EMFILE"]);
+    expect(nativeWatcher.closeAttempts).toBe(1);
+  });
 
   it("rebuilds a source-layout builtin app changed while the server was stopped", async () => {
     const mutableRoot = join(workDir, "bb-plugin-stale-app-builtin");
+    const watchers: ControlledBuiltinPluginSourceWatcher[] = [];
     await mkdir(mutableRoot, { recursive: true });
     await writeFile(
       join(mutableRoot, "package.json"),
@@ -754,6 +944,8 @@ describe("builtin plugin reconciliation", () => {
       builtinName: "stale-app",
       rootDir: mutableRoot,
       watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher:
+        createControlledBuiltinPluginSourceWatcherFactory(watchers),
     });
     await service.start();
     const beforeHash = service.list()[0]?.app.bundle?.hash;
@@ -776,6 +968,8 @@ describe("builtin plugin reconciliation", () => {
       builtinName: "stale-app",
       rootDir: mutableRoot,
       watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher:
+        createControlledBuiltinPluginSourceWatcherFactory(watchers),
     });
     await service.start();
 
@@ -783,10 +977,11 @@ describe("builtin plugin reconciliation", () => {
     await expect(
       readFile(join(mutableRoot, "dist", "app.js"), "utf8"),
     ).resolves.toContain("after");
-  }, 30_000);
+  });
 
   it("surfaces builtin app build failures in status until the next successful build", async () => {
     const mutableRoot = join(workDir, "bb-plugin-hot-app-builtin");
+    const watchers: ControlledBuiltinPluginSourceWatcher[] = [];
     await mkdir(mutableRoot, { recursive: true });
     await writeFile(
       join(mutableRoot, "package.json"),
@@ -817,6 +1012,8 @@ describe("builtin plugin reconciliation", () => {
       builtinName: "hot-app",
       rootDir: mutableRoot,
       watchBuiltinPluginSources: true,
+      createBuiltinPluginSourceWatcher:
+        createControlledBuiltinPluginSourceWatcherFactory(watchers),
     });
     await service.start();
     const before = service.list()[0]?.app.bundle;
@@ -826,15 +1023,8 @@ describe("builtin plugin reconciliation", () => {
       join(mutableRoot, "app.tsx"),
       "export default function App( {\n",
     );
-    let deadline = Date.now() + 20_000;
-    let failed = service.list()[0];
-    while (
-      !failed?.statusDetail?.includes("frontend bundle build failed") &&
-      Date.now() < deadline
-    ) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-      failed = service.list()[0];
-    }
+    await watchers[0]?.emitChange("app.tsx");
+    const failed = service.list()[0];
     expect(failed?.status).toBe("running");
     expect(failed?.statusDetail).toContain("frontend bundle build failed");
     expect(failed?.app.bundle?.hash).toBe(before?.hash);
@@ -843,22 +1033,14 @@ describe("builtin plugin reconciliation", () => {
       join(mutableRoot, "app.tsx"),
       "export default function App() { return <div>after</div>; }\n",
     );
-    deadline = Date.now() + 20_000;
-    let after = service.list()[0];
-    while (
-      (after?.statusDetail !== null ||
-        after.app.bundle?.hash === before?.hash) &&
-      Date.now() < deadline
-    ) {
-      await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
-      after = service.list()[0];
-    }
+    await watchers[0]?.emitChange("app.tsx");
+    const after = service.list()[0];
     expect(after?.statusDetail).toBeNull();
     expect(after?.app.bundle?.hash).not.toBe(before?.hash);
     await expect(
       readFile(join(mutableRoot, "dist", "app.js"), "utf8"),
     ).resolves.toContain("after");
-  }, 90_000);
+  });
 
   it("rejects unknown builtin install sources clearly", async () => {
     service = createService({ db, dataDir: join(workDir, "data") });

@@ -20,7 +20,8 @@ interface PluginDevLoopDeps {
 }
 
 interface PluginDevLoop {
-  handleChange: (relativePath: string) => void;
+  handleChange: (relativePath: string) => Promise<boolean>;
+  closeIntake: () => void;
   settled: () => Promise<void>;
   dispose: () => void;
 }
@@ -33,7 +34,9 @@ export function createPluginDevLoop(deps: PluginDevLoopDeps): PluginDevLoop {
   const debounceMs = deps.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   const now = deps.now ?? (() => Date.now());
   const pending = new Set<string>();
+  let pendingChangeResolvers: Array<(accepted: boolean) => void> = [];
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let intakeOpen = true;
   let disposed = false;
   let queueTail: Promise<void> = Promise.resolve();
   async function runCycle(files: readonly string[]): Promise<void> {
@@ -77,24 +80,58 @@ export function createPluginDevLoop(deps: PluginDevLoopDeps): PluginDevLoop {
   }
   function flush(): void {
     timer = null;
-    if (pending.size === 0) return;
+    if (pending.size === 0) {
+      for (const resolve of pendingChangeResolvers.splice(0)) resolve(false);
+      return;
+    }
     const files = [...pending];
     pending.clear();
-    queueTail = queueTail.then(() => runCycle(files));
+    const resolvers = pendingChangeResolvers;
+    pendingChangeResolvers = [];
+    queueTail = queueTail
+      .then(() => runCycle(files))
+      .then(
+        () => {
+          for (const resolve of resolvers) resolve(true);
+        },
+        (error) => {
+          deps.log(
+            `${deps.pluginId}: development loop failed: ${errorMessage(error)}`,
+          );
+          for (const resolve of resolvers) resolve(false);
+        },
+      );
   }
   return {
     handleChange(relativePath) {
-      if (disposed || isIgnoredPluginDevPath(relativePath)) return;
+      if (!intakeOpen || disposed || isIgnoredPluginDevPath(relativePath)) {
+        return Promise.resolve(false);
+      }
       pending.add(relativePath);
+      const completion = new Promise<boolean>((resolve) => {
+        pendingChangeResolvers.push(resolve);
+      });
       if (timer !== null) clearTimeout(timer);
       timer = setTimeout(flush, debounceMs);
+      return completion;
     },
-    settled: () => queueTail,
+    closeIntake() {
+      intakeOpen = false;
+    },
+    async settled() {
+      if (timer !== null) {
+        clearTimeout(timer);
+        flush();
+      }
+      await queueTail;
+    },
     dispose() {
       disposed = true;
+      intakeOpen = false;
       if (timer !== null) clearTimeout(timer);
       timer = null;
       pending.clear();
+      for (const resolve of pendingChangeResolvers.splice(0)) resolve(false);
     },
   };
 }

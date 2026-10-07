@@ -32,6 +32,12 @@ type PluginServiceState = "running" | "backoff" | "stopped";
 
 export type PluginListEntry = InstalledPlugin;
 
+export interface BuiltinPluginSourceWatcher {
+  close: () => Promise<void>;
+  onClose: (listener: () => void) => void;
+  onError: (listener: (error: Error) => void) => void;
+}
+
 export interface ServiceRuntime {
   record: PluginBackgroundServiceRecord;
   state: PluginServiceState;
@@ -88,6 +94,10 @@ export interface PluginServiceDeps {
   appVersion: string;
   bundledPlugins?: readonly BundledPluginRegistration[];
   watchBuiltinPluginSources?: boolean;
+  createBuiltinPluginSourceWatcher?: (args: {
+    rootDir: string;
+    onChange: (filename: string | null) => Promise<boolean>;
+  }) => BuiltinPluginSourceWatcher;
   loadTimeoutMs?: number;
   serviceStopTimeoutMs?: number;
   serviceRestartBaseMs?: number;

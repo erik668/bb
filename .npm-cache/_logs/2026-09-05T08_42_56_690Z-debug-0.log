@@ -1,0 +1,38 @@
+0 verbose cli /Users/erik/.local/share/mise/installs/node/24.14.0/bin/node /Users/erik/.local/share/mise/installs/node/24.14.0/lib/node_modules/npm/bin/npm-cli.js
+1 info using npm@11.9.0
+2 info using node@v24.14.0
+3 silly config load:file:/Users/erik/.local/share/mise/installs/node/24.14.0/lib/node_modules/npm/npmrc
+4 silly config load:file:/private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-server-test-SE1Uw6/npm-work/prebuilt/.npmrc
+5 silly config load:file:/Users/erik/.npmrc
+6 silly config load:file:/Users/erik/.local/share/mise/installs/node/24.14.0/etc/npmrc
+7 verbose title npm pack
+8 verbose argv "pack" "--pack-destination" "/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-server-test-SE1Uw6/npm-work/pack"
+9 verbose logfile logs-max:10 dir:/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base-v2/.npm-cache/_logs/2026-09-05T08_42_56_690Z-
+10 verbose logfile /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base-v2/.npm-cache/_logs/2026-09-05T08_42_56_690Z-debug-0.log
+11 silly logfile start cleaning logs, removing 1 files
+12 silly logfile done cleaning log files
+13 silly packumentCache heap:4496293888 maxSize:1124073472 maxEntrySize:562036736
+14 notice
+15 notice 📦  bb-plugin-prebuilt@0.1.0
+16 notice Tarball Contents
+17 notice 83B app.tsx
+17 notice 19B dist/app.js
+17 notice 36B dist/app.meta.json
+17 notice 192B package.json
+17 notice 66B server.ts
+18 notice Tarball Details
+19 notice name: bb-plugin-prebuilt
+20 notice version: 0.1.0
+21 notice filename: bb-plugin-prebuilt-0.1.0.tgz
+22 notice package size: 453 B
+23 notice unpacked size: 396 B
+24 notice shasum: fd4a1169a5b65710ad492a58b7b1eff7bd3e414c
+25 notice integrity: sha512-sh4lakNug9ECK[...]k45O3AcDdsGAw==
+26 notice total files: 5
+27 notice
+28 verbose cwd /private/var/folders/g5/vj0gzjwj1v7b78lx2rsxrjcw0000gn/T/bb-server-test-SE1Uw6/npm-work/prebuilt
+29 verbose os Darwin 25.6.0
+30 verbose node v24.14.0
+31 verbose npm  v11.9.0
+32 verbose exit 0
+33 info ok

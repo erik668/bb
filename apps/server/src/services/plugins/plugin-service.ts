@@ -116,6 +116,7 @@ import { createPluginUpdates } from "./plugin-updates.js";
 import { pluginUpdateCheckEntrySchema } from "./plugin-service-internal.js";
 import type {
   LoadedPlugin,
+  BuiltinPluginSourceWatcher,
   PluginAgentToolContribution,
   PluginApplyUpdateOutcome,
   PluginInstructionContribution,
@@ -149,10 +150,57 @@ export type PluginReloadOutcome =
   | { ok: false; error: string; plugins: PluginListEntry[] };
 
 export function dispatchPluginSourceWatchChange(
-  handleChange: (relativePath: string) => void,
+  handleChange: (relativePath: string) => Promise<boolean>,
   filename: string | null,
-): void {
-  handleChange(filename === null || filename.length === 0 ? "." : filename);
+): Promise<boolean> {
+  return handleChange(
+    filename === null || filename.length === 0 ? "." : filename,
+  );
+}
+
+export function createBuiltinPluginSourceWatcher(watcher: {
+  close: () => void;
+  onClose: (listener: () => void) => void;
+  onError: (listener: (error: Error) => void) => void;
+}): BuiltinPluginSourceWatcher {
+  let terminal = false;
+  let settleTerminal: (() => void) | undefined;
+  const terminalSettled = new Promise<void>((resolve) => {
+    settleTerminal = resolve;
+  });
+  const markTerminal = () => {
+    if (terminal) return;
+    terminal = true;
+    settleTerminal?.();
+  };
+  watcher.onClose(markTerminal);
+  watcher.onError(markTerminal);
+  return {
+    close: async () => {
+      watcher.close();
+      await terminalSettled;
+    },
+    onClose: (listener) => watcher.onClose(listener),
+    onError: (listener) => watcher.onError(listener),
+  };
+}
+
+function createNodeBuiltinPluginSourceWatcher(args: {
+  rootDir: string;
+  onChange: (filename: string | null) => Promise<boolean>;
+}): BuiltinPluginSourceWatcher {
+  const watcher = watch(
+    args.rootDir,
+    { recursive: true },
+    (_event, filename) => {
+      void args.onChange(filename);
+    },
+  );
+  return createBuiltinPluginSourceWatcher({
+    close: () => watcher.close(),
+    onClose: (listener) => watcher.on("close", listener),
+    onError: (listener) => watcher.on("error", listener),
+  });
 }
 
 export interface PluginService {
@@ -803,6 +851,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     });
 
   const HTTP_TOKEN_FILE = ".http-token";
+  const builtinSourceWatchLoops = new Map<
+    BuiltinPluginSourceWatcher,
+    { closeIntake: () => void; settled: () => Promise<void> }
+  >();
+  const builtinSourceWatcherTerminals = new Map<
+    BuiltinPluginSourceWatcher,
+    { isTerminal: () => boolean; settled: Promise<void> }
+  >();
 
   const {
     REGISTRATION_MUTATION_KEY,
@@ -1409,15 +1465,45 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             },
             log: (message) => logger.info(`plugin ${row.id}: ${message}`),
           });
-          const watcher = watch(
-            bundled.rootDir,
-            { recursive: true },
-            (_event, filename) => {
-              dispatchPluginSourceWatchChange(loop.handleChange, filename);
+          const watcher = (
+            deps.createBuiltinPluginSourceWatcher ??
+            createNodeBuiltinPluginSourceWatcher
+          )({
+            rootDir: bundled.rootDir,
+            onChange: (filename) => {
+              return dispatchPluginSourceWatchChange(
+                loop.handleChange,
+                filename,
+              );
             },
-          );
-          watcher.on("close", () => loop.dispose());
+          });
+          let terminal = false;
+          let settleTerminal: (() => void) | undefined;
+          const terminalSettled = new Promise<void>((resolve) => {
+            settleTerminal = resolve;
+          });
+          const markTerminal = () => {
+            if (terminal) return;
+            terminal = true;
+            settleTerminal?.();
+          };
+          watcher.onClose(() => {
+            markTerminal();
+            loop.dispose();
+          });
+          watcher.onError((error) => {
+            markTerminal();
+            loop.dispose();
+            logger.warn(
+              `plugin ${row.id}: builtin source watcher error: ${error.message}`,
+            );
+          });
           builtinSourceWatchers.push(watcher);
+          builtinSourceWatchLoops.set(watcher, loop);
+          builtinSourceWatcherTerminals.set(watcher, {
+            isTerminal: () => terminal,
+            settled: terminalSettled,
+          });
         }
       }
       await syncCliSkill();
@@ -1425,7 +1511,29 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     },
 
     async stop() {
-      for (const watcher of builtinSourceWatchers.splice(0)) watcher.close();
+      const watchers = builtinSourceWatchers.splice(0);
+      for (const watcher of watchers) {
+        builtinSourceWatchLoops.get(watcher)?.closeIntake();
+      }
+      for (const watcher of watchers) {
+        await builtinSourceWatchLoops.get(watcher)?.settled();
+      }
+      await Promise.all(
+        watchers.map(async (watcher) => {
+          const terminal = builtinSourceWatcherTerminals.get(watcher);
+          if (terminal?.isTerminal()) return;
+          const closed = watcher.close().catch((error) => {
+            logger.warn(
+              `builtin source watcher close failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          });
+          await Promise.race([closed, terminal?.settled ?? Promise.resolve()]);
+        }),
+      );
+      for (const watcher of watchers) {
+        builtinSourceWatchLoops.delete(watcher);
+        builtinSourceWatcherTerminals.delete(watcher);
+      }
       await disposeAll();
       await syncCliSkill();
       notifyPluginsChanged();
