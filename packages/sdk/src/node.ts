@@ -111,6 +111,7 @@ export type {
   BbSdkTransport,
   FetchImplementation,
 };
+export type * from "./areas/browser.js";
 export type * from "./areas/skills.js";
 export type {
   BbRealtimeSocket,

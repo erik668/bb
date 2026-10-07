@@ -55,6 +55,12 @@ export const BUILTIN_PLUGINS = [
     category: "Workflow management",
   },
   {
+    name: "browser-control",
+    pluginId: "browser-control",
+    defaultEnabled: false,
+    category: "Developer tools",
+  },
+  {
     name: "connect",
     pluginId: "connect",
     defaultEnabled: true,
@@ -144,12 +150,10 @@ export const BUILTIN_PLUGINS = [
     defaultEnabled: false,
     category: "Workflow management",
   },
-].map(
-  (plugin): BundledPluginDefinition => ({
-    ...plugin,
-    autoInstall: true,
-  }),
-);
+].map((plugin): BundledPluginDefinition => ({
+  ...plugin,
+  autoInstall: true,
+}));
 
 /**
  * Official plugins ship bundled with the app like builtins, but are not
@@ -180,12 +184,10 @@ export const OFFICIAL_PLUGINS = [
     defaultEnabled: true,
     category: "Workflow management",
   },
-].map(
-  (plugin): BundledPluginDefinition => ({
-    ...plugin,
-    autoInstall: false,
-  }),
-);
+].map((plugin): BundledPluginDefinition => ({
+  ...plugin,
+  autoInstall: false,
+}));
 
 export const BUNDLED_PLUGINS: readonly BundledPluginDefinition[] = [
   ...BUILTIN_PLUGINS,

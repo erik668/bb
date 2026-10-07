@@ -1,4 +1,5 @@
 import type { BbSdkContext, BbSdkTransport } from "./transport.js";
+import { createBrowserArea, type BrowserArea } from "./areas/browser.js";
 import {
   createEnvironmentsArea,
   type EnvironmentsArea,
@@ -42,6 +43,7 @@ export interface CreateBbSdkWithGuideArgs extends CreateBbSdkArgs {
  * (~112 KB of markdown) stay out of the web app's boot chunk.
  */
 export interface BbSdkAreas extends BbRealtime {
+  browser: BrowserArea;
   environments: EnvironmentsArea;
   files: FilesArea;
   hosts: HostsArea;
@@ -71,6 +73,7 @@ export function createBbSdk(
     transport: args.transport,
   });
   const areas: BbSdkAreas = {
+    browser: createBrowserArea(sdkContext),
     environments: createEnvironmentsArea(sdkContext),
     files: createFilesArea(sdkContext),
     hosts: createHostsArea(sdkContext),

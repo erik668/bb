@@ -4,6 +4,7 @@ import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Hono } from "hono";
+import { getInstalledPlugin } from "@bb/db";
 import { terminalWebSocketQuerySchema } from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
@@ -17,6 +18,7 @@ import { registerThreadSectionRoutes } from "./routes/thread-sections.js";
 import { registerSystemRoutes } from "./routes/system.js";
 import { registerTerminalRoutes } from "./routes/terminals.js";
 import { registerThreadRoutes } from "./routes/threads/index.js";
+import { registerBrowserRoutes } from "./routes/browser.js";
 import { registerPluginRoutes } from "./routes/plugins.js";
 import { registerPluginCatalogRoutes } from "./routes/plugin-catalog.js";
 import { registerSkillsRegistryRoutes } from "./routes/skills-registry.js";
@@ -42,6 +44,7 @@ import {
   resolveRequestAppSurface,
 } from "./request-context.js";
 import { runEventLoopWork } from "./services/system/event-loop-work.js";
+import { requireThreadEnvironment } from "./services/lib/entity-lookup.js";
 import { runWithTelemetryAppSurface } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
@@ -86,6 +89,7 @@ import {
 const PLUGIN_WIRE_HTTP_PATH = /^\/api\/v1\/plugins\/[^/]+\/http(?:\/|$)/u;
 import { rankAcceptedAssetEncodings } from "./asset-content-encoding.js";
 import { apiJsonCompression } from "./api-response-compression.js";
+import { createBrowserControlService } from "./services/browser/browser-control.js";
 
 type CloseWebSockets = () => Promise<void>;
 type NodeWebSocketServer = ReturnType<typeof createNodeWebSocket>["wss"];
@@ -479,6 +483,8 @@ export function createApp(
     notifyCatalogChanged: () => deps.hub.notifySystem(["plugins-changed"]),
     warn: (message) => deps.logger.warn(message),
   });
+  const browserControl = createBrowserControlService();
+  registerBrowserRoutes(publicApi, deps, browserControl);
   registerProjectRoutes(publicApi, deps);
   registerThreadSectionRoutes(publicApi, deps);
   registerFileRoutes(publicApi, deps);
@@ -520,8 +526,31 @@ export function createApp(
       return {
         onOpen: (_event, socket) => onClientSocketOpen(deps.hub, socket),
         onMessage: (event, socket) =>
-          onClientSocketMessage(deps, socket, event.data),
-        onClose: (_event, socket) => onClientSocketClose(deps, socket),
+          onClientSocketMessage(
+            {
+              ...deps,
+              browserController: {
+                authorizeConnect(message) {
+                  if (
+                    getInstalledPlugin(deps.db, "browser-control")?.enabled !==
+                    true
+                  ) {
+                    throw new ApiError(
+                      404,
+                      "browser_control_disabled",
+                      "Browser Control is disabled. Enable the built-in plugin to use it.",
+                    );
+                  }
+                  requireThreadEnvironment(deps.db, message.threadId);
+                },
+                service: browserControl,
+              },
+            },
+            socket,
+            event.data,
+          ),
+        onClose: (_event, socket) =>
+          onClientSocketClose({ ...deps, browserControl }, socket),
       };
     }),
   );
@@ -681,12 +710,14 @@ export function createApp(
 
   return {
     app,
-    closeWebSockets: () =>
-      closeWebSocketServer({
+    closeWebSockets: () => {
+      browserControl.dispose();
+      return closeWebSocketServer({
         forceCloseAfterMs: WEB_SOCKET_SHUTDOWN_FORCE_CLOSE_MS,
         reason: WEB_SOCKET_SHUTDOWN_REASON,
         server: wss,
-      }),
+      });
+    },
     injectWebSocket,
     pluginService,
     pluginCatalogService,

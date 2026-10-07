@@ -1,0 +1,33 @@
+{
+  "name": "bb-plugin-browser-control",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Share BB's visible in-app browser with coding agents.",
+  "engines": {
+    "bb": ">=0.0"
+  },
+  "bb": {
+    "name": "Browser Control",
+    "description": "Share BB's visible in-app browser with coding agents.",
+    "branding": {
+      "icon": "Eye"
+    },
+    "server": "./server.ts"
+  },
+  "keywords": [
+    "bb-plugin"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "devDependencies": {
+    "@get-bb/plugin-sdk": "workspace:*",
+    "@types/node": "^22.0.0",
+    "typescript": "npm:@typescript/typescript6@^6.0.2",
+    "typescript-7": "npm:typescript@^7.0.2",
+    "vitest": "^4.1.1"
+  }
+}
+

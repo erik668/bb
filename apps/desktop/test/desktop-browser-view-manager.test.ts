@@ -1,6 +1,9 @@
 import type { RenderProcessGoneDetails, WebContentsView } from "electron";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { BbDesktopBrowserViewBounds } from "@bb/desktop-contract";
+import {
+  BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH,
+  type BbDesktopBrowserViewBounds,
+} from "@bb/desktop-contract";
 import {
   createDesktopBrowserViewManager as createProductionDesktopBrowserViewManager,
   isAllowedBrowserPermission,
@@ -186,6 +189,7 @@ type FakeWindowOpenHandler = (
 
 const electronMock = vi.hoisted(() => {
   interface FakeNativeImage {
+    getSize(): { height: number; width: number };
     isEmpty(): boolean;
     toJPEG(quality: number): Buffer;
   }
@@ -239,6 +243,7 @@ const electronMock = vi.hoisted(() => {
   const fakeWebContentsEvent: FakeWebContentsEvent = {};
 
   const fakeCapturedImage: FakeNativeImage = {
+    getSize: () => ({ height: 480, width: 640 }),
     isEmpty: () => false,
     toJPEG: () => Buffer.from("jpeg-bytes"),
   };
@@ -247,6 +252,11 @@ const electronMock = vi.hoisted(() => {
     public activeHistoryIndex = 0;
     public canGoBackResult = false;
     public canGoForwardResult = false;
+    public capturePageError: Error | null = null;
+    public debuggerCaptureError: Error | null = null;
+    public debuggerCaptureData = Buffer.from("debugger-jpeg-bytes").toString(
+      "base64",
+    );
     public destroyed = false;
     public focusCalls = 0;
     public readonly goBackCalls: string[] = [];
@@ -281,6 +291,7 @@ const electronMock = vi.hoisted(() => {
     private title = "";
     private url = "";
     private windowOpenHandler: FakeWindowOpenHandler | null = null;
+    private debuggerAttached = false;
 
     constructor(id: number) {
       this.id = id;
@@ -301,10 +312,29 @@ const electronMock = vi.hoisted(() => {
     };
 
     capturePage(): Promise<FakeNativeImage> {
+      if (this.capturePageError !== null) {
+        return Promise.reject(this.capturePageError);
+      }
       return new Promise((resolve) => {
         this.pendingCaptureResolvers.push(resolve);
       });
     }
+
+    public readonly debugger = {
+      attach: (): void => {
+        this.debuggerAttached = true;
+      },
+      detach: (): void => {
+        this.debuggerAttached = false;
+      },
+      isAttached: (): boolean => this.debuggerAttached,
+      sendCommand: async (): Promise<{ data: string }> => {
+        if (this.debuggerCaptureError !== null) {
+          throw this.debuggerCaptureError;
+        }
+        return { data: this.debuggerCaptureData };
+      },
+    };
 
     close(): void {
       this.destroyed = true;
@@ -542,6 +572,9 @@ const electronMock = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   WebContentsView: electronMock.FakeWebContentsView,
+  nativeImage: {
+    createFromBuffer: () => electronMock.fakeCapturedImage,
+  },
   session: electronMock.session,
 }));
 
@@ -1628,6 +1661,258 @@ describe("DesktopBrowserViewManager", () => {
     manager.focus({ hostWindow, tabId: "browser:focused" });
 
     expect(focusedView.webContents.focusCalls).toBe(1);
+  });
+
+  it("captures only the exact visible tab and reports its current page", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 83,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+
+    const capture = manager.capturePage({
+      hostWindow,
+      tabId: "browser:visible",
+    });
+    await settlePendingCaptures(view);
+
+    await expect(capture).resolves.toEqual({
+      data: Buffer.from("jpeg-bytes").toString("base64"),
+      height: 480,
+      mimeType: "image/jpeg",
+      url: "https://example.com/current",
+      width: 640,
+    });
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:missing" }),
+    ).rejects.toThrow("Browser tab is not visible");
+
+    manager.setVisible({
+      hostWindow,
+      request: { tabId: "browser:visible", visible: false },
+    });
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).rejects.toThrow("Browser tab is not visible");
+  });
+
+  it("falls back to the exact viewport when Electron loses its display surface", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 84,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+    view.webContents.capturePageError = new Error(
+      "Current display surface not available for capture",
+    );
+
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).resolves.toEqual({
+      data: Buffer.from("debugger-jpeg-bytes").toString("base64"),
+      height: 480,
+      mimeType: "image/jpeg",
+      url: "https://example.com/current",
+      width: 640,
+    });
+    expect(view.webContents.debugger.isAttached()).toBe(false);
+  });
+
+  it("rejects destroyed tabs and tabs without an HTTP(S) page before capture", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 88,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+
+    await view.webContents.loadURL("");
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).rejects.toThrow("Browser tab has no capturable page");
+
+    await view.webContents.loadURL("https://example.com/current");
+    view.webContents.destroyed = true;
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).rejects.toThrow("Browser tab is not visible");
+  });
+
+  it("rejects empty and oversized debugger fallback captures", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 89,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+    view.webContents.capturePageError = new Error("surface unavailable");
+    view.webContents.debuggerCaptureData = "";
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).rejects.toThrow("Browser debugger capture returned no image");
+    expect(view.webContents.debugger.isAttached()).toBe(false);
+
+    view.webContents.debuggerCaptureData = "x".repeat(
+      BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH + 1,
+    );
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).rejects.toThrow("Browser capture exceeded the maximum size");
+    expect(view.webContents.debugger.isAttached()).toBe(false);
+  });
+
+  it("detaches the debugger when the fallback command itself fails", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 90,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+    view.webContents.capturePageError = new Error("surface unavailable");
+    view.webContents.debuggerCaptureError = new Error("debugger unavailable");
+
+    await expect(
+      manager.capturePage({ hostWindow, tabId: "browser:visible" }),
+    ).rejects.toThrow("Browser capture failed: debugger unavailable");
+    expect(view.webContents.debugger.isAttached()).toBe(false);
+  });
+
+  it("discards a capture when the tab is hidden before pixels resolve", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 85,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+    const capture = manager.capturePage({
+      hostWindow,
+      tabId: "browser:visible",
+    });
+    const rejection = expect(capture).rejects.toThrow(
+      "Browser tab changed during capture",
+    );
+
+    manager.setVisible({
+      hostWindow,
+      request: { tabId: "browser:visible", visible: false },
+    });
+    await settlePendingCaptures(view);
+
+    await rejection;
+  });
+
+  it("discards a capture when the tab navigates before pixels resolve", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 86,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+    const capture = manager.capturePage({
+      hostWindow,
+      tabId: "browser:visible",
+    });
+    const rejection = expect(capture).rejects.toThrow(
+      "Browser tab changed during capture",
+    );
+
+    manager.navigate({
+      hostWindow,
+      request: {
+        tabId: "browser:visible",
+        url: "https://example.com/replacement",
+      },
+    });
+    await settlePendingCaptures(view);
+
+    await rejection;
+  });
+
+  it("discards a capture when the exact tab is detached before pixels resolve", async () => {
+    const manager = createDesktopBrowserViewManager({
+      partition: "persist:test",
+    });
+    const hostWindow = new FakeHostWindow({
+      contentBounds: { width: 700, height: 450 },
+      webContentsId: 87,
+    });
+    attachBrowserTab({
+      manager,
+      hostWindow,
+      tabId: "browser:visible",
+      url: "https://example.com/current",
+    });
+    const view = requireFakeView(0);
+    const capture = manager.capturePage({
+      hostWindow,
+      tabId: "browser:visible",
+    });
+    const rejection = expect(capture).rejects.toThrow(
+      "Browser tab changed during capture",
+    );
+
+    manager.detach({ hostWindow, tabId: "browser:visible" });
+    await settlePendingCaptures(view);
+
+    await rejection;
   });
 
   it("allows clipboard-sanitized-write but denies clipboard-read and device permissions", () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import type { Environment, JsonValue } from "@bb/domain";
+import type { BrowserSnapshot } from "@bb/server-contract";
 import { createBbSdk } from "../src/core.js";
 import { createHttpTransport } from "../src/transport-http.js";
 import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
@@ -103,6 +104,40 @@ function createFetchQueue(
 }
 
 describe("@bb/sdk", () => {
+  it("exposes only the public browser snapshot transport", async () => {
+    const snapshot = {
+      data: Buffer.from("jpeg-bytes").toString("base64"),
+      height: 480,
+      mimeType: "image/jpeg",
+      tabId: "browser:visible",
+      threadId: "thr_test",
+      url: "https://example.com/current",
+      width: 640,
+    } satisfies BrowserSnapshot;
+    const queue = createFetchQueue([{ body: snapshot }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+
+    expect(Object.keys(sdk.browser)).toEqual(["snapshot"]);
+
+    await expect(
+      sdk.browser.snapshot({ threadId: snapshot.threadId }),
+    ).resolves.toEqual(snapshot);
+
+    expect(queue.requests).toEqual([
+      {
+        bodyText: JSON.stringify({ threadId: snapshot.threadId }),
+        method: "POST",
+        url: "http://bb.test/api/v1/browser/snapshots",
+      },
+    ]);
+  });
+
   it("sends thread pane presentation actions through the typed transport", async () => {
     const queue = createFetchQueue([{ body: { delivered: 3 } }]);
     const sdk = createBbSdk({

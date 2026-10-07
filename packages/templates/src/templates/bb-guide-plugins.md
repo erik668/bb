@@ -23,6 +23,22 @@ The builtin Custom instructions plugin adds a multiline editor under Settings
 → Custom instructions. Saved text is persisted on this bb host and included in
 agent task instructions; blank text contributes nothing.
 
+The builtin Browser Control plugin is installed but disabled by default for a
+safe rollout. Enable it in Settings → Plugins or with
+`bb plugin enable browser-control`. It lets a thread's agents capture the exact
+visible BB in-app browser tab after the user clicks **Share this tab with
+agents** in that tab's toolbar. Sharing is ephemeral, scoped to one thread and
+tab, and revoked from the same toolbar or when the browser controller
+disconnects. It does not expose cookies, storage, hidden DOM, or external
+browser windows. Agents receive the `browser_snapshot` tool. Humans and agents
+can also save the current JPEG without overwriting an existing file:
+
+```
+bb browser snapshot --output <path>
+```
+
+Run the command inside the BB project thread that owns the shared tab.
+
 The builtin Keep Awake plugin prevents macOS idle sleep while bb is running.
 Its settings page lets you target all hosts or selected hosts. The CLI
 equivalents are:

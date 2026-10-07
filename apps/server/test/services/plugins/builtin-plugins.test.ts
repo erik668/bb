@@ -210,6 +210,7 @@ describe("builtin plugin reconciliation", () => {
     const expectedIcons = new Map([
       ["ask-user-question", "MessageQuestion"],
       ["automations", "Clock"],
+      ["browser-control", "Eye"],
       ["connect", "Smartphone"],
       ["custom-instructions", "EditFile"],
       ["plugin-api-tester", "Beaker"],
@@ -446,6 +447,14 @@ describe("builtin plugin reconciliation", () => {
     );
 
     expect(pluginApiTester?.defaultEnabled).toBe(false);
+  });
+
+  it("ships Browser Control disabled as the rollout cutback", () => {
+    const browserControl = BUILTIN_PLUGINS.find(
+      (builtin) => builtin.name === "browser-control",
+    );
+
+    expect(browserControl?.defaultEnabled).toBe(false);
   });
 
   it("ships Workflows disabled on a fresh database", async () => {

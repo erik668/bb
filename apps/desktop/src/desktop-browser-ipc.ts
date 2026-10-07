@@ -13,6 +13,8 @@ export const BB_DESKTOP_BROWSER_GO_FORWARD_CHANNEL =
 export const BB_DESKTOP_BROWSER_RELOAD_CHANNEL = "bb-desktop:browser:reload";
 export const BB_DESKTOP_BROWSER_STOP_CHANNEL = "bb-desktop:browser:stop";
 export const BB_DESKTOP_BROWSER_FOCUS_CHANNEL = "bb-desktop:browser:focus";
+export const BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL =
+  "bb-desktop:browser:capture-page";
 export const BB_DESKTOP_BROWSER_SET_BOUNDS_CHANNEL =
   "bb-desktop:browser:set-bounds";
 export const BB_DESKTOP_BROWSER_SET_VISIBLE_CHANNEL =

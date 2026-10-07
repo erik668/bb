@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame } from "electron";
 import { appCommandIdSchema } from "@bb/domain";
 import {
   bbDesktopBrowserFindResultSchema,
+  bbDesktopBrowserCaptureSchema,
   bbDesktopBrowserOpenTabRequestSchema,
   bbDesktopBrowserScopedOpenTabRequestSchema,
   bbDesktopBrowserTabRefSchema,
@@ -39,6 +40,7 @@ import {
 } from "./desktop-update-ipc.js";
 import {
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
+  BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
   BB_DESKTOP_BROWSER_DETACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,
@@ -217,6 +219,13 @@ const bbBrowserApi: BbDesktopBrowserApi = {
   },
   stop(tabId): void {
     ipcRenderer.send(BB_DESKTOP_BROWSER_STOP_CHANNEL, { tabId });
+  },
+  async capturePage(tabId) {
+    return bbDesktopBrowserCaptureSchema.parse(
+      await ipcRenderer.invoke(BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL, {
+        tabId,
+      }),
+    );
   },
   focus(tabId): void {
     ipcRenderer.send(BB_DESKTOP_BROWSER_FOCUS_CHANNEL, { tabId });

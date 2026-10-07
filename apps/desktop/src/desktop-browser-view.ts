@@ -1,9 +1,19 @@
-import { Menu, WebContentsView, session, type Session } from "electron";
+import {
+  Menu,
+  WebContentsView,
+  nativeImage,
+  session,
+  type NativeImage,
+  type Session,
+  type WebContents,
+} from "electron";
 import {
   BB_DESKTOP_BROWSER_MAX_TITLE_LENGTH,
   BB_DESKTOP_BROWSER_MAX_URL_LENGTH,
+  BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH,
   clampBbDesktopBrowserViewBounds,
   type BbDesktopBrowserAttachRequest,
+  type BbDesktopBrowserCapture,
   type BbDesktopBrowserFindInPageRequest,
   type BbDesktopBrowserFindResult,
   type BbDesktopBrowserNavigateRequest,
@@ -48,9 +58,92 @@ const RESIZE_SNAPSHOT_HIDE_CAP_MS = 80;
 const RESIZE_SNAPSHOT_JPEG_QUALITY = 70;
 const RENDERER_RECOVERY_DELAY_MS = 250;
 const RENDERER_RECOVERY_MAX_ATTEMPTS = 2;
+const BROWSER_CAPTURE_JPEG_QUALITY = 80;
 
 function truncate(value: string, max: number): string {
   return value.length > max ? value.slice(0, max) : value;
+}
+
+function browserCaptureFromImage(
+  image: NativeImage,
+  url: string,
+): BbDesktopBrowserCapture {
+  if (image.isEmpty()) throw new Error("Browser capture was empty");
+  const data = image.toJPEG(BROWSER_CAPTURE_JPEG_QUALITY).toString("base64");
+  if (data.length > BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH) {
+    throw new Error("Browser capture exceeded the maximum size");
+  }
+  const size = image.getSize();
+  return {
+    data,
+    height: size.height,
+    mimeType: "image/jpeg",
+    url,
+    width: size.width,
+  };
+}
+
+async function captureVisibleBrowserPage(
+  webContents: WebContents,
+  url: string,
+): Promise<BbDesktopBrowserCapture> {
+  try {
+    return browserCaptureFromImage(await webContents.capturePage(), url);
+  } catch (surfaceError) {
+    // Electron 41 can lose a WebContentsView's embedded display surface after
+    // a hidden → visible transition on macOS. The page is still live and CDP
+    // can capture its exact current viewport, so use that path only when the
+    // native surface capture fails. Never leave a debugger attached.
+    const browserDebugger = webContents.debugger;
+    const wasAttached = browserDebugger.isAttached();
+    try {
+      if (!wasAttached) browserDebugger.attach("1.3");
+      const result = await browserDebugger.sendCommand(
+        "Page.captureScreenshot",
+        {
+          captureBeyondViewport: false,
+          format: "jpeg",
+          fromSurface: true,
+          quality: BROWSER_CAPTURE_JPEG_QUALITY,
+        },
+      );
+      const data =
+        typeof result === "object" &&
+        result !== null &&
+        typeof Reflect.get(result, "data") === "string"
+          ? Reflect.get(result, "data")
+          : null;
+      if (data === null || data.length === 0) {
+        throw new Error("Browser debugger capture returned no image");
+      }
+      if (data.length > BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH) {
+        throw new Error("Browser capture exceeded the maximum size");
+      }
+      const image = nativeImage.createFromBuffer(Buffer.from(data, "base64"));
+      if (image.isEmpty()) throw new Error("Browser capture was empty");
+      const size = image.getSize();
+      return {
+        data,
+        height: size.height,
+        mimeType: "image/jpeg",
+        url,
+        width: size.width,
+      };
+    } catch (debuggerError) {
+      throw new Error(
+        `Browser capture failed: ${debuggerError instanceof Error ? debuggerError.message : String(debuggerError)}`,
+        { cause: surfaceError },
+      );
+    } finally {
+      if (!wasAttached && browserDebugger.isAttached()) {
+        try {
+          browserDebugger.detach();
+        } catch {
+          // The target may close between the final command and cleanup.
+        }
+      }
+    }
+  }
 }
 
 /**
@@ -170,6 +263,7 @@ export interface DesktopBrowserViewManager {
   goForward(args: HostScopedTabArgs): void;
   reload(args: HostScopedTabArgs): void;
   stop(args: HostScopedTabArgs): void;
+  capturePage(args: HostScopedTabArgs): Promise<BbDesktopBrowserCapture>;
   setBounds(
     args: HostScopedRequestArgs<BbDesktopBrowserSetBoundsRequest>,
   ): void;
@@ -860,6 +954,36 @@ export function createDesktopBrowserViewManager(
       withEntry({ hostWindow, tabId }, (entry) => {
         entry.view.webContents.stop();
       });
+    },
+    async capturePage({ hostWindow, tabId }) {
+      const key = browserViewKey(hostWindow, tabId);
+      const entry = entries.get(key);
+      if (
+        entry === undefined ||
+        entry.view.webContents.isDestroyed() ||
+        !entry.visible
+      ) {
+        throw new Error("Browser tab is not visible");
+      }
+      const url = entry.view.webContents.getURL();
+      if (!isAllowedBrowserUrl(url)) {
+        throw new Error("Browser tab has no capturable page");
+      }
+      const capture = await captureVisibleBrowserPage(
+        entry.view.webContents,
+        url,
+      );
+      const currentEntry = entries.get(key);
+      if (
+        currentEntry !== entry ||
+        entry.view.webContents.isDestroyed() ||
+        !entry.visible ||
+        entry.view.webContents.getURL() !== url ||
+        !isAllowedBrowserUrl(entry.view.webContents.getURL())
+      ) {
+        throw new Error("Browser tab changed during capture");
+      }
+      return capture;
     },
     setBounds({ hostWindow, request }) {
       withEntry({ hostWindow, tabId: request.tabId }, (entry) => {

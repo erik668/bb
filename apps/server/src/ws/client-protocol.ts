@@ -1,4 +1,10 @@
 import { clientMessageSchema, type PongMessage } from "@bb/domain";
+import {
+  browserControllerClientMessageSchema,
+  type BrowserControllerConnectMessage,
+  type BrowserControllerServerMessage,
+} from "@bb/server-contract";
+import type { BrowserControlService } from "../services/browser/browser-control.js";
 import { decodeSocketPayload } from "./decode-payload.js";
 import type { NotificationHub } from "./hub.js";
 import type { WatchInterestCoordinator } from "./watch-interests.js";
@@ -10,6 +16,18 @@ interface ClientSocket {
   send(data: string): void;
 }
 
+interface BrowserControllerProtocolDeps {
+  authorizeConnect(message: BrowserControllerConnectMessage): void;
+  service: BrowserControlService;
+}
+
+function sendBrowserControllerMessage(
+  socket: ClientSocket,
+  message: BrowserControllerServerMessage,
+): void {
+  socket.send(JSON.stringify(message));
+}
+
 export function onClientSocketOpen(
   hub: NotificationHub,
   socket: ClientSocket,
@@ -19,6 +37,7 @@ export function onClientSocketOpen(
 
 export function onClientSocketMessage(
   deps: {
+    browserController?: BrowserControllerProtocolDeps;
     hub: NotificationHub;
     watchInterests: Pick<
       WatchInterestCoordinator,
@@ -34,6 +53,51 @@ export function onClientSocketMessage(
   } catch {
     socket.close(1008, "invalid-message");
     return;
+  }
+
+  const browserMessage =
+    browserControllerClientMessageSchema.safeParse(decoded);
+  if (browserMessage.success) {
+    const browserController = deps.browserController;
+    if (browserController === undefined) {
+      socket.close(1008, "invalid-message");
+      return;
+    }
+    const message = browserMessage.data;
+    try {
+      switch (message.type) {
+        case "browser-controller-connect":
+          browserController.authorizeConnect(message);
+          browserController.service.grant({
+            controller: socket,
+            request: message,
+          });
+          return;
+        case "browser-controller-disconnect":
+          browserController.service.revoke({
+            controller: socket,
+            controllerId: message.controllerId,
+          });
+          return;
+        case "browser-controller-complete":
+          browserController.service.completeCommand({
+            controller: socket,
+            message,
+          });
+          return;
+      }
+    } catch (error) {
+      browserController.service.revoke({
+        controller: socket,
+        controllerId: message.controllerId,
+      });
+      sendBrowserControllerMessage(socket, {
+        controllerId: message.controllerId,
+        message: error instanceof Error ? error.message : String(error),
+        type: "browser-controller-disconnected",
+      });
+      return;
+    }
   }
 
   const result = clientMessageSchema.safeParse(decoded);
@@ -66,11 +130,13 @@ export function onClientSocketMessage(
 
 export function onClientSocketClose(
   deps: {
+    browserControl?: BrowserControlService;
     hub: NotificationHub;
     watchInterests: Pick<WatchInterestCoordinator, "releaseSocket">;
   },
   socket: ClientSocket,
 ): void {
+  deps.browserControl?.releaseController(socket);
   deps.watchInterests.releaseSocket(socket);
   deps.hub.unregisterClient(socket);
 }

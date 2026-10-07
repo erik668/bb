@@ -1,6 +1,7 @@
 import ReconnectingWebSocket from "partysocket/ws";
 import {
   changedMessageLenientSchema,
+  browserControllerServerMessageSchema,
   pluginSignalLenientSchema,
   pongMessageLenientSchema,
   realtimeSubscriptionTargetKey,
@@ -9,6 +10,8 @@ import {
 } from "@bb/server-contract";
 import type {
   ClientMessage,
+  BrowserControllerClientMessage,
+  BrowserControllerServerMessage,
   ChangedMessage,
   PluginSignal,
   RealtimeSubscriptionTarget,
@@ -26,6 +29,9 @@ type ChangeCallback = (message: ChangedMessage) => void;
 type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
 type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
+type BrowserControllerCallback = (
+  message: BrowserControllerServerMessage,
+) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
   | {
@@ -92,6 +98,7 @@ export class WebSocketManager {
   private threadOpenCallbacks = new Set<ThreadOpenCallback>();
   private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
+  private browserControllerCallbacks = new Set<BrowserControllerCallback>();
   // Ephemeral "open this file in the secondary panel" intents, keyed by thread.
   // Held in memory only (cleared on reload) so a thread that is not currently
   // viewed opens the file when it is next viewed. Last write wins per thread.
@@ -373,6 +380,15 @@ export class WebSocketManager {
       return;
     }
 
+    const browserController =
+      browserControllerServerMessageSchema.safeParse(parsed);
+    if (browserController.success) {
+      for (const cb of this.browserControllerCallbacks) {
+        cb(browserController.data);
+      }
+      return;
+    }
+
     // Lenient parse: tolerate a newer server (unknown fields stripped,
     // unknown change kinds filtered) instead of dropping whole messages
     // on additive contract changes.
@@ -459,6 +475,19 @@ export class WebSocketManager {
     return () => {
       this.pluginSignalCallbacks.delete(callback);
     };
+  }
+
+  onBrowserController(callback: BrowserControllerCallback): () => void {
+    this.browserControllerCallbacks.add(callback);
+    return () => {
+      this.browserControllerCallbacks.delete(callback);
+    };
+  }
+
+  sendBrowserController(message: BrowserControllerClientMessage): boolean {
+    if (this.socket?.readyState !== WebSocket.OPEN) return false;
+    this.socket.send(JSON.stringify(message));
+    return true;
   }
 
   /**

@@ -203,6 +203,7 @@ export type BbDesktopBrowserScopedOpenTabRequest = z.infer<
  * never balloon renderer memory.
  */
 const BB_DESKTOP_BROWSER_MAX_SNAPSHOT_DATA_URL_LENGTH = 8_388_608;
+export const BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH = 8_388_608;
 
 /**
  * A transient bitmap of a browser view, pushed main → renderer at the start
@@ -223,6 +224,30 @@ export const bbDesktopBrowserSnapshotSchema = z
   .strict();
 export type BbDesktopBrowserSnapshot = z.infer<
   typeof bbDesktopBrowserSnapshotSchema
+>;
+
+export const bbDesktopBrowserCaptureSchema = z
+  .object({
+    data: z.string().min(1).max(BB_DESKTOP_BROWSER_MAX_CAPTURE_BASE64_LENGTH),
+    height: z.number().int().positive().max(16_384),
+    mimeType: z.literal("image/jpeg"),
+    url: z
+      .string()
+      .url()
+      .max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH)
+      .refine((value) => {
+        try {
+          const protocol = new URL(value).protocol;
+          return protocol === "http:" || protocol === "https:";
+        } catch {
+          return false;
+        }
+      }, "Capture URL must use HTTP(S)"),
+    width: z.number().int().positive().max(16_384),
+  })
+  .strict();
+export type BbDesktopBrowserCapture = z.infer<
+  typeof bbDesktopBrowserCaptureSchema
 >;
 
 /**
@@ -307,6 +332,12 @@ export interface BbDesktopBrowserApi {
   goForward(tabId: string): void;
   reload(tabId: string): void;
   stop(tabId: string): void;
+  /**
+   * Capture the exact visible page for an explicitly connected agent. Optional
+   * for desktop-shell version skew; old shells report browser control as
+   * unavailable instead of receiving an unknown IPC message.
+   */
+  capturePage?(tabId: string): Promise<BbDesktopBrowserCapture>;
   /** Focus a visible view without treating that programmatic focus as a page click. */
   focus?(tabId: string): void;
   setBounds(request: BbDesktopBrowserSetBoundsRequest): void;

@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from "vitest";
 import {
+  onClientSocketClose,
   onClientSocketMessage,
   onClientSocketOpen,
 } from "../../src/ws/client-protocol.js";
+import {
+  createBrowserControlService,
+  type BrowserControlService,
+} from "../../src/services/browser/browser-control.js";
 import { NotificationHub } from "../../src/ws/hub.js";
 import { createMockHubSocket } from "../helpers/mock-hub-socket.js";
 
@@ -14,6 +19,17 @@ function createProtocolDeps(hub: NotificationHub) {
       subscribe: vi.fn(),
       unsubscribe: vi.fn(),
     },
+  };
+}
+
+function createBrowserControlMock(): BrowserControlService {
+  return {
+    completeCommand: vi.fn(),
+    dispose: vi.fn(),
+    grant: vi.fn(),
+    releaseController: vi.fn(),
+    revoke: vi.fn(),
+    snapshot: vi.fn(),
   };
 }
 
@@ -211,5 +227,171 @@ describe("client websocket protocol", () => {
 
     expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
     expect(deps.watchInterests.subscribe).not.toHaveBeenCalled();
+  });
+
+  it("binds browser controller lifecycle messages to the exact app socket", () => {
+    const hub = new NotificationHub();
+    const baseDeps = createProtocolDeps(hub);
+    const service = createBrowserControlMock();
+    const authorizeConnect = vi.fn();
+    const deps = {
+      ...baseDeps,
+      browserController: { authorizeConnect, service },
+    };
+    const socket = createMockHubSocket();
+    const connect = {
+      controllerId: "controller:test",
+      tabId: "browser:test",
+      threadId: "thread:test",
+      type: "browser-controller-connect" as const,
+    };
+
+    onClientSocketMessage(deps, socket, JSON.stringify(connect));
+
+    expect(authorizeConnect).toHaveBeenCalledWith(connect);
+    expect(service.grant).toHaveBeenCalledWith({
+      controller: socket,
+      request: connect,
+    });
+
+    const complete = {
+      commandId: "bcmd_test",
+      controllerId: connect.controllerId,
+      generation: 2,
+      grantId: "bgr_test",
+      outcome: {
+        snapshot: {
+          data: Buffer.from("jpeg").toString("base64"),
+          height: 480,
+          mimeType: "image/jpeg" as const,
+          tabId: connect.tabId,
+          threadId: connect.threadId,
+          url: "https://example.com/current",
+          width: 640,
+        },
+        status: "success" as const,
+      },
+      type: "browser-controller-complete" as const,
+    };
+    onClientSocketMessage(deps, socket, JSON.stringify(complete));
+    expect(service.completeCommand).toHaveBeenCalledWith({
+      controller: socket,
+      message: complete,
+    });
+
+    onClientSocketClose({ ...baseDeps, browserControl: service }, socket);
+    expect(service.releaseController).toHaveBeenCalledWith(socket);
+  });
+
+  it("rejects controller messages on a socket without the trusted browser protocol", () => {
+    const hub = new NotificationHub();
+    const deps = createProtocolDeps(hub);
+    const socket = createMockHubSocket();
+
+    onClientSocketMessage(
+      deps,
+      socket,
+      JSON.stringify({
+        controllerId: "controller:test",
+        tabId: "browser:test",
+        threadId: "thread:test",
+        type: "browser-controller-connect",
+      }),
+    );
+
+    expect(socket.closed).toEqual([{ code: 1008, reason: "invalid-message" }]);
+  });
+
+  it("revokes and reports an authorization failure without accepting the grant", () => {
+    const hub = new NotificationHub();
+    const baseDeps = createProtocolDeps(hub);
+    const service = createBrowserControlMock();
+    const deps = {
+      ...baseDeps,
+      browserController: {
+        authorizeConnect: vi.fn(() => {
+          throw new Error("Browser Control is disabled");
+        }),
+        service,
+      },
+    };
+    const socket = createMockHubSocket();
+
+    onClientSocketMessage(
+      deps,
+      socket,
+      JSON.stringify({
+        controllerId: "controller:test",
+        tabId: "browser:test",
+        threadId: "thread:test",
+        type: "browser-controller-connect",
+      }),
+    );
+
+    expect(service.grant).not.toHaveBeenCalled();
+    expect(service.revoke).toHaveBeenCalledWith({
+      controller: socket,
+      controllerId: "controller:test",
+    });
+    expect(socket.messages.map((message) => JSON.parse(message))).toEqual([
+      {
+        controllerId: "controller:test",
+        message: "Browser Control is disabled",
+        type: "browser-controller-disconnected",
+      },
+    ]);
+  });
+
+  it("round-trips a snapshot only through the socket that owns the grant", async () => {
+    const hub = new NotificationHub();
+    const baseDeps = createProtocolDeps(hub);
+    const service = createBrowserControlService();
+    const deps = {
+      ...baseDeps,
+      browserController: { authorizeConnect: vi.fn(), service },
+    };
+    const owner = createMockHubSocket();
+    const other = createMockHubSocket();
+    const connect = {
+      controllerId: "controller:owner",
+      tabId: "browser:visible",
+      threadId: "thread:test",
+      type: "browser-controller-connect" as const,
+    };
+    onClientSocketMessage(deps, owner, JSON.stringify(connect));
+    const connected = JSON.parse(owner.messages[0] ?? "null") as {
+      grant: { generation: number; grantId: string };
+    };
+
+    const pending = service.snapshot({ threadId: connect.threadId });
+    const command = JSON.parse(owner.messages[1] ?? "null") as {
+      command: { commandId: string };
+    };
+    const snapshot = {
+      data: Buffer.from("jpeg").toString("base64"),
+      height: 480,
+      mimeType: "image/jpeg" as const,
+      tabId: connect.tabId,
+      threadId: connect.threadId,
+      url: "https://example.com/current",
+      width: 640,
+    };
+    const completion = {
+      commandId: command.command.commandId,
+      controllerId: connect.controllerId,
+      generation: connected.grant.generation,
+      grantId: connected.grant.grantId,
+      outcome: { snapshot, status: "success" as const },
+      type: "browser-controller-complete" as const,
+    };
+
+    onClientSocketMessage(deps, other, JSON.stringify(completion));
+    expect(JSON.parse(other.messages[0] ?? "null")).toMatchObject({
+      controllerId: connect.controllerId,
+      type: "browser-controller-disconnected",
+    });
+
+    onClientSocketMessage(deps, owner, JSON.stringify(completion));
+    await expect(pending).resolves.toEqual(snapshot);
   });
 });

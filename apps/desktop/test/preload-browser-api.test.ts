@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AppCommandId } from "@bb/domain";
 import type {
   BbDesktopApi,
+  BbDesktopBrowserCapture,
   BbDesktopBrowserFindResult,
   BbDesktopBrowserOpenTabRequest,
   BbDesktopBrowserScopedOpenTabRequest,
@@ -18,6 +19,7 @@ import {
 } from "../src/desktop-update-ipc.js";
 import {
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
+  BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
   BB_DESKTOP_BROWSER_DETACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUSED_CHANNEL,
@@ -107,8 +109,22 @@ const electronMock = vi.hoisted(() => {
       },
     },
     ipcRenderer: {
-      invoke(channel: string): Promise<BbDesktopInfo | BbDesktopWindowState> {
+      invoke(
+        channel: string,
+        _payload?: unknown,
+      ): Promise<
+        BbDesktopInfo | BbDesktopBrowserCapture | BbDesktopWindowState
+      > {
         invokeCalls.push(channel);
+        if (channel === BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL) {
+          return Promise.resolve({
+            data: Buffer.from("jpeg-bytes").toString("base64"),
+            height: 480,
+            mimeType: "image/jpeg",
+            url: "https://example.com/current",
+            width: 640,
+          });
+        }
         if (channel === "bb-desktop:get-window-state") {
           return Promise.resolve(desktopWindowState);
         }
@@ -197,6 +213,7 @@ describe("desktop preload browser API", () => {
 
     expect(Object.keys(api.browser).sort()).toEqual([
       "attach",
+      "capturePage",
       "detach",
       "findInPage",
       "focus",
@@ -232,6 +249,13 @@ describe("desktop preload browser API", () => {
     api.browser.setVisibleWithoutFocus?.(visibleRequest);
     api.browser.findInPage?.(findRequest);
     api.browser.stopFindInPage?.(stopFindRequest);
+    await expect(api.browser.capturePage?.("browser:a")).resolves.toMatchObject(
+      {
+        height: 480,
+        url: "https://example.com/current",
+        width: 640,
+      },
+    );
     api.setTheme("dark");
     await api.checkForUpdates();
     await expect(api.getWindowState?.()).resolves.toEqual({
@@ -300,6 +324,9 @@ describe("desktop preload browser API", () => {
     );
     expect(electronMock.invokeCalls).toContain(
       BB_DESKTOP_INSTALL_UPDATE_CHANNEL,
+    );
+    expect(electronMock.invokeCalls).toContain(
+      BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
     );
   }, 10_000);
 

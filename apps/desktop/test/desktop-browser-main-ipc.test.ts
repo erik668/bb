@@ -9,6 +9,7 @@ import {
   type BbDesktopBrowserStopFindInPageRequest,
 } from "@bb/desktop-contract";
 import {
+  BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
   BB_DESKTOP_BROWSER_DETACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
@@ -40,11 +41,17 @@ const electronMock = vi.hoisted(() => {
   }
 
   type FakeIpcListener = (event: FakeIpcEvent, payload: unknown) => void;
+  type FakeIpcHandler = (
+    event: FakeIpcEvent,
+    payload: unknown,
+  ) => Promise<unknown>;
 
+  const handlers = new Map<string, FakeIpcHandler>();
   const listeners = new Map<string, FakeIpcListener>();
   const windowsBySender = new Map<FakeWebContents, FakeBrowserWindow>();
 
   return {
+    handlers,
     listeners,
     windowsBySender,
     BrowserWindow: {
@@ -53,6 +60,9 @@ const electronMock = vi.hoisted(() => {
       },
     },
     ipcMain: {
+      handle(channel: string, handler: FakeIpcHandler): void {
+        handlers.set(channel, handler);
+      },
       on(channel: string, listener: FakeIpcListener): void {
         listeners.set(channel, listener);
       },
@@ -66,6 +76,7 @@ vi.mock("electron", () => ({
 }));
 
 type AttachCall = Parameters<DesktopBrowserViewManager["attach"]>[0];
+type CapturePageCall = Parameters<DesktopBrowserViewManager["capturePage"]>[0];
 type DetachCall = Parameters<DesktopBrowserViewManager["detach"]>[0];
 type FindInPageCall = Parameters<DesktopBrowserViewManager["findInPage"]>[0];
 type StopFindInPageCall = Parameters<
@@ -101,6 +112,7 @@ interface SendBrowserIpcArgs {
 class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
   public readonly attachCalls: AttachCall[] = [];
   public readonly beginWindowResizeCalls: WindowResizeCall[] = [];
+  public readonly capturePageCalls: CapturePageCall[] = [];
   public readonly destroyAllCalls: string[] = [];
   public readonly detachCalls: DetachCall[] = [];
   public readonly endWindowResizeCalls: WindowResizeCall[] = [];
@@ -123,6 +135,17 @@ class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
 
   beginWindowResize(hostWindow: WindowResizeCall): void {
     this.beginWindowResizeCalls.push(hostWindow);
+  }
+
+  capturePage(args: CapturePageCall) {
+    this.capturePageCalls.push(args);
+    return Promise.resolve({
+      data: Buffer.from("jpeg-bytes").toString("base64"),
+      height: 480,
+      mimeType: "image/jpeg" as const,
+      url: "https://example.com/current",
+      width: 640,
+    });
   }
 
   destroyAll(): void {
@@ -189,6 +212,7 @@ class RecordingDesktopBrowserViewManager implements DesktopBrowserViewManager {
 let nextWebContentsId = 1;
 
 beforeEach(() => {
+  electronMock.handlers.clear();
   electronMock.listeners.clear();
   electronMock.windowsBySender.clear();
   nextWebContentsId = 1;
@@ -217,11 +241,53 @@ function sendBrowserIpc(args: SendBrowserIpcArgs): void {
   listener({ sender: args.sender }, args.payload);
 }
 
+async function invokeBrowserIpc(args: SendBrowserIpcArgs): Promise<unknown> {
+  const handler = electronMock.handlers.get(args.channel);
+  expect(handler).toBeDefined();
+  if (handler === undefined) {
+    throw new Error(`Expected handler for ${args.channel}.`);
+  }
+  return handler({ sender: args.sender }, args.payload);
+}
+
 function oversizedBrowserUrl(): string {
   return `https://example.com/${"a".repeat(BB_DESKTOP_BROWSER_MAX_URL_LENGTH)}`;
 }
 
 describe("registerDesktopBrowserIpc", () => {
+  it("captures a parsed tab only for a BrowserWindow-owned sender", async () => {
+    const manager = new RecordingDesktopBrowserViewManager();
+    registerDesktopBrowserIpc(manager);
+    const renderer = createTrustedRenderer("main-window");
+
+    await expect(
+      invokeBrowserIpc({
+        channel: BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
+        payload: { tabId: "browser:visible" },
+        sender: renderer.sender,
+      }),
+    ).resolves.toMatchObject({ url: "https://example.com/current" });
+    expect(manager.capturePageCalls).toEqual([
+      { hostWindow: renderer.hostWindow, tabId: "browser:visible" },
+    ]);
+
+    await expect(
+      invokeBrowserIpc({
+        channel: BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
+        payload: { tabId: "", extra: true },
+        sender: renderer.sender,
+      }),
+    ).rejects.toThrow("Invalid browser capture request");
+    await expect(
+      invokeBrowserIpc({
+        channel: BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
+        payload: { tabId: "browser:visible" },
+        sender: createUntrustedSender(),
+      }),
+    ).rejects.toThrow("Browser window is unavailable");
+    expect(manager.capturePageCalls).toHaveLength(1);
+  });
+
   it("dispatches valid browser commands only from BrowserWindow-owned senders", () => {
     const manager = new RecordingDesktopBrowserViewManager();
     registerDesktopBrowserIpc(manager);

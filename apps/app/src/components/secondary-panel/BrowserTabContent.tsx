@@ -51,8 +51,13 @@ import {
 import type { AppShortcutPresentation } from "@/lib/app-keybindings";
 import { CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS } from "@bb/shared-ui/chrome-style-tokens";
 import { isLocalOnlyUrl } from "@/lib/loopback-hostname";
+import {
+  useBrowserAgentConnection,
+  type BrowserAgentConnectionState,
+} from "@/hooks/useBrowserAgentConnection";
 
 interface BrowserTabContentProps {
+  browserAgentControlEnabled: boolean;
   tabId: string;
   initialUrl: string;
   addressFocusRequest: BrowserAddressFocusRequest | null;
@@ -104,14 +109,27 @@ interface BrowserChromeProps {
   onOpenExternal: () => void;
   locationShortcut: AppShortcutPresentation | null;
   reloadShortcut: AppShortcutPresentation | null;
+  agentConnectionState: BrowserAgentConnectionState;
+  browserAgentControlEnabled: boolean;
+  canShareWithAgents: boolean;
+  onToggleAgentConnection: () => void;
 }
 
 interface NavButtonProps {
-  icon: "ChevronLeft" | "ChevronRight" | "RotateCcw" | "X" | "ExternalLink";
+  icon:
+    | "ChevronLeft"
+    | "ChevronRight"
+    | "RotateCcw"
+    | "X"
+    | "ExternalLink"
+    | "Eye"
+    | "EyeOff"
+    | "Spinner";
   label: string;
   disabled?: boolean;
   onClick: () => void;
   shortcut?: AppShortcutPresentation | null;
+  pressed?: boolean;
 }
 
 interface BrowserViewBoundsFromElementArgs {
@@ -212,6 +230,7 @@ function NavButton({
   disabled,
   onClick,
   shortcut,
+  pressed,
 }: NavButtonProps) {
   const accessibleLabel = shortcut ? `${label} (${shortcut.label})` : label;
   return (
@@ -221,10 +240,13 @@ function NavButton({
       disabled={disabled}
       aria-label={accessibleLabel}
       aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
+      aria-pressed={pressed}
+      title={accessibleLabel}
       className={cn(
         "flex shrink-0 items-center justify-center transition-colors hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40",
         COARSE_POINTER_HEADER_ICON_BUTTON_CLASS,
         CHROME_SUBTLE_ICON_BUTTON_FOREGROUND_CLASS,
+        pressed && "bg-state-active text-foreground",
       )}
     >
       <Icon name={icon} aria-hidden />
@@ -248,6 +270,10 @@ function BrowserChrome({
   onOpenExternal,
   locationShortcut,
   reloadShortcut,
+  agentConnectionState,
+  browserAgentControlEnabled,
+  canShareWithAgents,
+  onToggleAgentConnection,
 }: BrowserChromeProps) {
   const isLoading = state?.isLoading ?? false;
   const security = getBrowserUrlSecurity(currentUrl);
@@ -347,6 +373,29 @@ function BrowserChrome({
           disabled={currentUrl.length === 0}
           onClick={onOpenExternal}
         />
+        {browserAgentControlEnabled ? (
+          <NavButton
+            icon={
+              agentConnectionState === "connecting"
+                ? "Spinner"
+                : agentConnectionState === "connected"
+                  ? "EyeOff"
+                  : "Eye"
+            }
+            label={
+              agentConnectionState === "connecting"
+                ? "Sharing this tab with agents"
+                : agentConnectionState === "connected"
+                  ? "Stop sharing this tab with agents"
+                  : "Share this tab with agents"
+            }
+            disabled={
+              !canShareWithAgents || agentConnectionState === "connecting"
+            }
+            pressed={agentConnectionState === "connected"}
+            onClick={onToggleAgentConnection}
+          />
+        ) : null}
         {isLoading ? (
           <span className="absolute inset-x-0 bottom-0 h-0.5 overflow-hidden">
             <span className="block h-full w-1/3 animate-pulse bg-ring/70 motion-reduce:animate-none" />
@@ -435,6 +484,7 @@ function BrowserPageLoadError({
 }
 
 export function BrowserTabContent({
+  browserAgentControlEnabled,
   tabId,
   initialUrl,
   addressFocusRequest,
@@ -501,6 +551,17 @@ export function BrowserTabContent({
     attachedBrowserViewIdentity.threadId === threadId;
 
   const hasPage = currentUrl.length > 0;
+  const canShareWithAgents =
+    browserAgentControlEnabled &&
+    canShowNativeBrowserView &&
+    hasPage &&
+    desktopBrowser?.capturePage !== undefined;
+  const agentConnection = useBrowserAgentConnection({
+    desktopBrowser,
+    enabled: canShareWithAgents,
+    tabId,
+    threadId,
+  });
   const supportsNativePaneFocus =
     desktopBrowser?.focus !== undefined &&
     desktopBrowser.onFocus !== undefined &&
@@ -965,6 +1026,12 @@ export function BrowserTabContent({
         onOpenExternal={handleOpenExternal}
         locationShortcut={locationShortcut}
         reloadShortcut={reloadShortcut}
+        agentConnectionState={agentConnection.state}
+        browserAgentControlEnabled={browserAgentControlEnabled}
+        canShareWithAgents={canShareWithAgents}
+        onToggleAgentConnection={() => {
+          void agentConnection.toggle();
+        }}
       />
       {isFindOpen ? (
         <BrowserFindBar

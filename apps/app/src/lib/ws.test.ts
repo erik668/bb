@@ -161,6 +161,35 @@ describe("WebSocketManager subscriptions", () => {
     ]);
   });
 
+  it("sends and receives browser controller messages on the owning socket", () => {
+    const { manager, socket } = createConnectedManager();
+    const callback = vi.fn();
+    manager.onBrowserController(callback);
+    const connect = {
+      controllerId: "controller:test",
+      tabId: "browser:test",
+      threadId: "thread:test",
+      type: "browser-controller-connect" as const,
+    };
+
+    expect(manager.sendBrowserController(connect)).toBe(true);
+    expect(JSON.parse(socket.sentMessages.at(-1) ?? "null")).toEqual(connect);
+
+    const connected = {
+      grant: {
+        controllerId: connect.controllerId,
+        generation: 1,
+        grantId: "bgr_test",
+        tabId: connect.tabId,
+        threadId: connect.threadId,
+      },
+      type: "browser-controller-connected",
+    };
+    manager.handleIncomingMessage(JSON.stringify(connected));
+
+    expect(callback).toHaveBeenCalledWith(connected);
+  });
+
   it("resends active subscriptions when the websocket reconnects", () => {
     const { manager, socket } = createConnectedManager();
 

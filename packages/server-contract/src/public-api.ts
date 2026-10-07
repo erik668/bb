@@ -214,6 +214,8 @@ import type {
   ThreadTabsWireResponse,
   UpdateThreadTabsRequest,
 } from "./api/thread-tabs.js";
+import type { BrowserSnapshot, BrowserSnapshotRequest } from "./api/browser.js";
+import { browserSnapshotRequestSchema } from "./api/browser.js";
 import { updateThreadTabsRequestSchema } from "./api/thread-tabs.js";
 import {
   closeTerminalRequestSchema,
@@ -313,8 +315,17 @@ type PathProjectSourceId = { param: { id: string; sourceId: string } };
 type PathThreadInteractionId = {
   param: { id: string; interactionId: string };
 };
-
 export const publicApiRoutes = {
+  browser: {
+    snapshot: defineRoute({
+      path: "/browser/snapshots",
+      method: "post",
+      request: jsonRequest<EmptyInput, BrowserSnapshotRequest>(
+        browserSnapshotRequestSchema,
+      ),
+      response: jsonResponse<BrowserSnapshot>(),
+    }),
+  },
   projects: {
     list: defineRoute({
       path: "/projects",

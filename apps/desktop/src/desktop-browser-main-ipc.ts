@@ -1,4 +1,9 @@
-import { BrowserWindow, ipcMain, type IpcMainEvent } from "electron";
+import {
+  BrowserWindow,
+  ipcMain,
+  type IpcMainEvent,
+  type IpcMainInvokeEvent,
+} from "electron";
 import {
   bbDesktopBrowserAttachRequestSchema,
   bbDesktopBrowserFindInPageRequestSchema,
@@ -10,6 +15,7 @@ import {
 } from "@bb/desktop-contract";
 import {
   BB_DESKTOP_BROWSER_ATTACH_CHANNEL,
+  BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
   BB_DESKTOP_BROWSER_DETACH_CHANNEL,
   BB_DESKTOP_BROWSER_FOCUS_CHANNEL,
   BB_DESKTOP_BROWSER_FIND_IN_PAGE_CHANNEL,
@@ -38,7 +44,7 @@ interface RegisterDesktopBrowserTabCommandArgs {
 }
 
 function hostWindowFromBrowserIpcEvent(
-  event: IpcMainEvent,
+  event: IpcMainEvent | IpcMainInvokeEvent,
 ): BrowserWindow | null {
   return BrowserWindow.fromWebContents(event.sender);
 }
@@ -75,6 +81,24 @@ export function registerDesktopBrowserIpc(
     }
     manager.attach({ hostWindow, request: parsed.data });
   });
+
+  ipcMain.handle(
+    BB_DESKTOP_BROWSER_CAPTURE_PAGE_CHANNEL,
+    async (event, payload: unknown) => {
+      const hostWindow = hostWindowFromBrowserIpcEvent(event);
+      if (hostWindow === null) {
+        throw new Error("Browser window is unavailable");
+      }
+      const parsed = bbDesktopBrowserTabRefSchema.safeParse(payload);
+      if (!parsed.success) {
+        throw new Error("Invalid browser capture request");
+      }
+      return manager.capturePage({
+        hostWindow,
+        tabId: parsed.data.tabId,
+      });
+    },
+  );
 
   ipcMain.on(BB_DESKTOP_BROWSER_NAVIGATE_CHANNEL, (event, payload: unknown) => {
     const hostWindow = hostWindowFromBrowserIpcEvent(event);

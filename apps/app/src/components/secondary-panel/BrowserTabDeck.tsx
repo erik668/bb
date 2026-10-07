@@ -10,6 +10,7 @@ import {
   destroyPersistedBrowserView,
 } from "./browserViewVisibilityCoordinator";
 import type { UpdateBrowserTabArgs } from "./useThreadFileTabs";
+import { usePluginList } from "@/hooks/queries/plugin-settings-queries";
 
 interface BrowserTabDeckProps {
   browserTabs: readonly BrowserFixedPanelTab[];
@@ -131,6 +132,11 @@ export function BrowserTabDeck({
   onUpdate,
 }: BrowserTabDeckProps) {
   const desktopBrowser = useMemo(() => getDesktopBrowserApi(), []);
+  const pluginListQuery = usePluginList({ enabled: desktopBrowser !== null });
+  const browserAgentControlEnabled =
+    pluginListQuery.data?.plugins.some(
+      (plugin) => plugin.id === "browser-control" && plugin.enabled,
+    ) ?? false;
   const visibilityCoordinator = useMemo(
     () =>
       desktopBrowser === null
@@ -150,6 +156,7 @@ export function BrowserTabDeck({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-sidebar">
       <BrowserTabContent
+        browserAgentControlEnabled={browserAgentControlEnabled}
         key={activeBrowserTab.id}
         tabId={activeBrowserTab.id}
         initialUrl={activeBrowserTab.url}

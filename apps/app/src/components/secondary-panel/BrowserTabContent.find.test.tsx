@@ -138,6 +138,7 @@ function renderBrowser(harness: FindHarness, initialUrl: string) {
   return render(
     <AppCommandProvider>
       <BrowserTabContent
+        browserAgentControlEnabled={false}
         tabId="browser:test"
         initialUrl={initialUrl}
         addressFocusRequest={null}
