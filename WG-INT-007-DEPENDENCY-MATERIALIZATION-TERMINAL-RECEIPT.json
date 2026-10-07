@@ -1,0 +1,41 @@
+{
+  "schema": "wg-int-007-dependency-materialization-terminal-v1",
+  "status": "STOPPED_CAPABILITY_DEPENDENCY_CLOSURE_UNAVAILABLE",
+  "createdAt": "2026-09-05T03:44:46-04:00",
+  "base": {
+    "head": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "builtinPluginsTestSha256": "f2230af43a4d4e37bcf89658c879a9c05822d6dd2ec89b09a48a1b4025abb735",
+    "node": "v24.14.0",
+    "pnpm": "9.15.0"
+  },
+  "authorizedMaterialization": {
+    "command": "pnpm install --offline --frozen-lockfile --ignore-scripts",
+    "network": "offline",
+    "scripts": "ignored",
+    "result": "pnpm presented its modules-directory replacement prompt and did not materialize the detached workspace links",
+    "logSha256": "d5727c59898d788f01314fd0eda4fb3b3ff86933f403d514098121169e82d736"
+  },
+  "capabilityChecks": {
+    "appsServerDbPackageResolvable": false,
+    "appsAppTwAnimateCssPresent": false,
+    "betterSqlite3Loadable": false,
+    "nativeFailure": "MODULE_NOT_FOUND: better-sqlite3"
+  },
+  "integrity": {
+    "trackedSourceChanged": false,
+    "lockfileChanged": false,
+    "pnpmLockIndexModeOid": "100644 8eaad2dc7e1427d18bdaf4b953adf4673756602f",
+    "builtinPluginsTestIndexModeOid": "100644 a223459cf4d46fab73f77e4f74f473f68894e325"
+  },
+  "classification": "The detached base lacks the dependency and native-module closure needed to execute builtin-plugins.test.ts. The authorized materialization command did not complete its replacement step; no test rerun is valid without further authority.",
+  "notPerformed": [
+    "builtin-plugins test rerun",
+    "interactive confirmation or materialization retry",
+    "ad hoc workspace-link synthesis",
+    "global-cache repair",
+    "source edit",
+    "sealed-eval access",
+    "commit, BB install, or live action"
+  ]
+}

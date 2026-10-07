@@ -1,0 +1,41 @@
+{
+  "schema": "wg-int-007-final-materialization-scope-stop-v1",
+  "status": "STOPPED_WRITE_BOUNDARY_BREACH",
+  "createdAt": "2026-09-05T03:46:35-04:00",
+  "base": {
+    "head": "7cdd77ba9cd23f71f7833bd989d63565128c6fea",
+    "pnpmLockSha256": "deb60f4b3a4d3c76f9eb6b9a12d1147ac9172b91ddf245447c64167f140567a1",
+    "builtinPluginsTestSha256": "f2230af43a4d4e37bcf89658c879a9c05822d6dd2ec89b09a48a1b4025abb735"
+  },
+  "priorRootNodeModules": {
+    "type": "symbolic link",
+    "target": "/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/node_modules",
+    "inode": "490977591"
+  },
+  "authorizedCommand": "CI=1 pnpm install --offline --frozen-lockfile --ignore-scripts",
+  "result": {
+    "exitCode": 0,
+    "lockfileChanged": false,
+    "baseTrackedSourceChanged": false,
+    "workspacePackagesResolvable": true,
+    "betterSqlite3Loadable": true,
+    "logSha256": "110f8401d085e64f5ba2ed377c69b5c5f35dc15248c037739f2e54fe18d22d19"
+  },
+  "scopeEvidence": {
+    "logLine": "Recreating /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int001-source/node_modules",
+    "targetAfter": {
+      "type": "directory",
+      "inode": "490101567"
+    },
+    "classification": "pnpm followed the detached checkout's root node_modules symlink and recreated the target layout in another checkout. The authorization allowed only this detached checkout's ignored node_modules layout."
+  },
+  "verdict": "The requested builtin-plugins test was not run. The materialized dependency closure cannot be treated as a valid detached-base control after the boundary breach.",
+  "notPerformed": [
+    "builtin-plugins test rerun",
+    "materialization retry",
+    "source edit",
+    "global-cache repair",
+    "sealed-eval access",
+    "commit, BB install, or live action"
+  ]
+}

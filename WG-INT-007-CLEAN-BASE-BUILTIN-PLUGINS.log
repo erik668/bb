@@ -1,0 +1,49 @@
+[WARN] The "pnpm" field in package.json is no longer read by pnpm. The following keys were ignored: "pnpm.supportedArchitectures", "pnpm.overrides", "pnpm.patchedDependencies". See https://pnpm.io/settings for the new home of each setting.
+• turbo 2.8.3
+• Packages in scope: @bb/server
+• Running test in 1 packages
+• Remote caching disabled, using shared worktree cache
+//:ensure-native-modules: cache bypass, force executing f43c90d655806ca7
+//:ensure-native-modules: 
+//:ensure-native-modules: > bb@ ensure-native-modules /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base
+//:ensure-native-modules: > node scripts/ensure-native-modules.mjs
+//:ensure-native-modules: 
+@bb/templates:generate:plugin-scaffold: cache bypass, force executing e4e3c4a50928d249
+@bb/templates:generate:plugin-scaffold: 
+@bb/templates:generate:plugin-scaffold: > @bb/templates@0.0.1 generate:plugin-scaffold /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/packages/templates
+@bb/templates:generate:plugin-scaffold: > node ./scripts/generate-plugin-scaffold.mjs
+@bb/templates:generate:plugin-scaffold: 
+@bb/plugin-build:generate: cache bypass, force executing dc758e77f25c1b9f
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: > @bb/plugin-build@0.0.1 generate /Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/packages/plugin-build
+@bb/plugin-build:generate: > node ./scripts/generate-plugin-theme.mjs && node ./scripts/generate-runtime-export-manifest.mjs
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: node:internal/fs/promises:637
+@bb/plugin-build:generate:   return new FileHandle(await PromisePrototypeThen(
+@bb/plugin-build:generate:                         ^
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: Error: ENOENT: no such file or directory, open '/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/apps/app/node_modules/tw-animate-css/dist/tw-animate.css'
+@bb/plugin-build:generate:     at async open (node:internal/fs/promises:637:25)
+@bb/plugin-build:generate:     at async readFile (node:internal/fs/promises:1269:14)
+@bb/plugin-build:generate:     at async Promise.all (index 1)
+@bb/plugin-build:generate:     at async file:///Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/packages/plugin-build/scripts/generate-plugin-theme.mjs:102:56 {
+@bb/plugin-build:generate:   errno: -2,
+@bb/plugin-build:generate:   code: 'ENOENT',
+@bb/plugin-build:generate:   syscall: 'open',
+@bb/plugin-build:generate:   path: '/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/apps/app/node_modules/tw-animate-css/dist/tw-animate.css'
+@bb/plugin-build:generate: }
+@bb/plugin-build:generate: 
+@bb/plugin-build:generate: Node.js v24.14.0
+@bb/plugin-build:generate:  ELIFECYCLE  Command failed with exit code 1.
+@bb/plugin-build:generate:  WARN   Local package.json exists, but node_modules missing, did you mean to install?
+@bb/plugin-build:generate: ERROR: command finished with error: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/packages/plugin-build) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run generate exited (1)
+@get-bb/plugin-sdk:build:types: cache bypass, force executing 36fc01b05f34ee6c
+@bb/templates:generate:templates: cache bypass, force executing 987bf88ffe06966a
+@bb/plugin-build#generate: command (/Users/erik/.bb/thread-storage/thr_vfqhedcjfx/bb-wg-int007-clean-base/packages/plugin-build) /Users/erik/.bb/thread-storage/.pnpm-store/v11/links/@/pnpm/9.15.0/dabcd8222099706e9d5613e2bbde82a6ffe5e77c8ba18b78fcd77c3eac869433/bin/pnpm run generate exited (1)
+
+ Tasks:    2 successful, 5 total
+Cached:    0 cached, 5 total
+  Time:    1.092s 
+Failed:    @bb/plugin-build#generate
+
+ ERROR  run failed: command  exited (1)
