@@ -1,0 +1,617 @@
+{
+  "schemaVersion": "artifact-recovery-v11-runner-conformance-1",
+  "dslId": "bb-keyed-sqlite-oracle-dsl-v1",
+  "canonicalizationVersion": "bb-cjson-2",
+  "rawAdmissionVectors": {
+    "accepted": [
+      {
+        "id": "minimal-object",
+        "utf8Hex": "7b2261223a317d"
+      },
+      {
+        "id": "escaped-scalar",
+        "utf8Hex": "7b225c7530306539223a225c7532306163227d"
+      }
+    ],
+    "rejected": [
+      {
+        "id": "duplicate-root-key",
+        "utf8Hex": "7b2261223a312c2261223a327d",
+        "error": "E_DUPLICATE_KEY"
+      },
+      {
+        "id": "duplicate-nested-key",
+        "utf8Hex": "7b2261223a7b2262223a312c2262223a327d7d",
+        "error": "E_DUPLICATE_KEY"
+      },
+      {
+        "id": "utf8-overlong",
+        "utf8Hex": "c0af",
+        "error": "E_INVALID_UTF8"
+      },
+      {
+        "id": "utf8-lone-continuation",
+        "utf8Hex": "80",
+        "error": "E_INVALID_UTF8"
+      },
+      {
+        "id": "lone-surrogate",
+        "utf8Hex": "7b2261223a225c7564383030227d",
+        "error": "E_LONE_SURROGATE"
+      },
+      {
+        "id": "negative-zero",
+        "utf8Hex": "7b2261223a2d307d",
+        "error": "E_NONCANONICAL_NUMBER"
+      },
+      {
+        "id": "fraction",
+        "utf8Hex": "7b2261223a312e357d",
+        "error": "E_NONCANONICAL_NUMBER"
+      },
+      {
+        "id": "bom",
+        "utf8Hex": "efbbbf7b7d",
+        "error": "E_BOM"
+      }
+    ]
+  },
+  "pointerVectors": {
+    "accepted": [
+      {
+        "id": "escaped-slash",
+        "document": {
+          "a/b": {
+            "id": "slash"
+          }
+        },
+        "pointer": "/a~1b",
+        "targetId": "slash"
+      },
+      {
+        "id": "escaped-tilde",
+        "document": {
+          "m~n": {
+            "id": "tilde"
+          }
+        },
+        "pointer": "/m~0n",
+        "targetId": "tilde"
+      },
+      {
+        "id": "keyed-case",
+        "document": {
+          "authority": {
+            "caseCatalog": {
+              "a/b~c": {
+                "id": "case"
+              }
+            }
+          }
+        },
+        "pointer": "/authority/caseCatalog/a~1b~0c",
+        "targetId": "case"
+      }
+    ],
+    "rejected": [
+      {
+        "id": "invalid-escape",
+        "pointer": "/a~2b",
+        "error": "E_POINTER_ESCAPE"
+      },
+      {
+        "id": "missing-member",
+        "pointer": "/missing",
+        "error": "E_UNRESOLVED_POINTER"
+      },
+      {
+        "id": "array-out-of-range",
+        "pointer": "/items/2",
+        "error": "E_POINTER_ARRAY"
+      },
+      {
+        "id": "leading-zero-index",
+        "pointer": "/items/01",
+        "error": "E_POINTER_ARRAY"
+      },
+      {
+        "id": "append-token",
+        "pointer": "/items/-",
+        "error": "E_POINTER_ARRAY"
+      },
+      {
+        "id": "wildcard",
+        "pointer": "/items/*",
+        "error": "E_POINTER_WILDCARD"
+      },
+      {
+        "id": "wrong-root",
+        "pointer": "/caseCatalog/a",
+        "error": "E_POINTER_DOMAIN"
+      },
+      {
+        "id": "overlap",
+        "pointers": ["/a", "/a/b"],
+        "error": "E_POINTER_OVERLAP"
+      },
+      {
+        "id": "target-id-mismatch",
+        "pointer": "/a",
+        "targetId": "other",
+        "error": "E_TARGET_ID"
+      }
+    ]
+  },
+  "patchVectors": {
+    "accepted": [
+      {
+        "id": "add-member",
+        "document": {
+          "a": {}
+        },
+        "patch": [
+          {
+            "op": "add",
+            "path": "/a/b",
+            "value": 1
+          }
+        ],
+        "result": {
+          "a": {
+            "b": 1
+          }
+        }
+      },
+      {
+        "id": "replace-member",
+        "document": {
+          "a": 1
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/a",
+            "value": 2
+          }
+        ],
+        "result": {
+          "a": 2
+        }
+      },
+      {
+        "id": "remove-member",
+        "document": {
+          "a": 1
+        },
+        "patch": [
+          {
+            "op": "remove",
+            "path": "/a"
+          }
+        ],
+        "result": {}
+      }
+    ],
+    "rejected": [
+      {
+        "id": "invalid-escape",
+        "document": {
+          "a/b": 0
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/a~2b",
+            "value": 1
+          }
+        ],
+        "semanticField": "a/b",
+        "error": "E_POINTER_ESCAPE"
+      },
+      {
+        "id": "missing-parent",
+        "document": {},
+        "patch": [
+          {
+            "op": "add",
+            "path": "/a/b",
+            "value": 1
+          }
+        ],
+        "semanticField": "a/b",
+        "error": "E_UNRESOLVED_POINTER"
+      },
+      {
+        "id": "missing-member",
+        "document": {},
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/a",
+            "value": 1
+          }
+        ],
+        "semanticField": "a",
+        "error": "E_PATCH_MEMBER"
+      },
+      {
+        "id": "out-of-range",
+        "document": {
+          "items": [0]
+        },
+        "patch": [
+          {
+            "op": "add",
+            "path": "/items/2",
+            "value": 1
+          }
+        ],
+        "semanticField": "items",
+        "error": "E_PATCH_RANGE"
+      },
+      {
+        "id": "wrong-op",
+        "document": {
+          "a": 0
+        },
+        "patch": [
+          {
+            "op": "copy",
+            "path": "/a",
+            "value": 1
+          }
+        ],
+        "semanticField": "a",
+        "error": "E_PATCH_OP"
+      },
+      {
+        "id": "overlap",
+        "document": {
+          "a": {
+            "b": 0
+          }
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/a",
+            "value": {}
+          },
+          {
+            "op": "add",
+            "path": "/a/b",
+            "value": 1
+          }
+        ],
+        "semanticField": "a",
+        "error": "E_POINTER_OVERLAP"
+      },
+      {
+        "id": "wildcard",
+        "document": {
+          "a": 0
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/*",
+            "value": 1
+          }
+        ],
+        "semanticField": "a",
+        "error": "E_POINTER_WILDCARD"
+      },
+      {
+        "id": "multi-target",
+        "document": {
+          "items": [
+            {
+              "a": 0
+            },
+            {
+              "a": 0
+            }
+          ]
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/items/*/a",
+            "value": 1
+          }
+        ],
+        "semanticField": "items",
+        "error": "E_POINTER_WILDCARD"
+      },
+      {
+        "id": "no-op",
+        "document": {
+          "a": 1
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/a",
+            "value": 1
+          }
+        ],
+        "semanticField": "a",
+        "error": "E_PATCH_NO_EFFECT"
+      },
+      {
+        "id": "unintended-field",
+        "document": {
+          "a": 1,
+          "other": 1
+        },
+        "patch": [
+          {
+            "op": "replace",
+            "path": "/other",
+            "value": 2
+          }
+        ],
+        "semanticField": "a",
+        "error": "E_PATCH_SEMANTIC_FIELD"
+      }
+    ]
+  },
+  "opcodeVectors": [
+    {
+      "op": "open",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "materializeFixture",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "admitAuthority",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "assertNoDbAccess",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "observe",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "reduce",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "begin",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "executeEffects",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "verifyCompleted",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "commit",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "rollback",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "close",
+      "operandPolicy": "none"
+    },
+    {
+      "op": "reopen",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "constructConsumers",
+      "operandPolicy": "closed-by-schema"
+    },
+    {
+      "op": "assertExpectedSnapshot",
+      "operandPolicy": "none"
+    }
+  ],
+  "rejectedOpcodeVectors": [
+    {
+      "id": "unknown-opcode",
+      "operation": {
+        "op": "deriveExpected"
+      },
+      "error": "E_OPCODE"
+    },
+    {
+      "id": "snapshot-operand",
+      "operation": {
+        "op": "assertExpectedSnapshot",
+        "snapshotRef": "x"
+      },
+      "error": "E_OPCODE_OPERAND"
+    },
+    {
+      "id": "snapshot-optional",
+      "operation": {
+        "op": "assertExpectedSnapshot",
+        "optional": true
+      },
+      "error": "E_OPCODE_OPERAND"
+    }
+  ],
+  "mutationInventory": {
+    "requiredA0SemanticClasses": [
+      "authority-input",
+      "reference-interpreter",
+      "shared-reducer",
+      "canonicalization",
+      "pointer-patch",
+      "schema-normalization",
+      "projection",
+      "digest",
+      "darkness-registration"
+    ],
+    "bySemanticClass": {
+      "adapter": 6,
+      "authority-input": 46,
+      "canonicalization": 1,
+      "darkness-registration": 6,
+      "digest": 9,
+      "pointer-patch": 15,
+      "projection": 3,
+      "reference-interpreter": 63,
+      "schema-normalization": 1,
+      "shared-reducer": 29
+    },
+    "byOwner": {
+      "authority-author": 46,
+      "canonicalization-core": 1,
+      "darkness-registration": 6,
+      "digest-verifier": 9,
+      "fake-adapter": 3,
+      "literal-projection": 3,
+      "pointer-patch-admission": 15,
+      "production-adapter": 3,
+      "reference-interpreter": 63,
+      "shared-reducer": 29,
+      "sqlite-normalizer": 1
+    },
+    "byPhase": {
+      "a0": 173,
+      "v3-construction": 6
+    },
+    "byArm": {
+      "fake": 3,
+      "production": 3,
+      "reference": 173
+    }
+  },
+  "constructionSentinels": [
+    {
+      "mutantId": "mutant-divergence-production-omit-grant",
+      "owner": "production-adapter",
+      "arm": "production",
+      "targetId": "divergence-production-omit-grant",
+      "adapterTarget": {
+        "arm": "production",
+        "path": "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+        "symbol": "ArtifactReviewV3Contract"
+      },
+      "a0Disposition": "construction-gated-by-phase",
+      "failingArmCount": 1
+    },
+    {
+      "mutantId": "mutant-divergence-production-duplicate-row",
+      "owner": "production-adapter",
+      "arm": "production",
+      "targetId": "divergence-production-duplicate-row",
+      "adapterTarget": {
+        "arm": "production",
+        "path": "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+        "symbol": "artifactRecoveryV3Capability"
+      },
+      "a0Disposition": "construction-gated-by-phase",
+      "failingArmCount": 1
+    },
+    {
+      "mutantId": "mutant-divergence-production-retarget-blob",
+      "owner": "production-adapter",
+      "arm": "production",
+      "targetId": "divergence-production-retarget-blob",
+      "adapterTarget": {
+        "arm": "production",
+        "path": "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+        "symbol": "projectArtifactReviewV3"
+      },
+      "a0Disposition": "construction-gated-by-phase",
+      "failingArmCount": 1
+    },
+    {
+      "mutantId": "mutant-divergence-fake-omit-edge",
+      "owner": "fake-adapter",
+      "arm": "fake",
+      "targetId": "divergence-fake-omit-edge",
+      "adapterTarget": {
+        "arm": "fake",
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+        "symbol": "createArtifactRecoveryV3FakeAdapter"
+      },
+      "a0Disposition": "construction-gated-by-phase",
+      "failingArmCount": 1
+    },
+    {
+      "mutantId": "mutant-divergence-fake-reorder-ledger",
+      "owner": "fake-adapter",
+      "arm": "fake",
+      "targetId": "divergence-fake-reorder-ledger",
+      "adapterTarget": {
+        "arm": "fake",
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+        "symbol": "artifactRecoveryV3FakeContractVectors"
+      },
+      "a0Disposition": "construction-gated-by-phase",
+      "failingArmCount": 1
+    },
+    {
+      "mutantId": "mutant-divergence-fake-early-completion",
+      "owner": "fake-adapter",
+      "arm": "fake",
+      "targetId": "divergence-fake-early-completion",
+      "adapterTarget": {
+        "arm": "fake",
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+        "symbol": "projectArtifactRecoveryV3Fake"
+      },
+      "a0Disposition": "construction-gated-by-phase",
+      "failingArmCount": 1
+    }
+  ],
+  "requiredReport": {
+    "selected": 179,
+    "passed": 179,
+    "failed": 0,
+    "skipped": 0,
+    "categoryCounts": {
+      "collision": 57,
+      "corruption": 15,
+      "darkness": 6,
+      "divergence": 9,
+      "edge": 24,
+      "fault": 40,
+      "parity": 3,
+      "restart": 9,
+      "state": 16
+    },
+    "a0MutantsSelected": 173,
+    "a0MutantsKilled": 173,
+    "a0MutantsSurvived": 0,
+    "a0MutantsSkipped": 0,
+    "a0MutantsUncovered": 0,
+    "constructionSentinels": 6
+  },
+  "interpreterBoundary": {
+    "path": "plugins/workflows/src/artifact-recovery-v11-reference-interpreter.ts",
+    "requiredExports": ["validateV11Authority", "executeV11Corpus"],
+    "forbiddenImports": [
+      "./data.js",
+      "./artifact-recovery.js",
+      "./plugin-api.js",
+      "./fake-plugin-host.js",
+      "@get-bb/plugin-sdk",
+      "apps/server",
+      "packages/plugin-sdk"
+    ],
+    "forbiddenSemanticDispatch": [
+      "case-id",
+      "label",
+      "category-name",
+      "filename",
+      "object-key-spelling",
+      "array-position"
+    ]
+  }
+}

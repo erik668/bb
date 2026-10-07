@@ -1,0 +1,89 @@
+{
+  "schemaVersion": 1,
+  "seamId": "bb-artifact-review-v3-host-foundation-f3:standalone-neutral-self-admission-v1",
+  "repoRoot": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details",
+  "f3Root": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3",
+  "runtime": {
+    "node": {
+      "path": "/Users/erik/.local/share/mise/installs/node/24.14.0/bin/node",
+      "sha256": "20a18709f0154d668f1bd6f6ea8c2a7ae001447b4b2c339732f22e57a8767a55",
+      "version": "v24.14.0",
+      "modules": "137",
+      "napi": "10",
+      "sqlite": "3.51.2"
+    },
+    "sqlite3": {
+      "path": "/usr/bin/sqlite3",
+      "sha256": "441a1953829d6bff74a0e0070b0ab0a05ba2a2c1b1d330fc2f1a8e42b4a89723",
+      "version": "3.51.0"
+    }
+  },
+  "selfAdmission": {
+    "entrypoint": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3/self-admission-runner.mjs",
+    "argvShape": ["--mode=self-admit", "--topology", "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3/launch-topology.json", "--recorder-root", "<fresh-absolute-mktemp-root>"],
+    "cwdRule": "equals-recorder-root",
+    "environmentAllowlist": ["F3_RUN_ID", "HOME", "LANG", "LC_ALL", "PATH", "TMPDIR", "__CF_USER_TEXT_ENCODING"],
+    "sandboxProfile": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3/author-self-admit.sb"
+  },
+  "sourceMembers": [
+    "tools/artifact-review-v3-host-foundation-f3/contract-capsule.json",
+    "tools/artifact-review-v3-host-foundation-f3/result.schema.json",
+    "tools/artifact-review-v3-host-foundation-f3/launch-topology.json",
+    "tools/artifact-review-v3-host-foundation-f3/oracle.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/self-admission-subject.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/self-admission-runner.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/crash-child.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/reopen-observer-node.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/reopen-observer-sqlite3.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/candidate-entry.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/candidate-adjudication-launcher.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/access-audit.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/author-self-admit.sb",
+    "tools/artifact-review-v3-host-foundation-f3/candidate-adjudication.sb",
+    "tools/artifact-review-v3-host-foundation-f3/manifest-encoder-node.mjs",
+    "tools/artifact-review-v3-host-foundation-f3/manifest-encoder-posix.sh"
+  ],
+  "forbiddenDiscovery": [
+    "apps/server",
+    "package.json",
+    "pnpm-workspace.yaml",
+    "pnpm-lock.yaml",
+    "vitest.config.ts",
+    "vitest.shared.ts",
+    "node_modules"
+  ],
+  "candidate": {
+    "entrypoint": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3/candidate-entry.mjs",
+    "launcher": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3/candidate-adjudication-launcher.mjs",
+    "sandboxProfile": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/tools/artifact-review-v3-host-foundation-f3/candidate-adjudication.sb",
+    "tsxImport": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/tsx/dist/loader.mjs",
+    "betterSqlite3Root": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/better-sqlite3",
+    "runtimeClosure": [
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/tsx",
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/esbuild",
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/get-tsconfig",
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/resolve-pkg-maps",
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/better-sqlite3",
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/bindings",
+      "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/node_modules/file-uri-to-path"
+    ],
+    "runtimeClosureFreezeRule": "resolve-regular-files-and-bind-byte-identities-before-candidate-exposure-without-package-discovery",
+    "noncandidateProductionImports": [],
+    "paths": [
+      { "path": "apps/server/scripts/generate-workflows-plugin-migration-authority.mjs", "rejectedSha256": "e76dcd6ea5f661f7b90235a2eb3ed81643d7646630f1222acc956239d6f6e023" },
+      { "path": "apps/server/src/services/plugins/generated/workflows-plugin-migration-authority.generated.ts", "rejectedSha256": "41fe590c86679e27ea60e161448c3850144d15276847fb8223f0490a5e1600e5" },
+      { "path": "apps/server/src/services/plugins/plugin-migration-authority-registry.ts", "rejectedSha256": "8ae19e15045a93f42225fe3b1544975c0a6138abafa062e5dfce171514df7bf0" },
+      { "path": "apps/server/src/services/plugins/host-owned-plugin-transaction.ts", "rejectedSha256": "87b26db7858215a72838761aa688a080a4e05620072bb9b450fe13685bf210cf" },
+      { "path": "apps/server/src/services/plugins/host-transaction-phase-controller.ts", "rejectedSha256": "ad8644005371b0c5521d8e767729394ee498200bc0151e305a1c1ece46e24d7b" },
+      { "path": "apps/server/package.json", "rejectedSha256": "7d93ca1daa367d70bebe581cf760faec5b56e85c87b693f5ac1d4c88ca17a186" }
+    ],
+    "namedExports": {
+      "apps/server/scripts/generate-workflows-plugin-migration-authority.mjs": ["generateWorkflowsPluginMigrationAuthority"],
+      "apps/server/src/services/plugins/generated/workflows-plugin-migration-authority.generated.ts": ["WORKFLOWS_PLUGIN_MIGRATION_AUTHORITY"],
+      "apps/server/src/services/plugins/plugin-migration-authority-registry.ts": ["getPluginMigrationAuthority"],
+      "apps/server/src/services/plugins/host-owned-plugin-transaction.ts": ["runHostOwnedPluginTransaction"],
+      "apps/server/src/services/plugins/host-transaction-phase-controller.ts": ["createHostTransactionPhaseController"]
+    },
+    "callerModuleSubstitution": false
+  }
+}

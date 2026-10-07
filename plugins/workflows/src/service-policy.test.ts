@@ -24,6 +24,7 @@ import {
   DEFAULT_WORKFLOW_SETTINGS,
   type WorkflowSettings,
 } from "./settings.js";
+import { workflowArtifactLiveChangesEnabled } from "./service-policy.js";
 import {
   MAX_WORKFLOW_CAMPAIGN_DETAILED_RUNS,
   MAX_WORKFLOW_RUNS_PER_CAMPAIGN,
@@ -52,6 +53,14 @@ function source(body: string, name = "policy-test"): string {
   };
   ${body}`;
 }
+
+describe("artifact live-change policy", () => {
+  it("is fail-closed for omitted and false durable definition values", () => {
+    expect(workflowArtifactLiveChangesEnabled(undefined)).toBe(false);
+    expect(workflowArtifactLiveChangesEnabled(false)).toBe(false);
+    expect(workflowArtifactLiveChangesEnabled(true)).toBe(true);
+  });
+});
 
 function model() {
   return {
@@ -1390,7 +1399,7 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
-  it("surfaces a hidden origin on its nearest visible ancestor without duplicate signals", async () => {
+  it("surfaces a hidden origin on its root visible ancestor without duplicate signals", async () => {
     const test = setup();
     harnesses.push(test.harness);
     test.setThread("root-visible", { visibility: "visible" });
@@ -1421,6 +1430,69 @@ describe("workflow service policy integration", () => {
         (signal) => (signal.payload as { threadId: string }).threadId,
       ),
     ).toEqual(["worker-hidden", "root-visible"]);
+  });
+
+  it("presents a visible cross-project launcher on its root visible parent", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.setThread("human-root", {
+      projectId: "project-personal",
+      environmentId: "environment-personal",
+      visibility: "visible",
+    });
+    test.setThread("launcher", {
+      parentThreadId: "visible-middle",
+      visibility: "visible",
+    });
+    test.setThread("visible-middle", {
+      parentThreadId: "human-root",
+      visibility: "visible",
+    });
+
+    const run = await test.start(source("return null", "visible-launcher"), {
+      originThreadId: "launcher",
+    });
+
+    expect(run).toMatchObject({
+      originThreadId: "launcher",
+      presentationThreadId: "human-root",
+    });
+    expect(
+      test.harness.realtimeSignals.map(
+        (signal) => (signal.payload as { threadId: string }).threadId,
+      ),
+    ).toEqual(["launcher", "human-root"]);
+  });
+
+  it("accepts an explicit visible presentation thread outside launcher ancestry", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.setThread("human-root", {
+      projectId: "project-personal",
+      environmentId: "environment-personal",
+      visibility: "visible",
+    });
+
+    const run = await test.start(source("return null", "standalone-launcher"), {
+      presentationThreadId: "human-root",
+    });
+
+    expect(run).toMatchObject({
+      originThreadId: "origin",
+      presentationThreadId: "human-root",
+    });
+  });
+
+  it("rejects an explicit hidden presentation thread", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    test.setThread("hidden-target", { visibility: "hidden" });
+
+    await expect(
+      test.start(source("return null", "hidden-presentation"), {
+        presentationThreadId: "hidden-target",
+      }),
+    ).rejects.toThrow(/presentation thread must be visible/i);
   });
 
   it("inherits presentation and root IDs when a workflow worker launches a nested run", async () => {

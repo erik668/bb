@@ -1,0 +1,5 @@
+Playwright session: workflow-story-qa
+Page: http://127.0.0.1:38886/threads/thr_izyqi5c7pj
+Command: playwright-cli -s=workflow-story-qa console error
+Result: Total messages: 192 (Errors: 0, Warnings: 192)
+Error-level messages returned: 0

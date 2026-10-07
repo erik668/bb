@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bb-artifact-review-p1-raw-receipt",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "identity", "command", "process", "boundary", "content", "physical"],
+      "properties": {
+        "version": { "const": 1 },
+        "identity": { "type": "string", "pattern": "^[0-9a-f]{48}$" },
+        "command": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["argv", "pid", "startedNs", "completedNs", "exitCode", "stdoutBase64", "stderrBase64"],
+          "properties": {
+            "argv": { "type": "array", "items": { "type": "string" } },
+            "pid": { "type": "integer", "minimum": 1 },
+            "startedNs": { "type": "string", "pattern": "^[0-9]+$" },
+            "completedNs": { "type": "string", "pattern": "^[0-9]+$" },
+            "exitCode": { "type": "integer" },
+            "stdoutBase64": { "type": "string" },
+            "stderrBase64": { "type": "string" }
+          }
+        },
+        "process": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pid", "ppid"],
+          "properties": {
+            "pid": { "type": "integer", "minimum": 1 },
+            "ppid": { "type": "integer", "minimum": 1 }
+          }
+        },
+        "boundary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["typedBytesBase64"],
+          "properties": { "typedBytesBase64": { "type": "string" } }
+        },
+        "content": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["stateBytes", "stateSha256"],
+          "properties": {
+            "stateBytes": { "type": "integer", "minimum": 0 },
+            "stateSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        },
+        "physical": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuedRootSha256"],
+          "properties": {
+            "issuedRootSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          }
+        }
+      }
+    }
+  ]
+}

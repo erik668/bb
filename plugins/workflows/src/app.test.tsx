@@ -8,6 +8,8 @@ const app = await loadPluginApp(() => import("./app"));
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
 });
 
@@ -244,7 +246,7 @@ describe("workflow composer banner", () => {
           scope: { kind: "thread", threadId: "thr_scope" },
         },
         rpc: {
-          workflowActiveRuns: (input) => {
+          workflowThreadRuns: (input) => {
             expect(input).toEqual({ threadId: "thr_scope" });
             return { runs: [run, queuedRun] };
           },
@@ -278,7 +280,7 @@ describe("workflow composer banner", () => {
           scope: { kind: "thread", threadId: "thr_root" },
         },
         rpc: {
-          workflowActiveRuns: () => ({ runs: [relatedRun] }),
+          workflowThreadRuns: () => ({ runs: [relatedRun] }),
         },
       },
     );
@@ -297,7 +299,7 @@ describe("workflow composer banner", () => {
         composer: {
           scope: { kind: "thread", threadId: "thr_scope" },
         },
-        rpc: { workflowActiveRuns: () => ({ runs: [run] }) },
+        rpc: { workflowThreadRuns: () => ({ runs: [run] }) },
       },
     );
 
@@ -337,7 +339,7 @@ describe("workflow composer banner", () => {
           scope: { kind: "thread", threadId: "thr_scope" },
         },
         rpc: {
-          workflowActiveRuns: () => {
+          workflowThreadRuns: () => {
             polls += 1;
             return { runs: [{ ...run }] };
           },
@@ -358,6 +360,72 @@ describe("workflow composer banner", () => {
     slot.unmount();
   });
 
+  it("continues the elapsed timer while a workflow is active", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const slot = renderSlot(
+      banner,
+      {},
+      {
+        composer: {
+          scope: { kind: "thread", threadId: "thr_scope" },
+        },
+        rpc: { workflowThreadRuns: () => ({ runs: [run] }) },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    const toggle = slot.getByRole("button", {
+      name: "Workflow: Review the release",
+    });
+    expect(toggle.textContent).toContain("9s");
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(toggle.textContent).toContain("10s");
+    slot.unmount();
+  });
+
+  it("stops the elapsed timer when an active workflow settles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    let polls = 0;
+    const completedRun: WorkflowRunView = {
+      ...run,
+      status: "succeeded",
+      finishedAt: 4_000,
+    };
+    const slot = renderSlot(
+      banner,
+      {},
+      {
+        composer: {
+          scope: { kind: "thread", threadId: "thr_scope" },
+        },
+        rpc: {
+          workflowThreadRuns: () => ({
+            runs: [polls++ === 0 ? run : completedRun],
+          }),
+        },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    const toggle = slot.getByRole("button", {
+      name: "Workflow: Review the release",
+    });
+    expect(toggle.textContent).toContain("9s");
+
+    await act(async () => vi.advanceTimersByTimeAsync(1_000));
+    expect(toggle.textContent).toContain("3s");
+    expect(clearInterval).toHaveBeenCalled();
+    expect(polls).toBe(2);
+
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(toggle.textContent).toContain("3s");
+    expect(polls).toBe(2);
+    slot.unmount();
+  });
+
   it("renders null when the scope thread has no active runs", async () => {
     const slot = renderSlot(
       banner,
@@ -366,12 +434,79 @@ describe("workflow composer banner", () => {
         composer: {
           scope: { kind: "thread", threadId: "thr_idle" },
         },
-        rpc: { workflowActiveRuns: () => ({ runs: [] }) },
+        rpc: { workflowThreadRuns: () => ({ runs: [] }) },
       },
     );
 
     await waitFor(() => expect(slot.rpcCalls).toHaveLength(1));
     expect(slot.container.childElementCount).toBe(0);
+  });
+
+  it("keeps the latest completed workflow available for the inspector without polling", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(10_000);
+    const completedRun: WorkflowRunView = {
+      ...run,
+      status: "succeeded",
+      finishedAt: 4_000,
+      phases: run.phases.map((phase) => ({
+        ...phase,
+        calls: phase.calls.map((call) => ({
+          ...call,
+          status: "succeeded" as const,
+          finishedAt: 4_000,
+        })),
+      })),
+    };
+    const slot = renderSlot(
+      banner,
+      {},
+      {
+        composer: {
+          scope: { kind: "thread", threadId: "thr_origin" },
+        },
+        rpc: { workflowThreadRuns: () => ({ runs: [completedRun] }) },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    expect(slot.getByText("Review the release")).toBeTruthy();
+    expect(slot.getByText("Latest workflow")).toBeTruthy();
+    const toggle = slot.getByRole("button", {
+      name: "Workflow: Review the release",
+    });
+    expect(toggle.textContent).toContain("3s");
+    expect(slot.rpcCalls).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(toggle.textContent).toContain("3s");
+    expect(slot.rpcCalls).toHaveLength(1);
+    slot.unmount();
+  });
+
+  it("does not poll a directive after an RPC error", async () => {
+    vi.useFakeTimers();
+    const slot = renderSlot(
+      app.messageDirectives[0]!,
+      {
+        attributes: { run: run.id },
+        source: `::workflow-preview{run="${run.id}"}`,
+        message: { ...message, threadId: "thr_parent" },
+        openWorkspaceFile: null,
+      },
+      {
+        rpc: {
+          workflowRunView: () => {
+            throw new Error("Workflow view is temporarily unavailable");
+          },
+        },
+      },
+    );
+
+    await act(async () => Promise.resolve());
+    expect(slot.rpcCalls).toHaveLength(1);
+    await act(async () => vi.advanceTimersByTimeAsync(5_000));
+    expect(slot.rpcCalls).toHaveLength(1);
+    slot.unmount();
   });
 
   it("does not poll an idle thread; a workflow-runs signal for the thread triggers one refresh", async () => {
@@ -384,7 +519,7 @@ describe("workflow composer banner", () => {
         composer: {
           scope: { kind: "thread", threadId: "thr_idle" },
         },
-        rpc: { workflowActiveRuns: () => ({ runs }) },
+        rpc: { workflowThreadRuns: () => ({ runs }) },
       },
     );
 
@@ -434,7 +569,7 @@ describe("workflow composer banner", () => {
         composer: {
           scope: { kind: "thread", threadId: "thr_scope" },
         },
-        rpc: { workflowActiveRuns: () => ({ runs: [run] }) },
+        rpc: { workflowThreadRuns: () => ({ runs: [run] }) },
       },
     );
     try {
@@ -477,7 +612,7 @@ describe("workflow composer banner", () => {
         },
         openThreadPanel,
         rpc: {
-          workflowActiveRuns: () => ({ runs: [run] }),
+          workflowThreadRuns: () => ({ runs: [run] }),
         },
       },
     );
@@ -624,7 +759,7 @@ describe("workflow-preview directive", () => {
     expect(slot.getByText("Unphased verification")).toBeTruthy();
   });
 
-  it("recovers from initial and active polling failures, then settles", async () => {
+  it("preserves the last good run across an active polling failure, then settles", async () => {
     vi.useFakeTimers();
     let attempt = 0;
     const terminalRun: WorkflowRunView = {
@@ -652,18 +787,14 @@ describe("workflow-preview directive", () => {
         rpc: {
           workflowRunView: () => {
             attempt += 1;
-            if (attempt === 1) throw new Error("initial outage");
-            if (attempt === 3) throw new Error("poll outage");
-            return { run: attempt === 2 ? run : terminalRun };
+            if (attempt === 2) throw new Error("poll outage");
+            return { run: attempt === 1 ? run : terminalRun };
           },
         },
       },
     );
 
     await act(async () => Promise.resolve());
-    expect(slot.getByRole("alert").textContent).toMatch(/initial outage/i);
-
-    await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(slot.getByText("Review the release")).toBeTruthy();
     expect(slot.queryByText("Complete")).toBeNull();
 
@@ -676,13 +807,13 @@ describe("workflow-preview directive", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1_000));
     expect(slot.getByText("Complete")).toBeTruthy();
     expect(slot.queryByRole("status")).toBeNull();
-    expect(attempt).toBe(4);
+    expect(attempt).toBe(3);
 
     await act(async () => vi.advanceTimersByTimeAsync(5_000));
-    expect(attempt).toBe(4);
+    expect(attempt).toBe(3);
     slot.unmount();
     await act(async () => vi.advanceTimersByTimeAsync(5_000));
-    expect(attempt).toBe(4);
+    expect(attempt).toBe(3);
   });
 
   it("does not overlap a poll that takes longer than the interval", async () => {
@@ -940,6 +1071,14 @@ describe("workflow thread panel", () => {
     expect(slot.getByRole("heading", { name: "Build story" })).toBeTruthy();
     expect(slot.getByLabelText("Build dependency graph")).toBeTruthy();
     expect(
+      [...slot.container.querySelectorAll("[data-dag-edge-from]")].map(
+        (edge) => [
+          edge.getAttribute("data-dag-edge-from"),
+          edge.getAttribute("data-dag-edge-to"),
+        ],
+      ),
+    ).toEqual([["ticket-101", "ticket-102"]]);
+    expect(
       slot.getByText("2 related runs, shown as one campaign."),
     ).toBeTruthy();
     expect(
@@ -993,6 +1132,196 @@ describe("workflow thread panel", () => {
         "Cyclic or cycle-blocked dependencies affect: cycle-a, cycle-b.",
       ),
     ).toBeTruthy();
+    expect(
+      slot.container.querySelector(
+        '[data-dag-edge-from="missing-node"][data-dag-edge-to="unknown-ref"]',
+      ),
+    ).toBeNull();
+  });
+
+  it("keeps dependency edges distinct when checkpoint IDs contain colons", async () => {
+    let targetShifted = false;
+    const resizeState: {
+      callback: ResizeObserverCallback | null;
+      observer: ResizeObserver | null;
+    } = { callback: null, observer: null };
+    let disconnectCount = 0;
+    class TestResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        resizeState.callback = callback;
+        resizeState.observer = this;
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {
+        disconnectCount += 1;
+      }
+    }
+    const rect = (x: number, y: number, width: number, height: number): DOMRect =>
+      ({
+        x,
+        y,
+        width,
+        height,
+        top: y,
+        right: x + width,
+        bottom: y + height,
+        left: x,
+        toJSON: () => ({ x, y, width, height }),
+      });
+    vi.stubGlobal("ResizeObserver", TestResizeObserver);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(
+      function (this: HTMLElement) {
+        if (this.getAttribute("aria-label") === "Build dependency graph") {
+          return rect(0, 0, 400, 300);
+        }
+        switch (this.getAttribute("data-dag-node")) {
+          case "a:b":
+            return rect(20, 50, 100, 40);
+          case "a":
+            return rect(220, 50, 100, 40);
+          case "c":
+            return rect(targetShifted ? 120 : 20, 150, 100, 40);
+          case "b:c":
+            return rect(220, 150, 100, 40);
+          default:
+            return rect(0, 0, 0, 0);
+        }
+      },
+    );
+    const colonSource = workCheckpoint("a:b", "succeeded");
+    const plainSource = workCheckpoint("a", "succeeded");
+    const plainTarget = workCheckpoint("c", "pending");
+    const colonTarget = workCheckpoint("b:c", "pending");
+    if (
+      plainTarget.checkpoint.kind !== "work-item" ||
+      colonTarget.checkpoint.kind !== "work-item"
+    ) {
+      throw new Error("test setup");
+    }
+    plainTarget.checkpoint.dependsOn = ["a:b"];
+    colonTarget.checkpoint.dependsOn = ["a"];
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [colonSource, plainSource, plainTarget, colonTarget],
+            campaign: null,
+          }),
+        },
+      },
+    );
+
+    await slot.findByLabelText("Build dependency graph");
+    const edges = [...slot.container.querySelectorAll("[data-dag-edge-from]")];
+    expect(
+      edges.map((edge) => [
+        edge.getAttribute("data-dag-edge-from"),
+        edge.getAttribute("data-dag-edge-to"),
+      ]),
+    ).toEqual([
+      ["a:b", "c"],
+      ["a", "b:c"],
+    ]);
+    await waitFor(() => {
+      expect(edges[0]?.getAttribute("d")).toBe(
+        "M 70 90 C 70 119, 70 119, 70 148",
+      );
+      expect(edges[1]?.getAttribute("d")).toBe(
+        "M 270 90 C 270 119, 270 119, 270 148",
+      );
+    });
+
+    targetShifted = true;
+    const { callback, observer } = resizeState;
+    if (callback === null || observer === null) {
+      throw new Error("ResizeObserver was not installed");
+    }
+    await act(async () => callback([], observer));
+    await waitFor(() => {
+      expect(edges[0]?.getAttribute("d")).toBe(
+        "M 70 90 C 70 119, 170 119, 170 148",
+      );
+    });
+    slot.unmount();
+    expect(disconnectCount).toBe(1);
+  });
+
+  it("keeps dependency layer keys distinct when checkpoint IDs contain colons", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+    const firstSource = workCheckpoint("a:b", "succeeded");
+    const secondSource = workCheckpoint("c", "succeeded");
+    const firstTarget = workCheckpoint("a", "pending");
+    const secondTarget = workCheckpoint("b:c", "pending");
+    if (
+      firstTarget.checkpoint.kind !== "work-item" ||
+      secondTarget.checkpoint.kind !== "work-item"
+    ) {
+      throw new Error("test setup");
+    }
+    firstTarget.checkpoint.dependsOn = ["a:b"];
+    secondTarget.checkpoint.dependsOn = ["c"];
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [
+              firstSource,
+              secondSource,
+              firstTarget,
+              secondTarget,
+            ],
+            campaign: null,
+          }),
+        },
+      },
+    );
+
+    await slot.findByLabelText("Build dependency graph");
+    expect(consoleError.mock.calls.flat().join(" ")).not.toMatch(
+      /same key|unique "key"/i,
+    );
+  });
+
+  it("caps connector rendering while preserving textual prerequisites", async () => {
+    const source = workCheckpoint("source", "succeeded");
+    const targets = Array.from({ length: 201 }, (_, index) => {
+      const target = workCheckpoint(`target-${index}`, "pending");
+      if (target.checkpoint.kind !== "work-item") {
+        throw new Error("test setup");
+      }
+      target.checkpoint.dependsOn = ["source"];
+      return target;
+    });
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run }),
+          workflowRunDetails: () => ({
+            checkpoints: [source, ...targets],
+            campaign: null,
+          }),
+        },
+      },
+    );
+
+    expect(
+      await slot.findByText(
+        "Showing the first 200 dependency connectors. Exact prerequisites remain listed on each card.",
+      ),
+    ).toBeTruthy();
+    expect(
+      slot.container.querySelectorAll("[data-dag-edge-from]"),
+    ).toHaveLength(200);
+    expect(slot.getAllByText("After: source")).toHaveLength(201);
   });
 
   it("labels unresolved dependencies as incomplete when older ledgers were omitted", async () => {

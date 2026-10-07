@@ -1,0 +1,1402 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "bb-artifact-review-v3-executable-recorder-a0-closed-data-v1",
+  "title": "Artifact review v3 executable recorder A0 closed data contract",
+  "oneOf": [
+    {
+      "$ref": "#/definitions/authority"
+    },
+    {
+      "$ref": "#/definitions/publicStimuli"
+    },
+    {
+      "$ref": "#/definitions/privateAuthority"
+    },
+    {
+      "$ref": "#/definitions/prefreezeProvenance"
+    },
+    {
+      "$ref": "#/definitions/repairProvenance"
+    }
+  ],
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitOid": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "status",
+        "byteLength",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            " M",
+            "M ",
+            "A ",
+            " D",
+            "D ",
+            "R ",
+            "C ",
+            "??"
+          ]
+        },
+        "byteLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/definitions/sha256"
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "role",
+        "decision",
+        "bindings",
+        "contract",
+        "roleSeparation",
+        "inventory",
+        "negativeControls",
+        "executionContract",
+        "sdkContract",
+        "manifestCanonicalization",
+        "repairLifecycle",
+        "pathClosure",
+        "approvalBoundary"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0-authority-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0:independent-harness-admission-v1"
+        },
+        "role": {
+          "const": "a0-corpus-and-authority-author"
+        },
+        "decision": {
+          "const": "proof-only-executable-recorder-admission"
+        },
+        "bindings": {
+          "const": {
+            "synthesis": {
+              "runId": "wfr_dabb0686-de35-4d6e-83ef-58ad936678d6",
+              "path": "/Users/erik/.bb/thread-storage/v3-a0-contract.json",
+              "byteLength": 20806,
+              "sha256": "b4bbedd9460e1dee4389c2d13f7831f341105063924fca81afa787551fd99ebc"
+            },
+            "immutableLineage": {
+              "v12": {
+                "disposition": "accepted-frozen-input",
+                "manifest": {
+                  "byteLength": 798,
+                  "sha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b"
+                },
+                "approvalSha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0",
+                "ledgerSha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7"
+              },
+              "c0": {
+                "disposition": "immutable-failed-non-adoptable",
+                "manifest": {
+                  "byteLength": 556,
+                  "sha256": "d0e9c7a124fdc3f3f00f7608f919a59fd3eaaeafd1a0135eee7a3e848cd93069"
+                },
+                "candidateManifest": "absent",
+                "ledger": "absent",
+                "approval": "absent"
+              },
+              "c1": {
+                "disposition": "immutable-failed-non-adoptable",
+                "manifest": {
+                  "byteLength": 747,
+                  "sha256": "f448ed2b2c1e0a14e6d3a389c19ad227757a41012052da6e805d835748c75d6d"
+                },
+                "candidateManifest": "absent",
+                "ledger": "absent",
+                "approval": "absent"
+              },
+              "c2": {
+                "disposition": "immutable-failed-non-adoptable-zero-repair",
+                "manifest": {
+                  "byteLength": 1497,
+                  "sha256": "46c46b57ef0a40173617e890469a315d6b2a7039e11e6624f55aa5c85aa892f5",
+                  "terminalNewline": true
+                },
+                "result": {
+                  "selected": 134,
+                  "passed": 0,
+                  "failed": 134,
+                  "skipped": 0
+                },
+                "repairUsed": false,
+                "candidateManifest": "absent",
+                "ledger": "absent",
+                "approval": "absent"
+              },
+              "failedOracleGenerations": [
+                {
+                  "id": "v9",
+                  "approval": "absent"
+                },
+                {
+                  "id": "v10",
+                  "approval": "absent"
+                },
+                {
+                  "id": "v11",
+                  "approval": "absent"
+                }
+              ]
+            },
+            "migrationVector": {
+              "encoding": "id-colon-sha256-semicolon-no-terminal",
+              "byteLength": 1553,
+              "sha256": "2d4aa4a4dc215e4a3c51e763dfde370cf2a33741130f7ec3d2082c334251ec7c",
+              "hashes": [
+                "cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6",
+                "25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071",
+                "caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d",
+                "d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1",
+                "ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14",
+                "8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1",
+                "e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465",
+                "eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337",
+                "a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2",
+                "e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89",
+                "bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d",
+                "89f614b25f424c27f61d6308f1d93373420fff3cea5a4958b471668bf31ccf24",
+                "5c980eccd9a3a40da158ef41806df8f212b494cbc60b2768762bf05fe58c09c2",
+                "5951a693ab7a49e5f1b4cecb2e4bc6385853584de204f48b974aaa3fb19e2bfa",
+                "1767f3322d25f443f073ff49cada30950ace97d2d348d57696d1baeee7d7a3e3",
+                "65e86c96105b3f48f8e0faa5f168e7f5e0d66f916cd4c1ea6d6f8a8a89111f83",
+                "5b44b70d6b98aa04374afeefff2860733465d4a1156ac33917b15646073014d8",
+                "d147cd626d4887587d4efa99fea9a9f801960d6c9c18b0fb8ac6c9a0b636f01e",
+                "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d",
+                "03afb93d68a7018bed783ce9bb72665b52a9c6f544564956d35dbda7d65997a3",
+                "1d0f7ebcbc92d9bc7e175a4b70ac430ef42498191b4c57ff46620f82af17434e",
+                "57defc2f33da6307d6887fcb357dcf030fd614b56a342f310796ae1fe2b81e14",
+                "045811cf8748bb6ca9a33242449f58a2c72dc8e42972e4acc63f2807bef0053e"
+              ]
+            }
+          }
+        },
+        "contract": {
+          "const": {
+            "architectureRevision": 2,
+            "contractId": "bb-artifact-review-service:revision-1",
+            "authorityRule": "server-assigned-local-owner-over-origin-campaign-project-environment",
+            "presentationRule": "grant-and-provenance-only",
+            "savedRule": "committed-and-independently-reopened",
+            "byteRule": "content-addressed",
+            "retentionRule": "append-only-non-destructive",
+            "migrationRange": "0..22",
+            "rollout": "dark",
+            "excludedClaims": [
+              "malicious-writer-authenticity",
+              "shared-host-mutation",
+              "cross-environment-continuation",
+              "bootstrap",
+              "deployment",
+              "adoption",
+              "rollout",
+              "product-lighting"
+            ]
+          }
+        },
+        "roleSeparation": {
+          "const": {
+            "requiredRoles": [
+              "corpus-author",
+              "harness-implementer",
+              "execution-recorder",
+              "independent-reviewer-and-approval-recorder"
+            ],
+            "distinct": true,
+            "candidateReceives": [
+              "opaque-execution-identity",
+              "nonce",
+              "operational-stimulus",
+              "recorder-owned-store-root",
+              "recorder-owned-command-root",
+              "recorder-owned-clean-consumer-root"
+            ],
+            "candidateForbidden": [
+              "case-id",
+              "category",
+              "private-expectation",
+              "expected-path",
+              "database-choice",
+              "approval-material",
+              "aggregate-target"
+            ],
+            "privateJoin": "after durable actual and independent observation records exist"
+          }
+        },
+        "inventory": {
+          "const": {
+            "selected": 134,
+            "categories": {
+              "behavior": 20,
+              "corruption": 18,
+              "fault": 37,
+              "dispatch": 5,
+              "parity": 12,
+              "reopen": 5,
+              "sdk": 30,
+              "darkness": 7
+            },
+            "adapterAllocation": {
+              "production": 42,
+              "sdk-fake": 4,
+              "workflows-fake": 4
+            },
+            "publicOperationalRows": 134,
+            "privateJudgments": 134,
+            "postFreezeRuns": 2,
+            "positiveJoinsPerRun": 134,
+            "positiveJoinsTotal": 268,
+            "controlsPerRun": 17,
+            "controlExecutionsTotal": 34,
+            "skipsAllowed": 0,
+            "harnessErrorsAllowed": 0
+          }
+        },
+        "negativeControls": {
+          "const": [
+            {
+              "id": "expectation-access-attempt",
+              "target": {
+                "kind": "recorder-private-authority-read"
+              },
+              "phase": "dispatch",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "private-authority-access-attempted"
+              },
+              "killReason": {
+                "code": "E_PRIVATE_AUTHORITY_ACCESS_BLOCKED",
+                "source": "recorder-process-boundary"
+              }
+            },
+            {
+              "id": "fake-production-executor",
+              "target": {
+                "kind": "createPluginApi-storage-migrate"
+              },
+              "phase": "execute",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "production-factory-and-migrate-invoked"
+              },
+              "killReason": {
+                "code": "E_PRODUCTION_EXECUTOR_SUBSTITUTED",
+                "source": "production-call-receipt"
+              }
+            },
+            {
+              "id": "serialized-return-tamper",
+              "target": {
+                "kind": "durably-serialized-actual"
+              },
+              "phase": "record",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "serialized-actual-reopened"
+              },
+              "killReason": {
+                "code": "E_SERIALIZED_RETURN_TAMPER",
+                "source": "independent-record-reopen"
+              }
+            },
+            {
+              "id": "candidate-controlled-database-selection",
+              "target": {
+                "kind": "recorder-selected-store-root"
+              },
+              "phase": "dispatch",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "database-root-issued-by-recorder"
+              },
+              "killReason": {
+                "code": "E_CANDIDATE_DATABASE_SELECTION",
+                "source": "root-provenance-observation"
+              }
+            },
+            {
+              "id": "reused-handle-cache",
+              "target": {
+                "kind": "fresh-independent-observer-process"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "candidate-handle-closed-and-new-process-opened"
+              },
+              "killReason": {
+                "code": "E_REUSED_HANDLE_OR_CACHE",
+                "source": "observer-process-provenance"
+              }
+            },
+            {
+              "id": "uncommitted-visibility",
+              "target": {
+                "kind": "sqlite-commit-boundary"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "uncommitted-state-probed"
+              },
+              "killReason": {
+                "code": "E_UNCOMMITTED_STATE_VISIBLE",
+                "source": "fresh-readonly-reopen"
+              }
+            },
+            {
+              "id": "rollback-failure",
+              "target": {
+                "kind": "sqlite-rollback-boundary"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "rollback-state-probed"
+              },
+              "killReason": {
+                "code": "E_ROLLBACK_NOT_PRESERVED",
+                "source": "fresh-readonly-reopen"
+              }
+            },
+            {
+              "id": "database-creation-on-rejected-admission",
+              "target": {
+                "kind": "absent-database-admission-boundary"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "rejected-path-root-probed"
+              },
+              "killReason": {
+                "code": "E_REJECTED_ADMISSION_CREATED_DATABASE",
+                "source": "filesystem-and-sqlite-observation"
+              }
+            },
+            {
+              "id": "skipped-sdk-command",
+              "target": {
+                "kind": "sdk-command-executor"
+              },
+              "phase": "execute",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "sdk-command-started-and-completed"
+              },
+              "killReason": {
+                "code": "E_SDK_COMMAND_SKIPPED",
+                "source": "command-receipt"
+              }
+            },
+            {
+              "id": "stale-runtime-output",
+              "target": {
+                "kind": "isolated-runtime-builder-destination"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "runtime-output-identity-collected"
+              },
+              "killReason": {
+                "code": "E_STALE_RUNTIME_OUTPUT",
+                "source": "output-byte-identity"
+              }
+            },
+            {
+              "id": "stale-declaration-output",
+              "target": {
+                "kind": "isolated-declaration-builder-destination"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "declaration-output-identity-collected"
+              },
+              "killReason": {
+                "code": "E_STALE_DECLARATION_OUTPUT",
+                "source": "output-byte-identity"
+              }
+            },
+            {
+              "id": "regeneration-divergence",
+              "target": {
+                "kind": "dual-isolated-sdk-builders"
+              },
+              "phase": "compare",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "both-output-identity-sets-collected"
+              },
+              "killReason": {
+                "code": "E_SDK_REGENERATION_DIVERGED",
+                "source": "complete-identity-set-comparison"
+              }
+            },
+            {
+              "id": "registration-substitution",
+              "target": {
+                "kind": "fresh-registration-observer"
+              },
+              "phase": "observe",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "registration-state-read-from-consumer"
+              },
+              "killReason": {
+                "code": "E_REGISTRATION_SUBSTITUTED",
+                "source": "fresh-registration-readback"
+              }
+            },
+            {
+              "id": "rpc-lighting",
+              "target": {
+                "kind": "rpc-consumer-boundary"
+              },
+              "phase": "darkness",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "rpc-consumer-probed"
+              },
+              "killReason": {
+                "code": "E_RPC_CONSUMER_LIT",
+                "source": "consumer-boundary-observation"
+              }
+            },
+            {
+              "id": "ui-lighting",
+              "target": {
+                "kind": "ui-consumer-boundary"
+              },
+              "phase": "darkness",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "ui-consumer-probed"
+              },
+              "killReason": {
+                "code": "E_UI_CONSUMER_LIT",
+                "source": "consumer-boundary-observation"
+              }
+            },
+            {
+              "id": "renderer-lighting",
+              "target": {
+                "kind": "renderer-consumer-boundary"
+              },
+              "phase": "darkness",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "renderer-consumer-probed"
+              },
+              "killReason": {
+                "code": "E_RENDERER_CONSUMER_LIT",
+                "source": "consumer-boundary-observation"
+              }
+            },
+            {
+              "id": "live-change-lighting",
+              "target": {
+                "kind": "live-change-consumer-boundary"
+              },
+              "phase": "darkness",
+              "reachability": {
+                "requirement": "same-dispatcher-and-observation-path",
+                "receiptType": "live-change-consumer-probed"
+              },
+              "killReason": {
+                "code": "E_LIVE_CHANGE_CONSUMER_LIT",
+                "source": "consumer-boundary-observation"
+              }
+            }
+          ]
+        },
+        "executionContract": {
+          "const": {
+            "dispatcher": "one recorder-owned dispatcher for positives, controls, and target-boundary attempt",
+            "positiveRoute": "frozen-known-good-reference-adapter-through-real-observation-boundaries",
+            "faultRoute": "injected-fault-adapters-and-semantic-mutants-use-identical-dispatch-record-observe-ledger-path",
+            "productionRoute": "real createPluginApi/storage.migrate using recorder-owned temporary root",
+            "sdkFakeRoute": "real createFakePluginHost/storage.migrate in recorder-controlled subprocess and root",
+            "workflowsFakeRoute": "real workflows fake adapter and shared reducer",
+            "observation": "fresh independent process after candidate handles close; direct reopened state and consumer boundaries only",
+            "recordCardinality": "exactly one execution record plus exactly one independent observation record per selected stimulus",
+            "targetAbsence": {
+              "boundary": "real construction module/factory",
+              "expectedReceipt": "typed-expected-construction-red",
+              "sideEffectsAllowed": [],
+              "separateFromPositiveEvidence": true
+            },
+            "cleanup": "only after independent observation",
+            "forbiddenEvidence": [
+              "source-token",
+              "ast-shape",
+              "parser-only",
+              "exported-symbol",
+              "caller-count",
+              "candidate-summary",
+              "private-row-terminal",
+              "aggregate-without-rows",
+              "literal-boolean-or-count"
+            ]
+          }
+        },
+        "sdkContract": {
+          "const": {
+            "selected": 30,
+            "setupSurfaces": [
+              "source-index",
+              "normal-package-import-from-clean-consumer",
+              "direct-dist-index",
+              "direct-dist-testing",
+              "workflows-typecheck",
+              "isolated-builders"
+            ],
+            "runtimeEntrypoints": [
+              "index",
+              "app",
+              "provider-bridge",
+              "host",
+              "internal/composer-customization-validation",
+              "internal/composer-view",
+              "internal/file-navigation-validation",
+              "internal/host-policy",
+              "internal/plugin-app-collector",
+              "testing/index",
+              "testing/app",
+              "testing/host"
+            ],
+            "declarationEntrypoints": [
+              "bb-plugin-sdk",
+              "bb-plugin-sdk-app",
+              "bb-plugin-sdk-provider-bridge",
+              "bb-plugin-sdk-host",
+              "bb-plugin-sdk-internal-composer-customization-validation",
+              "bb-plugin-sdk-internal-composer-view",
+              "bb-plugin-sdk-internal-file-navigation-validation",
+              "bb-plugin-sdk-internal-host-policy",
+              "bb-plugin-sdk-internal-plugin-app-collector",
+              "bb-plugin-sdk-testing",
+              "bb-plugin-sdk-testing-app",
+              "bb-plugin-sdk-testing-host"
+            ],
+            "builderDestinations": 2,
+            "identityRule": "complete-12-runtime-plus-12-declaration-sets-byte-identical",
+            "repositoryOutputsWritable": false,
+            "zeroSelectionAllowed": false,
+            "skippedCommandAllowed": false
+          }
+        },
+        "manifestCanonicalization": {
+          "const": {
+            "format": "canonical-json",
+            "encoding": "utf-8",
+            "objectKeys": "lexicographic-codepoint-order",
+            "arrays": "preserve-order",
+            "whitespace": "none-outside-json-strings",
+            "terminalNewline": false,
+            "terminalByteRule": "last-byte-must-not-be-0a-or-0d",
+            "digest": "sha256",
+            "independentEncoders": 2,
+            "selfReference": "manifest-excluded-from-own-member-list",
+            "newlineBoundaryControl": "append-or-remove-terminal-newline-must-be-killed"
+          }
+        },
+        "repairLifecycle": {
+          "const": {
+            "preFinalFreeze": {
+              "status": "available-not-yet-applicable",
+              "used": null,
+              "events": []
+            },
+            "definitiveFreezeChoices": [
+              {
+                "status": "unused",
+                "used": false,
+                "reason": null,
+                "events": []
+              },
+              {
+                "status": "used",
+                "used": true,
+                "reasonRequired": true,
+                "eventCount": 1,
+                "eventType": "mechanical-manifest-encoding-only",
+                "requiredEventFields": [
+                  "reason",
+                  "exactScope",
+                  "beforeByteLength",
+                  "beforeSha256",
+                  "afterByteLength",
+                  "afterSha256"
+                ]
+              }
+            ],
+            "afterDefinitiveFreeze": {
+              "repairAuthority": 0,
+              "freshSeamRequiredForAnyDefect": true
+            },
+            "c2RepairAuthority": 0
+          }
+        },
+        "pathClosure": {
+          "const": {
+            "allA0OwnedPaths": [
+              "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-executable-recorder-a0.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-public-stimuli.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-private-authority.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-reference-and-fault-adapters.ts",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-runner.ts",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-independent-observer.ts",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0.schema.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-oracle.test.ts",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-prefreeze-provenance.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-repair-provenance.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-manifest.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-run-1.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-run-2.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-execution-ledger.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-approval.json"
+            ],
+            "definitiveManifestMembers": [
+              "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-executable-recorder-a0.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-public-stimuli.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-private-authority.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-reference-and-fault-adapters.ts",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-runner.ts",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-independent-observer.ts",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0.schema.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-oracle.test.ts",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-prefreeze-provenance.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-repair-provenance.json"
+            ],
+            "postManifestOutputs": [
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-manifest.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-run-1.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-run-2.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-execution-ledger.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-approval.json"
+            ],
+            "currentAuthorWritePaths": [
+              "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-executable-recorder-a0.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-public-stimuli.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0-private-authority.json",
+              "plugins/workflows/src/artifact-recovery-v3-executable-recorder-a0.schema.json",
+              "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-prefreeze-provenance.json"
+            ],
+            "forbiddenWriteClasses": [
+              "production-behavior",
+              "migrations-0..22",
+              "existing-v12-c0-c1-c2-history",
+              "checked-in-sdk-runtime-or-declarations",
+              "feature-rpc-ui-renderer-live",
+              "later-construction-candidate",
+              "unrelated-dirty-paths"
+            ],
+            "futureConstruction": {
+              "authorized": false,
+              "pinnedPaths": [],
+              "pinnedIdentities": [],
+              "authoritySourceRequired": "fresh-successor-after-a0-approval"
+            }
+          }
+        },
+        "approvalBoundary": {
+          "const": {
+            "grantsOnly": "executable-recorder-admission",
+            "doesNotGrant": [
+              "semantic-construction",
+              "generated-output-adoption",
+              "deployment",
+              "rollout",
+              "product-lighting"
+            ],
+            "finalRequirements": [
+              "two-fresh-unchanged-byte-green-runs",
+              "268-positive-joins",
+              "34-control-executions",
+              "17-of-17-controls-reached-and-killed-per-run",
+              "zero-skips",
+              "zero-harness-errors",
+              "typed-target-construction-red",
+              "independent-review-and-approval"
+            ]
+          }
+        }
+      }
+    },
+    "operationalInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "authorityId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authorityIds": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "capability": {
+          "type": "string"
+        },
+        "completion": {
+          "type": "string"
+        },
+        "digest": {
+          "type": "string"
+        },
+        "invokeCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "legacyEvidence": {
+          "type": "boolean"
+        },
+        "legacyRoute": {
+          "type": "string"
+        },
+        "migration18Error": {
+          "type": "string"
+        },
+        "migrationIds": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "string",
+                "minLength": 1
+              }
+            ]
+          }
+        },
+        "state": {
+          "type": "string"
+        },
+        "suffixIds": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "operation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "interface"
+      ],
+      "properties": {
+        "interface": {
+          "enum": [
+            "production",
+            "reducer",
+            "production-admission",
+            "independent-observer",
+            "darkness-consumer",
+            "sdk-fake",
+            "workflows-fake",
+            "production-reopen",
+            "sdk-surface"
+          ]
+        },
+        "input": {
+          "$ref": "#/definitions/operationalInput"
+        },
+        "fault": {
+          "$ref": "#/definitions/faultOperation"
+        },
+        "mutation": {
+          "$ref": "#/definitions/semanticMutation"
+        },
+        "scenario": {
+          "type": "string",
+          "minLength": 1
+        },
+        "surface": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "minProperties": 2
+    },
+    "faultOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "phase"
+      ],
+      "properties": {
+        "phase": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "semanticMutation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "operation"
+      ],
+      "properties": {
+        "target": {
+          "type": "string",
+          "minLength": 1
+        },
+        "operation": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "stimulus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nonce",
+        "operation"
+      ],
+      "properties": {
+        "nonce": {
+          "$ref": "#/definitions/sha256"
+        },
+        "operation": {
+          "$ref": "#/definitions/operation"
+        }
+      }
+    },
+    "publicStimuli": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "inputBoundary",
+        "rows"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0-public-stimuli-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0:independent-harness-admission-v1"
+        },
+        "inputBoundary": {
+          "const": "opaque-nonce-and-operational-stimulus-only; recorder adds execution identity, store root, command root, and clean-consumer root per invocation"
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 134,
+          "maxItems": 134,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/definitions/stimulus"
+          }
+        }
+      }
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "consumerCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "database": {
+          "type": "string"
+        },
+        "decision": {
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "independentHostObservation": {
+          "type": "boolean"
+        },
+        "negative": {
+          "type": "boolean"
+        },
+        "phaseTraceRef": {
+          "type": "string"
+        },
+        "physicalRef": {
+          "type": "string"
+        },
+        "positive": {
+          "type": "boolean"
+        },
+        "rollback": {
+          "type": "boolean"
+        },
+        "saved": {
+          "type": "string"
+        },
+        "snapshotRef": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string"
+        },
+        "surface": {
+          "type": "string"
+        },
+        "v12TraceRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "minProperties": 3
+    },
+    "judgment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stimulusDigest",
+        "caseId",
+        "category",
+        "adapter",
+        "observerId",
+        "expected"
+      ],
+      "properties": {
+        "stimulusDigest": {
+          "$ref": "#/definitions/sha256"
+        },
+        "caseId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "enum": [
+            "behavior",
+            "corruption",
+            "fault",
+            "dispatch",
+            "parity",
+            "reopen",
+            "sdk",
+            "darkness"
+          ]
+        },
+        "adapter": {
+          "enum": [
+            "production",
+            "sdk-fake",
+            "workflows-fake",
+            "reducer",
+            "production-admission",
+            "independent-observer",
+            "sdk",
+            "darkness-consumer",
+            "static"
+          ]
+        },
+        "observerId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "expected": {
+          "$ref": "#/definitions/expected"
+        }
+      }
+    },
+    "privateAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "visibility",
+        "joinRule",
+        "targetConstructionRed",
+        "rows"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0-private-authority-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0:independent-harness-admission-v1"
+        },
+        "visibility": {
+          "const": "recorder-private-join-only; never candidate-readable"
+        },
+        "joinRule": {
+          "const": {
+            "algorithm": "sha256",
+            "input": "canonical-json-public-stimulus",
+            "terminalNewline": false,
+            "ordering": "same ordinal as public rows"
+          }
+        },
+        "targetConstructionRed": {
+          "const": {
+            "boundary": "real artifact-review-v3 construction module/factory",
+            "attemptsPerRun": 1,
+            "expectedCode": "E_A0_TARGET_CONSTRUCTION_ABSENT",
+            "sideEffectsAllowed": [],
+            "positiveEvidence": false,
+            "aggregateDisposition": "separate-from-134-positive-rows"
+          }
+        },
+        "rows": {
+          "type": "array",
+          "minItems": 134,
+          "maxItems": 134,
+          "items": {
+            "$ref": "#/definitions/judgment"
+          }
+        }
+      }
+    },
+    "repairEvent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "exactScope",
+        "beforeByteLength",
+        "beforeSha256",
+        "afterByteLength",
+        "afterSha256"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exactScope": {
+          "const": [
+            "output/artifact-review-shakedown/oracle/recovery-v3-executable-recorder-a0-manifest.json"
+          ]
+        },
+        "beforeByteLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "beforeSha256": {
+          "$ref": "#/definitions/sha256"
+        },
+        "afterByteLength": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "afterSha256": {
+          "$ref": "#/definitions/sha256"
+        }
+      }
+    },
+    "preFreezeRepair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "used",
+        "events"
+      ],
+      "properties": {
+        "status": {
+          "const": "available-not-yet-applicable"
+        },
+        "used": {
+          "type": "null"
+        },
+        "events": {
+          "const": []
+        }
+      }
+    },
+    "unusedRepair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "used",
+        "reason",
+        "events"
+      ],
+      "properties": {
+        "status": {
+          "const": "unused"
+        },
+        "used": {
+          "const": false
+        },
+        "reason": {
+          "type": "null"
+        },
+        "events": {
+          "const": []
+        }
+      }
+    },
+    "usedRepair": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "used",
+        "reason",
+        "events"
+      ],
+      "properties": {
+        "status": {
+          "const": "used"
+        },
+        "used": {
+          "const": true
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/definitions/repairEvent"
+          }
+        }
+      }
+    },
+    "prefreezeProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "phase",
+        "git",
+        "immutableLineage",
+        "unrelatedDirtyClosure",
+        "futureConstructionPins",
+        "repair"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0-prefreeze-provenance-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0:independent-harness-admission-v1"
+        },
+        "phase": {
+          "const": "authority-and-corpus-authored-pre-harness"
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "head",
+            "branch",
+            "indexClean"
+          ],
+          "properties": {
+          "head": {
+            "$ref": "#/definitions/gitOid"
+          },
+            "branch": {
+              "const": "feature/workflow-detail-ledger"
+            },
+            "indexClean": {
+              "const": true
+            }
+          }
+        },
+        "immutableLineage": {
+          "const": {
+            "v12": {
+              "disposition": "accepted-frozen-input",
+              "manifest": {
+                "byteLength": 798,
+                "sha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b"
+              },
+              "approvalSha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0",
+              "ledgerSha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7"
+            },
+            "c0": {
+              "disposition": "immutable-failed-non-adoptable",
+              "manifest": {
+                "byteLength": 556,
+                "sha256": "d0e9c7a124fdc3f3f00f7608f919a59fd3eaaeafd1a0135eee7a3e848cd93069"
+              },
+              "candidateManifest": "absent",
+              "ledger": "absent",
+              "approval": "absent"
+            },
+            "c1": {
+              "disposition": "immutable-failed-non-adoptable",
+              "manifest": {
+                "byteLength": 747,
+                "sha256": "f448ed2b2c1e0a14e6d3a389c19ad227757a41012052da6e805d835748c75d6d"
+              },
+              "candidateManifest": "absent",
+              "ledger": "absent",
+              "approval": "absent"
+            },
+            "c2": {
+              "disposition": "immutable-failed-non-adoptable-zero-repair",
+              "manifest": {
+                "byteLength": 1497,
+                "sha256": "46c46b57ef0a40173617e890469a315d6b2a7039e11e6624f55aa5c85aa892f5",
+                "terminalNewline": true
+              },
+              "result": {
+                "selected": 134,
+                "passed": 0,
+                "failed": 134,
+                "skipped": 0
+              },
+              "repairUsed": false,
+              "candidateManifest": "absent",
+              "ledger": "absent",
+              "approval": "absent"
+            },
+            "failedOracleGenerations": [
+              {
+                "id": "v9",
+                "approval": "absent"
+              },
+              {
+                "id": "v10",
+                "approval": "absent"
+              },
+              {
+                "id": "v11",
+                "approval": "absent"
+              }
+            ]
+          }
+        },
+        "unrelatedDirtyClosure": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "encoding",
+            "entryCount",
+            "closureByteLength",
+            "closureSha256",
+            "entries"
+          ],
+          "properties": {
+            "encoding": {
+              "const": "json-array-path-status-byteLength-sha256-no-terminal-newline"
+            },
+            "entryCount": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "closureByteLength": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "closureSha256": {
+              "$ref": "#/definitions/sha256"
+            },
+            "entries": {
+              "type": "array",
+              "items": {
+                "$ref": "#/definitions/identity"
+              }
+            }
+          }
+        },
+        "futureConstructionPins": {
+          "const": {
+            "paths": [],
+            "identities": [],
+            "reason": "construction-is-unauthorized-until-a0-approval-and-fresh-successor"
+          }
+        },
+        "repair": {
+          "$ref": "#/definitions/preFreezeRepair"
+        }
+      }
+    },
+    "repairProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "phase",
+        "repair"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0-repair-provenance-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-executable-recorder-a0:independent-harness-admission-v1"
+        },
+        "phase": {
+          "const": "definitive-freeze"
+        },
+        "repair": {
+          "oneOf": [
+            {
+              "$ref": "#/definitions/unusedRepair"
+            },
+            {
+              "$ref": "#/definitions/usedRepair"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

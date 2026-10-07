@@ -17,6 +17,7 @@ describe("workflow parser", () => {
       metadata: {
         name: "review-code",
         description: "Review a change",
+        workflowArtifactLiveChanges: false,
         inputSchema: { type: "object" },
         outputSchema: { type: "array", items: { type: "string" } },
         phases: [],
@@ -148,6 +149,17 @@ describe("workflow parser", () => {
       { title: "Inspect", detail: "Read the implementation" },
       { title: "Verify", detail: null },
     ]);
+  });
+
+  it("defaults live artifact changes off and accepts only an explicit boolean opt-in", () => {
+    expect(
+      parseWorkflowSource(`export const meta = { name: "live-change", description: "x", workflowArtifactLiveChanges: true };
+      return null;`).metadata.workflowArtifactLiveChanges,
+    ).toBe(true);
+    expect(() =>
+      parseWorkflowSource(`export const meta = { name: "bad-live-change", description: "x", workflowArtifactLiveChanges: "true" };
+      return null;`),
+    ).toThrow("workflowArtifactLiveChanges must be a boolean");
   });
 
   it.each([

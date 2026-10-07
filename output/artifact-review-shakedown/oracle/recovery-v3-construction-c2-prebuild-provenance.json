@@ -1,0 +1,637 @@
+{
+  "schemaVersion": "bb-artifact-review-v3-construction-c2-prebuild-provenance-v1",
+  "successorSeamId": "bb-artifact-review-v3-construction-c2:recorder-owned-independent-effects-and-sdk-execution-v1",
+  "phase": "finalized-prebuild",
+  "git": {
+    "head": "e2b88b053c1e9823e56d71e7f7861fd351d94d5d",
+    "branch": "feature/workflow-detail-ledger",
+    "indexClean": true
+  },
+  "immutableLineage": {
+    "v12ApprovalSha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0",
+    "v12LedgerSha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7",
+    "v12ManifestSha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b",
+    "failedC0ManifestSha256": "d0e9c7a124fdc3f3f00f7608f919a59fd3eaaeafd1a0135eee7a3e848cd93069",
+    "failedC1ManifestSha256": "f448ed2b2c1e0a14e6d3a389c19ad227757a41012052da6e805d835748c75d6d"
+  },
+  "unrelatedDirtyClosure": {
+    "entryCount": 92,
+    "closureByteLength": 16532,
+    "closureSha256": "545ced941f4b723bdc0418b6827642fcc13e64d6a5e31acbb24e9638264dd5e1",
+    "entries": [
+      {
+        "path": ".architect/CHECKPOINT-artifact-review-foundation-v5.md",
+        "status": "??",
+        "byteLength": 1430,
+        "sha256": "a403e3757bc14ba583e19f43c592f4daf784bf65604bea53b3f0ddbd20e0f157"
+      },
+      {
+        "path": ".architect/CHECKPOINT-index-other-initiatives.md",
+        "status": "??",
+        "byteLength": 159,
+        "sha256": "845e096d87c3dd260160d7c61214de3504a2af3892158872aaa92f703b76d82a"
+      },
+      {
+        "path": ".architect/context-packets/artifact-review-service-build.md",
+        "status": "??",
+        "byteLength": 13331,
+        "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+      },
+      {
+        "path": ".architect/critic/feature-workflow-detail-ledger.md",
+        "status": " M",
+        "byteLength": 9904,
+        "sha256": "c36d8948560be06b200540fca2556e42db96da069fd061f5264501aebe0c58c6"
+      },
+      {
+        "path": ".architect/design-lab/workflow-artifact-review.md",
+        "status": "??",
+        "byteLength": 52165,
+        "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+      },
+      {
+        "path": ".architect/evidence/artifact-review/section-1-admission-dispatch-kernel-v4.json",
+        "status": "??",
+        "byteLength": 2596,
+        "sha256": "324ecc402075a3db6ed1eac2b3827a1062acbe5870e18b2e1b6e8c868d6f9568"
+      },
+      {
+        "path": ".architect/evidence/artifact-review/section-1-foundation.json",
+        "status": "??",
+        "byteLength": 8604,
+        "sha256": "b72c416ddc981c6ce9482039152447ac422ad0955dd479a331331f5a0003b6c2"
+      },
+      {
+        "path": ".architect/evidence/artifact-review/section-1-recovery.json",
+        "status": "??",
+        "byteLength": 2627,
+        "sha256": "339626650707e4bea9f8be93e79874ca82f96555a0ee5a1cc7c9724dad38cd9a"
+      },
+      {
+        "path": ".architect/evidence/artifact-review/section-1-terminal-kernel.json",
+        "status": "??",
+        "byteLength": 4913,
+        "sha256": "1acdad4b036654a1142ea640c89bbae6a4c59df5bdea12c84fef2afd8e3381f5"
+      },
+      {
+        "path": ".architect/inventory/workflow-artifact-review.md",
+        "status": "??",
+        "byteLength": 11682,
+        "sha256": "ebdbed5616a957112663f2239df56c054b507ae7e5d6df62c0553c606ade8258"
+      },
+      {
+        "path": ".architect/inventory/workflow-build-story.md",
+        "status": " M",
+        "byteLength": 5888,
+        "sha256": "fab951dfa59002881dd3f1d7648525940a829712fcfa0c2b3f32362669a272fb"
+      },
+      {
+        "path": ".architect/inventory/workflow-presentation-target.md",
+        "status": " M",
+        "byteLength": 7906,
+        "sha256": "cdd59efedc2b0af18d320bfa7601e58993411b47f3f3b16ff9c03c6fc5420ce4"
+      },
+      {
+        "path": ".architect/inventory/workflow-production-capability-merge.md",
+        "status": " M",
+        "byteLength": 6556,
+        "sha256": "38efbc6abea879899955a142ef67ab5336e38b9cf1aaa8c69c93ada33660440e"
+      },
+      {
+        "path": ".handoffs/artifact-review-foundation-v5.md",
+        "status": "??",
+        "byteLength": 1572,
+        "sha256": "2c43c855f2b70cdf3ba8129f38e1c8e86961a381e441838a28c1abb9ff0c5e5f"
+      },
+      {
+        "path": "apps/app/src/components/plugin/PluginArtifactReview.acceptance.test.tsx",
+        "status": "??",
+        "byteLength": 8704,
+        "sha256": "47169db9f475579abc2b12b69b6bff6b10f1de9e149c844f9c54d1700e43c106"
+      },
+      {
+        "path": "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+        "status": "??",
+        "byteLength": 4759,
+        "sha256": "f8e4074a1ac5154cf107d729be5ef6dac880ac8b8d6057fc0d5210e8b1aabbb7"
+      },
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v10.json",
+        "status": "??",
+        "byteLength": 2189525,
+        "sha256": "95e637c55895583fcb046021d1dddc6e4a054180467ed3a9bd7e0071d61aa38b"
+      },
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v11.json",
+        "status": "??",
+        "byteLength": 2167232,
+        "sha256": "930a23241a670e6e3a31862ac415499aa561286f6802c0ae7929a27a387a3187"
+      },
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v12.json",
+        "status": "??",
+        "byteLength": 2418865,
+        "sha256": "dce9f6220e07452f0ad0aea5efe34dbd518e8bc689d6c5f9a558652fd7d64225"
+      },
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v9.json",
+        "status": "??",
+        "byteLength": 155571,
+        "sha256": "4b9c4b91ee8e3a9384c92cb3fb5366be85e6cfc85756f9fe5d6026be42fd2428"
+      },
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-construction-c0.json",
+        "status": "??",
+        "byteLength": 23829,
+        "sha256": "3be9d1508dac92e46eaa4719bbe97fdc2e09ce578a44d64c280784533be16074"
+      },
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-construction-c1.json",
+        "status": "??",
+        "byteLength": 14042,
+        "sha256": "6aa253047e945ec34ade6bd2f6c4f13e8f16213a5fd6dc3082855ae4b702c16f"
+      },
+      {
+        "path": "apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts",
+        "status": "??",
+        "byteLength": 5934,
+        "sha256": "2ee50b3c72822f60639a92a7b8d34b0b6139ca9b4768f7f38e20cd7b6060eead"
+      },
+      {
+        "path": "apps/server/src/services/plugins/plugin-api.ts",
+        "status": " M",
+        "byteLength": 65001,
+        "sha256": "0c34ac6416cbd990a7b9af06c8456bd6531c001133501a9c582ab057be8d2e06"
+      },
+      {
+        "path": "apps/server/src/services/skills/builtin-skills/bb-cli/SKILL.md",
+        "status": " M",
+        "byteLength": 61437,
+        "sha256": "60924468b3068c63f07fc76f6912e87f3175b6d59bab2fce21abdd85e84163e7"
+      },
+      {
+        "path": "output/artifact-review-shakedown/oracle/invariant-ownership-boundary-v8-approval.json",
+        "status": "??",
+        "byteLength": 7659,
+        "sha256": "117b322e0b524e1a6a7900389dfc0eaeb1cafe63f7c68427817572f7b10e6a4d"
+      },
+      {
+        "path": "output/artifact-review-shakedown/oracle/mutation-proof-boundary-approval.json",
+        "status": "??",
+        "byteLength": 3879,
+        "sha256": "c6f3396ecd081541c5b4ce85c1fb2b309f7fea581c46d237d0b53e3259b7e08a"
+      },
+      {
+        "path": "output/artifact-review-shakedown/oracle/oracle-approval.json",
+        "status": "??",
+        "byteLength": 8735,
+        "sha256": "a3329fcbcc0390f788a7536981ef734610bb259001613d6c5b266014d4e7e7fc"
+      },
+      {
+        "path": "output/artifact-review-shakedown/oracle/recovery-authority-v12-a0-ledger.json",
+        "status": "??",
+        "byteLength": 10077,
+        "sha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7"
+      },
+      {
+        "path": "output/artifact-review-shakedown/oracle/recovery-authority-v12-approval.json",
+        "status": "??",
+        "byteLength": 8740,
+        "sha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0"
+      },
+      {
+        "path": "output/artifact-review-shakedown/oracle/recovery-v3-construction-c1-oracle-manifest.json",
+        "status": "??",
+        "byteLength": 747,
+        "sha256": "f448ed2b2c1e0a14e6d3a389c19ad227757a41012052da6e805d835748c75d6d"
+      },
+      {
+        "path": "output/artifact-review-shakedown/section-1/v6-recovery.receipt.json",
+        "status": "??",
+        "byteLength": 4227,
+        "sha256": "912abd52c73c9e5ad623c922717f2b64438a75e8d14c97dbeaa14dee86fcd439"
+      },
+      {
+        "path": "output/artifact-review/section-1-ownership-adjudication.receipt.json",
+        "status": "??",
+        "byteLength": 4458,
+        "sha256": "b85f0b398daded031d3303e54c572084fece563d368eff159ff6282288f5a995"
+      },
+      {
+        "path": "output/artifact-review/section-1-walking-skeleton.receipt.json",
+        "status": "??",
+        "byteLength": 3074,
+        "sha256": "77636020c6630d50d5f21311451dd0faa19856f61d6e645d3dea62756e3c2fc9"
+      },
+      {
+        "path": "output/playwright/workflow-campaign-inspector-console.txt",
+        "status": "??",
+        "byteLength": 237,
+        "sha256": "95917bee9ac11c369e671b1fe85a70ec9ac10b46ba5283dca1477545dc16908a"
+      },
+      {
+        "path": "output/playwright/workflow-campaign-inspector-details.png",
+        "status": "??",
+        "byteLength": 133700,
+        "sha256": "05eea357ecde5451d6f9ea67557c42adcd62d80623d8f85e2eac170357cb3541"
+      },
+      {
+        "path": "output/playwright/workflow-campaign-inspector-interaction.webm",
+        "status": "??",
+        "byteLength": 608009,
+        "sha256": "ce4beb8f069456b46c90ef853a97e333089ba09f1dd6153ddb6ae2bba5bc203b"
+      },
+      {
+        "path": "output/playwright/workflow-campaign-inspector.png",
+        "status": "??",
+        "byteLength": 155540,
+        "sha256": "1ff79ae1cc840893739b100dbd534468d8222e4b4815ba9ca559da0bdda0fcb9"
+      },
+      {
+        "path": "packages/plugin-sdk/src/__tests__/artifact-review-contract.test.tsx",
+        "status": "??",
+        "byteLength": 4508,
+        "sha256": "14ac76e44ea6f33409942a3c634e4e8f72491ae39001fac000f3fc6bb1f66a16"
+      },
+      {
+        "path": "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+        "status": "??",
+        "byteLength": 8460,
+        "sha256": "04a4a9991f9d94c4a5f7b80e1ca8e5ffb47218360efb613600e313315b1222a6"
+      },
+      {
+        "path": "packages/plugin-sdk/src/backend-contract.ts",
+        "status": " M",
+        "byteLength": 39793,
+        "sha256": "c8b9926a8ec600157a4e958e953c7be9e3cba3cab8a44ea1b137046078fad236"
+      },
+      {
+        "path": "packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts",
+        "status": " M",
+        "byteLength": 43627,
+        "sha256": "e81af7cc07e0b1bc7950eec180a0580fcd3f6051ef11849fd8206597aedcbb5b"
+      },
+      {
+        "path": "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+        "status": " M",
+        "byteLength": 86387,
+        "sha256": "357f5471dbbe08a562965682cea2d998469a1256c5a6be69909ab0c1774685b8"
+      },
+      {
+        "path": "packages/templates/src/templates/bb-guide-plugins.md",
+        "status": " M",
+        "byteLength": 46152,
+        "sha256": "7bea24f33cc6613f79291121cb6b55df62ded08c34532d9250f4964b3172c3c2"
+      },
+      {
+        "path": "plugins/workflows/README.md",
+        "status": " M",
+        "byteLength": 17927,
+        "sha256": "0e876fd3466f874e9807138a78da763ed320d75d16a2f8374829e7d7fe092087"
+      },
+      {
+        "path": "plugins/workflows/skills/workflows/SKILL.md",
+        "status": " M",
+        "byteLength": 25958,
+        "sha256": "10dc74b80f5772dabf059c56f0e44c1c7eb4111c91716da296cf889a2d84df57"
+      },
+      {
+        "path": "plugins/workflows/src/app.test.tsx",
+        "status": " M",
+        "byteLength": 54882,
+        "sha256": "8e25d1f67b3db424d8ffa6385c9f76d448e8e24a46de630ae1351638fe796c8e"
+      },
+      {
+        "path": "plugins/workflows/src/app.tsx",
+        "status": " M",
+        "byteLength": 66239,
+        "sha256": "d04ae749a1201bae3e97aa856bcc742bf63e480b84fe1fc318a9092e4bcdf285"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v10-oracle-dsl.schema.json",
+        "status": "??",
+        "byteLength": 730123,
+        "sha256": "3d89e61f60f271a844c2ea7bf1a60bb4a7575fffd9f6fe6d5df8331c8c636b7a"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v10-oracle.test.ts",
+        "status": "??",
+        "byteLength": 14986,
+        "sha256": "a8b745dfe2f847322ab93e8801c82f7d23e1bbd30647a82a5cc7f89dd79c0a65"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v10-runner-conformance.json",
+        "status": "??",
+        "byteLength": 6599,
+        "sha256": "2f0f2ddaf9166877c2e238dcae56a10a866dd1ced8dbb67512cbdce271cff6ab"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v11-oracle-dsl.schema.json",
+        "status": "??",
+        "byteLength": 2922578,
+        "sha256": "d112f8c813887b3bc6a04f937aa1eda2a932d4708570483364202149eb9ac942"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v11-oracle.test.ts",
+        "status": "??",
+        "byteLength": 33650,
+        "sha256": "826c19de36c5bbf70487b8fe431fefcc45e613e759a8cb2650ecb8deb3850860"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v11-reference-interpreter.ts",
+        "status": "??",
+        "byteLength": 48140,
+        "sha256": "9b76cd1a81a4b0958ef4c1ef7442639f97c3bd218e91bf43998d77e9e8b848b0"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v11-runner-conformance.json",
+        "status": "??",
+        "byteLength": 14046,
+        "sha256": "acaaa98f0c0c97abafef4b970e1c9cd26e1fa1e7f25ae2a57275a84d6abf0a2a"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-oracle-dsl.schema.json",
+        "status": "??",
+        "byteLength": 4365548,
+        "sha256": "1757d6d75991b4df7e42a1172706d7abc3447d9c769845b86ee80a533177cf0e"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-oracle.test.ts",
+        "status": "??",
+        "byteLength": 21799,
+        "sha256": "6d99c62c80eb3d7a30c3df45701c293ed760b539e0aa575c7045c28b1aac0e4c"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-reference-interpreter.ts",
+        "status": "??",
+        "byteLength": 65010,
+        "sha256": "274ec43fb0dcebf719d99e5541c2a56ded9e2ed23233ed00903d3322ea95f9c5"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-runner-conformance.json",
+        "status": "??",
+        "byteLength": 7199,
+        "sha256": "eaeca2940663a8662a82189c95aee5424e4152b9431fa7ec15b6583eab3f1d6a"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+        "status": "??",
+        "byteLength": 7079,
+        "sha256": "94c01826031a0d52519869f02fe834c8899e20f7e8b560b40aaa8c225afa31cd"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-construction-c1-corpus.json",
+        "status": "??",
+        "byteLength": 37379,
+        "sha256": "c5a385f8e2f88612de77315c9a3d7d13dcf15f30b2d94e917b108ec5c84f93ee"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-construction-c1-oracle.test.ts",
+        "status": "??",
+        "byteLength": 21365,
+        "sha256": "0771c787231232942b0e1477ba459aa7c6ff486ddd0429477bd0fa212f43082d"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-construction-c1.schema.json",
+        "status": "??",
+        "byteLength": 33334,
+        "sha256": "5465a0c4b046725d6aec5efa8ab78e171826b192a3829bad6955503b8c231fd5"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-construction.schema.json",
+        "status": "??",
+        "byteLength": 14346,
+        "sha256": "ec20efd31bfe51bbcf8288157e10891152aec77fcbb6139199f9efee46d7039d"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-construction.test.ts",
+        "status": "??",
+        "byteLength": 17141,
+        "sha256": "b169b89aca9971695481bf996ba2c89e9a129e3619383bc7f24393a439abe357"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+        "status": "??",
+        "byteLength": 1029,
+        "sha256": "274bb2885a4637df867fc8c5626cfe56ff0c533571bf36611dc8ec70cabf6d58"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+        "status": "??",
+        "byteLength": 1935,
+        "sha256": "fe76b107b2a16b5dc39a3ceabeb50cc76f0d952012b88beadb751017c8af1197"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+        "status": "??",
+        "byteLength": 2676,
+        "sha256": "24e552b8c3b6e7257cdfa6209e174c261cca172fcf09cf6e996914372d38834d"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery.test.ts",
+        "status": "??",
+        "byteLength": 9281,
+        "sha256": "521935567c2863e2ddf664929b9c5707434a085b581f78714831b9c44f6f9166"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery.ts",
+        "status": "??",
+        "byteLength": 26197,
+        "sha256": "508a4cd4eef6d56458d390067a98aa6809890b077d8e33bdee10b53d4f352b8e"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-contract.ts",
+        "status": "??",
+        "byteLength": 4501,
+        "sha256": "887b4749db30db96fbfb8cde652a6899554ad8cd340fce9eeda7606201eec012"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-decision-table.ts",
+        "status": "??",
+        "byteLength": 23001,
+        "sha256": "2f8e22d0dfc6d24311acda6d5ef14d5691dfb05ba97ad89f3b5977e58b50b6bc"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-oracle.test.ts",
+        "status": "??",
+        "byteLength": 14499,
+        "sha256": "f169fa70a7efbb2d4c2ebe76b89208d6c4d095aa2328cb0e8c7b6eb21c11e124"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-ownership.ts",
+        "status": "??",
+        "byteLength": 3037,
+        "sha256": "81c6cb1ea6936509f0205aad78cf1b18d673ce4b8325a37c643cd43497b22ff5"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-reference-model.ts",
+        "status": "??",
+        "byteLength": 2060,
+        "sha256": "760a1164aa3e480a3b5fd788c8b65800b9ae683748585c789db80d0b6994eade"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-oracle-fixtures.ts",
+        "status": "??",
+        "byteLength": 60342,
+        "sha256": "0730ddc5d46ea4ff9148fdc4ccc8823a22552184debd8a00214fd4c6fb217a71"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-oracle.test.ts",
+        "status": "??",
+        "byteLength": 20560,
+        "sha256": "f45a6f51bca5ef03b4574518add819adf9052a8dba2b4a15117346a032903d03"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-storage.test.ts",
+        "status": "??",
+        "byteLength": 15763,
+        "sha256": "053bb844b8ddb67718bd22f277899d1bce53075973ba9c20148ea714e2410694"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-storage.ts",
+        "status": "??",
+        "byteLength": 41835,
+        "sha256": "13f92392d9b2725c28cf5718a90f4e9158b1e1635891366288a3064c957e09f1"
+      },
+      {
+        "path": "plugins/workflows/src/data.test.ts",
+        "status": " M",
+        "byteLength": 60610,
+        "sha256": "db51df82473b9bd190f2b5d3456e95e260d8ab1499881ffa8c4cbd7c7a14f5d4"
+      },
+      {
+        "path": "plugins/workflows/src/data.ts",
+        "status": " M",
+        "byteLength": 35080,
+        "sha256": "4dc6842cb404de9f2487785d83362e41b33bbed2500b5bfc4194a918e6e11a91"
+      },
+      {
+        "path": "plugins/workflows/src/parser.test.ts",
+        "status": " M",
+        "byteLength": 7761,
+        "sha256": "6195bdd865c6b71de69489c3114fef187ace90f5963a0adddb446a4742f0c93a"
+      },
+      {
+        "path": "plugins/workflows/src/parser.ts",
+        "status": " M",
+        "byteLength": 16234,
+        "sha256": "c5bc453fb6152868054354e5034e8a2abda339ffbd494d7c19c5d31cee7b66d4"
+      },
+      {
+        "path": "plugins/workflows/src/server-harness.test.ts",
+        "status": " M",
+        "byteLength": 73696,
+        "sha256": "aa8d4a0091d6ee8e6052f11028cb65e3182c824b029357508a398ba7198fca83"
+      },
+      {
+        "path": "plugins/workflows/src/server.ts",
+        "status": " M",
+        "byteLength": 14639,
+        "sha256": "4bf574a3d06923254b2f6cf120d87dce9fce413700b7284b13a0d23dae068ceb"
+      },
+      {
+        "path": "plugins/workflows/src/service-policy.test.ts",
+        "status": " M",
+        "byteLength": 75104,
+        "sha256": "d4ddaf4c15f2673067569f958d7a91e51530bc4c0ab49bed04479eaefa120d11"
+      },
+      {
+        "path": "plugins/workflows/src/service-policy.ts",
+        "status": "??",
+        "byteLength": 354,
+        "sha256": "d1801856aed028087fadd0850f94ad106905279e1ef4860b4ccdf842bada751b"
+      },
+      {
+        "path": "plugins/workflows/src/service.ts",
+        "status": " M",
+        "byteLength": 74585,
+        "sha256": "3ed81e4e1d6bc0f5454a9505ac5a40862527289ba89e4d28040144d171fc0757"
+      },
+      {
+        "path": "plugins/workflows/src/types.ts",
+        "status": " M",
+        "byteLength": 3179,
+        "sha256": "280126df9321682fa5c8516647e9b2f34ffb4a393ba672cdf4c694d07192dcd5"
+      },
+      {
+        "path": "plugins/workflows/src/ui-contract.ts",
+        "status": " M",
+        "byteLength": 4812,
+        "sha256": "a9a3121d75b470097eba1636ce920c6d0295e72124d56c2fc58c59de31fdd890"
+      },
+      {
+        "path": "plugins/workflows/src/workflow-terminal-settlement.test.ts",
+        "status": "??",
+        "byteLength": 30856,
+        "sha256": "ccf1a9981e0346405c984488489c9189316da71d13697f33173e484800ad18f8"
+      },
+      {
+        "path": "plugins/workflows/src/workflow-terminal-settlement.ts",
+        "status": "??",
+        "byteLength": 49519,
+        "sha256": "3bdfe4517a9bbc3790fca655eb7ddafca9bd9e3120ac16c24a322e065996823b"
+      }
+    ]
+  },
+  "mutableStartingIdentities": [
+    {
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+      "byteLength": 2676,
+      "sha256": "24e552b8c3b6e7257cdfa6209e174c261cca172fcf09cf6e996914372d38834d"
+    },
+    {
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+      "byteLength": 1029,
+      "sha256": "274bb2885a4637df867fc8c5626cfe56ff0c533571bf36611dc8ec70cabf6d58"
+    },
+    {
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+      "byteLength": 1935,
+      "sha256": "fe76b107b2a16b5dc39a3ceabeb50cc76f0d952012b88beadb751017c8af1197"
+    },
+    {
+      "path": "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+      "byteLength": 7079,
+      "sha256": "94c01826031a0d52519869f02fe834c8899e20f7e8b560b40aaa8c225afa31cd"
+    },
+    {
+      "path": "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+      "byteLength": 8460,
+      "sha256": "04a4a9991f9d94c4a5f7b80e1ca8e5ffb47218360efb613600e313315b1222a6"
+    },
+    {
+      "path": "packages/plugin-sdk/src/backend-contract.ts",
+      "byteLength": 39793,
+      "sha256": "c8b9926a8ec600157a4e958e953c7be9e3cba3cab8a44ea1b137046078fad236"
+    },
+    {
+      "path": "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+      "byteLength": 86387,
+      "sha256": "357f5471dbbe08a562965682cea2d998469a1256c5a6be69909ab0c1774685b8"
+    },
+    {
+      "path": "packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts",
+      "byteLength": 43627,
+      "sha256": "e81af7cc07e0b1bc7950eec180a0580fcd3f6051ef11849fd8206597aedcbb5b"
+    },
+    {
+      "path": "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+      "byteLength": 4759,
+      "sha256": "f8e4074a1ac5154cf107d729be5ef6dac880ac8b8d6057fc0d5210e8b1aabbb7"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-api.ts",
+      "byteLength": 65001,
+      "sha256": "0c34ac6416cbd990a7b9af06c8456bd6531c001133501a9c582ab057be8d2e06"
+    },
+    {
+      "path": "apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts",
+      "byteLength": 5934,
+      "sha256": "2ee50b3c72822f60639a92a7b8d34b0b6139ca9b4768f7f38e20cd7b6060eead"
+    }
+  ],
+  "repair": {
+    "used": false,
+    "reason": null
+  }
+}

@@ -1,6 +1,7 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import Database from "better-sqlite3";
 import { CronExpressionParser } from "cron-parser";
 import { Hono } from "hono";
@@ -57,6 +58,9 @@ import type {
   PluginInteractionResult,
   PluginKvStorage,
   PluginLogger,
+  PluginMigrationCandidateEffectsV3,
+  PluginMigrationDomainEffectV3,
+  PluginMigrationPlanV2,
   PluginMentionItem,
   PluginMentionSearchContext,
   PluginMentionTrigger,
@@ -123,6 +127,414 @@ export class PluginContextStaleError extends Error {
     );
     this.name = "PluginContextStaleError";
   }
+}
+
+function migrationSha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function fakeMigrationSchemaFingerprint(database: Database.Database): string {
+  const rows = database
+    .prepare(
+      `SELECT type, name, tbl_name AS tableName, sql FROM sqlite_master
+       WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name, tbl_name`,
+    )
+    .all();
+  return migrationSha256(JSON.stringify(rows));
+}
+
+function fakeMigrateWithPlanV2(
+  database: Database.Database,
+  plan: PluginMigrationPlanV2,
+): void {
+  const statements = [...plan.statements];
+  const { descriptor } = plan.recovery;
+  if (
+    plan.statementSha256.length !== statements.length ||
+    statements.some(
+      (statement, id) =>
+        migrationSha256(statement) !== plan.statementSha256[id],
+    )
+  ) {
+    throw new Error("Plugin migration V2 statement hash mismatch");
+  }
+  if (
+    descriptor.beforeMigrationId !== 18 ||
+    descriptor.migration18Sha256 !== plan.statementSha256[18] ||
+    migrationSha256(plan.recovery.recoveryRecipeJson) !==
+      descriptor.recoveryRecipeSha256
+  ) {
+    throw new Error("Plugin migration V2 recovery descriptor mismatch");
+  }
+  database.exec(
+    "CREATE TABLE IF NOT EXISTS _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
+  );
+  const appliedIds = (
+    database
+      .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+      .all() as Array<{ id: number }>
+  ).map(({ id }) => id);
+  if (
+    appliedIds.some(
+      (id, index) =>
+        !Number.isInteger(id) || id !== index || id >= statements.length,
+    )
+  ) {
+    throw new Error("Plugin migration V2 ledger is noncontiguous or unknown");
+  }
+  const recoveryLedgerExists =
+    database
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '_bb_migration_recoveries'",
+      )
+      .get() !== undefined;
+  if (recoveryLedgerExists) {
+    const rows = database
+      .prepare(
+        `SELECT recovery_id AS recoveryId, descriptor_sha256 AS descriptorSha256
+         FROM _bb_migration_recoveries`,
+      )
+      .all() as Array<{ recoveryId: string; descriptorSha256: string }>;
+    if (
+      rows.length !== 1 ||
+      rows[0]?.recoveryId !== descriptor.recoveryId ||
+      rows[0]?.descriptorSha256 !==
+        migrationSha256(JSON.stringify(descriptor)) ||
+      appliedIds.length !== statements.length
+    ) {
+      throw new Error(
+        "Plugin migration V2 recovery ledger is partial or unknown",
+      );
+    }
+  }
+  const record = database.prepare(
+    "INSERT INTO _bb_migrations (id, applied_at) VALUES (?, ?)",
+  );
+  try {
+    database.transaction(() => {
+      for (let id = appliedIds.length; id < statements.length; id += 1) {
+        database.exec(statements[id]!);
+        record.run(id, Date.now());
+      }
+    })();
+    return;
+  } catch (ordinaryError) {
+    if (
+      appliedIds.length !== descriptor.beforeMigrationId ||
+      fakeMigrationSchemaFingerprint(database) !==
+        descriptor.preSchemaFingerprintSha256
+    ) {
+      throw ordinaryError;
+    }
+  }
+  database.transaction(() => {
+    let nextMigrationId = descriptor.beforeMigrationId;
+    const result = plan.recovery.recover({
+      database,
+      descriptor,
+      executeMigration(id) {
+        if (id !== nextMigrationId || id >= statements.length) {
+          throw new Error("Plugin migration V2 recovery order mismatch");
+        }
+        database.exec(statements[id]!);
+        record.run(id, Date.now());
+        nextMigrationId += 1;
+      },
+    });
+    if (nextMigrationId !== statements.length) {
+      throw new Error(
+        "Plugin migration V2 recovery did not execute every migration",
+      );
+    }
+    for (const value of [
+      result.activeGraphSha256,
+      result.quarantineGraphSha256,
+      result.receiptSha256,
+    ]) {
+      if (!/^[a-f0-9]{64}$/.test(value)) {
+        throw new Error(
+          "Plugin migration V2 recovery returned an invalid hash",
+        );
+      }
+    }
+    if (result.stagedRowCount < 0 || result.restoredGrantCount < 0) {
+      throw new Error("Plugin migration V2 recovery returned invalid counts");
+    }
+    database.exec(`CREATE TABLE _bb_migration_recoveries (
+      recovery_id TEXT PRIMARY KEY,
+      descriptor_sha256 TEXT NOT NULL,
+      receipt_sha256 TEXT NOT NULL,
+      recovered_at INTEGER NOT NULL
+    )`);
+    database
+      .prepare(
+        `INSERT INTO _bb_migration_recoveries
+           (recovery_id, descriptor_sha256, receipt_sha256, recovered_at)
+         VALUES (?, ?, ?, ?)`,
+      )
+      .run(
+        descriptor.recoveryId,
+        migrationSha256(JSON.stringify(descriptor)),
+        result.receiptSha256,
+        Date.now(),
+      );
+  })();
+}
+
+const FAKE_V3_SEAM_ID =
+  "sdk-fake-parity:bb-artifact-review-v3-real-boundary-atomicity-c1";
+const FAKE_V3_SERVICE_REVISION = "bb-artifact-review-service:revision-1";
+const FAKE_V3_ARCHITECTURE_REVISION = 2;
+const FAKE_V3_STATEMENT_SHA256 = [
+  "cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6",
+  "25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071",
+  "caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d",
+  "d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1",
+  "ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14",
+  "8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1",
+  "e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465",
+  "eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337",
+  "a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2",
+  "e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89",
+  "bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d",
+  "89f614b25f424c27f61d6308f1d93373420fff3cea5a4958b471668bf31ccf24",
+  "5c980eccd9a3a40da158ef41806df8f212b494cbc60b2768762bf05fe58c09c2",
+  "5951a693ab7a49e5f1b4cecb2e4bc6385853584de204f48b974aaa3fb19e2bfa",
+  "1767f3322d25f443f073ff49cada30950ace97d2d348d57696d1baeee7d7a3e3",
+  "65e86c96105b3f48f8e0faa5f168e7f5e0d66f916cd4c1ea6d6f8a8a89111f83",
+  "5b44b70d6b98aa04374afeefff2860733465d4a1156ac33917b15646073014d8",
+  "d147cd626d4887587d4efa99fea9a9f801960d6c9c18b0fb8ac6c9a0b636f01e",
+  "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d",
+  "03afb93d68a7018bed783ce9bb72665b52a9c6f544564956d35dbda7d65997a3",
+  "1d0f7ebcbc92d9bc7e175a4b70ac430ef42498191b4c57ff46620f82af17434e",
+  "57defc2f33da6307d6887fcb357dcf030fd614b56a342f310796ae1fe2b81e14",
+  "045811cf8748bb6ca9a33242449f58a2c72dc8e42972e4acc63f2807bef0053e",
+] as const;
+
+function fakeAssertV3Effects(effects: PluginMigrationCandidateEffectsV3): void {
+  if (
+    effects === null ||
+    typeof effects !== "object" ||
+    effects.version !== 3 ||
+    typeof effects.gate?.recorderNonce !== "string" ||
+    effects.gate.recorderNonce.length === 0 ||
+    typeof effects.gate?.stimulusId !== "string" ||
+    effects.gate.stimulusId.length === 0 ||
+    typeof effects.operation?.kind !== "string" ||
+    !(effects.operation?.payload instanceof Uint8Array) ||
+    !(effects.launch?.payload instanceof Uint8Array) ||
+    !(effects.query?.payload instanceof Uint8Array) ||
+    !Array.isArray(effects.domainEffects) ||
+    !Array.isArray(effects.recoveryEffects)
+  ) {
+    throw new Error("E_V3_INVALID_INPUT");
+  }
+  if (
+    effects.statements.length !== FAKE_V3_STATEMENT_SHA256.length ||
+    effects.statements.some(
+      (statement, id) =>
+        migrationSha256(statement) !== FAKE_V3_STATEMENT_SHA256[id],
+    )
+  ) {
+    throw new Error("E_V3_STATIC_MIGRATION_MISMATCH");
+  }
+  for (const effect of [...effects.recoveryEffects, ...effects.domainEffects]) {
+    const sql = effect.sql?.trim();
+    if (
+      typeof sql !== "string" ||
+      !/^(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE(?:\s+OR\s+\w+)?|DELETE\s+FROM)\b/iu.test(
+        sql,
+      ) ||
+      /_bb_/iu.test(sql) ||
+      /;\s*\S/u.test(sql)
+    ) {
+      throw new Error("E_V3_INVALID_DOMAIN_EFFECT");
+    }
+  }
+}
+
+function fakeRunV3DomainEffects(
+  database: Database.Database,
+  effects: readonly PluginMigrationDomainEffectV3[],
+): void {
+  for (const effect of effects) {
+    database
+      .prepare(effect.sql)
+      .run(
+        ...(effect.values ?? []).map((value) =>
+          value instanceof Uint8Array ? Buffer.from(value) : value,
+        ),
+      );
+  }
+}
+
+function fakeCreateV3Journal(database: Database.Database): void {
+  database.exec(`CREATE TABLE IF NOT EXISTS _bb_artifact_review_v3_operations (
+    operation_key INTEGER PRIMARY KEY,
+    seam_id TEXT NOT NULL,
+    service_revision TEXT NOT NULL,
+    architecture_revision INTEGER NOT NULL,
+    plugin_id TEXT NOT NULL,
+    recorder_nonce TEXT NOT NULL,
+    stimulus_id TEXT NOT NULL,
+    operation_kind TEXT NOT NULL,
+    operation_payload BLOB NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS _bb_artifact_review_v3_gate_consumptions (
+    consumption_key INTEGER PRIMARY KEY,
+    operation_key INTEGER NOT NULL UNIQUE,
+    seam_id TEXT NOT NULL,
+    service_revision TEXT NOT NULL,
+    architecture_revision INTEGER NOT NULL,
+    plugin_id TEXT NOT NULL,
+    recorder_nonce TEXT NOT NULL,
+    stimulus_id TEXT NOT NULL,
+    consumed_at INTEGER NOT NULL,
+    UNIQUE(seam_id, service_revision, architecture_revision, plugin_id, recorder_nonce, stimulus_id),
+    UNIQUE(consumption_key, operation_key),
+    FOREIGN KEY(operation_key) REFERENCES _bb_artifact_review_v3_operations(operation_key)
+  );
+  CREATE TABLE IF NOT EXISTS _bb_artifact_review_v3_receipts (
+    receipt_key INTEGER PRIMARY KEY,
+    operation_key INTEGER NOT NULL,
+    receipt_kind TEXT NOT NULL CHECK(receipt_kind IN ('launch','query')),
+    receipt_payload BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    UNIQUE(operation_key, receipt_kind),
+    UNIQUE(receipt_key, operation_key, receipt_kind),
+    FOREIGN KEY(operation_key) REFERENCES _bb_artifact_review_v3_operations(operation_key)
+  );
+  CREATE TABLE IF NOT EXISTS _bb_artifact_review_v3_complete_families (
+    family_key INTEGER PRIMARY KEY,
+    operation_key INTEGER NOT NULL UNIQUE,
+    consumption_key INTEGER NOT NULL UNIQUE,
+    launch_receipt_key INTEGER NOT NULL UNIQUE,
+    launch_kind TEXT NOT NULL DEFAULT 'launch' CHECK(launch_kind = 'launch'),
+    query_receipt_key INTEGER NOT NULL UNIQUE,
+    query_kind TEXT NOT NULL DEFAULT 'query' CHECK(query_kind = 'query'),
+    completed_at INTEGER NOT NULL,
+    FOREIGN KEY(operation_key) REFERENCES _bb_artifact_review_v3_operations(operation_key),
+    FOREIGN KEY(consumption_key, operation_key) REFERENCES _bb_artifact_review_v3_gate_consumptions(consumption_key, operation_key),
+    FOREIGN KEY(launch_receipt_key, operation_key, launch_kind) REFERENCES _bb_artifact_review_v3_receipts(receipt_key, operation_key, receipt_kind),
+    FOREIGN KEY(query_receipt_key, operation_key, query_kind) REFERENCES _bb_artifact_review_v3_receipts(receipt_key, operation_key, receipt_kind)
+  )`);
+}
+
+function fakeMigrateWithCandidateEffectsV3(
+  database: Database.Database,
+  pluginId: string,
+  effects: PluginMigrationCandidateEffectsV3,
+): void {
+  database.pragma("journal_mode = WAL");
+  database.pragma("synchronous = FULL");
+  database.pragma("foreign_keys = ON");
+  database.pragma("busy_timeout = 5000");
+  database
+    .transaction(() => {
+      database.exec(
+        "CREATE TABLE IF NOT EXISTS _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
+      );
+      fakeCreateV3Journal(database);
+      const spent = database
+        .prepare(
+          `SELECT 1
+             FROM _bb_artifact_review_v3_gate_consumptions c
+             JOIN _bb_artifact_review_v3_complete_families f
+               ON f.consumption_key = c.consumption_key AND f.operation_key = c.operation_key
+            WHERE c.seam_id = ? AND c.service_revision = ?
+              AND c.architecture_revision = ? AND c.plugin_id = ?
+              AND c.recorder_nonce = ? AND c.stimulus_id = ?`,
+        )
+        .get(
+          FAKE_V3_SEAM_ID,
+          FAKE_V3_SERVICE_REVISION,
+          FAKE_V3_ARCHITECTURE_REVISION,
+          pluginId,
+          effects.gate.recorderNonce,
+          effects.gate.stimulusId,
+        );
+      if (spent !== undefined) throw new Error("E_V3_GATE_SPENT");
+      const ids = database
+        .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+        .pluck()
+        .all() as number[];
+      if (ids.some((id, index) => id !== index)) {
+        throw new Error("E_V3_MIGRATION_LEDGER_MISMATCH");
+      }
+      if (effects.recoveryEffects.length > 0 && ids.length !== 18) {
+        throw new Error("E_V3_RECOVERY_PREFIX_MISMATCH");
+      }
+      const operationKey = database
+        .prepare(
+          `INSERT INTO _bb_artifact_review_v3_operations
+             (seam_id, service_revision, architecture_revision, plugin_id,
+              recorder_nonce, stimulus_id, operation_kind, operation_payload, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          FAKE_V3_SEAM_ID,
+          FAKE_V3_SERVICE_REVISION,
+          FAKE_V3_ARCHITECTURE_REVISION,
+          pluginId,
+          effects.gate.recorderNonce,
+          effects.gate.stimulusId,
+          effects.operation.kind,
+          Buffer.from(effects.operation.payload),
+          Date.now(),
+        ).lastInsertRowid;
+      const consumptionKey = database
+        .prepare(
+          `INSERT INTO _bb_artifact_review_v3_gate_consumptions
+             (operation_key, seam_id, service_revision, architecture_revision,
+              plugin_id, recorder_nonce, stimulus_id, consumed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          operationKey,
+          FAKE_V3_SEAM_ID,
+          FAKE_V3_SERVICE_REVISION,
+          FAKE_V3_ARCHITECTURE_REVISION,
+          pluginId,
+          effects.gate.recorderNonce,
+          effects.gate.stimulusId,
+          Date.now(),
+        ).lastInsertRowid;
+      fakeRunV3DomainEffects(database, effects.recoveryEffects);
+      const record = database.prepare(
+        "INSERT INTO _bb_migrations (id, applied_at) VALUES (?, ?)",
+      );
+      for (let id = ids.length; id < effects.statements.length; id += 1) {
+        database.exec(effects.statements[id]!);
+        record.run(id, Date.now());
+      }
+      fakeRunV3DomainEffects(database, effects.domainEffects);
+      const insertReceipt = database.prepare(
+        `INSERT INTO _bb_artifact_review_v3_receipts
+           (operation_key, receipt_kind, receipt_payload, created_at)
+         VALUES (?, ?, ?, ?)`,
+      );
+      const launchKey = insertReceipt.run(
+        operationKey,
+        "launch",
+        Buffer.from(effects.launch.payload),
+        Date.now(),
+      ).lastInsertRowid;
+      const queryKey = insertReceipt.run(
+        operationKey,
+        "query",
+        Buffer.from(effects.query.payload),
+        Date.now(),
+      ).lastInsertRowid;
+      database
+        .prepare(
+          `INSERT INTO _bb_artifact_review_v3_complete_families
+             (operation_key, consumption_key, launch_receipt_key, query_receipt_key, completed_at)
+           VALUES (?, ?, ?, ?, ?)`,
+        )
+        .run(operationKey, consumptionKey, launchKey, queryKey, Date.now());
+    })
+    .immediate();
 }
 
 export type FakeLogLevel = "debug" | "info" | "warn" | "error";
@@ -372,6 +784,12 @@ export interface FakePluginHarness
 export interface CreateFakePluginHostOptions {
   /** Defaults to "test-plugin". */
   pluginId?: string;
+  /**
+   * Recorder-owned temporary root for file-backed V3 parity. When omitted the
+   * fake creates and owns a temporary root; a supplied root is never removed
+   * by fake-host disposal.
+   */
+  storageRoot?: string;
   /**
    * Value served by `bb.server.loopbackBaseUrl` (always bound here, like
    * `bb.sdk`). Defaults to "http://127.0.0.1:38886".
@@ -798,6 +1216,7 @@ function normalizeAgentConfiguration(args: {
 interface FakePluginPersistentState {
   kvRows: Map<string, string>;
   storageRoot: string;
+  ownsStorageRoot: boolean;
   storedSettings: Map<string, PluginSettingValue>;
 }
 
@@ -816,11 +1235,19 @@ function createFakePluginHostInternal(
   options: CreateFakePluginHostOptions,
   sharedState?: FakePluginPersistentState,
 ): FakePluginHost {
+  const selectedStorageRoot =
+    options.storageRoot === undefined
+      ? mkdtempSync(join(tmpdir(), "bb-fake-plugin-host-"))
+      : resolve(options.storageRoot);
+  if (sharedState === undefined) {
+    mkdirSync(selectedStorageRoot, { recursive: true });
+  }
   const persistentState =
     sharedState ??
     ({
       kvRows: new Map<string, string>(),
-      storageRoot: mkdtempSync(join(tmpdir(), "bb-fake-plugin-host-")),
+      storageRoot: selectedStorageRoot,
+      ownsStorageRoot: options.storageRoot === undefined,
       storedSettings: new Map<string, PluginSettingValue>(
         Object.entries(options.settings ?? {}),
       ),
@@ -897,12 +1324,70 @@ function createFakePluginHostInternal(
       assertLive();
       if (!databaseHandle?.open) {
         databaseHandle = new Database(join(storageRoot, "data.db"));
+        databaseHandle.pragma("journal_mode = WAL");
+        databaseHandle.pragma("synchronous = FULL");
+        databaseHandle.pragma("foreign_keys = ON");
         databaseHandle.pragma("busy_timeout = 5000");
       }
       return databaseHandle;
     },
-    migrate(database, statements) {
+    migrate(
+      databaseOrEffects: Database.Database | PluginMigrationCandidateEffectsV3,
+      statements?: string[] | PluginMigrationPlanV2,
+    ) {
       assertLive();
+      if (statements === undefined) {
+        const effects = databaseOrEffects as PluginMigrationCandidateEffectsV3;
+        fakeAssertV3Effects(effects);
+        const databasePath = join(storageRoot, "data.db");
+        if (!databaseHandle?.open) {
+          databaseHandle = new Database(databasePath);
+        } else if (databaseHandle.name !== databasePath) {
+          throw new Error("E_V3_WRITER_SUBSTITUTION");
+        }
+        try {
+          fakeMigrateWithCandidateEffectsV3(databaseHandle, pluginId, effects);
+        } finally {
+          if (databaseHandle.open) databaseHandle.close();
+        }
+        const reopened = new Database(databasePath, {
+          readonly: true,
+          fileMustExist: true,
+        });
+        try {
+          const count = reopened
+            .prepare(
+              `SELECT count(*)
+                 FROM _bb_artifact_review_v3_gate_consumptions c
+                 JOIN _bb_artifact_review_v3_complete_families f
+                   ON f.consumption_key = c.consumption_key AND f.operation_key = c.operation_key
+                WHERE c.seam_id = ? AND c.service_revision = ?
+                  AND c.architecture_revision = ? AND c.plugin_id = ?
+                  AND c.recorder_nonce = ? AND c.stimulus_id = ?`,
+            )
+            .pluck()
+            .get(
+              FAKE_V3_SEAM_ID,
+              FAKE_V3_SERVICE_REVISION,
+              FAKE_V3_ARCHITECTURE_REVISION,
+              pluginId,
+              effects.gate.recorderNonce,
+              effects.gate.stimulusId,
+            ) as number;
+          if (count !== 1) throw new Error("E_V3_REOPEN_MISMATCH");
+        } finally {
+          reopened.close();
+        }
+        return;
+      }
+      const database = databaseOrEffects as Database.Database;
+      if (!Array.isArray(statements)) {
+        if (statements.version !== 2) {
+          throw new Error("Unknown plugin migration plan version");
+        }
+        fakeMigrateWithPlanV2(database, statements);
+        return;
+      }
       database.exec(
         "CREATE TABLE IF NOT EXISTS _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL)",
       );
@@ -1768,7 +2253,7 @@ function createFakePluginHostInternal(
         emitLog("warn", `database close failed: ${errorMessage(error)}`);
       }
     }
-    if (cleanupStorage) {
+    if (cleanupStorage && persistentState.ownsStorageRoot) {
       rmSync(storageRoot, { recursive: true, force: true });
     }
     hostWorkerExitSubscriptions.splice(0);

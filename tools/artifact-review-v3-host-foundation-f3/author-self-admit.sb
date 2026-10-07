@@ -1,0 +1,13 @@
+(version 1)
+(allow default)
+(deny network*)
+(deny file-read* (subpath (param "APPS_SERVER")))
+(deny file-write* (subpath (param "APPS_SERVER")))
+(deny file-read* (subpath (param "REPO_NODE_MODULES")))
+(deny file-read*
+  (literal "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/package.json")
+  (literal "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/pnpm-workspace.yaml")
+  (literal "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/pnpm-lock.yaml")
+  (literal "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/vitest.config.ts")
+  (literal "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details/vitest.shared.ts"))
+(deny file-write* (subpath (param "REPO_ROOT")))

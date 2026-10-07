@@ -1,0 +1,119 @@
+{
+  "artifactId": "s1-ownership-adjudication-receipt",
+  "section": "Approved effectful settlement walking skeleton",
+  "sourceRunId": "wfr_ab972a3d-2a6a-46cf-93fb-1e3331cb494c",
+  "architectureDispositionPacket": "/Users/erik/.bb/thread-storage/artifact-review-u0-ownership-adjudication.md",
+  "ownershipCorrection": {
+    "classification": "contract-preserving-decomposition-correction",
+    "correctedOwnedPath": "bb-workflow-details/plugins/workflows/src/data.test.ts",
+    "addedOwnedPaths": [
+      "bb-workflow-details/plugins/workflows/src/data.test.ts"
+    ],
+    "productionOrBehaviorChange": false,
+    "rationale": "data.test.ts is the direct migration-ledger acceptance consumer for U0-owned data.ts and its appended contractInterlockMigration. Adding only this test path corrects decomposition ownership without changing the approved artifact-review contract, architecture revision 2, product behavior, migration behavior, risk acceptance, or authority."
+  },
+  "producedSeam": "artifact-review-effectful-settlement-skeleton-v1",
+  "candidateHashes": [
+    {
+      "path": "plugins/workflows/src/workflow-terminal-settlement.ts",
+      "sha256": "02b41d862409fad6665a57bc8959b7c57a188fbfd40dfc674dd4acb65310f2cf",
+      "matchesExpected": true
+    },
+    {
+      "path": "plugins/workflows/src/workflow-terminal-settlement.test.ts",
+      "sha256": "5caa25fef2e7b8816479d3ca69a54a421c5c1179b1394a315723591704d00098",
+      "matchesExpected": true
+    },
+    {
+      "path": "plugins/workflows/src/data.ts",
+      "sha256": "bd425ef882cec380b91dd1463a963e4ecaae506968b07165e37b918db2fc023c",
+      "matchesExpected": true
+    },
+    {
+      "path": "plugins/workflows/src/data.test.ts",
+      "sha256": "ca97d181dfdb944c7a10490d2ec81e4acdc0cdb9617b7819c1cd6a5de079886e",
+      "matchesExpected": true
+    },
+    {
+      "path": "plugins/workflows/src/service.ts",
+      "sha256": "df3154d32b170d56edb35e5305c72bad2da17fb1f5876d5f11162685b3435a37",
+      "matchesExpected": true
+    },
+    {
+      "path": "output/artifact-review/section-1-walking-skeleton.receipt.json",
+      "sha256": "82d01687656707b77434fd8506bc8540f2d2bd8b7f6e53e4afbaa5f247b49a4a",
+      "matchesExpected": true
+    }
+  ],
+  "dataTestDiff": {
+    "stagedHunks": 0,
+    "unstagedHunks": 1,
+    "insertions": 1,
+    "deletions": 1,
+    "onlyChange": "expect(migrations).toHaveLength(14) -> expect(migrations).toHaveLength(16)",
+    "sourceRepairAttribution": "The source final repair records its incremental correction as 15 -> 16; the prior same-workstream artifact-storage migration accounts for 14 -> 15."
+  },
+  "sourceHistory": {
+    "returnedCalls": 7,
+    "totalCalls": 7,
+    "hasMore": false,
+    "finalRepairCall": "section-1:repair-owner",
+    "finalRepairStatus": "succeeded"
+  },
+  "selectedEvidence": {
+    "totalSelectedAssertions": 320,
+    "settlementTests": {
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    },
+    "changedScopeTests": {
+      "passed": 286,
+      "failed": 0,
+      "skipped": 0
+    },
+    "dataTests": {
+      "passed": 26,
+      "failed": 0,
+      "skipped": 0
+    },
+    "typecheck": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "mutationKills": {
+      "killed": 4,
+      "survived": 0,
+      "mutants": [
+        "no-dispatch-adoption",
+        "no-chain-bridge",
+        "no-stale-dedupe",
+        "no-affected-dedupe"
+      ]
+    }
+  },
+  "repairBudget": {
+    "authorizedProductRepairs": 1,
+    "consumedProductRepairs": 1,
+    "remainingProductRepairs": 0,
+    "consumedBy": "section-1:repair-owner",
+    "ownerRerunAuthorized": false
+  },
+  "deferredArtifactStorageTestOwnership": {
+    "path": "bb-workflow-details/plugins/workflows/src/artifact-storage.test.ts",
+    "assignedUnit": "later artifact-persistence unit",
+    "ownedByU0": false,
+    "selectedAsU0Evidence": false,
+    "recordOnlyFullSuiteEvidence": {
+      "passed": 335,
+      "failed": 1,
+      "skipped": 112,
+      "soleFailure": "artifact-storage.test.ts > logs unrelated legacy foreign-key violations and continues"
+    }
+  },
+  "independentVerdict": {
+    "verdict": "pass",
+    "summary": "All six candidate hashes match, the data.test.ts ownership addition is contract-preserving, the produced seam is unchanged, the single repair budget is consumed, selected evidence is non-vacuous and skip-free, and artifact-storage.test.ts remains outside U0 under the later artifact-persistence unit."
+  },
+  "recordedOn": "2026-08-26"
+}

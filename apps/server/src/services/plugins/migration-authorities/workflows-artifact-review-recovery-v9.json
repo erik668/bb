@@ -1,0 +1,4020 @@
+{
+  "schemaVersion": "artifact-review-v9-oracle-authority-v1",
+  "authorityId": "artifact-review-v9:oracle-authority-completed-state-dual-adapter-recovery-v1",
+  "architectureRevision": 2,
+  "contract": {
+    "id": "bb-artifact-review-service:revision-1",
+    "revision": 1
+  },
+  "plan": {
+    "version": 3,
+    "minimumHostCapability": {
+      "id": "bb-plugin-migration-completed-state-v3",
+      "version": 1
+    },
+    "oldHost": "reject before database read/write",
+    "legacyStrings": "continue for unrelated plugins"
+  },
+  "scope": {
+    "soleNormativeAuthority": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v9.json",
+    "dataOnly": true,
+    "environmentDependentFields": false,
+    "productionDerivedNormativeValues": false,
+    "repairBudget": 0,
+    "threatModel": "local-single-owner tamper-evident consistency",
+    "excluded": "no authenticity claim against malicious database writer"
+  },
+  "predecessor": {
+    "predecessorAuthorityId": null,
+    "reason": "no independently admitted predecessor",
+    "historicalV6Id": "artifact-review-v6:hash-bound-pre18-quarantine-recovery-v1",
+    "forbidden": [
+      "alias",
+      "predecessor",
+      "bootstrap",
+      "adoption-fallback",
+      "registry-fallback"
+    ]
+  },
+  "identities": {
+    "acceptedDesign": {
+      "path": ".architect/design-lab/workflow-artifact-review.md",
+      "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+    },
+    "context": {
+      "path": ".architect/context-packets/artifact-review-service-build.md",
+      "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+    },
+    "v8Manifest": {
+      "bytes": 1346,
+      "sha256": "983a3147a5bc43255f99ca4e6294a970bd471a97bbdd85d47779e4a17ea7658a"
+    },
+    "v8Approval": {
+      "path": "output/artifact-review-shakedown/oracle/invariant-ownership-boundary-v8-approval.json",
+      "sha256": "117b322e0b524e1a6a7900389dfc0eaeb1cafe63f7c68427817572f7b10e6a4d"
+    },
+    "oracleRecipe": {
+      "sha256": "a13f7073da036d0f163b640779710327cd88dca9b2cd75259aef39a0afe5c6b5",
+      "disposition": "frozen input whose V6 ID is historical only"
+    },
+    "pre18": {
+      "algorithm": "SHA-256 of UTF-8 JSON.stringify(sqlite_master rows ordered by type,name,tbl_name with keys type,name,tableName,sql)",
+      "objects": 35,
+      "sha256": "51a8174aa115545aebc378063c3d1a612ab5561ea22932bd744dea0506fa5afa"
+    },
+    "migration18": {
+      "id": 18,
+      "sha256": "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d"
+    },
+    "blockedCandidate": {
+      "bytes": 1472,
+      "sha256": "7969351886be16fbdd81c560114fb7ba080e6e7129d0ebdb0fb915409b982a28",
+      "disposition": "historical blocked evidence only"
+    },
+    "historicalReceipt": {
+      "sha256": "912abd52c73c9e5ad623c922717f2b64438a75e8d14c97dbeaa14dee86fcd439",
+      "disposition": "unadmitted evidence only"
+    },
+    "synthesis": {
+      "run": "wfr_47a365c7-ee03-409e-81ec-dba7fc3f9049",
+      "verdict": "contract-preserving-successor"
+    }
+  },
+  "identityAlgorithms": {
+    "rawFile": "SHA-256 exact UTF-8 bytes including whitespace and terminal newline; approval records bytes and digest from disk",
+    "manifest": "UTF-8 JSON.stringify path-localeCompare-sorted exact {path,sha256} array, no terminal newline; bytes and SHA-256 normative",
+    "approval": "independent zero-findings exact unchanged bytes and no production-derived normative value"
+  },
+  "migrations": {
+    "immutable": "0..22",
+    "strictPrefixOnly": true,
+    "vector": [
+      {
+        "id": 0,
+        "byteLength": 1935,
+        "sha256": "cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6",
+        "statementUtf8": "CREATE TABLE IF NOT EXISTS workflow_runs (\n     id TEXT PRIMARY KEY,\n     project_id TEXT NOT NULL,\n     origin_thread_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     origin_provider TEXT NOT NULL,\n     origin_model TEXT NOT NULL,\n     origin_reasoning_level TEXT NOT NULL,\n     origin_permission_mode TEXT NOT NULL,\n     name TEXT NOT NULL,\n     source TEXT NOT NULL,\n     source_hash TEXT NOT NULL,\n     args_json TEXT NOT NULL,\n     status TEXT NOT NULL,\n     resumed_from_run_id TEXT REFERENCES workflow_runs(id),\n     result_json TEXT,\n     error TEXT,\n     phase TEXT,\n     notification_sent INTEGER NOT NULL DEFAULT 0,\n     created_at INTEGER NOT NULL,\n     started_at INTEGER,\n     finished_at INTEGER\n   );\n   CREATE INDEX IF NOT EXISTS workflow_runs_project_created_idx\n     ON workflow_runs(project_id, created_at DESC);\n   CREATE INDEX IF NOT EXISTS workflow_runs_status_created_idx\n     ON workflow_runs(status, created_at);\n   CREATE TABLE IF NOT EXISTS workflow_calls (\n     id TEXT PRIMARY KEY,\n     run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,\n     call_index INTEGER NOT NULL,\n     cache_key TEXT NOT NULL,\n     prompt TEXT NOT NULL,\n     options_json TEXT NOT NULL,\n     resolved_provider TEXT NOT NULL,\n     resolved_model TEXT NOT NULL,\n     resolved_reasoning_level TEXT NOT NULL,\n     resolved_permission_mode TEXT NOT NULL,\n     status TEXT NOT NULL,\n     child_thread_id TEXT UNIQUE,\n     repair_attempts INTEGER NOT NULL DEFAULT 0,\n     result_json TEXT,\n     error TEXT,\n     replayed_from_call_id TEXT REFERENCES workflow_calls(id),\n     replay_source TEXT,\n     created_at INTEGER NOT NULL,\n     started_at INTEGER,\n     finished_at INTEGER,\n     UNIQUE(run_id, call_index)\n   );\n   CREATE INDEX IF NOT EXISTS workflow_calls_run_idx\n     ON workflow_calls(run_id, call_index);\n   CREATE INDEX IF NOT EXISTS workflow_calls_child_idx\n     ON workflow_calls(child_thread_id);"
+      },
+      {
+        "id": 1,
+        "byteLength": 534,
+        "sha256": "25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071",
+        "statementUtf8": "ALTER TABLE workflow_runs ADD COLUMN settings_json TEXT NOT NULL\n     DEFAULT '{\"maxActiveRuns\":4,\"maxConcurrentAgents\":8,\"maxAgentCalls\":100,\"totalRunTimeoutMs\":86400000,\"retentionDays\":30,\"maxNotificationBytes\":16384}';\n   ALTER TABLE workflow_calls ADD COLUMN last_activity_at INTEGER;\n   CREATE INDEX IF NOT EXISTS workflow_calls_running_activity_idx\n     ON workflow_calls(status, last_activity_at);\n   CREATE INDEX IF NOT EXISTS workflow_runs_terminal_retention_idx\n     ON workflow_runs(status, notification_sent, finished_at);"
+      },
+      {
+        "id": 2,
+        "byteLength": 386,
+        "sha256": "caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d",
+        "statementUtf8": "ALTER TABLE workflow_runs ADD COLUMN notification_attempt_count INTEGER NOT NULL DEFAULT 0;\n   ALTER TABLE workflow_runs ADD COLUMN notification_next_attempt_at INTEGER;\n   ALTER TABLE workflow_runs ADD COLUMN notification_error TEXT;\n   CREATE INDEX IF NOT EXISTS workflow_runs_notification_retry_idx\n     ON workflow_runs(notification_sent, notification_next_attempt_at, finished_at);"
+      },
+      {
+        "id": 3,
+        "byteLength": 350,
+        "sha256": "d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1",
+        "statementUtf8": "ALTER TABLE workflow_runs ADD COLUMN notification_outcome TEXT NOT NULL DEFAULT 'pending';\n   UPDATE workflow_runs SET notification_outcome = 'delivered'\n     WHERE notification_sent = 1 AND notification_error IS NULL;\n   UPDATE workflow_runs SET notification_outcome = 'abandoned'\n     WHERE notification_sent = 1 AND notification_error IS NOT NULL;"
+      },
+      {
+        "id": 4,
+        "byteLength": 156,
+        "sha256": "ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14",
+        "statementUtf8": "ALTER TABLE workflow_runs ADD COLUMN replay_safety_version INTEGER NOT NULL DEFAULT 0;\n   ALTER TABLE workflow_runs ADD COLUMN replay_barrier_index INTEGER;"
+      },
+      {
+        "id": 5,
+        "byteLength": 117,
+        "sha256": "8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1",
+        "statementUtf8": "CREATE INDEX IF NOT EXISTS workflow_runs_origin_created_idx\n     ON workflow_runs(origin_thread_id, created_at DESC);"
+      },
+      {
+        "id": 6,
+        "byteLength": 90,
+        "sha256": "e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465",
+        "statementUtf8": "UPDATE workflow_runs SET replay_barrier_index = NULL\n     WHERE replay_safety_version = 1;"
+      },
+      {
+        "id": 7,
+        "byteLength": 89,
+        "sha256": "eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337",
+        "statementUtf8": "ALTER TABLE workflow_calls ADD COLUMN provider_retry_attempts INTEGER NOT NULL DEFAULT 0;"
+      },
+      {
+        "id": 8,
+        "byteLength": 385,
+        "sha256": "a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2",
+        "statementUtf8": "ALTER TABLE workflow_calls ADD COLUMN prompt_bytes INTEGER NOT NULL DEFAULT 0;\n   UPDATE workflow_calls SET prompt_bytes = length(CAST(prompt AS BLOB));\n   ALTER TABLE workflow_calls ADD COLUMN observed_context_used_tokens INTEGER;\n   ALTER TABLE workflow_calls ADD COLUMN observed_model_context_window INTEGER;\n   ALTER TABLE workflow_calls ADD COLUMN context_usage_estimated INTEGER;"
+      },
+      {
+        "id": 9,
+        "byteLength": 69,
+        "sha256": "e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89",
+        "statementUtf8": "ALTER TABLE workflow_calls ADD COLUMN context_minimum_tokens INTEGER;"
+      },
+      {
+        "id": 10,
+        "byteLength": 64,
+        "sha256": "bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d",
+        "statementUtf8": "ALTER TABLE workflow_calls ADD COLUMN context_profile_json TEXT;"
+      },
+      {
+        "id": 11,
+        "byteLength": 565,
+        "sha256": "89f614b25f424c27f61d6308f1d93373420fff3cea5a4958b471668bf31ccf24",
+        "statementUtf8": "CREATE TABLE IF NOT EXISTS workflow_checkpoints (\n     id TEXT PRIMARY KEY,\n     run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,\n     checkpoint_id TEXT NOT NULL,\n     checkpoint_json TEXT NOT NULL,\n     phase TEXT,\n     source_call_id TEXT REFERENCES workflow_calls(id) ON DELETE SET NULL,\n     ordinal INTEGER NOT NULL,\n     created_at INTEGER NOT NULL,\n     updated_at INTEGER NOT NULL,\n     UNIQUE(run_id, checkpoint_id)\n   );\n   CREATE INDEX IF NOT EXISTS workflow_checkpoints_run_created_idx\n     ON workflow_checkpoints(run_id, ordinal);"
+      },
+      {
+        "id": 12,
+        "byteLength": 667,
+        "sha256": "5c980eccd9a3a40da158ef41806df8f212b494cbc60b2768762bf05fe58c09c2",
+        "statementUtf8": "ALTER TABLE workflow_runs ADD COLUMN presentation_thread_id TEXT;\n   ALTER TABLE workflow_runs ADD COLUMN parent_run_id TEXT REFERENCES workflow_runs(id) ON DELETE SET NULL;\n   ALTER TABLE workflow_runs ADD COLUMN root_run_id TEXT;\n   UPDATE workflow_runs\n     SET presentation_thread_id = origin_thread_id\n     WHERE presentation_thread_id IS NULL;\n   UPDATE workflow_runs SET root_run_id = id WHERE root_run_id IS NULL;\n   CREATE INDEX IF NOT EXISTS workflow_runs_presentation_created_idx\n     ON workflow_runs(presentation_thread_id, created_at DESC);\n   CREATE INDEX IF NOT EXISTS workflow_runs_root_created_idx\n     ON workflow_runs(root_run_id, created_at ASC);"
+      },
+      {
+        "id": 13,
+        "byteLength": 243,
+        "sha256": "5951a693ab7a49e5f1b4cecb2e4bc6385853584de204f48b974aaa3fb19e2bfa",
+        "statementUtf8": "ALTER TABLE workflow_runs ADD COLUMN campaign_id TEXT;\n   UPDATE workflow_runs SET campaign_id = id WHERE campaign_id IS NULL;\n   CREATE INDEX IF NOT EXISTS workflow_runs_campaign_created_idx\n     ON workflow_runs(campaign_id, created_at ASC);"
+      },
+      {
+        "id": 14,
+        "byteLength": 8918,
+        "sha256": "1767f3322d25f443f073ff49cada30950ace97d2d348d57696d1baeee7d7a3e3",
+        "statementUtf8": "CREATE TABLE workflow_artifact_blobs (\n     sha256 TEXT PRIMARY KEY CHECK(length(sha256) = 64),\n     content_type TEXT NOT NULL CHECK(content_type IN ('text/markdown', 'text/html', 'application/json')),\n     content BLOB NOT NULL,\n     byte_length INTEGER NOT NULL CHECK(byte_length >= 0),\n     created_at INTEGER NOT NULL,\n     CHECK(length(content) = byte_length)\n   );\n   CREATE TABLE workflow_artifacts (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     id TEXT NOT NULL,\n     kind TEXT NOT NULL CHECK(kind IN ('requirements', 'architecture', 'decision-log')),\n     title TEXT NOT NULL,\n     content_type TEXT NOT NULL CHECK(content_type IN ('text/markdown', 'text/html', 'application/json')),\n     created_at INTEGER NOT NULL,\n     updated_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, id),\n     UNIQUE (campaign_id, project_id, environment_id, presentation_thread_id, kind)\n   );\n   CREATE TABLE workflow_artifact_revisions (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     artifact_id TEXT NOT NULL,\n     revision INTEGER NOT NULL CHECK(revision >= 1),\n     blob_sha256 TEXT NOT NULL REFERENCES workflow_artifact_blobs(sha256) ON DELETE RESTRICT,\n     status TEXT NOT NULL CHECK(status IN ('draft', 'accepted-pending-impact', 'admitted', 'superseded')),\n     source_host_id TEXT,\n     source_root_path TEXT,\n     source_relative_path TEXT,\n     source_sha256 TEXT,\n     produced_by_thread_id TEXT,\n     created_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision),\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id)\n       REFERENCES workflow_artifacts(campaign_id, project_id, environment_id, presentation_thread_id, id)\n       ON DELETE RESTRICT,\n     CHECK (\n       (source_host_id IS NULL AND source_root_path IS NULL AND source_relative_path IS NULL AND source_sha256 IS NULL)\n       OR\n       (source_host_id IS NOT NULL AND source_root_path IS NOT NULL AND source_relative_path IS NOT NULL AND source_sha256 IS NOT NULL)\n     )\n   );\n   CREATE UNIQUE INDEX workflow_artifact_one_admitted_revision_idx\n     ON workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id)\n     WHERE status = 'admitted';\n   CREATE INDEX workflow_artifact_revisions_history_idx\n     ON workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision DESC);\n   CREATE TABLE workflow_artifact_annotations (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     id TEXT NOT NULL,\n     artifact_id TEXT NOT NULL,\n     artifact_revision INTEGER NOT NULL,\n     kind TEXT NOT NULL CHECK(kind IN ('highlight', 'comment', 'suggestion')),\n     anchor_json TEXT NOT NULL CHECK(json_valid(anchor_json)),\n     body TEXT,\n     author TEXT NOT NULL CHECK(author = 'local-owner'),\n     status TEXT NOT NULL CHECK(status IN ('open', 'resolved', 'orphaned')),\n     resolution TEXT CHECK(resolution IS NULL OR resolution IN ('accepted', 'declined', 'superseded')),\n     steward_thread_message_id TEXT,\n     created_at INTEGER NOT NULL,\n     updated_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, id),\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, artifact_revision)\n       REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision)\n       ON DELETE RESTRICT\n   );\n   CREATE INDEX workflow_artifact_annotations_open_idx\n     ON workflow_artifact_annotations(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, artifact_revision, status, created_at);\n   CREATE TABLE workflow_artifact_working_drafts (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     artifact_id TEXT NOT NULL,\n     base_revision INTEGER NOT NULL,\n     content TEXT NOT NULL,\n     content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),\n     state TEXT NOT NULL CHECK(state IN ('saving', 'saved', 'failed')),\n     updated_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id),\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, base_revision)\n       REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision)\n       ON DELETE RESTRICT\n   );\n   CREATE TABLE workflow_artifact_decisions (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     id TEXT NOT NULL,\n     artifact_id TEXT NOT NULL,\n     base_revision INTEGER NOT NULL,\n     candidate_revision INTEGER,\n     decision TEXT NOT NULL CHECK(decision IN ('accepted', 'declined', 'superseded')),\n     actor TEXT NOT NULL CHECK(actor = 'local-owner'),\n     rationale TEXT NOT NULL,\n     created_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, id),\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, base_revision)\n       REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision)\n       ON DELETE RESTRICT,\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, candidate_revision)\n       REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision)\n       ON DELETE RESTRICT\n   );\n   CREATE TABLE workflow_artifact_stewards (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     role TEXT NOT NULL CHECK(role = 'artifact-steward'),\n     thread_id TEXT NOT NULL,\n     created_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, role),\n     UNIQUE (thread_id)\n   );\n   CREATE TABLE workflow_artifact_mutations (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     actor TEXT NOT NULL CHECK(actor = 'local-owner'),\n     operation_kind TEXT NOT NULL,\n     idempotency_key TEXT NOT NULL,\n     request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),\n     outcome_json TEXT NOT NULL CHECK(json_valid(outcome_json)),\n     committed_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, actor, operation_kind, idempotency_key)\n   );\n   CREATE TABLE workflow_artifact_apply_intents (\n     campaign_id TEXT NOT NULL,\n     project_id TEXT NOT NULL,\n     environment_id TEXT NOT NULL,\n     presentation_thread_id TEXT NOT NULL,\n     id TEXT NOT NULL,\n     artifact_id TEXT NOT NULL,\n     base_revision INTEGER NOT NULL,\n     finalized_revision INTEGER,\n     source_host_id TEXT NOT NULL,\n     source_root_path TEXT NOT NULL,\n     source_relative_path TEXT NOT NULL,\n     source_before_sha256 TEXT NOT NULL CHECK(length(source_before_sha256) = 64),\n     target_sha256 TEXT NOT NULL CHECK(length(target_sha256) = 64),\n     target_blob_sha256 TEXT NOT NULL REFERENCES workflow_artifact_blobs(sha256) ON DELETE RESTRICT,\n     state TEXT NOT NULL CHECK(state IN ('prepared', 'file-applied', 'finalized', 'conflict', 'awaiting-source-host', 'rejected')),\n     detail TEXT,\n     created_at INTEGER NOT NULL,\n     updated_at INTEGER NOT NULL,\n     PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, id),\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, base_revision)\n       REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision)\n       ON DELETE RESTRICT,\n     FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, finalized_revision)\n       REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id, revision)\n       ON DELETE RESTRICT\n   );\n   CREATE UNIQUE INDEX workflow_artifact_one_active_apply_idx\n     ON workflow_artifact_apply_intents(campaign_id, project_id, environment_id, presentation_thread_id, artifact_id)\n     WHERE state IN ('prepared', 'file-applied', 'awaiting-source-host');"
+      },
+      {
+        "id": 15,
+        "byteLength": 1907,
+        "sha256": "65e86c96105b3f48f8e0faa5f168e7f5e0d66f916cd4c1ea6d6f8a8a89111f83",
+        "statementUtf8": "\n  ALTER TABLE workflow_calls ADD COLUMN contract_snapshot TEXT;\n  CREATE TABLE IF NOT EXISTS workflow_campaign_contract_changes (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    change_id TEXT NOT NULL,\n    sequence INTEGER NOT NULL CHECK(sequence >= 1),\n    presentation_thread_id TEXT NOT NULL,\n    artifact_id TEXT NOT NULL,\n    artifact_revision INTEGER NOT NULL CHECK(artifact_revision >= 1),\n    old_snapshot TEXT,\n    new_snapshot TEXT NOT NULL,\n    admitted_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, change_id),\n    UNIQUE (campaign_id, project_id, environment_id, sequence)\n  );\n  CREATE TABLE IF NOT EXISTS workflow_call_contract_interlocks (\n    change_id TEXT NOT NULL,\n    call_id TEXT NOT NULL REFERENCES workflow_calls(id) ON DELETE CASCADE,\n    required_sequence INTEGER NOT NULL CHECK(required_sequence >= 1),\n    old_snapshot TEXT,\n    new_snapshot TEXT NOT NULL,\n    state TEXT NOT NULL CHECK(state IN ('pending', 'adopted', 'blocked', 'stop-required')),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (change_id, call_id)\n  );\n  CREATE INDEX IF NOT EXISTS workflow_call_contract_interlocks_call_idx\n    ON workflow_call_contract_interlocks(call_id, state, required_sequence);\n  CREATE TABLE IF NOT EXISTS workflow_call_stale_evidence (\n    id TEXT PRIMARY KEY,\n    call_id TEXT NOT NULL REFERENCES workflow_calls(id) ON DELETE CASCADE,\n    writer TEXT NOT NULL CHECK(writer IN ('structured-result', 'settle-call', 'checkpoint', 'recovery', 'admission')),\n    evidence_snapshot TEXT,\n    blocking_change_id TEXT NOT NULL,\n    blocking_sequence INTEGER NOT NULL,\n    payload_json TEXT,\n    error TEXT,\n    recorded_at INTEGER NOT NULL\n  );\n  CREATE INDEX IF NOT EXISTS workflow_call_stale_evidence_call_idx\n    ON workflow_call_stale_evidence(call_id, recorded_at);"
+      },
+      {
+        "id": 16,
+        "byteLength": 150,
+        "sha256": "5b44b70d6b98aa04374afeefff2860733465d4a1156ac33917b15646073014d8",
+        "statementUtf8": "\n  ALTER TABLE workflow_runs ADD COLUMN workflow_artifact_live_changes\n    INTEGER NOT NULL DEFAULT 0 CHECK(workflow_artifact_live_changes IN (0, 1));"
+      },
+      {
+        "id": 17,
+        "byteLength": 204,
+        "sha256": "d147cd626d4887587d4efa99fea9a9f801960d6c9c18b0fb8ac6c9a0b636f01e",
+        "statementUtf8": "\n  CREATE TABLE IF NOT EXISTS workflow_call_dispatch_claims (\n    call_id TEXT PRIMARY KEY REFERENCES workflow_calls(id) ON DELETE CASCADE,\n    contract_snapshot TEXT,\n    claimed_at INTEGER NOT NULL\n  );"
+      },
+      {
+        "id": 18,
+        "byteLength": 20249,
+        "sha256": "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d",
+        "statementUtf8": "\n  CREATE TABLE workflow_artifact_blobs_v2 (\n    sha256 TEXT PRIMARY KEY CHECK(length(sha256) = 64),\n    content_type TEXT NOT NULL CHECK(content_type IN ('text/markdown', 'text/html', 'application/json')),\n    content BLOB NOT NULL,\n    byte_length INTEGER NOT NULL CHECK(byte_length >= 0),\n    created_at INTEGER NOT NULL,\n    CHECK(length(content) = byte_length)\n  );\n  INSERT INTO workflow_artifact_blobs_v2\n    SELECT sha256, content_type, content, byte_length, created_at\n    FROM workflow_artifact_blobs;\n\n  CREATE TABLE workflow_artifact_presentation_grants (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    presentation_run_id TEXT,\n    granted_at INTEGER NOT NULL,\n    revoked_at INTEGER,\n    PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id),\n    CHECK(revoked_at IS NULL OR revoked_at >= granted_at)\n  );\n  INSERT INTO workflow_artifact_presentation_grants\n    (campaign_id, project_id, environment_id, presentation_thread_id,\n     presentation_run_id, granted_at, revoked_at)\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id,\n      NULL, MIN(created_at), NULL\n    FROM workflow_artifacts\n    GROUP BY campaign_id, project_id, environment_id, presentation_thread_id;\n\n  CREATE TABLE workflow_artifacts_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT,\n    id TEXT NOT NULL,\n    kind TEXT NOT NULL CHECK(kind IN ('requirements', 'architecture', 'decision-log')),\n    title TEXT NOT NULL,\n    content_type TEXT NOT NULL CHECK(content_type IN ('text/markdown', 'text/html', 'application/json')),\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, id),\n    UNIQUE (campaign_id, project_id, environment_id, kind)\n  );\n  INSERT INTO workflow_artifacts_v2\n    SELECT campaign_id, project_id, environment_id, NULL, id, kind, title,\n      content_type, MIN(created_at), MAX(updated_at)\n    FROM workflow_artifacts\n    GROUP BY campaign_id, project_id, environment_id, id, kind, title, content_type;\n\n  CREATE TABLE workflow_artifact_revisions_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT,\n    artifact_id TEXT NOT NULL,\n    revision INTEGER NOT NULL CHECK(revision >= 1),\n    blob_sha256 TEXT NOT NULL REFERENCES workflow_artifact_blobs_v2(sha256) ON DELETE RESTRICT,\n    status TEXT NOT NULL CHECK(status IN ('draft', 'accepted-pending-impact', 'admitted', 'superseded')),\n    source_host_id TEXT,\n    source_root_path TEXT,\n    source_relative_path TEXT,\n    source_sha256 TEXT,\n    produced_by_thread_id TEXT,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, artifact_id, revision),\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id)\n      REFERENCES workflow_artifacts_v2(campaign_id, project_id, environment_id, id)\n      ON DELETE RESTRICT,\n    CHECK (\n      (source_host_id IS NULL AND source_root_path IS NULL AND source_relative_path IS NULL AND source_sha256 IS NULL)\n      OR\n      (source_host_id IS NOT NULL AND source_root_path IS NOT NULL AND source_relative_path IS NOT NULL AND source_sha256 IS NOT NULL)\n    )\n  );\n  INSERT INTO workflow_artifact_revisions_v2\n    SELECT campaign_id, project_id, environment_id, NULL, artifact_id, revision,\n      blob_sha256, status, source_host_id, source_root_path,\n      source_relative_path, source_sha256, produced_by_thread_id, MIN(created_at)\n    FROM workflow_artifact_revisions\n    GROUP BY campaign_id, project_id, environment_id, artifact_id, revision,\n      blob_sha256, status, source_host_id, source_root_path,\n      source_relative_path, source_sha256, produced_by_thread_id;\n\n  CREATE TABLE workflow_artifact_annotations_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    id TEXT NOT NULL,\n    artifact_id TEXT NOT NULL,\n    artifact_revision INTEGER NOT NULL,\n    kind TEXT NOT NULL CHECK(kind IN ('highlight', 'comment', 'suggestion')),\n    anchor_json TEXT NOT NULL CHECK(json_valid(anchor_json)),\n    body TEXT,\n    author TEXT NOT NULL CHECK(length(author) > 0),\n    status TEXT NOT NULL CHECK(status IN ('open', 'resolved', 'orphaned')),\n    resolution TEXT CHECK(resolution IS NULL OR resolution IN ('accepted', 'declined', 'superseded')),\n    steward_thread_message_id TEXT,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id)\n      REFERENCES workflow_artifact_presentation_grants(campaign_id, project_id, environment_id, presentation_thread_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, artifact_revision)\n      REFERENCES workflow_artifact_revisions_v2(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_annotations_v2\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id, id,\n      artifact_id, artifact_revision, kind, anchor_json, body, author, status,\n      resolution, steward_thread_message_id, created_at, updated_at\n    FROM workflow_artifact_annotations;\n\n  CREATE TABLE workflow_artifact_working_drafts_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    artifact_id TEXT NOT NULL,\n    base_revision INTEGER NOT NULL,\n    content TEXT NOT NULL,\n    content_sha256 TEXT NOT NULL CHECK(length(content_sha256) = 64),\n    state TEXT NOT NULL CHECK(state IN ('saving', 'saved', 'failed')),\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, artifact_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id)\n      REFERENCES workflow_artifact_presentation_grants(campaign_id, project_id, environment_id, presentation_thread_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, base_revision)\n      REFERENCES workflow_artifact_revisions_v2(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_working_drafts_v2\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id,\n      artifact_id, base_revision, content, content_sha256, state, updated_at\n    FROM workflow_artifact_working_drafts;\n\n  CREATE TABLE workflow_artifact_decisions_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    id TEXT NOT NULL,\n    artifact_id TEXT NOT NULL,\n    base_revision INTEGER NOT NULL,\n    candidate_revision INTEGER,\n    decision TEXT NOT NULL CHECK(decision IN ('accepted', 'declined', 'superseded')),\n    actor TEXT NOT NULL CHECK(length(actor) > 0),\n    rationale TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id)\n      REFERENCES workflow_artifact_presentation_grants(campaign_id, project_id, environment_id, presentation_thread_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, base_revision)\n      REFERENCES workflow_artifact_revisions_v2(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, candidate_revision)\n      REFERENCES workflow_artifact_revisions_v2(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_decisions_v2\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id, id,\n      artifact_id, base_revision, candidate_revision, decision, actor, rationale,\n      created_at\n    FROM workflow_artifact_decisions;\n\n  CREATE TABLE workflow_artifact_stewards_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    role TEXT NOT NULL CHECK(role = 'artifact-steward'),\n    thread_id TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, role),\n    UNIQUE (thread_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id)\n      REFERENCES workflow_artifact_presentation_grants(campaign_id, project_id, environment_id, presentation_thread_id)\n      ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_stewards_v2\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id,\n      role, thread_id, created_at\n    FROM workflow_artifact_stewards;\n\n  CREATE TABLE workflow_artifact_mutations_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    actor TEXT NOT NULL CHECK(length(actor) > 0),\n    operation_kind TEXT NOT NULL,\n    idempotency_key TEXT NOT NULL,\n    request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),\n    outcome_json TEXT NOT NULL CHECK(json_valid(outcome_json)),\n    committed_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, presentation_thread_id, actor, idempotency_key),\n    FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id)\n      REFERENCES workflow_artifact_presentation_grants(campaign_id, project_id, environment_id, presentation_thread_id)\n      ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_mutations_v2\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id,\n      actor, operation_kind, idempotency_key, request_digest, outcome_json,\n      committed_at\n    FROM workflow_artifact_mutations;\n\n  CREATE TABLE workflow_artifact_apply_intents_v2 (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    id TEXT NOT NULL,\n    artifact_id TEXT NOT NULL,\n    base_revision INTEGER NOT NULL,\n    finalized_revision INTEGER,\n    source_host_id TEXT NOT NULL,\n    source_root_path TEXT NOT NULL,\n    source_relative_path TEXT NOT NULL,\n    source_before_sha256 TEXT NOT NULL CHECK(length(source_before_sha256) = 64),\n    target_sha256 TEXT NOT NULL CHECK(length(target_sha256) = 64),\n    target_blob_sha256 TEXT NOT NULL REFERENCES workflow_artifact_blobs_v2(sha256) ON DELETE RESTRICT,\n    state TEXT NOT NULL CHECK(state IN ('prepared', 'file-applied', 'finalized', 'conflict', 'awaiting-source-host', 'rejected')),\n    detail TEXT,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, presentation_thread_id)\n      REFERENCES workflow_artifact_presentation_grants(campaign_id, project_id, environment_id, presentation_thread_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, base_revision)\n      REFERENCES workflow_artifact_revisions_v2(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, finalized_revision)\n      REFERENCES workflow_artifact_revisions_v2(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_apply_intents_v2\n    SELECT campaign_id, project_id, environment_id, presentation_thread_id, id,\n      artifact_id, base_revision, finalized_revision, source_host_id,\n      source_root_path, source_relative_path, source_before_sha256, target_sha256,\n      target_blob_sha256, state, detail, created_at, updated_at\n    FROM workflow_artifact_apply_intents;\n\n  DROP TABLE workflow_artifact_apply_intents;\n  DROP TABLE workflow_artifact_mutations;\n  DROP TABLE workflow_artifact_stewards;\n  DROP TABLE workflow_artifact_decisions;\n  DROP TABLE workflow_artifact_working_drafts;\n  DROP TABLE workflow_artifact_annotations;\n  DROP TABLE workflow_artifact_revisions;\n  DROP TABLE workflow_artifacts;\n  DROP TABLE workflow_artifact_blobs;\n  ALTER TABLE workflow_artifact_blobs_v2 RENAME TO workflow_artifact_blobs;\n  ALTER TABLE workflow_artifacts_v2 RENAME TO workflow_artifacts;\n  ALTER TABLE workflow_artifact_revisions_v2 RENAME TO workflow_artifact_revisions;\n  ALTER TABLE workflow_artifact_annotations_v2 RENAME TO workflow_artifact_annotations;\n  ALTER TABLE workflow_artifact_working_drafts_v2 RENAME TO workflow_artifact_working_drafts;\n  ALTER TABLE workflow_artifact_decisions_v2 RENAME TO workflow_artifact_decisions;\n  ALTER TABLE workflow_artifact_stewards_v2 RENAME TO workflow_artifact_stewards;\n  ALTER TABLE workflow_artifact_mutations_v2 RENAME TO workflow_artifact_mutations;\n  ALTER TABLE workflow_artifact_apply_intents_v2 RENAME TO workflow_artifact_apply_intents;\n\n  CREATE UNIQUE INDEX workflow_artifact_one_admitted_revision_idx\n    ON workflow_artifact_revisions(campaign_id, project_id, environment_id, artifact_id)\n    WHERE status = 'admitted';\n  CREATE INDEX workflow_artifact_revisions_history_idx\n    ON workflow_artifact_revisions(campaign_id, project_id, environment_id, artifact_id, revision DESC);\n  CREATE INDEX workflow_artifact_annotations_open_idx\n    ON workflow_artifact_annotations(campaign_id, project_id, environment_id, artifact_id, artifact_revision, status, created_at);\n  CREATE UNIQUE INDEX workflow_artifact_one_active_apply_idx\n    ON workflow_artifact_apply_intents(campaign_id, project_id, environment_id, artifact_id)\n    WHERE state IN ('prepared', 'file-applied', 'awaiting-source-host');\n\n  CREATE TABLE workflow_campaign_work_items (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    work_item_id TEXT NOT NULL,\n    version INTEGER NOT NULL CHECK(version >= 1),\n    state TEXT NOT NULL CHECK(state IN ('pending', 'active', 'completed', 'superseded')),\n    reporting_run_id TEXT,\n    reporting_checkpoint_id TEXT,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, work_item_id)\n  );\n  CREATE TABLE workflow_campaign_work_edges (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    predecessor_work_item_id TEXT NOT NULL,\n    successor_work_item_id TEXT NOT NULL,\n    version INTEGER NOT NULL CHECK(version >= 1),\n    PRIMARY KEY (campaign_id, project_id, environment_id, predecessor_work_item_id, successor_work_item_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, predecessor_work_item_id)\n      REFERENCES workflow_campaign_work_items(campaign_id, project_id, environment_id, work_item_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, successor_work_item_id)\n      REFERENCES workflow_campaign_work_items(campaign_id, project_id, environment_id, work_item_id)\n      ON DELETE RESTRICT,\n    CHECK(predecessor_work_item_id <> successor_work_item_id)\n  );\n  CREATE TABLE workflow_campaign_contract_snapshots (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    snapshot_digest TEXT NOT NULL CHECK(length(snapshot_digest) = 64),\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, snapshot_digest)\n  );\n  CREATE TABLE workflow_campaign_contract_snapshot_artifacts (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    snapshot_digest TEXT NOT NULL,\n    slot TEXT NOT NULL CHECK(slot IN ('requirements', 'architecture', 'decisions')),\n    artifact_id TEXT NOT NULL,\n    artifact_revision INTEGER NOT NULL CHECK(artifact_revision >= 1),\n    blob_sha256 TEXT NOT NULL CHECK(length(blob_sha256) = 64),\n    PRIMARY KEY (campaign_id, project_id, environment_id, snapshot_digest, slot),\n    FOREIGN KEY (campaign_id, project_id, environment_id, snapshot_digest)\n      REFERENCES workflow_campaign_contract_snapshots(campaign_id, project_id, environment_id, snapshot_digest)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, artifact_id, artifact_revision)\n      REFERENCES workflow_artifact_revisions(campaign_id, project_id, environment_id, artifact_id, revision)\n      ON DELETE RESTRICT\n  );\n  CREATE TABLE workflow_campaign_contract_state (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    transition_high_watermark INTEGER NOT NULL DEFAULT 0 CHECK(transition_high_watermark >= 0),\n    current_snapshot_digest TEXT,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, current_snapshot_digest)\n      REFERENCES workflow_campaign_contract_snapshots(campaign_id, project_id, environment_id, snapshot_digest)\n      ON DELETE RESTRICT\n  );\n  CREATE TABLE workflow_campaign_transition_receipts (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    change_id TEXT NOT NULL,\n    transition_sequence INTEGER NOT NULL CHECK(transition_sequence >= 1),\n    snapshot_digest TEXT NOT NULL,\n    actor_key TEXT NOT NULL CHECK(length(actor_key) > 0),\n    request_digest TEXT NOT NULL CHECK(length(request_digest) = 64),\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, change_id),\n    UNIQUE (campaign_id, project_id, environment_id, transition_sequence),\n    FOREIGN KEY (campaign_id, project_id, environment_id, snapshot_digest)\n      REFERENCES workflow_campaign_contract_snapshots(campaign_id, project_id, environment_id, snapshot_digest)\n      ON DELETE RESTRICT\n  );\n  CREATE TABLE workflow_artifact_change_outbox (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    change_id TEXT NOT NULL,\n    call_id TEXT NOT NULL,\n    work_item_id TEXT NOT NULL,\n    transition_sequence INTEGER NOT NULL CHECK(transition_sequence >= 1),\n    snapshot_digest TEXT NOT NULL,\n    state TEXT NOT NULL CHECK(state IN ('pending', 'leased', 'delivered', 'blocked', 'settled')),\n    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),\n    next_attempt_at INTEGER,\n    lease_expires_at INTEGER,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, change_id, call_id, work_item_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, work_item_id)\n      REFERENCES workflow_campaign_work_items(campaign_id, project_id, environment_id, work_item_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, snapshot_digest)\n      REFERENCES workflow_campaign_contract_snapshots(campaign_id, project_id, environment_id, snapshot_digest)\n      ON DELETE RESTRICT\n  );\n  CREATE INDEX workflow_artifact_change_outbox_claim_idx\n    ON workflow_artifact_change_outbox(state, next_attempt_at, transition_sequence);\n  CREATE TABLE workflow_artifact_change_receipts (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    change_id TEXT NOT NULL,\n    call_id TEXT NOT NULL,\n    adopted_sequence INTEGER NOT NULL CHECK(adopted_sequence >= 1),\n    snapshot_digest TEXT NOT NULL,\n    actor_key TEXT NOT NULL CHECK(length(actor_key) > 0),\n    outcome TEXT NOT NULL CHECK(outcome IN ('adopted', 'blocked', 'stop-required')),\n    summary TEXT NOT NULL,\n    blocker TEXT,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, change_id, call_id, adopted_sequence),\n    FOREIGN KEY (campaign_id, project_id, environment_id, snapshot_digest)\n      REFERENCES workflow_campaign_contract_snapshots(campaign_id, project_id, environment_id, snapshot_digest)\n      ON DELETE RESTRICT\n  );"
+      },
+      {
+        "id": 19,
+        "byteLength": 849,
+        "sha256": "03afb93d68a7018bed783ce9bb72665b52a9c6f544564956d35dbda7d65997a3",
+        "statementUtf8": "\n  UPDATE workflow_runs\n    SET campaign_id = id\n    WHERE campaign_id IS NULL;\n  UPDATE workflow_runs\n    SET presentation_thread_id = origin_thread_id\n    WHERE presentation_thread_id IS NULL;\n  CREATE TRIGGER workflow_runs_artifact_scope_insert_guard\n    BEFORE INSERT ON workflow_runs\n    WHEN (NEW.campaign_id IS NULL OR NEW.presentation_thread_id IS NULL)\n      AND NEW.workflow_artifact_live_changes = 1\n    BEGIN\n      SELECT RAISE(ABORT, 'workflow artifact origin scope is required');\n    END;\n  CREATE TRIGGER workflow_runs_artifact_scope_update_guard\n    BEFORE UPDATE OF campaign_id, presentation_thread_id ON workflow_runs\n    WHEN (NEW.campaign_id IS NULL OR NEW.presentation_thread_id IS NULL)\n      AND NEW.workflow_artifact_live_changes = 1\n    BEGIN\n      SELECT RAISE(ABORT, 'workflow artifact origin scope is required');\n    END;"
+      },
+      {
+        "id": 20,
+        "byteLength": 4012,
+        "sha256": "1d0f7ebcbc92d9bc7e175a4b70ac430ef42498191b4c57ff46620f82af17434e",
+        "statementUtf8": "\n  CREATE TABLE workflow_campaign_work_item_aliases (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    work_item_id TEXT NOT NULL,\n    reporting_run_id TEXT NOT NULL,\n    reporting_checkpoint_id TEXT NOT NULL,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, reporting_run_id, reporting_checkpoint_id),\n    UNIQUE (campaign_id, project_id, environment_id, work_item_id, reporting_run_id, reporting_checkpoint_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, work_item_id)\n      REFERENCES workflow_campaign_work_items(campaign_id, project_id, environment_id, work_item_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (reporting_run_id, reporting_checkpoint_id)\n      REFERENCES workflow_checkpoints(run_id, checkpoint_id)\n      ON DELETE RESTRICT\n  );\n\n  CREATE UNIQUE INDEX workflow_campaign_transition_receipts_identity_idx\n    ON workflow_campaign_transition_receipts(\n      campaign_id, project_id, environment_id, change_id,\n      transition_sequence, snapshot_digest\n    );\n\n  ALTER TABLE workflow_artifact_change_outbox RENAME TO workflow_artifact_change_outbox_v1;\n  CREATE TABLE workflow_artifact_change_outbox (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    change_id TEXT NOT NULL,\n    call_id TEXT NOT NULL,\n    work_item_id TEXT NOT NULL,\n    transition_sequence INTEGER NOT NULL CHECK(transition_sequence >= 1),\n    snapshot_digest TEXT NOT NULL,\n    state TEXT NOT NULL CHECK(state IN ('pending', 'leased', 'delivered', 'blocked', 'settled')),\n    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK(attempt_count >= 0),\n    next_attempt_at INTEGER,\n    lease_expires_at INTEGER,\n    created_at INTEGER NOT NULL,\n    updated_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, change_id, call_id, work_item_id),\n    FOREIGN KEY (campaign_id, project_id, environment_id, work_item_id)\n      REFERENCES workflow_campaign_work_items(campaign_id, project_id, environment_id, work_item_id)\n      ON DELETE RESTRICT,\n    FOREIGN KEY (campaign_id, project_id, environment_id, change_id, transition_sequence, snapshot_digest)\n      REFERENCES workflow_campaign_transition_receipts(\n        campaign_id, project_id, environment_id, change_id,\n        transition_sequence, snapshot_digest\n      ) ON DELETE RESTRICT,\n    FOREIGN KEY (call_id) REFERENCES workflow_calls(id) ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_change_outbox SELECT * FROM workflow_artifact_change_outbox_v1;\n  DROP TABLE workflow_artifact_change_outbox_v1;\n  CREATE INDEX workflow_artifact_change_outbox_claim_idx\n    ON workflow_artifact_change_outbox(state, next_attempt_at, transition_sequence);\n\n  ALTER TABLE workflow_artifact_change_receipts RENAME TO workflow_artifact_change_receipts_v1;\n  CREATE TABLE workflow_artifact_change_receipts (\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    change_id TEXT NOT NULL,\n    call_id TEXT NOT NULL,\n    adopted_sequence INTEGER NOT NULL CHECK(adopted_sequence >= 1),\n    snapshot_digest TEXT NOT NULL,\n    actor_key TEXT NOT NULL CHECK(length(actor_key) > 0),\n    outcome TEXT NOT NULL CHECK(outcome IN ('adopted', 'blocked', 'stop-required')),\n    summary TEXT NOT NULL,\n    blocker TEXT,\n    created_at INTEGER NOT NULL,\n    PRIMARY KEY (campaign_id, project_id, environment_id, change_id, call_id, adopted_sequence),\n    FOREIGN KEY (campaign_id, project_id, environment_id, change_id, adopted_sequence, snapshot_digest)\n      REFERENCES workflow_campaign_transition_receipts(\n        campaign_id, project_id, environment_id, change_id,\n        transition_sequence, snapshot_digest\n      ) ON DELETE RESTRICT,\n    FOREIGN KEY (call_id) REFERENCES workflow_calls(id) ON DELETE RESTRICT\n  );\n  INSERT INTO workflow_artifact_change_receipts SELECT * FROM workflow_artifact_change_receipts_v1;\n  DROP TABLE workflow_artifact_change_receipts_v1;\n"
+      },
+      {
+        "id": 21,
+        "byteLength": 634,
+        "sha256": "57defc2f33da6307d6887fcb357dcf030fd614b56a342f310796ae1fe2b81e14",
+        "statementUtf8": "\n  UPDATE workflow_runs SET workflow_artifact_live_changes = 0\n    WHERE workflow_artifact_live_changes = 1;\n  CREATE TRIGGER workflow_runs_artifact_live_changes_insert_guard\n    BEFORE INSERT ON workflow_runs\n    WHEN NEW.workflow_artifact_live_changes = 1\n    BEGIN\n      SELECT RAISE(ABORT, 'workflow artifact live changes are not admitted');\n    END;\n  CREATE TRIGGER workflow_runs_artifact_live_changes_update_guard\n    BEFORE UPDATE OF workflow_artifact_live_changes ON workflow_runs\n    WHEN NEW.workflow_artifact_live_changes = 1\n    BEGIN\n      SELECT RAISE(ABORT, 'workflow artifact live changes are not admitted');\n    END;"
+      },
+      {
+        "id": 22,
+        "byteLength": 3157,
+        "sha256": "045811cf8748bb6ca9a33242449f58a2c72dc8e42972e4acc63f2807bef0053e",
+        "statementUtf8": "\n  CREATE TABLE workflow_artifact_recovery_components (\n    recovery_id TEXT NOT NULL,\n    component_id TEXT NOT NULL,\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    artifact_id TEXT NOT NULL,\n    collision_classes_json TEXT NOT NULL CHECK(json_valid(collision_classes_json)),\n    canonical_component_sha256 TEXT NOT NULL CHECK(length(canonical_component_sha256) = 64),\n    row_count INTEGER NOT NULL CHECK(row_count >= 1),\n    blob_count INTEGER NOT NULL CHECK(blob_count >= 0),\n    adopted_at INTEGER NOT NULL,\n    PRIMARY KEY (recovery_id, component_id)\n  );\n  CREATE TABLE workflow_artifact_recovery_rows (\n    recovery_id TEXT NOT NULL,\n    component_id TEXT NOT NULL,\n    row_ordinal INTEGER NOT NULL CHECK(row_ordinal >= 0),\n    table_name TEXT NOT NULL CHECK(table_name IN ('workflow_artifacts', 'workflow_artifact_revisions', 'workflow_artifact_annotations', 'workflow_artifact_working_drafts', 'workflow_artifact_decisions', 'workflow_artifact_stewards', 'workflow_artifact_mutations', 'workflow_artifact_apply_intents')),\n    campaign_id TEXT NOT NULL,\n    project_id TEXT NOT NULL,\n    environment_id TEXT NOT NULL,\n    presentation_thread_id TEXT NOT NULL,\n    row_id TEXT,\n    artifact_id TEXT,\n    artifact_revision INTEGER,\n    blob_sha256 TEXT,\n    canonical_primary_key_json TEXT NOT NULL CHECK(json_valid(canonical_primary_key_json)),\n    relationships_json TEXT NOT NULL CHECK(json_valid(relationships_json)),\n    canonical_row_encoding BLOB NOT NULL,\n    canonical_row_sha256 TEXT NOT NULL CHECK(length(canonical_row_sha256) = 64),\n    PRIMARY KEY (recovery_id, component_id, row_ordinal),\n    FOREIGN KEY (recovery_id, component_id)\n      REFERENCES workflow_artifact_recovery_components(recovery_id, component_id)\n      ON DELETE RESTRICT\n  );\n  CREATE TABLE workflow_artifact_recovery_blobs (\n    recovery_id TEXT NOT NULL,\n    component_id TEXT NOT NULL,\n    sha256 TEXT NOT NULL CHECK(length(sha256) = 64),\n    content_type TEXT NOT NULL,\n    content BLOB NOT NULL,\n    byte_length INTEGER NOT NULL CHECK(byte_length >= 0),\n    created_at INTEGER NOT NULL,\n    CHECK(length(content) = byte_length),\n    PRIMARY KEY (recovery_id, component_id, sha256),\n    FOREIGN KEY (recovery_id, component_id)\n      REFERENCES workflow_artifact_recovery_components(recovery_id, component_id)\n      ON DELETE RESTRICT\n  );\n  CREATE TABLE workflow_artifact_recovery_receipts (\n    recovery_id TEXT PRIMARY KEY,\n    descriptor_sha256 TEXT NOT NULL CHECK(length(descriptor_sha256) = 64),\n    recovery_recipe_sha256 TEXT NOT NULL CHECK(length(recovery_recipe_sha256) = 64),\n    pre_schema_fingerprint_sha256 TEXT NOT NULL CHECK(length(pre_schema_fingerprint_sha256) = 64),\n    migration_18_sha256 TEXT NOT NULL CHECK(length(migration_18_sha256) = 64),\n    active_graph_sha256 TEXT NOT NULL CHECK(length(active_graph_sha256) = 64),\n    quarantine_graph_sha256 TEXT NOT NULL CHECK(length(quarantine_graph_sha256) = 64),\n    staged_row_count INTEGER NOT NULL CHECK(staged_row_count >= 0),\n    restored_grant_count INTEGER NOT NULL CHECK(restored_grant_count >= 0),\n    adopted_at INTEGER NOT NULL\n  );"
+      }
+    ]
+  },
+  "descriptor": {
+    "authorityId": "artifact-review-v9:oracle-authority-completed-state-dual-adapter-recovery-v1",
+    "architectureRevision": 2,
+    "contractId": "bb-artifact-review-service:revision-1",
+    "planVersion": 3,
+    "minimumHostCapability": {
+      "id": "bb-plugin-migration-completed-state-v3",
+      "version": 1
+    },
+    "predecessorAuthorityId": null,
+    "beforeMigrationId": 18,
+    "migration18Sha256": "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d",
+    "pre18FingerprintSha256": "51a8174aa115545aebc378063c3d1a612ab5561ea22932bd744dea0506fa5afa"
+  },
+  "recoveryRecipe": {
+    "authorityId": "artifact-review-v9:oracle-authority-completed-state-dual-adapter-recovery-v1",
+    "beforeMigrationId": 18,
+    "stageTables": [
+      "workflow_artifacts",
+      "workflow_artifact_revisions",
+      "workflow_artifact_annotations",
+      "workflow_artifact_working_drafts",
+      "workflow_artifact_decisions",
+      "workflow_artifact_stewards",
+      "workflow_artifact_mutations",
+      "workflow_artifact_apply_intents",
+      "workflow_artifact_blobs"
+    ],
+    "orderedSteps": [
+      "admit-identities",
+      "classify-components",
+      "stage-typed-rows-edges-provenance-encodings-and-blobs",
+      "remove-only-staged-components",
+      "execute-and-record-migrations-18-through-22",
+      "restore-presentation-grants",
+      "adopt-quarantine",
+      "write-plugin-semantic-receipt",
+      "verify-active-and-quarantine-parity",
+      "write-host-completion-evidence",
+      "commit"
+    ],
+    "parity": [
+      "per-table-row-multisets",
+      "relationship-and-reference-multisets",
+      "blob-object-byte-and-metadata-multisets",
+      "exact-presentation-grant-multiset",
+      "noncolliding-active-retention",
+      "no-active-artifact-for-conflicting-component"
+    ],
+    "prohibitions": [
+      "no-winner-by-thread-time-row-order-title-or-digest",
+      "no-synthesized-active-artifact-for-conflicting-component",
+      "no-edit-forge-renumber-or-skip-migrations-0-through-22",
+      "no-row-edge-reference-grant-or-byte-loss",
+      "no-presentation-scope-authority",
+      "no-live-change-enablement",
+      "no-post-recovery-artifact-rpc-activation",
+      "no-post-recovery-ui-or-renderer-activation",
+      "no-automatic-v2-v6-adoption",
+      "no-external-authenticity-claim"
+    ]
+  },
+  "encoding": {
+    "id": "artifact-review-canonical-json-row-root-v1",
+    "json": {
+      "utf8": true,
+      "compact": true,
+      "objectKeys": "recursive Unicode-codepoint ascending",
+      "arrays": "preserved",
+      "locale": false,
+      "clock": false,
+      "host": false,
+      "insertionOrder": false
+    },
+    "typed": {
+      "NULL": [
+        "NULL"
+      ],
+      "INTEGER": [
+        "INTEGER",
+        "base-10-string"
+      ],
+      "TEXT": [
+        "TEXT",
+        "Unicode-string"
+      ],
+      "BLOB": [
+        "BLOB",
+        "lowercase-hex"
+      ]
+    },
+    "leaf": "SHA-256 UTF-8(domainTag + U+0000 + canonical JSON leaf)",
+    "root": {
+      "order": "unsigned-byte lexicographic raw 32-byte leaf digests",
+      "duplicates": "retained",
+      "nonempty": "UTF-8(domain+NUL+v1+NUL+base10count+NUL) then raw digests",
+      "empty": "SHA-256 UTF-8(domain+NUL+EMPTY+NUL+v1)"
+    },
+    "golden": [
+      {
+        "id": "null",
+        "value": [
+          "NULL"
+        ],
+        "bytesHex": "5b224e554c4c225d",
+        "expect": "pass"
+      },
+      {
+        "id": "integer",
+        "value": [
+          "INTEGER",
+          "-12"
+        ],
+        "bytesHex": "5b22494e5445474552222c222d3132225d",
+        "expect": "pass"
+      },
+      {
+        "id": "text",
+        "value": [
+          "TEXT",
+          "é"
+        ],
+        "bytesHex": "5b2254455854222c22c3a9225d",
+        "expect": "pass"
+      },
+      {
+        "id": "blob",
+        "value": [
+          "BLOB",
+          "00ff"
+        ],
+        "bytesHex": "5b22424c4f42222c2230306666225d",
+        "expect": "pass"
+      },
+      {
+        "id": "unicode-key-order",
+        "value": {
+          "a": [
+            "INTEGER",
+            "2"
+          ],
+          "é": [
+            "TEXT",
+            "accent"
+          ],
+          "😀": [
+            "TEXT",
+            "astral"
+          ]
+        },
+        "canonical": "{\"a\":[\"INTEGER\",\"2\"],\"é\":[\"TEXT\",\"accent\"],\"😀\":[\"TEXT\",\"astral\"]}",
+        "expect": "pass"
+      },
+      {
+        "id": "array-order",
+        "value": [
+          [
+            "INTEGER",
+            "2"
+          ],
+          [
+            "INTEGER",
+            "1"
+          ]
+        ],
+        "expect": "pass"
+      },
+      {
+        "id": "negative-untagged-null",
+        "expect": "reject"
+      },
+      {
+        "id": "negative-numeric-integer",
+        "expect": "reject"
+      },
+      {
+        "id": "negative-uppercase-blob",
+        "expect": "reject"
+      },
+      {
+        "id": "negative-locale-sort",
+        "expect": "reject"
+      },
+      {
+        "id": "negative-insertion-order",
+        "expect": "reject"
+      },
+      {
+        "id": "negative-deduplicate",
+        "expect": "reject"
+      }
+    ]
+  },
+  "projection": {
+    "id": "migration18-projection-spec-v1",
+    "origin": {
+      "symbol": "S",
+      "columns": [
+        "campaign_id",
+        "project_id",
+        "environment_id"
+      ]
+    },
+    "presentation": "provenance/grant never origin authority",
+    "introspection": {
+      "reconstruct": "statements 0..17 then 18 in memory SQLite",
+      "surfaces": [
+        "table_info",
+        "index_list",
+        "index_xinfo",
+        "foreign_key_list",
+        "sqlite_master-index-sql"
+      ],
+      "pre18Sha256": "531a330e33b17b260923e05899fc7a3eaa702b35c591f8cf4cbf1b2e50a0f6f8",
+      "post18Sha256": "e7ecf90d784bb1971892528ed8f6576ad1561e57b38ead4407ec2e7de2e73545",
+      "perTable": {
+        "workflow_artifact_annotations": {
+          "pre18": "dad2d70018770e8a68d13fb874583571cef5a44afbcde05bf52b22ce5a6599a5",
+          "post18": "45443103c4edb63ab0e3f75fa306938355688d68cc44bb3fa3d1e408eac5e330"
+        },
+        "workflow_artifact_apply_intents": {
+          "pre18": "8d7c0ecb720b64e419f3ef30a0edb4f0b6d4d80187f8ed62dba9bd04c5815c9b",
+          "post18": "bd9fd91d4560e8599a965c524de9e4a45bb7931790f3aafc6c1cbba8bbc44f5e"
+        },
+        "workflow_artifact_blobs": {
+          "pre18": "501b38704c6196e0614e9517149230b9bbc6f99c5095993e546c1e2f86038183",
+          "post18": "13d199be6af82e77b0e67850269c1160637731d5e2ac82a47d1d535be5ec7289"
+        },
+        "workflow_artifact_decisions": {
+          "pre18": "06099c304a550c23c3c1ddd1b68758acec550ee23f55b8ff88e9050e5581bf4b",
+          "post18": "1067b2e5c647175aee45037f4e233185eb674c7d02ea1285d27db889c1c45659"
+        },
+        "workflow_artifact_mutations": {
+          "pre18": "2d0bed601d7ccf0a692c88c8d64dea7dc87946d4fd792337201febea0b9361b6",
+          "post18": "fd42ab3f26ae60eaa4bd00f3e811610ad5662924702f9988acc64229944ac59a"
+        },
+        "workflow_artifact_presentation_grants": {
+          "pre18": "absent",
+          "post18": "9d5ae4dc7d4e8436dc67e8a47906ee099f270b03404b91feeb65ac827c2faf61"
+        },
+        "workflow_artifact_revisions": {
+          "pre18": "2cd3b9dfd65d5052e0ab289dc4db624f0ae261637463a3d45b7070445b46f821",
+          "post18": "b5d99991b756aa7573514d1092927a03cd4a072558241ffbddbc65d771675226"
+        },
+        "workflow_artifact_stewards": {
+          "pre18": "87de2461731af47f11faf56c3c25e7c8941f88f5261445cfc1d05acffd6830b2",
+          "post18": "7c948424d8ba4aa0cca1da016d077952e37f529529a3ed7e0810616afcf4a5e2"
+        },
+        "workflow_artifact_working_drafts": {
+          "pre18": "c6408604c8e98373bbff70b84dde0549f9567ca12b136e1d9a56b6834ae8777e",
+          "post18": "5584d9dc0f0e94289f3dbdd2627ebfe281d0e352c690c27d9f6903367db3978d"
+        },
+        "workflow_artifacts": {
+          "pre18": "d7cad08514dc4f9c7ba6322c4d16be3b67fe91aadaf878371d70e992e89756f5",
+          "post18": "70dcf6422a37124e90ad167adc41b6d0090d18751906fb430f9ae3ea6707ad90"
+        }
+      },
+      "failUnlessExactlyOneSpec": [
+        "identity",
+        "partial-predicate",
+        "foreign-key",
+        "blob-reference",
+        "fold",
+        "grant-projection"
+      ]
+    },
+    "tables": [
+      {
+        "table": "workflow_artifact_blobs",
+        "sourcePk": [
+          "sha256"
+        ],
+        "targetPk": [
+          "sha256"
+        ],
+        "sourceUnique": [],
+        "targetUnique": [],
+        "exact": [
+          "sha256",
+          "content_type",
+          "content",
+          "byte_length",
+          "created_at"
+        ],
+        "fold": [],
+        "presentation": "none",
+        "collision": "identity-unchanged",
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifacts",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "id"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "id"
+        ],
+        "sourceUnique": [
+          {
+            "columns": [
+              "campaign_id",
+              "project_id",
+              "environment_id",
+              "presentation_thread_id",
+              "kind"
+            ],
+            "predicate": null
+          }
+        ],
+        "targetUnique": [
+          {
+            "columns": [
+              "campaign_id",
+              "project_id",
+              "environment_id",
+              "kind"
+            ],
+            "predicate": null
+          }
+        ],
+        "exact": [
+          "kind",
+          "title",
+          "content_type"
+        ],
+        "fold": [
+          [
+            "created_at",
+            "MIN"
+          ],
+          [
+            "updated_at",
+            "MAX"
+          ]
+        ],
+        "presentation": "target-null-provenance-grant",
+        "collision": "target-pk-or-target-kind-unique",
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifact_revisions",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "sourceUnique": [
+          {
+            "columns": [
+              "campaign_id",
+              "project_id",
+              "environment_id",
+              "presentation_thread_id",
+              "artifact_id"
+            ],
+            "predicate": "status = 'admitted'"
+          }
+        ],
+        "targetUnique": [
+          {
+            "columns": [
+              "campaign_id",
+              "project_id",
+              "environment_id",
+              "artifact_id"
+            ],
+            "predicate": "status = 'admitted'"
+          }
+        ],
+        "exact": [
+          "blob_sha256",
+          "status",
+          "source_host_id",
+          "source_root_path",
+          "source_relative_path",
+          "source_sha256",
+          "produced_by_thread_id"
+        ],
+        "fold": [
+          [
+            "created_at",
+            "MIN"
+          ]
+        ],
+        "presentation": "target-null-provenance-grant",
+        "collision": "target-pk-or-admitted-partial-unique",
+        "blobRefs": [
+          "blob_sha256"
+        ]
+      },
+      {
+        "table": "workflow_artifact_annotations",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "id"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "id"
+        ],
+        "sourceUnique": [],
+        "targetUnique": [],
+        "exact": [
+          "artifact_id",
+          "artifact_revision",
+          "kind",
+          "anchor_json",
+          "body",
+          "author",
+          "status",
+          "resolution",
+          "steward_thread_message_id",
+          "created_at",
+          "updated_at"
+        ],
+        "fold": [],
+        "presentation": "preserved-provenance-grant",
+        "collision": "duplicate-target-pk-no-fold",
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifact_working_drafts",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id"
+        ],
+        "sourceUnique": [],
+        "targetUnique": [],
+        "exact": [
+          "base_revision",
+          "content",
+          "content_sha256",
+          "state",
+          "updated_at"
+        ],
+        "fold": [],
+        "presentation": "preserved",
+        "collision": "inherited-not-migration18",
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifact_decisions",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "id"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "id"
+        ],
+        "sourceUnique": [],
+        "targetUnique": [],
+        "exact": [
+          "artifact_id",
+          "base_revision",
+          "candidate_revision",
+          "decision",
+          "actor",
+          "rationale",
+          "created_at"
+        ],
+        "fold": [],
+        "presentation": "preserved-provenance-grant",
+        "collision": "duplicate-target-pk-no-fold",
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifact_stewards",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "role"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "role"
+        ],
+        "sourceUnique": [
+          {
+            "columns": [
+              "thread_id"
+            ],
+            "predicate": null
+          }
+        ],
+        "targetUnique": [
+          {
+            "columns": [
+              "thread_id"
+            ],
+            "predicate": null
+          }
+        ],
+        "exact": [
+          "role",
+          "thread_id",
+          "created_at"
+        ],
+        "fold": [],
+        "presentation": "preserved-provenance-grant",
+        "collision": "target-pk-reachable; thread-id-unique-inherited-unreachable",
+        "constraints": [
+          {
+            "expression": "role = 'artifact-steward'"
+          },
+          {
+            "columns": [
+              "thread_id"
+            ],
+            "classification": "inherited-unreachable"
+          }
+        ],
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifact_mutations",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "actor",
+          "operation_kind",
+          "idempotency_key"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "actor",
+          "idempotency_key"
+        ],
+        "sourceUnique": [],
+        "targetUnique": [],
+        "exact": [
+          "operation_kind",
+          "request_digest",
+          "outcome_json",
+          "committed_at"
+        ],
+        "fold": [],
+        "presentation": "preserved",
+        "collision": "dropping-operation-kind",
+        "blobRefs": []
+      },
+      {
+        "table": "workflow_artifact_apply_intents",
+        "sourcePk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "id"
+        ],
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "id"
+        ],
+        "sourceUnique": [
+          {
+            "columns": [
+              "campaign_id",
+              "project_id",
+              "environment_id",
+              "presentation_thread_id",
+              "artifact_id"
+            ],
+            "predicate": "state IN ('prepared', 'file-applied', 'awaiting-source-host')"
+          }
+        ],
+        "targetUnique": [
+          {
+            "columns": [
+              "campaign_id",
+              "project_id",
+              "environment_id",
+              "artifact_id"
+            ],
+            "predicate": "state IN ('prepared', 'file-applied', 'awaiting-source-host')"
+          }
+        ],
+        "exact": [
+          "artifact_id",
+          "base_revision",
+          "finalized_revision",
+          "source_host_id",
+          "source_root_path",
+          "source_relative_path",
+          "source_before_sha256",
+          "target_sha256",
+          "target_blob_sha256",
+          "state",
+          "detail",
+          "created_at",
+          "updated_at"
+        ],
+        "fold": [],
+        "presentation": "preserved-provenance-grant",
+        "collision": "target-pk-or-active-partial-unique-no-fold",
+        "blobRefs": [
+          "target_blob_sha256"
+        ]
+      },
+      {
+        "table": "workflow_artifact_presentation_grants",
+        "sourcePk": null,
+        "targetPk": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "sourceUnique": [],
+        "targetUnique": [],
+        "exact": [
+          "presentation_run_id",
+          "granted_at",
+          "revoked_at"
+        ],
+        "fold": [],
+        "presentation": "artifact-derived-only",
+        "collision": "projection-output",
+        "blobRefs": []
+      }
+    ],
+    "preEdges": [
+      {
+        "id": "PRE-REVISION-ARTIFACT",
+        "fromTable": "workflow_artifact_revisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id"
+        ],
+        "toTable": "workflow_artifacts",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "id"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-REVISION-BLOB",
+        "fromTable": "workflow_artifact_revisions",
+        "fromColumns": [
+          "blob_sha256"
+        ],
+        "toTable": "workflow_artifact_blobs",
+        "toColumns": [
+          "sha256"
+        ],
+        "nullable": false,
+        "kind": "blob-reference"
+      },
+      {
+        "id": "PRE-ANNOTATION-REVISION",
+        "fromTable": "workflow_artifact_annotations",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "artifact_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-DRAFT-REVISION",
+        "fromTable": "workflow_artifact_working_drafts",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "base_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-DECISION-BASE",
+        "fromTable": "workflow_artifact_decisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "base_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-DECISION-CANDIDATE",
+        "fromTable": "workflow_artifact_decisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "candidate_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": true,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-APPLY-BASE",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "base_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-APPLY-FINALIZED",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "finalized_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": true,
+        "kind": "fk"
+      },
+      {
+        "id": "PRE-APPLY-BLOB",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "target_blob_sha256"
+        ],
+        "toTable": "workflow_artifact_blobs",
+        "toColumns": [
+          "sha256"
+        ],
+        "nullable": false,
+        "kind": "blob-reference"
+      }
+    ],
+    "postEdges": [
+      {
+        "id": "POST-REVISION-ARTIFACT",
+        "fromTable": "workflow_artifact_revisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id"
+        ],
+        "toTable": "workflow_artifacts",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "id"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-REVISION-BLOB",
+        "fromTable": "workflow_artifact_revisions",
+        "fromColumns": [
+          "blob_sha256"
+        ],
+        "toTable": "workflow_artifact_blobs",
+        "toColumns": [
+          "sha256"
+        ],
+        "nullable": false,
+        "kind": "blob-reference"
+      },
+      {
+        "id": "POST-ANNOTATIONS-GRANT",
+        "fromTable": "workflow_artifact_annotations",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "toTable": "workflow_artifact_presentation_grants",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "nullable": false,
+        "kind": "grant"
+      },
+      {
+        "id": "POST-WORKING_DRAFTS-GRANT",
+        "fromTable": "workflow_artifact_working_drafts",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "toTable": "workflow_artifact_presentation_grants",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "nullable": false,
+        "kind": "grant"
+      },
+      {
+        "id": "POST-DECISIONS-GRANT",
+        "fromTable": "workflow_artifact_decisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "toTable": "workflow_artifact_presentation_grants",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "nullable": false,
+        "kind": "grant"
+      },
+      {
+        "id": "POST-STEWARDS-GRANT",
+        "fromTable": "workflow_artifact_stewards",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "toTable": "workflow_artifact_presentation_grants",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "nullable": false,
+        "kind": "grant"
+      },
+      {
+        "id": "POST-MUTATIONS-GRANT",
+        "fromTable": "workflow_artifact_mutations",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "toTable": "workflow_artifact_presentation_grants",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "nullable": false,
+        "kind": "grant"
+      },
+      {
+        "id": "POST-APPLY_INTENTS-GRANT",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "toTable": "workflow_artifact_presentation_grants",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "presentation_thread_id"
+        ],
+        "nullable": false,
+        "kind": "grant"
+      },
+      {
+        "id": "POST-ANNOTATION-REVISION",
+        "fromTable": "workflow_artifact_annotations",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "artifact_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-DRAFT-REVISION",
+        "fromTable": "workflow_artifact_working_drafts",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "base_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-DECISION-BASE",
+        "fromTable": "workflow_artifact_decisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "base_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-DECISION-CANDIDATE",
+        "fromTable": "workflow_artifact_decisions",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "candidate_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": true,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-APPLY-BASE",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "base_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": false,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-APPLY-FINALIZED",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "finalized_revision"
+        ],
+        "toTable": "workflow_artifact_revisions",
+        "toColumns": [
+          "campaign_id",
+          "project_id",
+          "environment_id",
+          "artifact_id",
+          "revision"
+        ],
+        "nullable": true,
+        "kind": "fk"
+      },
+      {
+        "id": "POST-APPLY-BLOB",
+        "fromTable": "workflow_artifact_apply_intents",
+        "fromColumns": [
+          "target_blob_sha256"
+        ],
+        "toTable": "workflow_artifact_blobs",
+        "toColumns": [
+          "sha256"
+        ],
+        "nullable": false,
+        "kind": "blob-reference"
+      }
+    ],
+    "blobReferences": [
+      [
+        "workflow_artifact_revisions",
+        "blob_sha256"
+      ],
+      [
+        "workflow_artifact_apply_intents",
+        "target_blob_sha256"
+      ]
+    ],
+    "nonBlobDigests": [
+      [
+        "workflow_artifact_revisions",
+        "source_sha256"
+      ],
+      [
+        "workflow_artifact_working_drafts",
+        "content_sha256"
+      ],
+      [
+        "workflow_artifact_mutations",
+        "request_digest"
+      ],
+      [
+        "workflow_artifact_apply_intents",
+        "source_before_sha256"
+      ],
+      [
+        "workflow_artifact_apply_intents",
+        "target_sha256"
+      ]
+    ],
+    "grantProjection": {
+      "source": "distinct S,presentation_thread_id from workflow_artifacts",
+      "presentation_run_id": null,
+      "granted_at": "MIN(workflow_artifacts.created_at)",
+      "revoked_at": null,
+      "recovery": "exact artifact-derived multiset",
+      "dependentWithoutArtifact": "fail-closed",
+      "forbidden": [
+        "granted_at=0",
+        "dependent-row-inference"
+      ]
+    }
+  },
+  "graph": {
+    "nodes": "domain-separated {table,canonicalV1PK}",
+    "components": "connected components union target-identity hyperedges plus explicit FK, BLOB-reference, presentation-provenance edges",
+    "forbidden": "suffix inference",
+    "rowLeaf": [
+      "domain",
+      "table",
+      "canonical-v1-pk",
+      "full-typed-row",
+      "relationships",
+      "presentation-provenance",
+      "blob-references"
+    ],
+    "blobObjectLeaf": [
+      "sha256",
+      "content_type",
+      "created_at",
+      "byte_length",
+      "content-sha256"
+    ],
+    "blobReferenceLeaf": [
+      "source-table",
+      "canonical-source-pk",
+      "reference-column",
+      "referenced-sha256"
+    ],
+    "partition": "by component and authority with multiplicity"
+  },
+  "parity": [
+    {
+      "id": "rows",
+      "equation": "BeforeRows[T] = ActiveCanonicalRows[T] disjoint-union DecodedQuarantineRows[T]",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    },
+    {
+      "id": "relationships",
+      "equation": "BeforeRelationships = ActiveRelationships disjoint-union QuarantineRelationships",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    },
+    {
+      "id": "blob-objects",
+      "equation": "BeforeBlobObjects = AfterBlobObjects",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    },
+    {
+      "id": "blob-references",
+      "equation": "BeforeBlobReferences = ActiveBlobReferences disjoint-union QuarantineBlobReferences",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    },
+    {
+      "id": "grants",
+      "equation": "ExpectedPresentationGrants = ActualPresentationGrants",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    },
+    {
+      "id": "noncolliding",
+      "equation": "every noncolliding origin/component remains canonical active",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    },
+    {
+      "id": "conflicting",
+      "equation": "every conflicting component has no synthesized active artifact",
+      "multiplicity": "preserved",
+      "mutation": [
+        "omit",
+        "duplicate",
+        "reorder",
+        "retarget"
+      ],
+      "expect": "fail-closed"
+    }
+  ],
+  "semanticReceipt": {
+    "domain": "artifact-review-v9:plugin-semantic-receipt:v1",
+    "fields": [
+      "projection-digest",
+      "expected-and-actual-active-root",
+      "expected-and-actual-quarantine-root",
+      "expected-and-actual-grant-root",
+      "expected-and-actual-blob-object-root",
+      "expected-and-actual-blob-reference-root",
+      "expected-and-actual-relationship-root",
+      "per-table-counts",
+      "edge-count",
+      "reference-count",
+      "grant-count",
+      "blob-object-count",
+      "blob-reference-count",
+      "semanticReceiptSha256"
+    ]
+  },
+  "completion": {
+    "schema": "bb-plugin-migration-completion-row-v1",
+    "table": "_bb_plugin_migration_completions",
+    "appendOnly": true,
+    "ddl": "CREATE TABLE _bb_plugin_migration_completions (authority_id TEXT PRIMARY KEY, predecessor_authority_id TEXT, outcome TEXT NOT NULL CHECK(outcome IN ('ordinary','recovered')), applied_high_water_mark INTEGER NOT NULL CHECK(applied_high_water_mark >= 0), statement_vector_sha256 TEXT NOT NULL CHECK(length(statement_vector_sha256) = 64), descriptor_sha256 TEXT NOT NULL CHECK(length(descriptor_sha256) = 64), plugin_semantic_receipt_sha256 TEXT CHECK(plugin_semantic_receipt_sha256 IS NULL OR length(plugin_semantic_receipt_sha256) = 64), completed_verification_sha256 TEXT NOT NULL CHECK(length(completed_verification_sha256) = 64), completed_at INTEGER NOT NULL, FOREIGN KEY (predecessor_authority_id) REFERENCES _bb_plugin_migration_completions(authority_id) ON DELETE RESTRICT);",
+    "fields": [
+      "authorityId",
+      "predecessorAuthorityId|null",
+      "outcome ordinary|recovered",
+      "appliedHighWaterMark",
+      "statementVectorSha256",
+      "descriptorSha256",
+      "pluginSemanticReceiptSha256|null",
+      "completedVerificationSha256",
+      "completedAt"
+    ],
+    "write": "exactly one in same host transaction as terminal effects",
+    "missing": "unknown never inferred ordinary"
+  },
+  "verifier": {
+    "schema": "bb-plugin-migration-completed-verifier-result-v1",
+    "fields": [
+      "authorityId",
+      "outcome",
+      "migrationHighWaterMark",
+      "pluginReceiptDigest|null",
+      "activeGraphRoot",
+      "quarantineGraphRoot-or-explicit-empty-root",
+      "presentationGrantRoot",
+      "referencedBlobRoot",
+      "perTableCounts",
+      "relationshipCount",
+      "referenceCount",
+      "grantCount",
+      "blobObjectCount",
+      "blobReferenceCount",
+      "semanticReceiptSha256"
+    ],
+    "startup": "every startup/no-op/restart before settings service CLI RPC renderer UI live-change registration",
+    "ordinary": [
+      "one ordinary completion",
+      "no recovery row/receipt/component/quarantine row/blob",
+      "exact active/grant/blob",
+      "artifact FK closure"
+    ],
+    "recovered": [
+      "one recovered completion",
+      "one host recovery",
+      "one plugin receipt",
+      "exact correlation roots counts",
+      "no active artifact for conflicts",
+      "edge/reference closure"
+    ],
+    "failOn": [
+      "missing",
+      "extra",
+      "duplicate",
+      "malformed",
+      "mismatched"
+    ]
+  },
+  "reducer": {
+    "owner": "SDK",
+    "pure": true,
+    "input": [
+      "authority",
+      "capability",
+      "statements",
+      "migration-ledger",
+      "completion-ledger",
+      "recovery-ledger",
+      "plugin-receipt",
+      "schema",
+      "active/quarantine/grant/blob observations"
+    ],
+    "output": [
+      "one decision-or-error",
+      "stable ordered trace",
+      "no effects"
+    ],
+    "observations": [
+      "plan-version",
+      "capabilities",
+      "authority-id",
+      "statement bytes/hashes",
+      "descriptor",
+      "recipe",
+      "projection",
+      "ordered ledgers",
+      "schema/fingerprint",
+      "active/quarantine rows/edges",
+      "blob objects/references",
+      "expected/actual grants",
+      "darkness",
+      "legacy provenance"
+    ],
+    "decisions": [
+      "reject-before-db",
+      "ordinary",
+      "recover",
+      "verify-completed",
+      "strict-prefix-successor",
+      "block-unknown-completion",
+      "block-human-rollout",
+      "fail-closed"
+    ],
+    "effects": [
+      "begin",
+      "stage",
+      "remove",
+      "migrate",
+      "ledger",
+      "grants",
+      "quarantine",
+      "plugin-receipt",
+      "host-recovery",
+      "host-completion",
+      "commit",
+      "rollback"
+    ],
+    "errors": [
+      "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+      "E_UNKNOWN_AUTHORITY",
+      "E_AUTHORITY_ALIAS_FORBIDDEN",
+      "E_REGISTRY_FALLBACK_FORBIDDEN",
+      "E_STATIC_DIGEST_MISMATCH",
+      "E_STATEMENT_VECTOR_MISMATCH",
+      "E_DESCRIPTOR_MISMATCH",
+      "E_RECIPE_MISMATCH",
+      "E_PROJECTION_MISMATCH",
+      "E_SCHEMA_FINGERPRINT_MISMATCH",
+      "E_SCHEMA_METADATA_MISMATCH",
+      "E_LEDGER_FAILED",
+      "E_LEDGER_NONCONTIGUOUS",
+      "E_LEDGER_FUTURE",
+      "E_LEDGER_MALFORMED",
+      "E_LEDGER_PARTIAL",
+      "E_UNKNOWN_COMPLETION",
+      "E_COMPLETION_MISSING_EXTRA_DUPLICATE_MALFORMED_MISMATCH",
+      "E_RECOVERY_ROW_MISSING_EXTRA_DUPLICATE_MALFORMED_MISMATCH",
+      "E_PLUGIN_RECEIPT_MISSING_EXTRA_DUPLICATE_MALFORMED_MISMATCH",
+      "E_COMPONENT_MISMATCH",
+      "E_QUARANTINE_ROW_MISMATCH",
+      "E_QUARANTINE_BLOB_MISMATCH",
+      "E_ACTIVE_ROW_MISMATCH",
+      "E_GRANT_MISMATCH",
+      "E_BLOB_OBJECT_MISMATCH",
+      "E_BLOB_REFERENCE_MISMATCH",
+      "E_RELATIONSHIP_MISMATCH",
+      "E_ROOT_OR_COUNT_MISMATCH",
+      "E_COLLISION_SPEC_INCOMPLETE",
+      "E_INHERITED_CONSTRAINT_STATE_IMPOSSIBLE",
+      "E_DEPENDENT_WITHOUT_ARTIFACT_GRANT_SOURCE",
+      "E_CONFLICTING_COMPONENT_ACTIVE_ARTIFACT",
+      "E_UNADMITTED_LEGACY_STATE",
+      "E_DARKNESS_VIOLATION",
+      "E_FAULT_INJECTED"
+    ],
+    "traces": [
+      {
+        "id": "T00",
+        "event": "reject-version-capability"
+      },
+      {
+        "id": "T01",
+        "event": "resolve-authority"
+      },
+      {
+        "id": "T02",
+        "event": "admit-static-digests"
+      },
+      {
+        "id": "T03",
+        "event": "observe"
+      },
+      {
+        "id": "T04",
+        "event": "normalize"
+      },
+      {
+        "id": "T05",
+        "event": "decide"
+      },
+      {
+        "id": "T06",
+        "event": "begin"
+      },
+      {
+        "id": "T07",
+        "event": "classify-components"
+      },
+      {
+        "id": "T08",
+        "event": "stage"
+      },
+      {
+        "id": "T09",
+        "event": "remove-staged"
+      },
+      {
+        "id": "T10",
+        "event": "execute-migration"
+      },
+      {
+        "id": "T11",
+        "event": "append-migration-ledger"
+      },
+      {
+        "id": "T12",
+        "event": "restore-grants"
+      },
+      {
+        "id": "T13",
+        "event": "adopt-quarantine"
+      },
+      {
+        "id": "T14",
+        "event": "write-plugin-receipt"
+      },
+      {
+        "id": "T15",
+        "event": "verify-active"
+      },
+      {
+        "id": "T16",
+        "event": "verify-quarantine"
+      },
+      {
+        "id": "T17",
+        "event": "correlate-receipt"
+      },
+      {
+        "id": "T18",
+        "event": "verify-completed"
+      },
+      {
+        "id": "T19",
+        "event": "verify-predecessor"
+      },
+      {
+        "id": "T20",
+        "event": "execute-suffix"
+      },
+      {
+        "id": "T21",
+        "event": "write-host-recovery"
+      },
+      {
+        "id": "T22",
+        "event": "write-host-completion"
+      },
+      {
+        "id": "T23",
+        "event": "rollback"
+      },
+      {
+        "id": "T24",
+        "event": "commit"
+      },
+      {
+        "id": "T25",
+        "event": "return"
+      },
+      {
+        "id": "T26",
+        "event": "block-human-rollout"
+      }
+    ],
+    "stateRows": [
+      {
+        "id": "fresh",
+        "decision": "ordinary-append-all",
+        "terminal": "ordinary"
+      },
+      {
+        "id": "collision-free-pre18",
+        "decision": "ordinary-append-18-through-22",
+        "terminal": "ordinary"
+      },
+      {
+        "id": "exact-blocked-pre18",
+        "decision": "recover-one-transaction",
+        "terminal": "recovered"
+      },
+      {
+        "id": "completed-ordinary-restart",
+        "decision": "verify-completed",
+        "terminal": "ordinary"
+      },
+      {
+        "id": "completed-recovered-restart",
+        "decision": "verify-completed",
+        "terminal": "recovered"
+      },
+      {
+        "id": "strict-prefix-successor",
+        "decision": "verify-predecessor-apply-suffix",
+        "terminal": "preserve-outcome"
+      },
+      {
+        "id": "full-ledger-no-v3-completion",
+        "decision": "block-unknown-completion",
+        "terminal": "E_UNKNOWN_COMPLETION"
+      },
+      {
+        "id": "unadmitted-v2-v6",
+        "decision": "block-human-rollout",
+        "terminal": "E_UNADMITTED_LEGACY_STATE"
+      },
+      {
+        "id": "failed-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_FAILED"
+      },
+      {
+        "id": "noncontiguous-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_NONCONTIGUOUS"
+      },
+      {
+        "id": "future-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_FUTURE"
+      },
+      {
+        "id": "malformed-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_MALFORMED"
+      },
+      {
+        "id": "partial-ledger-or-recovery",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_PARTIAL"
+      },
+      {
+        "id": "schema-mismatch",
+        "decision": "fail-closed",
+        "terminal": "E_SCHEMA_METADATA_MISMATCH"
+      },
+      {
+        "id": "evidence-mismatch",
+        "decision": "fail-closed",
+        "terminal": "E_ROOT_OR_COUNT_MISMATCH"
+      }
+    ]
+  },
+  "vectors": {
+    "execution": "same corpus through separate production and fake SQLite adapters; effects required; real workflows V3 plan through production; no constant/parser/toy/zero-selection/skips",
+    "outputs": [
+      "decision",
+      "trace",
+      "schema",
+      "migration/completion-ledgers",
+      "table/edge/grant/blob roots/counts",
+      "error"
+    ],
+      "decisionTraces": [
+        {
+          "id": "fresh",
+          "decision": "ordinary-append-all",
+          "outcome": "ordinary",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T06",
+            "T10",
+            "T11",
+            "T18",
+            "T22",
+            "T24",
+            "T25"
+          ]
+        },
+        {
+          "id": "collision-free-pre18",
+          "decision": "ordinary-append-18-through-22",
+          "outcome": "ordinary",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T06",
+            "T10",
+            "T11",
+            "T18",
+            "T22",
+            "T24",
+            "T25"
+          ]
+        },
+        {
+          "id": "exact-blocked-pre18",
+          "decision": "recover-one-transaction",
+          "outcome": "recovered",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T06",
+            "T07",
+            "T08",
+            "T09",
+            "T10",
+            "T11",
+            "T12",
+            "T13",
+            "T14",
+            "T15",
+            "T16",
+            "T17",
+            "T18",
+            "T21",
+            "T22",
+            "T24",
+            "T25"
+          ]
+        },
+        {
+          "id": "completed-ordinary-restart",
+          "decision": "verify-completed",
+          "outcome": "ordinary",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T18",
+            "T25"
+          ]
+        },
+        {
+          "id": "completed-recovered-restart",
+          "decision": "verify-completed",
+          "outcome": "recovered",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T17",
+            "T18",
+            "T25"
+          ]
+        },
+        {
+          "id": "strict-prefix-successor",
+          "decision": "verify-predecessor-apply-suffix",
+          "outcome": "preserve-outcome",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T06",
+            "T19",
+            "T20",
+            "T11",
+            "T18",
+            "T22",
+            "T24",
+            "T25"
+          ]
+        },
+        {
+          "id": "full-ledger-no-v3-completion",
+          "decision": "block-unknown-completion",
+          "error": "E_UNKNOWN_COMPLETION",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "unadmitted-v2-v6",
+          "decision": "block-human-rollout",
+          "error": "E_UNADMITTED_LEGACY_STATE",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05",
+            "T26"
+          ]
+        },
+        {
+          "id": "failed-ledger",
+          "decision": "fail-closed",
+          "error": "E_LEDGER_FAILED",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "noncontiguous-ledger",
+          "decision": "fail-closed",
+          "error": "E_LEDGER_NONCONTIGUOUS",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "future-ledger",
+          "decision": "fail-closed",
+          "error": "E_LEDGER_FUTURE",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "malformed-ledger",
+          "decision": "fail-closed",
+          "error": "E_LEDGER_MALFORMED",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "partial-ledger-or-recovery",
+          "decision": "fail-closed",
+          "error": "E_LEDGER_PARTIAL",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "schema-mismatch",
+          "decision": "fail-closed",
+          "error": "E_SCHEMA_METADATA_MISMATCH",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        },
+        {
+          "id": "evidence-mismatch",
+          "decision": "fail-closed",
+          "error": "E_ROOT_OR_COUNT_MISMATCH",
+          "trace": [
+            "T01",
+            "T02",
+            "T03",
+            "T04",
+            "T05"
+          ]
+        }
+      ],
+      "collisionFixtureValues": {
+        "mergeAlgorithm": "take the named base row, replace exactly the listed field with the literal alternate; arrays are replaced and no field is inferred",
+        "scope": {
+          "campaign_id": "campaign-1",
+          "project_id": "project-1",
+          "environment_id": "environment-1"
+        },
+        "presentations": [
+          "presentation-a",
+          "presentation-b"
+        ],
+        "artifact": {
+          "id": "artifact-1",
+          "kind": {
+            "base": "requirements",
+            "alternate": "architecture"
+          },
+          "title": {
+            "base": "Requirements",
+            "alternate": "Different"
+          },
+          "content_type": {
+            "base": "text/markdown",
+            "alternate": "text/plain"
+          },
+          "created_at": {
+            "a": "10",
+            "b": "8",
+            "fold": "8"
+          },
+          "updated_at": {
+            "a": "20",
+            "b": "25",
+            "fold": "25"
+          }
+        },
+        "revision": {
+          "artifact_id": "artifact-1",
+          "revision": 1,
+          "blob_sha256": {
+            "base": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "alternate": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          },
+          "status": {
+            "base": "draft",
+            "alternate": "admitted"
+          },
+          "source_host_id": {
+            "base": "host-1",
+            "alternate": "host-2"
+          },
+          "source_root_path": {
+            "base": "/repo",
+            "alternate": "/other"
+          },
+          "source_relative_path": {
+            "base": "requirements.md",
+            "alternate": "architecture.md"
+          },
+          "source_sha256": {
+            "base": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "alternate": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+          },
+          "produced_by_thread_id": {
+            "base": "thread-1",
+            "alternate": "thread-2"
+          },
+          "created_at": {
+            "a": "10",
+            "b": "8",
+            "fold": "8"
+          }
+        },
+        "payloadDigests": {
+          "a": "1111111111111111111111111111111111111111111111111111111111111111",
+          "b": "2222222222222222222222222222222222222222222222222222222222222222"
+        },
+        "applyStates": {
+          "active": [
+            "prepared",
+            "file-applied",
+            "awaiting-source-host"
+          ],
+          "inactive": [
+            "finalized",
+            "conflict"
+          ]
+        },
+        "blobObject": {
+          "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "content_type": "text/markdown",
+          "created_at": "10",
+          "byte_length": "3",
+          "contentHex": "616263",
+          "contentSha256": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        },
+        "grant": {
+          "presentation_run_id": null,
+          "granted_at": "8",
+          "revoked_at": null
+        }
+      },
+      "states": [
+      {
+        "id": "fresh",
+        "decision": "ordinary-append-all",
+        "terminal": "ordinary"
+      },
+      {
+        "id": "collision-free-pre18",
+        "decision": "ordinary-append-18-through-22",
+        "terminal": "ordinary"
+      },
+      {
+        "id": "exact-blocked-pre18",
+        "decision": "recover-one-transaction",
+        "terminal": "recovered"
+      },
+      {
+        "id": "completed-ordinary-restart",
+        "decision": "verify-completed",
+        "terminal": "ordinary"
+      },
+      {
+        "id": "completed-recovered-restart",
+        "decision": "verify-completed",
+        "terminal": "recovered"
+      },
+      {
+        "id": "strict-prefix-successor",
+        "decision": "verify-predecessor-apply-suffix",
+        "terminal": "preserve-outcome"
+      },
+      {
+        "id": "full-ledger-no-v3-completion",
+        "decision": "block-unknown-completion",
+        "terminal": "E_UNKNOWN_COMPLETION"
+      },
+      {
+        "id": "unadmitted-v2-v6",
+        "decision": "block-human-rollout",
+        "terminal": "E_UNADMITTED_LEGACY_STATE"
+      },
+      {
+        "id": "failed-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_FAILED"
+      },
+      {
+        "id": "noncontiguous-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_NONCONTIGUOUS"
+      },
+      {
+        "id": "future-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_FUTURE"
+      },
+      {
+        "id": "malformed-ledger",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_MALFORMED"
+      },
+      {
+        "id": "partial-ledger-or-recovery",
+        "decision": "fail-closed",
+        "terminal": "E_LEDGER_PARTIAL"
+      },
+      {
+        "id": "schema-mismatch",
+        "decision": "fail-closed",
+        "terminal": "E_SCHEMA_METADATA_MISMATCH"
+      },
+      {
+        "id": "evidence-mismatch",
+        "decision": "fail-closed",
+        "terminal": "E_ROOT_OR_COUNT_MISMATCH"
+      }
+    ],
+    "collisions": [
+      {
+        "id": "artifact-pk-positive-fold",
+        "table": "workflow_artifacts",
+        "identity": "target-pk",
+        "field": "kind,title,content_type equal; created_at MIN; updated_at MAX",
+        "polarity": "positive",
+        "expect": "ordinary-fold"
+      },
+      {
+        "id": "artifact-pk-kind-negative",
+        "table": "workflow_artifacts",
+        "identity": "target-pk",
+        "field": "kind",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "artifact-pk-title-negative",
+        "table": "workflow_artifacts",
+        "identity": "target-pk",
+        "field": "title",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "artifact-pk-content_type-negative",
+        "table": "workflow_artifacts",
+        "identity": "target-pk",
+        "field": "content_type",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "artifact-kind-unique-negative",
+        "table": "workflow_artifacts",
+        "identity": "target-unique-S-kind",
+        "field": "different-id",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-positive-fold",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "all exact equal; created_at MIN",
+        "polarity": "positive",
+        "expect": "ordinary-fold"
+      },
+      {
+        "id": "revision-pk-blob_sha256-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "blob_sha256",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-status-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "status",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-source_host_id-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "source_host_id",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-source_root_path-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "source_root_path",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-source_relative_path-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "source_relative_path",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-source_sha256-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "source_sha256",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-pk-produced_by_thread_id-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-pk",
+        "field": "produced_by_thread_id",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-admitted-partial-negative",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-partial-unique-S-artifact",
+        "field": "status = 'admitted' different revisions",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "revision-admitted-nonmatch-positive",
+        "table": "workflow_artifact_revisions",
+        "identity": "target-partial-unique-S-artifact",
+        "field": "draft and superseded",
+        "polarity": "positive",
+        "expect": "ordinary"
+      },
+      {
+        "id": "workflow_artifact_annotations-target-pk-negative",
+        "table": "workflow_artifact_annotations",
+        "identity": "target-pk",
+        "field": "id",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "workflow_artifact_decisions-target-pk-negative",
+        "table": "workflow_artifact_decisions",
+        "identity": "target-pk",
+        "field": "id",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "workflow_artifact_stewards-target-pk-negative",
+        "table": "workflow_artifact_stewards",
+        "identity": "target-pk",
+        "field": "role",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "workflow_artifact_apply_intents-target-pk-negative",
+        "table": "workflow_artifact_apply_intents",
+        "identity": "target-pk",
+        "field": "id",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "working-draft-inherited-positive",
+        "table": "workflow_artifact_working_drafts",
+        "identity": "unchanged-pk",
+        "field": "presentation_thread_id",
+        "polarity": "positive",
+        "expect": "inherited-not-collision"
+      },
+      {
+        "id": "steward-thread-inherited-unreachable",
+        "table": "workflow_artifact_stewards",
+        "identity": "UNIQUE(thread_id) unchanged",
+        "field": "duplicate valid pre18 state",
+        "polarity": "negative",
+        "expect": "block-impossible-state"
+      },
+      {
+        "id": "mutation-operation-kind-drop-negative",
+        "table": "workflow_artifact_mutations",
+        "identity": "target-pk",
+        "field": "different operation_kind same remaining key",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "apply-active-prepared-negative",
+        "table": "workflow_artifact_apply_intents",
+        "identity": "target-partial-unique-S-artifact",
+        "field": "prepared",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "apply-active-file-applied-negative",
+        "table": "workflow_artifact_apply_intents",
+        "identity": "target-partial-unique-S-artifact",
+        "field": "file-applied",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "apply-active-awaiting-source-host-negative",
+        "table": "workflow_artifact_apply_intents",
+        "identity": "target-partial-unique-S-artifact",
+        "field": "awaiting-source-host",
+        "polarity": "negative",
+        "expect": "recover-complete-component"
+      },
+      {
+        "id": "apply-active-nonmatch-positive",
+        "table": "workflow_artifact_apply_intents",
+        "identity": "target-partial-unique-S-artifact",
+        "field": "finalized and conflict",
+        "polarity": "positive",
+        "expect": "ordinary"
+      },
+      {
+        "id": "blob-identity-positive",
+        "table": "workflow_artifact_blobs",
+        "identity": "sha256 unchanged",
+        "field": "all object fields exact",
+        "polarity": "positive",
+        "expect": "ordinary"
+      }
+    ],
+    "edges": [
+      {
+        "id": "PRE-REVISION-ARTIFACT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-REVISION-ARTIFACT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-REVISION-BLOB-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-REVISION-BLOB-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-ANNOTATION-REVISION-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-ANNOTATION-REVISION-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-DRAFT-REVISION-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-DRAFT-REVISION-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-DECISION-BASE-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-DECISION-BASE-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-DECISION-CANDIDATE-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-DECISION-CANDIDATE-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-APPLY-BASE-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-APPLY-BASE-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-APPLY-FINALIZED-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-APPLY-FINALIZED-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "PRE-APPLY-BLOB-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "PRE-APPLY-BLOB-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-REVISION-ARTIFACT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-REVISION-ARTIFACT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-REVISION-BLOB-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-REVISION-BLOB-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-ANNOTATIONS-GRANT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-ANNOTATIONS-GRANT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-WORKING_DRAFTS-GRANT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-WORKING_DRAFTS-GRANT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-DECISIONS-GRANT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-DECISIONS-GRANT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-STEWARDS-GRANT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-STEWARDS-GRANT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-MUTATIONS-GRANT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-MUTATIONS-GRANT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-APPLY_INTENTS-GRANT-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-APPLY_INTENTS-GRANT-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-ANNOTATION-REVISION-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-ANNOTATION-REVISION-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-DRAFT-REVISION-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-DRAFT-REVISION-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-DECISION-BASE-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-DECISION-BASE-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-DECISION-CANDIDATE-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-DECISION-CANDIDATE-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-APPLY-BASE-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-APPLY-BASE-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-APPLY-FINALIZED-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-APPLY-FINALIZED-negative",
+        "expect": "fail omitted/retargeted"
+      },
+      {
+        "id": "POST-APPLY-BLOB-positive",
+        "expect": "exact close"
+      },
+      {
+        "id": "POST-APPLY-BLOB-negative",
+        "expect": "fail omitted/retargeted"
+      }
+    ],
+    "blobs": [
+      {
+        "id": "object",
+        "fields": [
+          "sha256",
+          "content_type",
+          "created_at",
+          "byte_length",
+          "content-sha256"
+        ]
+      },
+      {
+        "id": "revision-reference",
+        "column": "blob_sha256"
+      },
+      {
+        "id": "apply-reference",
+        "column": "target_blob_sha256"
+      },
+      {
+        "id": "negative-content_type",
+        "expect": "fail"
+      },
+      {
+        "id": "negative-created_at",
+        "expect": "fail"
+      },
+      {
+        "id": "negative-byte_length",
+        "expect": "fail"
+      },
+      {
+        "id": "negative-content",
+        "expect": "fail"
+      },
+      {
+        "id": "negative-reference-count",
+        "expect": "fail"
+      }
+    ],
+    "grants": [
+      {
+        "id": "ordinary-exact",
+        "rows": "distinct artifact presentation; MIN created_at"
+      },
+      {
+        "id": "recovery-exact",
+        "rows": "same artifact-derived multiset"
+      },
+      {
+        "id": "orphan-dependent",
+        "expect": "fail"
+      },
+      {
+        "id": "synthesized-zero",
+        "expect": "fail"
+      },
+      {
+        "id": "count-only",
+        "expect": "fail"
+      }
+    ],
+    "parity": [
+      {
+        "id": "rows",
+        "equation": "BeforeRows[T] = ActiveCanonicalRows[T] disjoint-union DecodedQuarantineRows[T]",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      },
+      {
+        "id": "relationships",
+        "equation": "BeforeRelationships = ActiveRelationships disjoint-union QuarantineRelationships",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-objects",
+        "equation": "BeforeBlobObjects = AfterBlobObjects",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-references",
+        "equation": "BeforeBlobReferences = ActiveBlobReferences disjoint-union QuarantineBlobReferences",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      },
+      {
+        "id": "grants",
+        "equation": "ExpectedPresentationGrants = ActualPresentationGrants",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      },
+      {
+        "id": "noncolliding",
+        "equation": "every noncolliding origin/component remains canonical active",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      },
+      {
+        "id": "conflicting",
+        "equation": "every conflicting component has no synthesized active artifact",
+        "multiplicity": "preserved",
+        "mutation": [
+          "omit",
+          "duplicate",
+          "reorder",
+          "retarget"
+        ],
+        "expect": "fail-closed"
+      }
+    ],
+    "corruption": [
+      {
+        "id": "corrupt-table-identity",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-original-pk",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-row-encoding",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-relationship-metadata",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-presentation-provenance",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-blob-content_type",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-blob-created_at",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-blob-length",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-blob-content",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-blob-reference-count",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-grant-row",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-grant-timestamp",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-active-row",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-authority",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-predecessor",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-outcome",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-high-water",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-statement-vector",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-descriptor",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-plugin-receipt",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-verification",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-completion-time",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-recovery-row",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-plugin-receipt",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-projection",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-active-root",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-quarantine-root",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-grant-root",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-blob-root",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-row-count",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-edge-count",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-grant-count",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-blob-count",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "corrupt-receipt-semantic-sha256",
+        "mutation": "one-field valid-type change",
+        "expect": "fail-closed"
+      }
+    ],
+    "selfAttestation": [
+      {
+        "id": "statement-plus-caller-hash",
+        "expect": "E_STATEMENT_VECTOR_MISMATCH"
+      },
+      {
+        "id": "descriptor-plus-recipe",
+        "expect": "E_DESCRIPTOR_MISMATCH"
+      },
+      {
+        "id": "migration18-plus-descriptor",
+        "expect": "E_STATEMENT_VECTOR_MISMATCH"
+      },
+      {
+        "id": "unknown-alias",
+        "expect": "E_AUTHORITY_ALIAS_FORBIDDEN"
+      },
+      {
+        "id": "registry-fallback",
+        "expect": "E_REGISTRY_FALLBACK_FORBIDDEN"
+      },
+      {
+        "id": "oracle-imports-production",
+        "expect": "E_STATIC_DIGEST_MISMATCH"
+      }
+    ],
+    "restart": [
+      {
+        "id": "ordinary-success",
+        "boundary": "close-reopen",
+        "expect": "ordinary"
+      },
+      {
+        "id": "recovered-success",
+        "boundary": "close-reopen",
+        "expect": "recovered"
+      },
+      {
+        "id": "both-recovery-markers-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-completion-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-completion-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-completion-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-completion-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-completion-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-recovery-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-recovery-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-recovery-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-recovery-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "host-recovery-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "plugin-receipt-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "plugin-receipt-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "plugin-receipt-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "plugin-receipt-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "plugin-receipt-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "component-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "component-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "component-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "component-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "component-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-row-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-row-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-row-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-row-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-row-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-blob-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-blob-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-blob-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-blob-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "quarantine-blob-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "active-row-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "active-row-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "active-row-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "active-row-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "active-row-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "grant-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "grant-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "grant-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "grant-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "grant-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-object-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-object-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-object-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-object-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-object-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-reference-missing",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-reference-extra",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-reference-duplicate",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-reference-malformed",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      },
+      {
+        "id": "blob-reference-mismatched",
+        "boundary": "close-reopen",
+        "expect": "fail-closed"
+      }
+    ],
+    "darkness": [
+      {
+        "id": "feature",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      },
+      {
+        "id": "artifact-rpc",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      },
+      {
+        "id": "artifact-ui",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      },
+      {
+        "id": "artifact-renderer",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      },
+      {
+        "id": "workflowArtifactLiveChanges",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      },
+      {
+        "id": "corruption-rejection",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      },
+      {
+        "id": "fault-rollback",
+        "expected": "dark-off-unregistered-before-consumer-construction"
+      }
+    ],
+    "oneSided": "mutated adapter alone fails",
+    "sharedReducer": "independent oracle kills mutant"
+  },
+  "faults": {
+    "oldExact": [
+      "post-admission-pre-first-write",
+      "stage:workflow_artifacts",
+      "stage:workflow_artifact_revisions",
+      "stage:workflow_artifact_annotations",
+      "stage:workflow_artifact_working_drafts",
+      "stage:workflow_artifact_decisions",
+      "stage:workflow_artifact_stewards",
+      "stage:workflow_artifact_mutations",
+      "stage:workflow_artifact_apply_intents",
+      "stage:workflow_artifact_blobs",
+      "remove-staged-components",
+      "migration:18",
+      "migration-ledger:18",
+      "migration:19",
+      "migration-ledger:19",
+      "migration:20",
+      "migration-ledger:20",
+      "migration:21",
+      "migration-ledger:21",
+      "migration:22",
+      "migration-ledger:22",
+      "restore-presentation-grants",
+      "adopt-quarantine",
+      "write-recovery-receipt",
+      "verify-active-integrity",
+      "verify-quarantine-integrity",
+      "write-host-recovery-ledger"
+    ],
+    "newV3": [
+      "v3:capability-version-rejection",
+      "v3:authority-resolution",
+      "v3:static-digest-admission",
+      "v3:observation",
+      "v3:decision",
+      "v3:begin-transaction",
+      "v3:receipt-correlation",
+      "v3:verify-completed",
+      "v3:write-host-completion",
+      "v3:verify-predecessor",
+      "v3:execute-suffix",
+      "v3:rollback",
+      "v3:commit"
+    ],
+    "all": [
+      {
+        "id": "post-admission-pre-first-write",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifacts",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_revisions",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_annotations",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_working_drafts",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_decisions",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_stewards",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_mutations",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_apply_intents",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "stage:workflow_artifact_blobs",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "remove-staged-components",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration:18",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration-ledger:18",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration:19",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration-ledger:19",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration:20",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration-ledger:20",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration:21",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration-ledger:21",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration:22",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "migration-ledger:22",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "restore-presentation-grants",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "adopt-quarantine",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "write-recovery-receipt",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "verify-active-integrity",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "verify-quarantine-integrity",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "write-host-recovery-ledger",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:capability-version-rejection",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:authority-resolution",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:static-digest-admission",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:observation",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:decision",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:begin-transaction",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:receipt-correlation",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:verify-completed",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:write-host-completion",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:verify-predecessor",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:execute-suffix",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:rollback",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      },
+      {
+        "id": "v3:commit",
+        "expect": "rollback fail-closed",
+        "preimage": [
+          "schema SQL",
+          "ordered migration/completion ledgers",
+          "rows/PKs",
+          "edges/grants",
+          "BLOB bytes/metadata",
+          "plugin receipts",
+          "host markers"
+        ]
+      }
+    ]
+  },
+  "prefix": {
+    "predicate": "strict exact-prefix only",
+    "steps": [
+      "verify predecessor completion",
+      "execute suffix only",
+      "verify successor",
+      "append completion"
+    ],
+    "recoveredCanExtend": true
+  },
+  "transaction": {
+    "owner": "host",
+    "single": true,
+    "steps": [
+      "admit identities",
+      "classify",
+      "stage",
+      "remove",
+      "migrations 18..22 and ledger",
+      "restore grants",
+      "adopt quarantine",
+      "plugin receipt",
+      "verify parity",
+      "host completion",
+      "commit"
+    ],
+    "storageGap": "stop and freeze appended migration; never edit 18 or 22"
+  },
+  "darkness": {
+    "feature": "off",
+    "rpc": "unregistered",
+    "ui": "unregistered",
+    "renderer": "unregistered",
+    "liveChanges": "off",
+    "after": [
+      "ordinary",
+      "recovery",
+      "restart",
+      "corruption",
+      "fault"
+    ]
+  },
+  "legacy": {
+    "automaticV2V6Adoption": false,
+    "fullLedgerNoV3Completion": "block-unknown-completion",
+    "unadmittedState": "block-human-rollout",
+    "localMarkerInference": false,
+    "requiredForAdoption": "separate sealed provenance and read-only integrity evidence"
+  },
+  "admission": {
+    "approvalPath": "output/artifact-review-shakedown/oracle/recovery-authority-v9-approval.json",
+    "constructionGate": "approval exists passes exact manifest unchanged bytes zero findings",
+    "repair": "changed authority/projection/state/fault field requires new authority ID and fresh A0",
+    "final": [
+      "targeted SDK/server/workflows",
+      "changed-scope typechecks",
+      "diff",
+      "counts",
+      "one-sided mutations",
+      "oracle mutations",
+      "candidate manifest",
+      "extant unchanged V9 receipt"
+    ]
+  },
+  "digests": {
+    "algorithm": "SHA-256 UTF-8(domain+U+0000+compact canonical JSON); recursive Unicode-codepoint object keys; arrays preserved",
+    "authorityBody": "e6a7157ca5aaeccb1aef930ab2071b93367c263edc26e5475d383266ffb65691",
+    "statementVector": "ad40146c355ecc85e13d8a9db70f82870f480d6de0e2efc46ac8c9a40de0586f",
+    "descriptor": "643b7292312187d8d3f9de23e3eea4dcf5e0057c25592d9bf31c4e1d31a61422",
+    "oracleRecipe": "f9d0a49d0e0d0c049ad6d3d6b990656fddf9ce87d784f38f9a5a617f740ea955",
+    "projectionSpec": "4c15837d86d2bd3e62cc505fa586c5981541c982de76c0f15fc51b9daa52981c",
+    "completionEncoding": "1c0df1116affe0d58f991c5767156d883eb8da306b63ba5099a9791a719a635b",
+    "verifierEncoding": "a34ea64d3f29c1519d634b86e3307f5c326ddf1c78843ea565a0189477cade89",
+    "stateTable": "61d1b17c4ec00b999caaf00703516ea4c0af87003fe4d9c6657fe99947fbb8c0",
+    "traceTable": "6d423fefd955dcc933d98686618fb93e213e7e84a0fd6ff4eefb177d69abbe84",
+    "collisionTable": "5e2d23125898dce81a9149411b1a6a9c0afee8ec8744c9ed035f893458f3abbf",
+    "parityEquations": "5264b85ac5287c2f0ab7fa85b7410f13345a7994acd6a860066fedbd7826b624",
+    "faultVectorCorpus": "d19b75adda34668c9e706af39c079aebdf3b2c5cbd3da94248efbd325d83e804"
+  }
+}

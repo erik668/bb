@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bb-artifact-review-v3-host-foundation-f3-result-v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "seamId", "mode", "ready", "topology", "counts", "controls", "crashCells", "accessAudit", "encoders", "sourceIdentities", "outcome"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "seamId": { "const": "bb-artifact-review-v3-host-foundation-f3:standalone-neutral-self-admission-v1" },
+    "mode": { "const": "self-admit" },
+    "ready": { "const": true },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "sqlite3", "cwd", "runner", "environmentKeys"],
+      "properties": {
+        "node": { "type": "string", "minLength": 1 },
+        "sqlite3": { "const": "/usr/bin/sqlite3" },
+        "cwd": { "type": "string", "minLength": 1 },
+        "runner": { "type": "string", "minLength": 1 },
+        "environmentKeys": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["selected", "reached", "passed", "failed", "skipped", "todo", "filtered", "setupErrors", "semanticKills", "oracleInvalid"],
+      "properties": {
+        "selected": { "const": 16 }, "reached": { "const": 16 }, "passed": { "const": 16 }, "failed": { "const": 0 },
+        "skipped": { "const": 0 }, "todo": { "const": 0 }, "filtered": { "const": 0 }, "setupErrors": { "const": 0 },
+        "semanticKills": { "const": 13 }, "oracleInvalid": { "const": 1 }
+      }
+    },
+    "controls": {
+      "type": "array", "minItems": 16, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["id", "class", "status", "reason", "reachability", "receipt"],
+        "properties": {
+          "id": { "pattern": "^F3-SA-(0[1-9]|1[0-6])$" },
+          "class": { "enum": ["semantic", "oracle-invalid", "setup-topology"] },
+          "status": { "const": "passed" },
+          "reason": { "type": "string", "minLength": 1 },
+          "reachability": { "type": "string", "minLength": 1 },
+          "receipt": {
+            "type": "object", "additionalProperties": false,
+            "required": ["legitimateAccepted", "mutationCount", "mutationReasons", "semanticKillsContributed", "oracleInvalidContributed", "evidenceSha256"],
+            "properties": {
+              "legitimateAccepted": { "type": "boolean" },
+              "mutationCount": { "type": "integer", "minimum": 1 },
+              "mutationReasons": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+              "semanticKillsContributed": { "type": "integer", "minimum": 0, "maximum": 1 },
+              "oracleInvalidContributed": { "type": "integer", "minimum": 0, "maximum": 1 },
+              "evidenceSha256": { "pattern": "^[0-9a-f]{64}$" }
+            }
+          }
+        }
+      }
+    },
+    "crashCells": {
+      "type": "array", "minItems": 2, "maxItems": 2,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["cell", "barrier", "signal", "deathConfirmed", "nodeObserver", "sqlite3Observer", "retryable"],
+        "properties": {
+          "cell": { "enum": ["pre-commit", "post-commit-pre-close"] },
+          "barrier": { "type": "string", "minLength": 1 },
+          "signal": { "const": "SIGKILL" },
+          "deathConfirmed": { "const": true },
+          "nodeObserver": { "$ref": "#/$defs/observer" },
+          "sqlite3Observer": { "$ref": "#/$defs/observer" },
+          "retryable": { "type": "boolean" }
+        }
+      }
+    },
+    "accessAudit": {
+      "type": "object", "additionalProperties": false,
+      "required": ["deliberateDenied", "expectedDenied", "legitimateForbiddenAttempts", "operationsPerPath"],
+      "properties": {
+        "deliberateDenied": { "const": 14 }, "expectedDenied": { "const": 14 },
+        "legitimateForbiddenAttempts": { "const": 0 }, "operationsPerPath": { "const": 3 }
+      }
+    },
+    "encoders": {
+      "type": "object", "additionalProperties": false,
+      "required": ["nodeSha256", "posixSha256", "byteIdentical", "terminalNewline", "newlineMutantKilled"],
+      "properties": {
+        "nodeSha256": { "pattern": "^[0-9a-f]{64}$" }, "posixSha256": { "pattern": "^[0-9a-f]{64}$" },
+        "byteIdentical": { "const": true }, "terminalNewline": { "const": false }, "newlineMutantKilled": { "const": true }
+      }
+    },
+    "sourceIdentities": {
+      "type": "array", "minItems": 16, "maxItems": 16,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "bytes", "sha256"],
+        "properties": { "path": { "type": "string", "minLength": 1 }, "bytes": { "type": "integer", "minimum": 1 }, "sha256": { "pattern": "^[0-9a-f]{64}$" } }
+      }
+    },
+    "outcome": { "const": "pass" }
+  },
+  "$defs": {
+    "migration": {
+      "type": "object", "additionalProperties": false,
+      "required": ["migrationIndex", "authority", "origin"],
+      "properties": {
+        "migrationIndex": { "type": "integer", "minimum": 0, "maximum": 22 },
+        "authority": { "const": "server-local-owner" },
+        "origin": { "const": "server" }
+      }
+    },
+    "sentinel": {
+      "type": "object", "additionalProperties": false,
+      "required": ["owner", "origin", "artifactId", "contentSha256"],
+      "properties": {
+        "owner": { "const": "server-local-owner" },
+        "origin": { "const": "server" },
+        "artifactId": { "const": "f3-neutral-sentinel" },
+        "contentSha256": { "const": "fbcfd96b324792c0f66a449492746f7d4c8c47967d689e1302b65e77f98b12c5" }
+      }
+    },
+    "observer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["observer", "parser", "pid", "readonly", "fileMustExist", "migrations", "sentinels"],
+      "properties": {
+        "observer": { "enum": ["node:sqlite", "sqlite3-cli"] },
+        "parser": { "enum": ["node-row-object", "sqlite3-json-column-map"] },
+        "pid": { "type": "integer", "minimum": 1 },
+        "readonly": { "const": true },
+        "fileMustExist": { "const": true },
+        "migrations": { "type": "array", "maxItems": 23, "items": { "$ref": "#/$defs/migration" } },
+        "sentinels": { "type": "array", "maxItems": 1, "items": { "$ref": "#/$defs/sentinel" } }
+      }
+    }
+  }
+}

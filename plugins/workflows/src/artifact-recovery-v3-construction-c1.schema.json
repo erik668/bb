@@ -1,0 +1,992 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://getbb.dev/schemas/artifact-recovery-v3-construction-c1.schema.json",
+  "title": "Artifact review V3 construction C1 closed oracle artifacts",
+  "oneOf": [
+    { "$ref": "#/definitions/authority" },
+    { "$ref": "#/definitions/corpus" }
+  ],
+  "definitions": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nullableSha256": {
+      "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+    },
+    "stringArray": { "type": "array", "items": { "type": "string" } },
+    "integerArray": {
+      "type": "array",
+      "items": { "type": "integer", "minimum": 0 }
+    },
+    "rootMap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "ledger",
+        "active",
+        "quarantine",
+        "grants",
+        "blobs",
+        "blobReferences",
+        "relationships"
+      ],
+      "properties": {
+        "schema": { "$ref": "#/definitions/sha256" },
+        "ledger": { "$ref": "#/definitions/sha256" },
+        "active": { "$ref": "#/definitions/sha256" },
+        "quarantine": { "$ref": "#/definitions/sha256" },
+        "grants": { "$ref": "#/definitions/sha256" },
+        "blobs": { "$ref": "#/definitions/sha256" },
+        "blobReferences": { "$ref": "#/definitions/sha256" },
+        "relationships": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "semanticCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "activeRows",
+        "quarantineRows",
+        "grants",
+        "blobObjects",
+        "blobReferences",
+        "relationships",
+        "completions",
+        "recoveries",
+        "consumers"
+      ],
+      "properties": {
+        "activeRows": { "type": "integer", "minimum": 0 },
+        "quarantineRows": { "type": "integer", "minimum": 0 },
+        "grants": { "type": "integer", "minimum": 0 },
+        "blobObjects": { "type": "integer", "minimum": 0 },
+        "blobReferences": { "type": "integer", "minimum": 0 },
+        "relationships": { "type": "integer", "minimum": 0 },
+        "completions": { "type": "integer", "minimum": 0 },
+        "recoveries": { "type": "integer", "minimum": 0 },
+        "consumers": { "type": "integer", "const": 0 }
+      }
+    },
+    "physical": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "databaseOpens",
+        "transactions",
+        "writes",
+        "commits",
+        "rollbacks",
+        "closes",
+        "reopens",
+        "consumers"
+      ],
+      "properties": {
+        "databaseOpens": { "type": "integer", "minimum": 0 },
+        "transactions": { "type": "integer", "minimum": 0 },
+        "writes": { "type": "integer", "minimum": 0 },
+        "commits": { "type": "integer", "minimum": 0 },
+        "rollbacks": { "type": "integer", "minimum": 0 },
+        "closes": { "type": "integer", "minimum": 0 },
+        "reopens": { "type": "integer", "minimum": 0 },
+        "consumers": { "type": "integer", "const": 0 }
+      }
+    },
+    "snapshotCounts": {
+      "allOf": [{ "$ref": "#/definitions/semanticCounts" }],
+      "type": "object",
+      "properties": { "writes": { "type": "integer", "minimum": 0 } }
+    },
+    "completion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "outcome", "migrationThrough", "bodySha256"],
+      "properties": {
+        "authorityId": { "type": "string", "minLength": 1 },
+        "outcome": { "enum": ["ordinary", "recovered"] },
+        "migrationThrough": { "type": "integer", "const": 22 },
+        "bodySha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["recoveryId", "outcome", "bodySha256"],
+      "properties": {
+        "recoveryId": { "type": "string", "minLength": 1 },
+        "outcome": { "const": "recovered" },
+        "bodySha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "blob": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "contentType", "byteLength", "bytesHex"],
+      "properties": {
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "contentType": { "type": "string" },
+        "byteLength": { "type": "integer", "minimum": 0 },
+        "bytesHex": { "type": "string", "pattern": "^[0-9a-f]*$" }
+      }
+    },
+    "relationship": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sourceTable", "column", "targetTable", "multiplicity"],
+      "properties": {
+        "sourceTable": { "type": "string" },
+        "sourceId": { "type": "string" },
+        "column": { "type": "string" },
+        "targetTable": { "type": "string" },
+        "targetId": { "type": "string" },
+        "multiplicity": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "grant": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaignId",
+        "projectId",
+        "environmentId",
+        "presentationThreadId",
+        "provenanceOnly"
+      ],
+      "properties": {
+        "campaignId": { "type": "string" },
+        "projectId": { "type": "string" },
+        "environmentId": { "type": "string" },
+        "presentationThreadId": { "type": "string" },
+        "provenanceOnly": { "const": true }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "migrationIds",
+        "completion",
+        "recovery",
+        "roots",
+        "counts",
+        "blobObjects",
+        "relationships",
+        "grants"
+      ],
+      "properties": {
+        "migrationIds": { "$ref": "#/definitions/integerArray" },
+        "completion": {
+          "oneOf": [{ "$ref": "#/definitions/completion" }, { "type": "null" }]
+        },
+        "recovery": {
+          "oneOf": [{ "$ref": "#/definitions/recovery" }, { "type": "null" }]
+        },
+        "roots": { "$ref": "#/definitions/rootMap" },
+        "counts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "writes",
+            "activeRows",
+            "quarantineRows",
+            "grants",
+            "blobObjects",
+            "blobReferences",
+            "relationships",
+            "completions",
+            "recoveries",
+            "consumers"
+          ],
+          "properties": {
+            "writes": { "type": "integer", "minimum": 0 },
+            "activeRows": { "type": "integer", "minimum": 0 },
+            "quarantineRows": { "type": "integer", "minimum": 0 },
+            "grants": { "type": "integer", "minimum": 0 },
+            "blobObjects": { "type": "integer", "minimum": 0 },
+            "blobReferences": { "type": "integer", "minimum": 0 },
+            "relationships": { "type": "integer", "minimum": 0 },
+            "completions": { "type": "integer", "minimum": 0 },
+            "recoveries": { "type": "integer", "minimum": 0 },
+            "consumers": { "type": "integer", "const": 0 }
+          }
+        },
+        "blobObjects": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/blob" }
+        },
+        "relationships": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/relationship" }
+        },
+        "grants": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/grant" }
+        }
+      }
+    },
+    "seam": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "module", "requiredExport", "prebuildReason"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "module": { "type": "string", "minLength": 1 },
+        "requiredExport": { "type": "string", "minLength": 1 },
+        "prebuildReason": {
+          "type": "string",
+          "pattern": "^MISSING_[A-Z0-9_]+$"
+        }
+      }
+    },
+    "caseInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "state": { "type": "string" },
+        "invokeCount": { "type": "integer", "minimum": 1 },
+        "migration18Error": { "type": "string" },
+        "suffixIds": { "$ref": "#/definitions/integerArray" },
+        "version": { "type": "integer" },
+        "legacyRoute": { "type": "string" },
+        "legacyEvidence": { "type": "boolean" },
+        "authorityId": { "type": ["string", "null"] },
+        "authorityIds": { "$ref": "#/definitions/stringArray" },
+        "migrationIds": {
+          "type": "array",
+          "items": { "type": ["integer", "string"] }
+        },
+        "completion": { "type": "string" },
+        "capability": { "type": "string" },
+        "digest": { "type": "string" }
+      }
+    },
+    "caseExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decision",
+        "error",
+        "phaseTraceRef",
+        "v12TraceRef",
+        "snapshotRef",
+        "saved"
+      ],
+      "properties": {
+        "decision": { "type": "string" },
+        "error": { "type": ["string", "null"] },
+        "phaseTraceRef": { "type": "string" },
+        "v12TraceRef": { "type": ["string", "null"] },
+        "snapshotRef": { "type": "string" },
+        "physicalRef": { "type": "string" },
+        "saved": { "type": "string" }
+      }
+    },
+    "behaviorCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "seamId", "input", "expected"],
+      "properties": {
+        "id": { "type": "string" },
+        "seamId": { "type": "string" },
+        "input": { "$ref": "#/definitions/caseInput" },
+        "expected": { "$ref": "#/definitions/caseExpected" }
+      }
+    },
+    "corruptionCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "target", "mutation", "expectedError"],
+      "properties": {
+        "id": { "type": "string" },
+        "target": { "type": "string" },
+        "mutation": { "type": "string" },
+        "expectedError": { "type": "string" }
+      }
+    },
+    "faultCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "phase",
+        "seamId",
+        "expectedError",
+        "expectedDecision",
+        "expectedSnapshot"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "phase": { "type": "string" },
+        "seamId": { "type": "string" },
+        "expectedError": { "type": "string" },
+        "expectedDecision": { "type": "string" },
+        "expectedSnapshot": { "type": "string" }
+      }
+    },
+    "dispatchCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "input", "expectedError"],
+      "properties": {
+        "id": { "type": "string" },
+        "input": { "$ref": "#/definitions/caseInput" },
+        "expectedError": { "type": "string" }
+      }
+    },
+    "parityCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "adapters",
+        "expectedDecision",
+        "expectedError",
+        "snapshotRef"
+      ],
+      "properties": {
+        "id": { "type": "string" },
+        "adapters": {
+          "type": "array",
+          "items": { "enum": ["production", "sdk-fake", "workflows-fake"] },
+          "minItems": 3,
+          "maxItems": 3,
+          "uniqueItems": true
+        },
+        "expectedDecision": { "type": "string" },
+        "expectedError": { "type": ["string", "null"] },
+        "snapshotRef": { "type": "string" }
+      }
+    },
+    "reopenCase": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "snapshotRef", "expectedDecision", "expectedError"],
+      "properties": {
+        "id": { "type": "string" },
+        "snapshotRef": { "type": "string" },
+        "expectedDecision": { "type": "string" },
+        "expectedError": { "type": ["string", "null"] }
+      }
+    },
+    "negativeControl": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "expectedAssessment"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "enum": ["semantic-observation", "harness-failure"] },
+        "expectedAssessment": { "type": "string" },
+        "actualEqualsExpected": { "type": "boolean" },
+        "reachedSemanticBoundary": { "type": "boolean" }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "contract",
+        "bindings",
+        "authorityGraph",
+        "migrationCatalog",
+        "migrationVector",
+        "dirtyProvenance",
+        "semanticStates",
+        "allowedPhaseStates"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-construction-c1-authority-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-construction-c1:host-truth-phase-state-contract-v1"
+        },
+        "contract": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "architectureRevision",
+            "contractId",
+            "authorityRule",
+            "presentationRule",
+            "savedRule",
+            "byteRule",
+            "retentionRule",
+            "migrationRange",
+            "rollout",
+            "maliciousWriterAuthenticityClaim",
+            "sharedHostMutation",
+            "crossEnvironmentContinuation",
+            "bootstrap",
+            "deployment",
+            "adoption"
+          ],
+          "properties": {
+            "architectureRevision": { "const": 2 },
+            "contractId": { "const": "bb-artifact-review-service:revision-1" },
+            "authorityRule": { "type": "string" },
+            "presentationRule": { "type": "string" },
+            "savedRule": { "type": "string" },
+            "byteRule": { "type": "string" },
+            "retentionRule": { "type": "string" },
+            "migrationRange": { "const": "0..22" },
+            "rollout": { "const": "dark" },
+            "maliciousWriterAuthenticityClaim": { "const": false },
+            "sharedHostMutation": { "const": false },
+            "crossEnvironmentContinuation": { "const": false },
+            "bootstrap": { "const": false },
+            "deployment": { "const": false },
+            "adoption": { "const": false }
+          }
+        },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["synthesis", "v12", "failedC0"],
+          "properties": {
+            "synthesis": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["runId", "resultPath", "successorSeamId"],
+              "properties": {
+                "runId": {
+                  "const": "wfr_66625559-698f-43be-89ea-d3914f0d0735"
+                },
+                "resultPath": { "type": "string" },
+                "successorSeamId": { "type": "string" }
+              }
+            },
+            "v12": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "approvalSha256",
+                "ledgerSha256",
+                "manifestByteLength",
+                "manifestSha256",
+                "authoritySha256",
+                "schemaSha256",
+                "oracleSha256",
+                "interpreterSha256",
+                "conformanceSha256"
+              ],
+              "properties": {
+                "approvalSha256": { "$ref": "#/definitions/sha256" },
+                "ledgerSha256": { "$ref": "#/definitions/sha256" },
+                "manifestByteLength": { "const": 798 },
+                "manifestSha256": { "$ref": "#/definitions/sha256" },
+                "authoritySha256": { "$ref": "#/definitions/sha256" },
+                "schemaSha256": { "$ref": "#/definitions/sha256" },
+                "oracleSha256": { "$ref": "#/definitions/sha256" },
+                "interpreterSha256": { "$ref": "#/definitions/sha256" },
+                "conformanceSha256": { "$ref": "#/definitions/sha256" }
+              }
+            },
+            "failedC0": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "disposition",
+                "manifestByteLength",
+                "manifestSha256",
+                "authority",
+                "schema",
+                "oracle",
+                "ledgerMustRemainAbsent",
+                "approvalMustRemainAbsent"
+              ],
+              "properties": {
+                "disposition": { "const": "immutable-failed-lineage-only" },
+                "manifestByteLength": { "const": 556 },
+                "manifestSha256": { "$ref": "#/definitions/sha256" },
+                "authority": { "$ref": "#/definitions/fileIdentity" },
+                "schema": { "$ref": "#/definitions/fileIdentity" },
+                "oracle": { "$ref": "#/definitions/fileIdentity" },
+                "ledgerMustRemainAbsent": { "const": true },
+                "approvalMustRemainAbsent": { "const": true }
+              }
+            }
+          }
+        },
+        "authorityGraph": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["production", "testOnlyStrictPrefix"],
+          "properties": {
+            "production": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorityId",
+                "predecessorAuthorityId",
+                "allowedTransition"
+              ],
+              "properties": {
+                "authorityId": { "type": "string" },
+                "predecessorAuthorityId": { "type": "null" },
+                "allowedTransition": { "type": "string" }
+              }
+            },
+            "testOnlyStrictPrefix": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "predecessorAuthorityId",
+                "successorAuthorityId",
+                "verifiedPrefix",
+                "suffix",
+                "allowedTransition"
+              ],
+              "properties": {
+                "predecessorAuthorityId": { "type": "string" },
+                "successorAuthorityId": { "type": "string" },
+                "verifiedPrefix": { "const": "0..17" },
+                "suffix": { "const": "18..22" },
+                "allowedTransition": { "type": "string" }
+              }
+            }
+          }
+        },
+        "migrationCatalog": {
+          "type": "array",
+          "minItems": 23,
+          "maxItems": 23,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "byteLength", "sha256"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 0, "maximum": 22 },
+              "byteLength": { "type": "integer", "minimum": 1 },
+              "sha256": { "$ref": "#/definitions/sha256" }
+            }
+          }
+        },
+        "migrationVector": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "encoding",
+            "byteLength",
+            "sha256",
+            "compatibilityFault"
+          ],
+          "properties": {
+            "encoding": { "type": "string" },
+            "byteLength": { "type": "integer", "minimum": 1 },
+            "sha256": { "$ref": "#/definitions/sha256" },
+            "compatibilityFault": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["migrationId", "prefix", "error"],
+              "properties": {
+                "migrationId": { "const": 18 },
+                "prefix": { "const": "0..17" },
+                "error": { "const": "E_MIGRATION_18_COMPATIBILITY_BLOCKED" }
+              }
+            }
+          }
+        },
+        "dirtyProvenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "unrelatedPorcelainLineCount",
+            "filteredPorcelainSha256",
+            "indexMustRemainClean",
+            "failedLineageFiles",
+            "preC0BehavioralTests"
+          ],
+          "properties": {
+            "unrelatedPorcelainLineCount": { "type": "integer", "minimum": 1 },
+            "filteredPorcelainSha256": { "$ref": "#/definitions/sha256" },
+            "indexMustRemainClean": { "const": true },
+            "failedLineageFiles": {
+              "type": "array",
+              "minItems": 9,
+              "maxItems": 9,
+              "items": { "$ref": "#/definitions/pathIdentity" }
+            },
+            "preC0BehavioralTests": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "items": { "$ref": "#/definitions/pathIdentity" }
+            }
+          }
+        },
+        "semanticStates": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "pre18",
+            "ordinary",
+            "recovered",
+            "strictPrefixSuccessor"
+          ],
+          "properties": {
+            "pre18": { "$ref": "#/definitions/authorityState" },
+            "ordinary": { "$ref": "#/definitions/authorityState" },
+            "recovered": { "$ref": "#/definitions/authorityState" },
+            "strictPrefixSuccessor": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["completion", "prefixIds", "suffixIds"],
+              "properties": {
+                "completion": { "$ref": "#/definitions/completion" },
+                "prefixIds": { "$ref": "#/definitions/integerArray" },
+                "suffixIds": { "$ref": "#/definitions/integerArray" }
+              }
+            }
+          }
+        },
+        "allowedPhaseStates": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "preflight-rejected",
+              "classified-ordinary",
+              "classified-exact-recovery-prefix",
+              "classified-strict-prefix-successor",
+              "ordinary-effects",
+              "recovery-effects",
+              "successor-suffix-effects",
+              "committed",
+              "reopened-host-verified",
+              "failed-closed"
+            ]
+          }
+        }
+      }
+    },
+    "fileIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["byteLength", "sha256"],
+      "properties": {
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "pathIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "authorityState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["roots", "counts"],
+      "properties": {
+        "roots": { "$ref": "#/definitions/rootMap" },
+        "counts": { "$ref": "#/definitions/semanticCounts" },
+        "completion": { "$ref": "#/definitions/completion" },
+        "blob": { "$ref": "#/definitions/blob" },
+        "origin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "campaignId",
+            "projectId",
+            "environmentId",
+            "localOwner"
+          ],
+          "properties": {
+            "campaignId": { "type": "string" },
+            "projectId": { "type": "string" },
+            "environmentId": { "type": "string" },
+            "localOwner": { "type": "string" }
+          }
+        },
+        "presentationGrant": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["threadId", "provenanceOnly"],
+          "properties": {
+            "threadId": { "type": "string" },
+            "provenanceOnly": { "const": true }
+          }
+        },
+        "relationship": { "$ref": "#/definitions/relationship" }
+      }
+    },
+    "corpus": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "successorSeamId",
+        "modes",
+        "caseIdRule",
+        "seams",
+        "traceCatalog",
+        "physicalCatalog",
+        "groupContracts",
+        "snapshots",
+        "behaviorCases",
+        "semanticCorruptions",
+        "faultCases",
+        "dispatchCases",
+        "parityCases",
+        "reopenCases",
+        "sdkSurfaces",
+        "darknessSurfaces",
+        "negativeControls"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "bb-artifact-review-v3-construction-c1-corpus-v1"
+        },
+        "successorSeamId": {
+          "const": "bb-artifact-review-v3-construction-c1:host-truth-phase-state-contract-v1"
+        },
+        "modes": {
+          "type": "array",
+          "const": ["prebuild-red", "postbuild-pass"]
+        },
+        "caseIdRule": { "type": "string", "minLength": 1 },
+        "seams": {
+          "type": "array",
+          "minItems": 10,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/seam" }
+        },
+        "traceCatalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ordinary",
+            "exactRecovery",
+            "strictPrefix",
+            "preflightRejected",
+            "failedClosed",
+            "v12Ordinary",
+            "v12ExactRecovery",
+            "v12StrictPrefix"
+          ],
+          "properties": {
+            "ordinary": { "$ref": "#/definitions/stringArray" },
+            "exactRecovery": { "$ref": "#/definitions/stringArray" },
+            "strictPrefix": { "$ref": "#/definitions/stringArray" },
+            "preflightRejected": { "$ref": "#/definitions/stringArray" },
+            "failedClosed": { "$ref": "#/definitions/stringArray" },
+            "v12Ordinary": { "$ref": "#/definitions/stringArray" },
+            "v12ExactRecovery": { "$ref": "#/definitions/stringArray" },
+            "v12StrictPrefix": { "$ref": "#/definitions/stringArray" }
+          }
+        },
+        "physicalCatalog": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "preDbRejected",
+            "ordinary",
+            "exactRecovery",
+            "strictPrefix",
+            "transactionRollback",
+            "postCommitFailure"
+          ],
+          "properties": {
+            "preDbRejected": { "$ref": "#/definitions/physical" },
+            "ordinary": { "$ref": "#/definitions/physical" },
+            "exactRecovery": { "$ref": "#/definitions/physical" },
+            "strictPrefix": { "$ref": "#/definitions/physical" },
+            "transactionRollback": { "$ref": "#/definitions/physical" },
+            "postCommitFailure": { "$ref": "#/definitions/physical" }
+          }
+        },
+        "groupContracts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "semanticCorruption",
+            "dispatchBeforeDb",
+            "fault",
+            "parity",
+            "reopen",
+            "sdk",
+            "darkness"
+          ],
+          "properties": {
+            "semanticCorruption": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "seamId",
+                "inputSnapshotRef",
+                "expectedDecision",
+                "phaseTraceRef",
+                "expectedSnapshotRef",
+                "physicalRef",
+                "consumers"
+              ],
+              "properties": {
+                "seamId": { "type": "string" },
+                "inputSnapshotRef": { "type": "string" },
+                "expectedDecision": { "type": "string" },
+                "phaseTraceRef": { "type": "string" },
+                "expectedSnapshotRef": { "type": "string" },
+                "physicalRef": { "type": "string" },
+                "consumers": { "const": 0 }
+              }
+            },
+            "dispatchBeforeDb": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "seamId",
+                "phaseTraceRef",
+                "expectedSnapshotRef",
+                "physicalRef",
+                "consumers"
+              ],
+              "properties": {
+                "seamId": { "type": "string" },
+                "phaseTraceRef": { "type": "string" },
+                "expectedSnapshotRef": { "type": "string" },
+                "physicalRef": { "type": "string" },
+                "consumers": { "const": 0 }
+              }
+            },
+            "fault": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["phaseTraceRef", "consumers"],
+              "properties": {
+                "phaseTraceRef": { "type": "string" },
+                "consumers": { "const": 0 }
+              }
+            },
+            "parity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "requireExactActualEquality",
+                "requireAdapterPhysicalEvidence",
+                "consumers"
+              ],
+              "properties": {
+                "requireExactActualEquality": { "const": true },
+                "requireAdapterPhysicalEvidence": { "const": true },
+                "consumers": { "const": 0 }
+              }
+            },
+            "reopen": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "seamId",
+                "requireIndependentHostObservation",
+                "consumers"
+              ],
+              "properties": {
+                "seamId": { "type": "string" },
+                "requireIndependentHostObservation": { "const": true },
+                "consumers": { "const": 0 }
+              }
+            },
+            "sdk": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "requiredCapability",
+                "requiredPhaseExport",
+                "consumers"
+              ],
+              "properties": {
+                "requiredCapability": { "type": "string" },
+                "requiredPhaseExport": { "type": "string" },
+                "consumers": { "const": 0 }
+              }
+            },
+            "darkness": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "seamId",
+                "expectedDecision",
+                "expectedConsumerCount"
+              ],
+              "properties": {
+                "seamId": { "type": "string" },
+                "expectedDecision": { "const": "dark" },
+                "expectedConsumerCount": { "const": 0 }
+              }
+            }
+          }
+        },
+        "snapshots": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pre18", "ordinary", "recovered", "strictPrefix"],
+          "properties": {
+            "pre18": { "$ref": "#/definitions/snapshot" },
+            "ordinary": { "$ref": "#/definitions/snapshot" },
+            "recovered": { "$ref": "#/definitions/snapshot" },
+            "strictPrefix": { "$ref": "#/definitions/snapshot" }
+          }
+        },
+        "behaviorCases": {
+          "type": "array",
+          "minItems": 20,
+          "items": { "$ref": "#/definitions/behaviorCase" }
+        },
+        "semanticCorruptions": {
+          "type": "array",
+          "minItems": 18,
+          "items": { "$ref": "#/definitions/corruptionCase" }
+        },
+        "faultCases": {
+          "type": "array",
+          "minItems": 37,
+          "items": { "$ref": "#/definitions/faultCase" }
+        },
+        "dispatchCases": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "$ref": "#/definitions/dispatchCase" }
+        },
+        "parityCases": {
+          "type": "array",
+          "minItems": 4,
+          "items": { "$ref": "#/definitions/parityCase" }
+        },
+        "reopenCases": {
+          "type": "array",
+          "minItems": 5,
+          "items": { "$ref": "#/definitions/reopenCase" }
+        },
+        "sdkSurfaces": {
+          "type": "array",
+          "minItems": 30,
+          "uniqueItems": true,
+          "items": { "type": "string" }
+        },
+        "darknessSurfaces": {
+          "type": "array",
+          "const": [
+            "feature",
+            "artifact-rpc",
+            "ui",
+            "renderer",
+            "live-changes",
+            "deployment",
+            "rollout"
+          ]
+        },
+        "negativeControls": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": { "$ref": "#/definitions/negativeControl" }
+        }
+      }
+    }
+  }
+}

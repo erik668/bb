@@ -1,0 +1,185 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "artifact-review-v3-host-foundation-lab-result-v1",
+  "$defs": {
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tablePresent", "rowCount", "rows"],
+      "properties": {
+        "tablePresent": { "type": "boolean" },
+        "rowCount": { "type": "integer", "minimum": 0, "maximum": 1 },
+        "rows": {
+          "type": "array",
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "value"],
+            "properties": {
+              "id": { "type": "integer", "minimum": 1 },
+              "value": { "const": "committed" }
+            }
+          }
+        }
+      }
+    },
+    "observer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "actual"],
+      "properties": {
+        "pid": { "type": "integer", "minimum": 1 },
+        "actual": { "$ref": "#/$defs/observation" }
+      }
+    },
+    "snapshotIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "sourcePath", "snapshotPath", "byteLength", "sourceSha256Before", "sourceSha256After", "snapshotSha256Before", "snapshotSha256After"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "sourcePath": { "type": "string", "minLength": 1 },
+        "snapshotPath": { "type": "string", "minLength": 1 },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "sourceSha256Before": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sourceSha256After": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "snapshotSha256Before": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "snapshotSha256After": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "liveIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "path", "byteLength", "sha256Before", "sha256After"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "byteLength": { "type": "integer", "minimum": 1 },
+        "sha256Before": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sha256After": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    }
+  },
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "phase", "barrier", "databasePath", "childPid", "childExit", "events", "observers", "runtimeClosure"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "phase": { "enum": ["pre-commit", "post-commit-pre-close"] },
+    "barrier": { "enum": ["pre-commit", "post-commit-pre-close"] },
+    "databasePath": { "type": "string", "minLength": 1 },
+    "childPid": { "type": "integer", "minimum": 1 },
+    "childExit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "signal"],
+      "properties": {
+        "code": { "type": "null" },
+        "signal": { "const": "SIGKILL" }
+      }
+    },
+    "events": {
+      "type": "array",
+      "minItems": 7,
+      "maxItems": 7,
+      "prefixItems": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "childPid", "phase"],
+          "properties": {
+            "sequence": { "const": 0 },
+            "type": { "const": "barrier-received" },
+            "childPid": { "type": "integer", "minimum": 1 },
+            "phase": { "enum": ["pre-commit", "post-commit-pre-close"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "childPid"],
+          "properties": {
+            "sequence": { "const": 1 },
+            "type": { "const": "sigkill-sent" },
+            "childPid": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "childPid", "code", "signal"],
+          "properties": {
+            "sequence": { "const": 2 },
+            "type": { "const": "child-exit" },
+            "childPid": { "type": "integer", "minimum": 1 },
+            "code": { "type": "null" },
+            "signal": { "const": "SIGKILL" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "pid"],
+          "properties": {
+            "sequence": { "const": 3 },
+            "type": { "const": "observer-start:node" },
+            "pid": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "pid"],
+          "properties": {
+            "sequence": { "const": 4 },
+            "type": { "const": "observer-exit:node" },
+            "pid": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "pid"],
+          "properties": {
+            "sequence": { "const": 5 },
+            "type": { "const": "observer-start:sqlite3" },
+            "pid": { "type": "integer", "minimum": 1 }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sequence", "type", "pid"],
+          "properties": {
+            "sequence": { "const": 6 },
+            "type": { "const": "observer-exit:sqlite3" },
+            "pid": { "type": "integer", "minimum": 1 }
+          }
+        }
+      ],
+      "items": false
+    },
+    "observers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["node", "sqlite3"],
+      "properties": {
+        "node": { "$ref": "#/$defs/observer" },
+        "sqlite3": { "$ref": "#/$defs/observer" }
+      }
+    },
+    "runtimeClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runtimeRoot", "stable", "members", "controllers", "executables"],
+      "properties": {
+        "runtimeRoot": { "type": "string", "minLength": 1 },
+        "stable": { "const": true },
+        "members": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "#/$defs/snapshotIdentity" } },
+        "controllers": { "type": "array", "minItems": 4, "maxItems": 4, "items": { "$ref": "#/$defs/liveIdentity" } },
+        "executables": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/$defs/liveIdentity" } }
+      }
+    }
+  }
+}

@@ -1,0 +1,186 @@
+{
+  "schemaVersion": "artifact-review-oracle-approval-v2",
+  "approvalState": "approved",
+  "contractId": "bb-artifact-review-service:revision-1",
+  "architectureRevision": 2,
+  "architectureApproval": "thr_izyqi5c7pj:2026-08-26:artifact-review-revision-2-approved",
+  "generatedAt": "2026-08-26T13:43:28Z",
+  "repository": {
+    "head": "e2b88b053c1e9823e56d71e7f7861fd351d94d5d",
+    "branch": "feature/workflow-detail-ledger",
+    "dirty": true,
+    "worktreeStatusSha256BeforeReceipt": "b62b3b68d7ef2e98512ee61c348869d8633116ac6d8d81862369c990bdc53c0f",
+    "worktreeStatusCommand": "git status --porcelain=v1 --untracked-files=all | shasum -a 256",
+    "oracleFilesState": "untracked-workstream-output"
+  },
+  "acceptedDesign": {
+    "manifestSha256": "3ee1dbfd72e0a6770527c446e34decc4d3ab5d858f207591507f8b709c15454b",
+    "manifest": [
+      {
+        "path": ".architect/context-packets/artifact-review-service-build.md",
+        "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+      },
+      {
+        "path": ".architect/design-lab/workflow-artifact-review.md",
+        "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+      }
+    ]
+  },
+  "oracle": {
+    "manifestSha256": "a5930a713bb6b79ab116ddd75c692ae0843e64caf4bb0ee4f9ef558efdf50962",
+    "manifestEncoding": "UTF-8 JSON.stringify of path-localeCompare-sorted {path,sha256} array with no terminal newline",
+    "manifest": [
+      {
+        "path": "apps/app/src/components/plugin/PluginArtifactReview.acceptance.test.tsx",
+        "sha256": "47169db9f475579abc2b12b69b6bff6b10f1de9e149c844f9c54d1700e43c106"
+      },
+      {
+        "path": "packages/plugin-sdk/src/__tests__/artifact-review-contract.test.tsx",
+        "sha256": "14ac76e44ea6f33409942a3c634e4e8f72491ae39001fac000f3fc6bb1f66a16"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-oracle-fixtures.ts",
+        "sha256": "d1eb9de657eba30dbea8d64671c547e636660ced6f57661552f06581ccef4610"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-oracle.test.ts",
+        "sha256": "c0795d3cdc8bc5c7d1184a1599506c791f0c814ccad9ec12b9c7ea091c5a8cd0"
+      }
+    ]
+  },
+  "closureBindings": {
+    "manifestSha256": "c0b6966d5ca15fe568bfc86779c966cdd90e0388c6a592a0ebd8351d66760ef2",
+    "manifest": [
+      {
+        "path": "apps/app/src/lib/plugin-sdk-app-impl.tsx",
+        "sha256": "d828f26ddf450ef9bd0d39a06f44201bed0a4c68dfaa4b75730ae59fa1197ea7"
+      },
+      {
+        "path": "packages/plugin-sdk/src/app-contract.ts",
+        "sha256": "24548d1fb274b868390c10058b1eab7fd55fa29d748727b99c77e2dd6a018d6b"
+      },
+      {
+        "path": "packages/plugin-sdk/src/app.ts",
+        "sha256": "bdbd3df6922caa9e027a11ef6cab58e360b10c19e9428038ffad54069ae095a9"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-storage.test.ts",
+        "sha256": "52af791ca259bdf483af0eba3ee4ec035191c333c47579c3aecb7c060982810f"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-storage.ts",
+        "sha256": "37881d5549542e79b28af7071b83a4831074e311b2e894b4654525ff56cd0a0b"
+      },
+      {
+        "path": "plugins/workflows/src/data.ts",
+        "sha256": "9b8a3bf924dbb0f0a3e217f58e7efd26923d80a7414c474070afc2b1dc8ea63e"
+      },
+      {
+        "path": "plugins/workflows/src/runtime.ts",
+        "sha256": "9b55c79015e4060989140abbdf610ad7c9b6acc1e51cd5357e68bdde4167dcad"
+      },
+      {
+        "path": "plugins/workflows/src/server.ts",
+        "sha256": "defb0f5d18fdeb27f07577492f7efece8f45c30e663947e25b64666cf5abd6c2"
+      },
+      {
+        "path": "plugins/workflows/src/service.ts",
+        "sha256": "d7af1b822f7f34e09094655ec58dedccf01eda2fb5a8b558650606e18b1fd41b"
+      }
+    ]
+  },
+  "assertionInventory": {
+    "selected": 114,
+    "passed": 110,
+    "expectedConstructionRed": 4,
+    "unexpectedFailed": 0,
+    "skipped": 0,
+    "invariantClasses": 22,
+    "tableDrivenFaultCases": 87
+  },
+  "selectedTests": [
+    {
+      "id": "section-2:verification-1",
+      "command": "pnpm --filter bb-plugin-workflows exec vitest run --config vitest.config.ts src/artifact-review-oracle.test.ts",
+      "passed": 93,
+      "failed": 1,
+      "skipped": 0,
+      "expectedFailure": "plugins/workflows/src/artifact-review-service.js and its production acceptance-driver factory do not exist yet"
+    },
+    {
+      "id": "section-2:verification-2",
+      "command": "pnpm --filter @get-bb/plugin-sdk exec vitest run --config vitest.config.ts src/__tests__/artifact-review-contract.test.tsx",
+      "passed": 4,
+      "failed": 1,
+      "skipped": 0,
+      "expectedFailure": "the SDK facade does not yet export experimental_ArtifactReview"
+    },
+    {
+      "id": "section-2:verification-3",
+      "command": "pnpm --filter @bb/app exec vitest run --config vitest.config.ts src/components/plugin/PluginArtifactReview.acceptance.test.tsx",
+      "passed": 7,
+      "failed": 1,
+      "skipped": 0,
+      "expectedFailure": "pluginSdkAppImplementation does not yet register the host artifact-review renderer"
+    },
+    {
+      "id": "section-2:verification-4",
+      "command": "pnpm --filter bb-plugin-workflows exec vitest run --config vitest.config.ts src/artifact-storage.test.ts",
+      "passed": 6,
+      "failed": 1,
+      "skipped": 0,
+      "expectedFailure": "initializeWorkflowStorage still applies a database-wide integrity gate instead of logging unrelated legacy violations"
+    }
+  ],
+  "closureSearch": {
+    "productionSeamSearch": "targeted ArtifactReview, acceptance-driver, storage-integrity, migration, origin-stop, terminal-writer, SDK facade, and host implementation searches",
+    "result": "The production acceptance driver, SDK export, host renderer, artifact-scoped integrity implementation, and origin-controller-only plugin CLI stop remain construction seams. The active storage test requires artifact-scoped gating, and the UI stop RPC already restricts generic stop to the origin thread.",
+    "ignoredInputAudit": "Every input key declared by the 87 table cases is referenced by the evaluator; paired negative cases cover restart, migration order, required artifact presence, HTML network denial, steward concurrency, and delivery sequence equality.",
+    "contradictoryOracleResult": "No active database-wide legacy expectation remains; artifact-storage.test.ts now carries the approved log-and-continue expectation as an explicit construction red."
+  },
+  "mutationCheck": {
+    "kind": "manual-fallback",
+    "serviceMutation": "A temporary production factory returning the string wrong caused all 87 table cases plus the factory-shape sentinel to fail while six structural checks passed; the temporary file was removed.",
+    "rendererMutation": "A temporary renderer returning null caused all eight host acceptance assertions to fail; the fallback binding was restored.",
+    "result": "Both no-op production seams are killed by behavior assertions rather than existence checks."
+  },
+  "review": {
+    "currentOwnerVerification": {
+      "workflowRun": "wfr_85007623-29b9-4d1b-ae4b-25553864b53c",
+      "verifiedAt": "2026-08-26T13:43:28Z",
+      "selected": 114,
+      "passed": 110,
+      "expectedConstructionRed": 4,
+      "unexpectedFailed": 0,
+      "skipped": 0
+    },
+    "ownerRubricAudit": {
+      "verdict": "PASS",
+      "rubric": "test-construction/testing/test-reviewer/contract-edge-testing",
+      "findingsResolved": 9,
+      "notes": [
+        "When a production service driver exists, every table case executes it; the reference evaluator is used only while the explicit missing-service sentinel remains red.",
+        "When a production host renderer exists, every interaction assertion renders it; the approved fallback is used only while the explicit missing-host sentinel remains red.",
+        "The SDK and host fixtures now freeze the same revision-history and full annotation callback shapes.",
+        "Closure claims are bound to a nine-file production and legacy manifest rather than unversioned searches."
+      ]
+    },
+    "independentReviewer": {
+      "priorVerdict": "CONCERN",
+      "priorReviewedOracleManifestSha256": "3b916ee54fc725919ca354261e9f89279d8ddb962a35e9e3ca45b33ac525519d",
+      "patchLevelFindings": 9,
+      "ownerReportsResolved": 9,
+      "currentOracleManifestSha256": "a5930a713bb6b79ab116ddd75c692ae0843e64caf4bb0ee4f9ef558efdf50962",
+      "reviewedAt": "2026-08-26T13:43:28Z",
+      "reviewerKind": "fresh-workflow-worker exact-manifest review",
+      "verdict": "PASS",
+      "findingCounts": {
+        "block": 0,
+        "warn": 0,
+        "nit": 0
+      },
+      "currentManifestApproved": true,
+      "status": "exact current manifest independently approved"
+    }
+  }
+}

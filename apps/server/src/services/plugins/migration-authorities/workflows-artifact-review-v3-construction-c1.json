@@ -1,0 +1,381 @@
+{
+  "schemaVersion": "bb-artifact-review-v3-construction-c1-authority-v1",
+  "successorSeamId": "bb-artifact-review-v3-construction-c1:host-truth-phase-state-contract-v1",
+  "contract": {
+    "architectureRevision": 2,
+    "contractId": "bb-artifact-review-service:revision-1",
+    "authorityRule": "server-assigned-local-owner-over-origin-campaign-project-environment",
+    "presentationRule": "grant-and-provenance-only",
+    "savedRule": "committed-only-after-reopened-host-verification",
+    "byteRule": "content-addressed",
+    "retentionRule": "append-only-non-destructive",
+    "migrationRange": "0..22",
+    "rollout": "dark",
+    "maliciousWriterAuthenticityClaim": false,
+    "sharedHostMutation": false,
+    "crossEnvironmentContinuation": false,
+    "bootstrap": false,
+    "deployment": false,
+    "adoption": false
+  },
+  "bindings": {
+    "synthesis": {
+      "runId": "wfr_66625559-698f-43be-89ea-d3914f0d0735",
+      "resultPath": "/Users/erik/.bb/thread-storage/thr_izyqi5c7pj/workflows/v3-c1-contract.json",
+      "successorSeamId": "bb-artifact-review-v3-construction-c1:host-truth-phase-state-contract-v1"
+    },
+    "v12": {
+      "approvalSha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0",
+      "ledgerSha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7",
+      "manifestByteLength": 798,
+      "manifestSha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b",
+      "authoritySha256": "dce9f6220e07452f0ad0aea5efe34dbd518e8bc689d6c5f9a558652fd7d64225",
+      "schemaSha256": "1757d6d75991b4df7e42a1172706d7abc3447d9c769845b86ee80a533177cf0e",
+      "oracleSha256": "6d99c62c80eb3d7a30c3df45701c293ed760b539e0aa575c7045c28b1aac0e4c",
+      "interpreterSha256": "274ec43fb0dcebf719d99e5541c2a56ded9e2ed23233ed00903d3322ea95f9c5",
+      "conformanceSha256": "eaeca2940663a8662a82189c95aee5424e4152b9431fa7ec15b6583eab3f1d6a"
+    },
+    "failedC0": {
+      "disposition": "immutable-failed-lineage-only",
+      "manifestByteLength": 556,
+      "manifestSha256": "d0e9c7a124fdc3f3f00f7608f919a59fd3eaaeafd1a0135eee7a3e848cd93069",
+      "authority": {
+        "byteLength": 23829,
+        "sha256": "3be9d1508dac92e46eaa4719bbe97fdc2e09ce578a44d64c280784533be16074"
+      },
+      "schema": {
+        "byteLength": 14346,
+        "sha256": "ec20efd31bfe51bbcf8288157e10891152aec77fcbb6139199f9efee46d7039d"
+      },
+      "oracle": {
+        "byteLength": 17141,
+        "sha256": "b169b89aca9971695481bf996ba2c89e9a129e3619383bc7f24393a439abe357"
+      },
+      "ledgerMustRemainAbsent": true,
+      "approvalMustRemainAbsent": true
+    }
+  },
+  "authorityGraph": {
+    "production": {
+      "authorityId": "bb-artifact-review-v3-construction-c1:authority-v1",
+      "predecessorAuthorityId": null,
+      "allowedTransition": "ordinary-or-exact-migration-18-recovery"
+    },
+    "testOnlyStrictPrefix": {
+      "predecessorAuthorityId": "bb-artifact-review-v3-construction-c1:test-predecessor-v1",
+      "successorAuthorityId": "bb-artifact-review-v3-construction-c1:test-successor-v1",
+      "verifiedPrefix": "0..17",
+      "suffix": "18..22",
+      "allowedTransition": "verified-predecessor-apply-suffix"
+    }
+  },
+  "migrationCatalog": [
+    {
+      "id": 0,
+      "byteLength": 1935,
+      "sha256": "cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6"
+    },
+    {
+      "id": 1,
+      "byteLength": 534,
+      "sha256": "25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071"
+    },
+    {
+      "id": 2,
+      "byteLength": 386,
+      "sha256": "caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d"
+    },
+    {
+      "id": 3,
+      "byteLength": 350,
+      "sha256": "d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1"
+    },
+    {
+      "id": 4,
+      "byteLength": 156,
+      "sha256": "ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14"
+    },
+    {
+      "id": 5,
+      "byteLength": 117,
+      "sha256": "8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1"
+    },
+    {
+      "id": 6,
+      "byteLength": 90,
+      "sha256": "e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465"
+    },
+    {
+      "id": 7,
+      "byteLength": 89,
+      "sha256": "eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337"
+    },
+    {
+      "id": 8,
+      "byteLength": 385,
+      "sha256": "a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2"
+    },
+    {
+      "id": 9,
+      "byteLength": 69,
+      "sha256": "e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89"
+    },
+    {
+      "id": 10,
+      "byteLength": 64,
+      "sha256": "bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d"
+    },
+    {
+      "id": 11,
+      "byteLength": 565,
+      "sha256": "89f614b25f424c27f61d6308f1d93373420fff3cea5a4958b471668bf31ccf24"
+    },
+    {
+      "id": 12,
+      "byteLength": 667,
+      "sha256": "5c980eccd9a3a40da158ef41806df8f212b494cbc60b2768762bf05fe58c09c2"
+    },
+    {
+      "id": 13,
+      "byteLength": 243,
+      "sha256": "5951a693ab7a49e5f1b4cecb2e4bc6385853584de204f48b974aaa3fb19e2bfa"
+    },
+    {
+      "id": 14,
+      "byteLength": 8918,
+      "sha256": "1767f3322d25f443f073ff49cada30950ace97d2d348d57696d1baeee7d7a3e3"
+    },
+    {
+      "id": 15,
+      "byteLength": 1907,
+      "sha256": "65e86c96105b3f48f8e0faa5f168e7f5e0d66f916cd4c1ea6d6f8a8a89111f83"
+    },
+    {
+      "id": 16,
+      "byteLength": 150,
+      "sha256": "5b44b70d6b98aa04374afeefff2860733465d4a1156ac33917b15646073014d8"
+    },
+    {
+      "id": 17,
+      "byteLength": 204,
+      "sha256": "d147cd626d4887587d4efa99fea9a9f801960d6c9c18b0fb8ac6c9a0b636f01e"
+    },
+    {
+      "id": 18,
+      "byteLength": 20249,
+      "sha256": "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d"
+    },
+    {
+      "id": 19,
+      "byteLength": 849,
+      "sha256": "03afb93d68a7018bed783ce9bb72665b52a9c6f544564956d35dbda7d65997a3"
+    },
+    {
+      "id": 20,
+      "byteLength": 4012,
+      "sha256": "1d0f7ebcbc92d9bc7e175a4b70ac430ef42498191b4c57ff46620f82af17434e"
+    },
+    {
+      "id": 21,
+      "byteLength": 634,
+      "sha256": "57defc2f33da6307d6887fcb357dcf030fd614b56a342f310796ae1fe2b81e14"
+    },
+    {
+      "id": 22,
+      "byteLength": 3157,
+      "sha256": "045811cf8748bb6ca9a33242449f58a2c72dc8e42972e4acc63f2807bef0053e"
+    }
+  ],
+  "migrationVector": {
+    "encoding": "id-colon-sha256-semicolon-no-terminal",
+    "byteLength": 1553,
+    "sha256": "2d4aa4a4dc215e4a3c51e763dfde370cf2a33741130f7ec3d2082c334251ec7c",
+    "compatibilityFault": {
+      "migrationId": 18,
+      "prefix": "0..17",
+      "error": "E_MIGRATION_18_COMPATIBILITY_BLOCKED"
+    }
+  },
+  "dirtyProvenance": {
+    "unrelatedPorcelainLineCount": 69,
+    "filteredPorcelainSha256": "2a0613fa078a0c8d257a187f804d23382ac2157f7300ebc5154f98b832926929",
+    "indexMustRemainClean": true,
+    "failedLineageFiles": [
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+        "sha256": "24e552b8c3b6e7257cdfa6209e174c261cca172fcf09cf6e996914372d38834d"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+        "sha256": "274bb2885a4637df867fc8c5626cfe56ff0c533571bf36611dc8ec70cabf6d58"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+        "sha256": "fe76b107b2a16b5dc39a3ceabeb50cc76f0d952012b88beadb751017c8af1197"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+        "sha256": "94c01826031a0d52519869f02fe834c8899e20f7e8b560b40aaa8c225afa31cd"
+      },
+      {
+        "path": "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+        "sha256": "04a4a9991f9d94c4a5f7b80e1ca8e5ffb47218360efb613600e313315b1222a6"
+      },
+      {
+        "path": "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+        "sha256": "f8e4074a1ac5154cf107d729be5ef6dac880ac8b8d6057fc0d5210e8b1aabbb7"
+      },
+      {
+        "path": "packages/plugin-sdk/src/backend-contract.ts",
+        "sha256": "c8b9926a8ec600157a4e958e953c7be9e3cba3cab8a44ea1b137046078fad236"
+      },
+      {
+        "path": "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+        "sha256": "357f5471dbbe08a562965682cea2d998469a1256c5a6be69909ab0c1774685b8"
+      },
+      {
+        "path": "apps/server/src/services/plugins/plugin-api.ts",
+        "sha256": "0c34ac6416cbd990a7b9af06c8456bd6531c001133501a9c582ab057be8d2e06"
+      }
+    ],
+    "preC0BehavioralTests": [
+      {
+        "path": "packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts",
+        "sha256": "e81af7cc07e0b1bc7950eec180a0580fcd3f6051ef11849fd8206597aedcbb5b"
+      },
+      {
+        "path": "apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts",
+        "sha256": "2ee50b3c72822f60639a92a7b8d34b0b6139ca9b4768f7f38e20cd7b6060eead"
+      }
+    ]
+  },
+  "semanticStates": {
+    "pre18": {
+      "roots": {
+        "schema": "294f2b8286c24d068d57315c37a21ed4b97f27ea0bde65759573eee3f6a34392",
+        "ledger": "4f06ec74f19244e77bf08536cbf44117be74d100b4a99be99a8df27d1f82ab80",
+        "active": "85fd72185b5349b9d0ee6ab359444ec4d23d7838a914593ef934d1e7f82794fc",
+        "quarantine": "b182fd5caf928419c9c876ed8b521bba6f66e60d3365a260dc688173d73fd99a",
+        "grants": "392447f1dc715a15e5031fabd975fe85bec44e89504ac2d2fa347bffd686550f",
+        "blobs": "4affc119130a2956a3ee2d0ab9e0199f5951fdb95e87ffc5a92bee851aeb7992",
+        "blobReferences": "cabd0b5b7c9e6f125941fa115aba0cbe19c1d780b5990ef48c12bea350fc8e97",
+        "relationships": "6dbf853de7c70131ad7fde400feaf9551e0ab343021805fcbb12affbf73e9584"
+      },
+      "counts": {
+        "activeRows": 0,
+        "quarantineRows": 0,
+        "grants": 0,
+        "blobObjects": 0,
+        "blobReferences": 0,
+        "relationships": 0,
+        "completions": 0,
+        "recoveries": 0,
+        "consumers": 0
+      }
+    },
+    "ordinary": {
+      "roots": {
+        "schema": "90a7b92b35834393f9f9f3c96490763e19be497c904761ccebe710f7a89b960a",
+        "ledger": "40c1130abddfda2f14450d5c3ec3046cee84e7e1094ceab67f98df8bc0280c9f",
+        "active": "d44a07a39379d7ca32a566c2350cf37e5adb1da2ef026bd65ca1c0d8cc3ada13",
+        "quarantine": "a3aba96b8609a4d9f952449677b1c61f264f3229a8bb69b020bc0a3ff78f977b",
+        "grants": "f179b620f16a74110ce2885012398db2c63e6f2da623e1f1186d990b2672ef4f",
+        "blobs": "54bdafb9c242d87ae57697adcd93076db946a1b81c2e6d3ca1beb5659e167cb2",
+        "blobReferences": "cabd0b5b7c9e6f125941fa115aba0cbe19c1d780b5990ef48c12bea350fc8e97",
+        "relationships": "6dbf853de7c70131ad7fde400feaf9551e0ab343021805fcbb12affbf73e9584"
+      },
+      "counts": {
+        "activeRows": 0,
+        "quarantineRows": 0,
+        "grants": 0,
+        "blobObjects": 0,
+        "blobReferences": 0,
+        "relationships": 0,
+        "completions": 1,
+        "recoveries": 0,
+        "consumers": 0
+      },
+      "completion": {
+        "authorityId": "bb-artifact-review-v3-construction-c1:authority-v1",
+        "outcome": "ordinary",
+        "migrationThrough": 22,
+        "bodySha256": "5bba19a262fd96f8be4f42542c3c25b224847534e05997f3be4c7c5aa83c274c"
+      }
+    },
+    "recovered": {
+      "roots": {
+        "schema": "90a7b92b35834393f9f9f3c96490763e19be497c904761ccebe710f7a89b960a",
+        "ledger": "40c1130abddfda2f14450d5c3ec3046cee84e7e1094ceab67f98df8bc0280c9f",
+        "active": "95998ba96641773fc252f65c514dbcea709a711c950c39acd5a12e873a04f840",
+        "quarantine": "0ee84ee1875f49409c51ac601cdc08e48eda74aaa7c5aedcfe6f255f4dc65b0c",
+        "grants": "0cdffbac0ead13cecf51d7651cb77c6f784dbb49d8f5172c28958092a9536bd8",
+        "blobs": "69e1f10b9a0b73a26a970fed9e4a803baf2761fed469909b14fed75ca9f810d5",
+        "blobReferences": "cabd0b5b7c9e6f125941fa115aba0cbe19c1d780b5990ef48c12bea350fc8e97",
+        "relationships": "6dbf853de7c70131ad7fde400feaf9551e0ab343021805fcbb12affbf73e9584"
+      },
+      "counts": {
+        "activeRows": 1,
+        "quarantineRows": 1,
+        "grants": 1,
+        "blobObjects": 1,
+        "blobReferences": 1,
+        "relationships": 1,
+        "completions": 1,
+        "recoveries": 1,
+        "consumers": 0
+      },
+      "completion": {
+        "authorityId": "bb-artifact-review-v3-construction-c1:authority-v1",
+        "outcome": "recovered",
+        "migrationThrough": 22,
+        "bodySha256": "0ace18a154f95abe208d091029794db3a69431460948c9c805257fbc335b0979"
+      },
+      "blob": {
+        "sha256": "f6a1ec04366d6238e1003ebb7985038994fda2debedb14917cd4556e1250fc63",
+        "contentType": "text/markdown",
+        "byteLength": 21,
+        "bytesHex": "61727469666163742d7265636f766572792d763130"
+      },
+      "origin": {
+        "campaignId": "campaign-a",
+        "projectId": "project-a",
+        "environmentId": "environment-a",
+        "localOwner": "artifact-retained"
+      },
+      "presentationGrant": {
+        "threadId": "thread-presentation",
+        "provenanceOnly": true
+      },
+      "relationship": {
+        "sourceTable": "workflow_artifact_revisions",
+        "column": "blob_sha256",
+        "targetTable": "workflow_artifact_blobs",
+        "multiplicity": 1
+      }
+    },
+    "strictPrefixSuccessor": {
+      "completion": {
+        "authorityId": "bb-artifact-review-v3-construction-c1:test-successor-v1",
+        "outcome": "ordinary",
+        "migrationThrough": 22,
+        "bodySha256": "cd42c861068fe5dee466ed519a8069b15ba748bf7c4000d58db43b90c79babee"
+      },
+      "prefixIds": [
+        0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17
+      ],
+      "suffixIds": [18, 19, 20, 21, 22]
+    }
+  },
+  "allowedPhaseStates": [
+    "preflight-rejected",
+    "classified-ordinary",
+    "classified-exact-recovery-prefix",
+    "classified-strict-prefix-successor",
+    "ordinary-effects",
+    "recovery-effects",
+    "successor-suffix-effects",
+    "committed",
+    "reopened-host-verified",
+    "failed-closed"
+  ]
+}

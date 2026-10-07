@@ -1,0 +1,197 @@
+{
+  "schemaVersion": "artifact-review-v8-invariant-ownership-boundary-approval-v1",
+  "approvalState": "approved",
+  "generatedAt": "2026-08-27T04:22:01Z",
+  "scope": "invariant-ownership-integration-proof-only",
+  "seam": {
+    "id": "artifact-review-v8:invariant-ownership-boundary-v2"
+  },
+  "contract": {
+    "id": "bb-artifact-review-service:revision-1",
+    "revision": 1
+  },
+  "architecture": {
+    "revision": 2,
+    "synthesisRunId": "wfr_b58072cb-8953-4194-b8d5-97c292f980dd",
+    "decision": "contract-preserving-successor"
+  },
+  "authority": {
+    "acceptedDesign": {
+      "path": ".architect/design-lab/workflow-artifact-review.md",
+      "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+    },
+    "contextPacket": {
+      "path": ".architect/context-packets/artifact-review-service-build.md",
+      "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+    }
+  },
+  "frozenExpectedOutcomes": {
+    "manifestEncoding": "UTF-8 JSON.stringify of path-localeCompare-sorted {path,sha256} array with no terminal newline",
+    "manifestBytes": 299,
+    "manifestSha256": "320109d245dd94c8a65947f81cee412bc5c6f08fcc4b9b8c96064785a8116e12",
+    "manifest": [
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-contract.ts",
+        "sha256": "887b4749db30db96fbfb8cde652a6899554ad8cd340fce9eeda7606201eec012"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-decision-table.ts",
+        "sha256": "2f8e22d0dfc6d24311acda6d5ef14d5691dfb05ba97ad89f3b5977e58b50b6bc"
+      }
+    ],
+    "semanticCounts": {
+      "validRows": 37,
+      "negativeRows": 12,
+      "metamorphicRules": 6
+    },
+    "approvalReceipt": {
+      "path": "output/artifact-review-shakedown/oracle/mutation-proof-boundary-approval.json",
+      "sha256": "c6f3396ecd081541c5b4ce85c1fb2b309f7fea581c46d237d0b53e3259b7e08a",
+      "state": "historical-unchanged"
+    }
+  },
+  "candidate": {
+    "manifestEncoding": "UTF-8 JSON.stringify of path-localeCompare-sorted {path,sha256} array with no terminal newline",
+    "manifestBytes": 1346,
+    "manifestSha256": "983a3147a5bc43255f99ca4e6294a970bd471a97bbdd85d47779e4a17ea7658a",
+    "manifest": [
+      {
+        "path": "apps/app/src/components/plugin/PluginArtifactReview.acceptance.test.tsx",
+        "sha256": "47169db9f475579abc2b12b69b6bff6b10f1de9e149c844f9c54d1700e43c106"
+      },
+      {
+        "path": "packages/plugin-sdk/src/__tests__/artifact-review-contract.test.tsx",
+        "sha256": "14ac76e44ea6f33409942a3c634e4e8f72491ae39001fac000f3fc6bb1f66a16"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-contract.ts",
+        "sha256": "887b4749db30db96fbfb8cde652a6899554ad8cd340fce9eeda7606201eec012"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-decision-table.ts",
+        "sha256": "2f8e22d0dfc6d24311acda6d5ef14d5691dfb05ba97ad89f3b5977e58b50b6bc"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-oracle.test.ts",
+        "sha256": "f169fa70a7efbb2d4c2ebe76b89208d6c4d095aa2328cb0e8c7b6eb21c11e124"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-ownership.ts",
+        "sha256": "81c6cb1ea6936509f0205aad78cf1b18d673ce4b8325a37c643cd43497b22ff5"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-reference-model.ts",
+        "sha256": "760a1164aa3e480a3b5fd788c8b65800b9ae683748585c789db80d0b6994eade"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-oracle-fixtures.ts",
+        "sha256": "0730ddc5d46ea4ff9148fdc4ccc8823a22552184debd8a00214fd4c6fb217a71"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-oracle.test.ts",
+        "sha256": "f45a6f51bca5ef03b4574518add819adf9052a8dba2b4a15117346a032903d03"
+      }
+    ],
+    "frozenReferenceModel": {
+      "path": "plugins/workflows/src/artifact-review-mutation-reference-model.ts",
+      "sha256": "760a1164aa3e480a3b5fd788c8b65800b9ae683748585c789db80d0b6994eade"
+    }
+  },
+  "verification": {
+    "combinedVitest": {
+      "command": "pnpm --filter bb-plugin-workflows exec vitest run --config vitest.config.ts src/artifact-review-oracle.test.ts src/artifact-review-mutation-oracle.test.ts",
+      "selected": 325,
+      "passed": 325,
+      "failed": 0,
+      "skipped": 0
+    },
+    "mutationLogicalAccounting": {
+      "selected": 98,
+      "passed": 61,
+      "expectedConstructionRed": 37,
+      "unexpectedFailed": 0,
+      "skipped": 0
+    },
+    "typecheck": {
+      "command": "pnpm --filter bb-plugin-workflows typecheck",
+      "passed": true,
+      "diagnostics": 0
+    },
+    "postGateManifestStable": true,
+    "findings": []
+  },
+  "independentReview": {
+    "verdict": "pass",
+    "reviewerRole": "fresh-independent-v8-boundary-critic",
+    "workflowRunId": "wfr_c41461bc-f4e4-4120-ab9b-e73796e46db9",
+    "workflowCallId": "wfc_2be85389-1f5d-453b-8c81-c28deef7bbe3",
+    "reviewerThreadId": "thr_zd4t7dy4y4",
+    "provider": "codex",
+    "model": "gpt-5.6-sol",
+    "reasoningLevel": "high",
+    "independentOfBuilder": true,
+    "findingCounts": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "findings": []
+  },
+  "workflowLineage": {
+    "architectureRunId": "wfr_b58072cb-8953-4194-b8d5-97c292f980dd",
+    "integrationRunId": "wfr_c41461bc-f4e4-4120-ab9b-e73796e46db9",
+    "builderCallId": "wfc_e9ae3a22-8179-46e5-bd3c-b880af2ff778",
+    "builderThreadId": "thr_hvryqnnqge",
+    "reviewCallId": "wfc_2be85389-1f5d-453b-8c81-c28deef7bbe3",
+    "reviewThreadId": "thr_zd4t7dy4y4",
+    "approvalCallId": "wfc_c84e5dba-b8ed-4a43-85fc-eea957e1deb2",
+    "approvalThreadId": "thr_reyhmnhdpi"
+  },
+  "repository": {
+    "worktree": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details",
+    "remote": "https://github.com/ymichael/bb.git",
+    "head": "e2b88b053c1e9823e56d71e7f7861fd351d94d5d",
+    "branch": "feature/workflow-detail-ledger",
+    "dirty": true,
+    "worktreeStatusSha256BeforeReceipt": "57bb839cb08e3dc63d607f488615d15fd9fa359378acb040b53ad84a4663dbb0",
+    "worktreeStatusEntryCountBeforeReceipt": 60,
+    "worktreeStatusCommand": "git status --porcelain=v1 --untracked-files=all | shasum -a 256"
+  },
+  "repairBudget": {
+    "v7SuccessorPostFreeze": 0,
+    "v8PostFreeze": 0,
+    "approvalRecorder": 0
+  },
+  "historicalEvidence": {
+    "v6Recovery": {
+      "receiptPath": "output/artifact-review-shakedown/section-1/v6-recovery.receipt.json",
+      "receiptSha256": "912abd52c73c9e5ad623c922717f2b64438a75e8d14c97dbeaa14dee86fcd439",
+      "state": "unadmitted-unchanged-candidate-evidence"
+    },
+    "oracleApproval": {
+      "path": "output/artifact-review-shakedown/oracle/oracle-approval.json",
+      "sha256": "a3329fcbcc0390f788a7536981ef734610bb259001613d6c5b266014d4e7e7fc",
+      "state": "historical-unchanged"
+    },
+    "priorReceipts": "historical-and-unchanged"
+  },
+  "limitations": {
+    "productionService": {
+      "path": "plugins/workflows/src/artifact-review-service.ts",
+      "state": "absent-and-unapproved"
+    },
+    "feature": "dark",
+    "artifactRpc": "dark",
+    "artifactUi": "dark",
+    "liveChanges": "dark"
+  },
+  "statements": [
+    "This receipt approves only the exact v8 invariant-ownership integration manifest.",
+    "Production remains absent and unapproved.",
+    "V6 recovery bytes remain unadmitted unchanged candidate evidence.",
+    "Old receipts remain historical and unchanged.",
+    "Feature, RPC, UI, and live changes remain dark.",
+    "The v8 successor has zero post-freeze repair budget."
+  ]
+}

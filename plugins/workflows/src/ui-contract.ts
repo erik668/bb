@@ -126,6 +126,10 @@ export const workflowUiRpcContract = defineRpcContract({
     input: threadLookupInputSchema,
     output: z.object({ runs: z.array(workflowRunViewSchema) }).strict(),
   },
+  workflowThreadRuns: {
+    input: threadLookupInputSchema,
+    output: z.object({ runs: z.array(workflowRunViewSchema) }).strict(),
+  },
   workflowRunView: {
     input: runLookupInputSchema,
     output: z.object({ run: workflowRunViewSchema.nullable() }).strict(),

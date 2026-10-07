@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 3,
+  "section": "section-1",
+  "unit": "artifact-review-atomic-terminal-transition-kernel-v3",
+  "adjudication": "frozen-candidate",
+  "priorReceipt": {
+    "selector": ".architect/evidence/artifact-review/section-1-terminal-kernel.json",
+    "sha256": "e9c55885080b26b938d7e9b3147429325e3e560923748edc4a129dfd3e5d5849"
+  },
+  "immutableInputs": {
+    "plugins/workflows/src/workflow-terminal-settlement.ts": "fd787ff3658cd13542fc61c5c03ac06a3c2aefc43a84ce4dd4575af5ca8fc705",
+    "plugins/workflows/src/workflow-terminal-settlement.test.ts": "9f355cb7051ad14340771622bffca01591b641473d690cf2d020953af435096f",
+    "plugins/workflows/src/service.ts": "3b4b51dc06eebc570a03b1f928140a56db4b8f7f17db4a1a57018159e49a2f14"
+  },
+  "consumedRepairBudget": {
+    "family": "artifact-review-gated-terminal-writer-foundation-v2",
+    "status": "consumed",
+    "remainingRepairs": 0,
+    "rule": "No product or test-byte repair owner is authorized for this frozen adjudication."
+  },
+  "u6Boundary": "The fixture seeds already-committed revision, change, and interlock rows with SQL. It does not prove authorization, admission transactionality, or the admission/result race; U6 remains the sole production admission owner.",
+  "verifications": [
+    {
+      "id": "section-1:verification-1",
+      "command": "pnpm --filter bb-plugin-workflows test -- src/workflow-terminal-settlement.test.ts --no-file-parallelism",
+      "status": "passed",
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-2",
+      "command": "pace-agent-runtime heavy --name artifact-review-typecheck -- pnpm --filter bb-plugin-workflows typecheck",
+      "status": "passed"
+    },
+    {
+      "id": "section-1:verification-3",
+      "command": "shasum -a 256 plugins/workflows/src/workflow-terminal-settlement.ts plugins/workflows/src/workflow-terminal-settlement.test.ts plugins/workflows/src/service.ts && git diff --check -- plugins/workflows/src/workflow-terminal-settlement.ts plugins/workflows/src/workflow-terminal-settlement.test.ts plugins/workflows/src/service.ts && node -e 'JSON.parse(require(\"node:fs\").readFileSync(\".architect/evidence/artifact-review/section-1-terminal-kernel.json\", \"utf8\"))' && ! rg -n 'admitContractRevision' plugins/workflows/src --glob '*.ts' --glob '!*.test.ts' && jq -e '.faultInjection.status == \"killed\" and .faultInjection.restored == true and .faultInjection.failed == 4 and (.faultInjection.killedBy | length == 4)' .architect/evidence/artifact-review/section-1-terminal-kernel.json >/dev/null",
+      "status": "passed"
+    },
+    {
+      "id": "section-1:verification-4",
+      "command": "node -e 'const fs = require(\"node:fs\"); const receipt = JSON.parse(fs.readFileSync(\".architect/evidence/artifact-review/section-1-terminal-kernel.json\", \"utf8\")); const allowed = new Set([\"schemaVersion\", \"section\", \"unit\", \"adjudication\", \"priorReceipt\", \"immutableInputs\", \"consumedRepairBudget\", \"u6Boundary\", \"verifications\", \"faultInjection\", \"finalHashes\"]); if (Object.keys(receipt).some((key) => !allowed.has(key) || /critic|review|verdict/i.test(key))) process.exit(1); const evidence = { ...receipt, verifications: undefined }; if (JSON.stringify(evidence).match(/independent|critic|verdict/i)) process.exit(1); if (receipt.priorReceipt.sha256 !== \"e9c55885080b26b938d7e9b3147429325e3e560923748edc4a129dfd3e5d5849\") process.exit(1)' && shasum -a 256 plugins/workflows/src/workflow-terminal-settlement.ts plugins/workflows/src/workflow-terminal-settlement.test.ts plugins/workflows/src/service.ts .architect/evidence/artifact-review/section-1-terminal-kernel.json && git diff --check -- .architect/evidence/artifact-review/section-1-terminal-kernel.json && jq -e '.verifications | length == 4' .architect/evidence/artifact-review/section-1-terminal-kernel.json >/dev/null",
+      "status": "passed"
+    }
+  ],
+  "faultInjection": {
+    "mutation": "BLOCKING_INTERLOCK_PREDICATE: state != 'adopted' -> state = 'adopted'",
+    "command": "pnpm --filter bb-plugin-workflows test -- src/workflow-terminal-settlement.test.ts --no-file-parallelism",
+    "status": "killed",
+    "failed": 4,
+    "killedBy": [
+      "stale structured result",
+      "restart recovery",
+      "redispatch",
+      "stacked interlocks"
+    ],
+    "restored": true,
+    "adjudication": "The recorded kill is bound to the fresh restored immutable-input hashes; no new mutation was performed during frozen adjudication."
+  },
+  "finalHashes": {
+    "plugins/workflows/src/workflow-terminal-settlement.ts": "fd787ff3658cd13542fc61c5c03ac06a3c2aefc43a84ce4dd4575af5ca8fc705",
+    "plugins/workflows/src/workflow-terminal-settlement.test.ts": "9f355cb7051ad14340771622bffca01591b641473d690cf2d020953af435096f",
+    "plugins/workflows/src/service.ts": "3b4b51dc06eebc570a03b1f928140a56db4b8f7f17db4a1a57018159e49a2f14"
+  }
+}

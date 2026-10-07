@@ -1,0 +1,66 @@
+{
+  "artifactId": "section-1-walking-skeleton",
+  "section": "Effectful terminal-settlement walking skeleton",
+  "seam": "artifact-review-effectful-settlement-skeleton-v1",
+  "workflowRun": "wfr_727ec458-2e5f-4804-bc4d-88af10ec6c79",
+  "immutableInput": {
+    "path": ".architect/design-lab/workflow-artifact-review.md",
+    "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+  },
+  "completionInventory": [
+    {
+      "artifactId": "section-1-approved-design",
+      "path": ".architect/design-lab/workflow-artifact-review.md",
+      "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f",
+      "state": "verified"
+    },
+    {
+      "artifactId": "terminal-settlement-module",
+      "path": "plugins/workflows/src/workflow-terminal-settlement.ts",
+      "sha256": "02b41d862409fad6665a57bc8959b7c57a188fbfd40dfc674dd4acb65310f2cf",
+      "state": "updated"
+    },
+    {
+      "artifactId": "terminal-settlement-test",
+      "path": "plugins/workflows/src/workflow-terminal-settlement.test.ts",
+      "sha256": "59d5028d64393ea5da2428af22edc780250ceb7fb33412a84bd6f3ad2622c934",
+      "state": "updated"
+    }
+  ],
+  "outputs": {
+    "terminalSettlementModule": {
+      "path": "plugins/workflows/src/workflow-terminal-settlement.ts",
+      "sha256": "02b41d862409fad6665a57bc8959b7c57a188fbfd40dfc674dd4acb65310f2cf"
+    },
+    "terminalSettlementTest": {
+      "path": "plugins/workflows/src/workflow-terminal-settlement.test.ts",
+      "sha256": "59d5028d64393ea5da2428af22edc780250ceb7fb33412a84bd6f3ad2622c934"
+    }
+  },
+  "proof": [
+    "Production composition initializes the file-backed plugin SQLite database, migrates it, and creates WorkflowService.",
+    "An origin-scoped S0 Requirements revision and running call admit S1 plus its pending interlock; the real service structured-result path retains S0 output as stale without settling or promoting.",
+    "After database close/reopen, revision state, interlock, and stale receipt remain authoritative; a non-presentation-thread admission is denied.",
+    "Feature-off calls retain null snapshot semantics, settle normally, and a resumed production run replays the result without spawning a second child worker."
+  ],
+  "verifications": [
+    {
+      "id": "section-1:verification-1",
+      "kind": "test",
+      "command": "pnpm exec turbo run test --filter=bb-plugin-workflows -- src/workflow-terminal-settlement.test.ts",
+      "exitCode": 0,
+      "passed": 8,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-2",
+      "kind": "command",
+      "command": "pace-agent-runtime heavy --name artifact-review-typecheck -- pnpm exec turbo run typecheck --filter=bb-plugin-workflows",
+      "exitCode": 0,
+      "summary": "Workflow plugin typecheck passed."
+    }
+  ],
+  "scope": "Only the terminal-settlement seam, its effectful test, its migration count tripwire, and this receipt are represented. Change-controller, acknowledgement, delivery, and UI work remain deferred.",
+  "recordedAt": "2026-08-26T15:32:48-04:00"
+}

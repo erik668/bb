@@ -77,15 +77,16 @@ total. Older entries are explicitly marked `checkpointsOmitted`.
 Use the `campaignId` returned by a prior run with `--campaign` to continue that
 existing build story; an unknown campaign ID is rejected, and a campaign is
 capped at 100 runs. `--present-in`
-surfaces a CLI-launched run's active card and
+surfaces a CLI-launched run's active and latest-completed card and
 inspector in another thread while its origin retains execution, environment,
-permission, and completion-notification ownership. Hidden workflow workers
-otherwise inherit their parent run's presentation/root relationship or use the
-nearest visible ancestor. An explicit presentation target must be a visible
-thread in the same project and environment and must be the origin or one of its
-ancestors. Presentation-thread inspection is read-only; stop control remains
-with the origin. The target must be available from the same BB server;
-workflows do not federate state across servers. Status, list, and history run
+permission, and completion-notification ownership. Parented launchers use
+their root visible parent, including across projects or environments. A
+standalone launcher must pass `--present-in <thread-id>` or
+`presentationThreadId` through the agent tool. The target must be visible and
+available from the same BB server; workflows do not federate state across
+servers. The target receives read-only card and inspector access; copying a
+run ID into an unrelated thread does not grant access. Stop control remains
+with the origin. Status, list, and history run
 records include
 `originThreadId`, `presentationThreadId`, `parentRunId`, `rootRunId`, and
 `campaignId`.

@@ -668,13 +668,14 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
   unknown campaign IDs are rejected, and each campaign is capped at 100 runs.
   The origin thread keeps execution,
   environment, permission, and completion-notification ownership; the optional
-  presentation thread receives the active card, realtime updates, and inspector
-  access. Hidden workflow workers otherwise inherit their parent run's
-  presentation/root relationship or use the nearest visible ancestor. An
-  explicit presentation target must be a visible thread in the same project
-  and environment and must be the origin or one of its ancestors.
-  Presentation-thread inspection is read-only; stop control remains with the
-  origin. The target must be available from the same BB server.
+  presentation thread receives the active and latest-completed card, realtime
+  updates, and inspector access. Parented launchers use their root visible
+  parent, including across projects or environments. A standalone launcher
+  must pass `--present-in <thread-id>` (or `presentationThreadId` through the
+  agent tool). The target must be a visible thread on the same BB server.
+  The target receives read-only card and inspector access; copying a run ID
+  into an unrelated thread does not grant access. Stop control remains with
+  the origin.
 - Poll compact progress with `bb workflows status <run-id>` and list compact
   run summaries with `bb workflows list [--limit <1-50>]`. Inspect durable
   structured plan, work-item/ticket, and verification state with

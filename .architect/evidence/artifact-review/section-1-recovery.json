@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "sectionId": "section-1",
+  "unit": "artifact-review-v6:hash-bound-pre18-quarantine-recovery-v1",
+  "completionStatus": "complete",
+  "receipt": {
+    "path": "output/artifact-review-shakedown/section-1/v6-recovery.receipt.json",
+    "sha256": "912abd52c73c9e5ad623c922717f2b64438a75e8d14c97dbeaa14dee86fcd439"
+  },
+  "verifications": [
+    {
+      "id": "section-1:verification-1",
+      "kind": "test",
+      "command": "pnpm --filter @bb/server exec vitest run --config vitest.config.ts src/services/plugins/plugin-api.migration-recovery.test.ts",
+      "status": "passed",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-2",
+      "kind": "test",
+      "command": "pnpm --filter @get-bb/plugin-sdk exec vitest run --config vitest.config.ts src/testing/__tests__/fake-plugin-host.test.ts",
+      "status": "passed",
+      "passed": 44,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-3",
+      "kind": "test",
+      "command": "pnpm --filter bb-plugin-workflows exec vitest run --config vitest.config.ts src/artifact-review-oracle.test.ts src/artifact-recovery.test.ts src/data.test.ts src/server-harness.test.ts",
+      "status": "passed",
+      "passed": 65,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-4",
+      "kind": "command",
+      "command": "pnpm --filter @bb/server typecheck; pnpm --filter bb-plugin-workflows typecheck",
+      "status": "passed",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-5",
+      "kind": "command",
+      "command": "git diff --check -- packages/plugin-sdk/src/backend-contract.ts apps/server/src/services/plugins/plugin-api.ts apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts packages/plugin-sdk/src/testing/fake-plugin-host.ts packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts plugins/workflows/src/artifact-recovery.ts plugins/workflows/src/artifact-recovery.test.ts plugins/workflows/src/data.ts plugins/workflows/src/data.test.ts plugins/workflows/src/server.ts plugins/workflows/src/server-harness.test.ts plugins/workflows/src/artifact-review-oracle-fixtures.ts plugins/workflows/src/artifact-review-oracle.test.ts output/artifact-review-shakedown/section-1/v6-recovery.receipt.json",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "selectedAssertions": 111,
+  "scope": {
+    "artifactRpcRegistered": false,
+    "uiRegistered": false,
+    "liveChanges": "dark"
+  }
+}

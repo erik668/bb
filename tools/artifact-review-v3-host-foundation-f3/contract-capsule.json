@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "seamId": "bb-artifact-review-v3-host-foundation-f3:standalone-neutral-self-admission-v1",
+  "successorMode": "standalone-neutral-harness",
+  "authority": {
+    "architectureRevision": 2,
+    "serviceRevision": "bb-artifact-review-service:revision-1",
+    "migrations": { "first": 0, "last": 22, "count": 23 },
+    "manifestSha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b",
+    "approvalSha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0",
+    "ledgerSha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7",
+    "migrationVector": {
+      "bytes": 1553,
+      "sha256": "2d4aa4a4dc215e4a3c51e763dfde370cf2a33741130f7ec3d2082c334251ec7c"
+    },
+    "owner": "server-local-owner",
+    "originAuthority": "server",
+    "presentationScope": "grant-and-provenance-only",
+    "savedState": "committed-only",
+    "truthModel": "append-only-non-destructive",
+    "restartVerification": "independent",
+    "legacyFullLedgerAdoption": false,
+    "admittedArrayV2Behavior": "unchanged"
+  },
+  "darkSurfaces": [
+    "public-v3",
+    "feature",
+    "rpc",
+    "ui",
+    "renderer",
+    "sdk",
+    "live",
+    "deployment",
+    "rollout"
+  ],
+  "neutralSentinel": {
+    "owner": "server-local-owner",
+    "origin": "server",
+    "artifactId": "f3-neutral-sentinel",
+    "contentSha256": "fbcfd96b324792c0f66a449492746f7d4c8c47967d689e1302b65e77f98b12c5"
+  },
+  "counts": {
+    "selected": 16,
+    "reached": 16,
+    "passed": 16,
+    "failed": 0,
+    "skipped": 0,
+    "todo": 0,
+    "filtered": 0,
+    "setupErrors": 0
+  },
+  "controls": [
+    { "id": "F3-SA-01", "class": "oracle-invalid", "reachability": "plain-function-spy-matcher-misuse", "reason": "ORACLE_INVALID_SPY_REQUIRED" },
+    { "id": "F3-SA-02", "class": "semantic", "reachability": "real-callable-once-and-wrong-identity", "reason": "CALLABLE_IDENTITY_MISMATCH" },
+    { "id": "F3-SA-03", "class": "semantic", "reachability": "fabricated-child-phase-commit-close-durability-claims", "reason": "NON_AUTHORITATIVE_CLAIM" },
+    { "id": "F3-SA-04", "class": "semantic", "reachability": "disabled-moved-duplicated-reordered-nonblocking-phases", "reason": "PHASE_CHRONOLOGY_INVALID" },
+    { "id": "F3-SA-05", "class": "semantic", "reachability": "clean-sigterm-exception-timeout-ambiguous-death", "reason": "DEATH_NOT_CONFIRMED_SIGKILL" },
+    { "id": "F3-SA-06", "class": "semantic", "reachability": "kill-before-barrier-and-observe-before-death", "reason": "BARRIER_ORDER_INVALID" },
+    { "id": "F3-SA-07", "class": "semantic", "reachability": "stale-prekill-reused-handles", "reason": "OBSERVER_HANDLE_NOT_FRESH" },
+    { "id": "F3-SA-08", "class": "semantic", "reachability": "non-readonly-or-non-file-must-exist-reopen", "reason": "REOPEN_FLAGS_INVALID" },
+    { "id": "F3-SA-09", "class": "semantic", "reachability": "corrupt-delegated-shared-parser-common-mode-observers", "reason": "OBSERVER_INDEPENDENCE_INVALID" },
+    { "id": "F3-SA-10", "class": "semantic", "reachability": "generator-output-registry-cache-divergence", "reason": "AUTHORITY_CHAIN_INVALID" },
+    { "id": "F3-SA-11", "class": "semantic", "reachability": "phase-or-result-leakage", "reason": "PHASE_PRIVACY_VIOLATION" },
+    { "id": "F3-SA-12", "class": "semantic", "reachability": "admitted-array-v2-mutation", "reason": "V2_BEHAVIOR_CHANGED" },
+    { "id": "F3-SA-13", "class": "semantic", "reachability": "public-live-or-rollout-surface-lit", "reason": "DARKNESS_VIOLATION" },
+    { "id": "F3-SA-14", "class": "semantic", "reachability": "module-substitution-missing-abi-unlisted-closure", "reason": "PACKAGE_TOPOLOGY_INVALID" },
+    { "id": "F3-SA-15", "class": "setup-topology", "reachability": "zero-selection-or-missing-ready", "reason": "SETUP_SELECTION_INVALID" },
+    { "id": "F3-SA-16", "class": "setup-topology", "reachability": "wrong-executable-and-default-config-launch-reds", "reason": "LAUNCH_TOPOLOGY_INVALID" }
+  ],
+  "proofBoundary": {
+    "selfAdmission": "neutral-oracle-validity-only",
+    "candidateIdentity": "provenance-only",
+    "productEvidence": "post-freeze-named-export-execution-and-independent-raw-observation",
+    "ipcAuthority": false,
+    "childSummaryAuthority": false,
+    "observerAgreementAuthority": false,
+    "realPluginDatabaseAllowed": false
+  }
+}

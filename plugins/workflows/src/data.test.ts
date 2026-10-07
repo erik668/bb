@@ -4,6 +4,14 @@ import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
+  LOCAL_ARTIFACT_OWNER_ACTOR_KEY,
+  artifactRepositoryFoundationMigration,
+  artifactRepositoryFoundationRepairMigration,
+  artifactStorageMigrations,
+  resolveLocalArtifactOwnerScope,
+} from "./artifact-storage.js";
+import { createWorkflowMigrationPlanV2 } from "./artifact-recovery.js";
+import {
   attachCallThread,
   cancelRun,
   countCallsForRun,
@@ -220,14 +228,111 @@ describe("workflow durable data", () => {
           .pluck()
           .all(),
       ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
-      expect(migrations).toHaveLength(14);
+      expect(migrations).toHaveLength(23);
+      expect(migrations[14]).toBe(artifactStorageMigrations[0]);
+      expect(migrations[18]).toBe(artifactRepositoryFoundationMigration);
+      expect(migrations[20]).toBe(artifactRepositoryFoundationRepairMigration);
       expect(getRunRequired(productionDb, "wfr_legacy")).toMatchObject({
         originThreadId: "thread-legacy",
         presentationThreadId: "thread-legacy",
         parentRunId: null,
         rootRunId: "wfr_legacy",
         campaignId: "wfr_legacy",
+        workflowArtifactLiveChanges: false,
       });
+      expect(() =>
+        productionDb
+          .prepare(
+            `UPDATE workflow_runs
+             SET workflow_artifact_live_changes = 1, campaign_id = NULL
+             WHERE id = ?`,
+          )
+          .run("wfr_legacy"),
+      ).toThrow(/workflow artifact live changes are not admitted/);
+      expect(() =>
+        createRun(productionDb, {
+          projectId: "project-1",
+          originThreadId: "thread-opt-in",
+          presentationThreadId: "thread-opt-in",
+          parentRunId: null,
+          rootRunId: "",
+          environmentId: "environment-1",
+          originProvider: "codex",
+          originModel: "gpt-test",
+          originReasoningLevel: "medium",
+          originPermissionMode: "full",
+          name: "unadmitted-live-workflow",
+          source: "return null",
+          sourceHash: "unadmitted-live-hash",
+          argsJson: "null",
+          settingsJson: "{}",
+          workflowArtifactLiveChanges: true,
+          resumedFromRunId: null,
+        }),
+      ).toThrow(/workflow artifact live changes are not admitted/);
+
+      productionDb.exec(`
+        INSERT INTO workflow_checkpoints
+          (id, run_id, checkpoint_id, checkpoint_json, ordinal, created_at, updated_at)
+        VALUES
+          ('row-cp-1', 'wfr_legacy', 'cp-1', '{}', 1, 1, 1),
+          ('row-cp-2', 'wfr_legacy', 'cp-2', '{}', 2, 2, 2);
+        INSERT INTO workflow_campaign_work_items
+          (campaign_id, project_id, environment_id, work_item_id, version, state, updated_at)
+        VALUES ('wfr_legacy', 'project-1', 'environment-1', 'work-1', 1, 'active', 1);
+        INSERT INTO workflow_campaign_work_item_aliases
+          (campaign_id, project_id, environment_id, work_item_id,
+           reporting_run_id, reporting_checkpoint_id, created_at)
+        VALUES
+          ('wfr_legacy', 'project-1', 'environment-1', 'work-1', 'wfr_legacy', 'cp-1', 1),
+          ('wfr_legacy', 'project-1', 'environment-1', 'work-1', 'wfr_legacy', 'cp-2', 2);
+      `);
+      expect(
+        productionDb
+          .prepare("SELECT count(*) FROM workflow_campaign_work_item_aliases")
+          .pluck()
+          .get(),
+      ).toBe(2);
+
+      const snapshotDigest = "s".repeat(64);
+      productionDb
+        .prepare(
+          `INSERT INTO workflow_campaign_contract_snapshots
+             (campaign_id, project_id, environment_id, snapshot_digest, created_at)
+           VALUES ('wfr_legacy', 'project-1', 'environment-1', ?, 1)`,
+        )
+        .run(snapshotDigest);
+      productionDb
+        .prepare(
+          `INSERT INTO workflow_campaign_transition_receipts
+             (campaign_id, project_id, environment_id, change_id,
+              transition_sequence, snapshot_digest, actor_key, request_digest, created_at)
+           VALUES ('wfr_legacy', 'project-1', 'environment-1', 'change-1',
+             1, ?, 'local-owner', ?, 1)`,
+        )
+        .run(snapshotDigest, "r".repeat(64));
+      expect(() =>
+        productionDb
+          .prepare(
+            `INSERT INTO workflow_artifact_change_outbox
+               (campaign_id, project_id, environment_id, change_id, call_id,
+                work_item_id, transition_sequence, snapshot_digest, state, created_at, updated_at)
+             VALUES ('wfr_legacy', 'project-1', 'environment-1', 'change-1',
+               'missing-call', 'work-1', 1, ?, 'pending', 1, 1)`,
+          )
+          .run(snapshotDigest),
+      ).toThrow(/FOREIGN KEY constraint failed/);
+      expect(() =>
+        productionDb
+          .prepare(
+            `INSERT INTO workflow_artifact_change_receipts
+               (campaign_id, project_id, environment_id, change_id, call_id,
+                adopted_sequence, snapshot_digest, actor_key, outcome, summary, created_at)
+             VALUES ('wfr_legacy', 'project-1', 'environment-1', 'change-1',
+               'missing-call', 1, ?, 'tool:thread:call', 'adopted', 'done', 1)`,
+          )
+          .run(snapshotDigest),
+      ).toThrow(/FOREIGN KEY constraint failed/);
       expect(getLatestRunForThread(productionDb, "thread-legacy")?.id).toBe(
         "wfr_legacy",
       );
@@ -285,42 +390,47 @@ describe("workflow durable data", () => {
           .all(),
       ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
 
-      productionDb
-        .prepare(
-          `INSERT INTO workflow_runs (
-             id, project_id, origin_thread_id, environment_id,
-             origin_provider, origin_model, origin_reasoning_level,
-             origin_permission_mode, name, source, source_hash, args_json,
-             status, created_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        )
-        .run(
-          "wfr_rollback_legacy",
+      const legacyInsert = productionDb.prepare(
+        `INSERT INTO workflow_runs (
+           id, project_id, origin_thread_id, environment_id,
+           origin_provider, origin_model, origin_reasoning_level,
+           origin_permission_mode, name, source, source_hash, args_json,
+           status, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      );
+      expect(() =>
+        legacyInsert.run(
+          "wfr_mixed_version",
           "project-1",
-          "thread-rollback-legacy",
+          "thread-mixed-version",
           "environment-1",
           "codex",
           "gpt-test",
           "medium",
           "full",
-          "rollback-legacy-workflow",
+          "mixed-version-workflow",
           "return null",
-          "rollback-hash",
+          "mixed-version-hash",
           "null",
           "queued",
           3,
-        );
-
-      const rollbackLegacy = getRunRequired(
-        productionDb,
-        "wfr_rollback_legacy",
-      );
-      expect(rollbackLegacy).toMatchObject({
-        presentationThreadId: "thread-rollback-legacy",
-        parentRunId: null,
-        rootRunId: "wfr_rollback_legacy",
-        campaignId: "wfr_rollback_legacy",
+        ),
+      ).not.toThrow();
+      expect(getRunRequired(productionDb, "wfr_mixed_version")).toMatchObject({
+        campaignId: "wfr_mixed_version",
+        presentationThreadId: "thread-mixed-version",
+        workflowArtifactLiveChanges: false,
       });
+      expect(() =>
+        productionDb
+          .prepare(
+            `UPDATE workflow_runs SET workflow_artifact_live_changes = 1
+             WHERE id = ?`,
+          )
+          .run("wfr_mixed_version"),
+      ).toThrow(/workflow artifact live changes are not admitted/);
+
+      const rollbackLegacy = getRunRequired(productionDb, "wfr_legacy");
       expect(
         getFirstRunForCampaignScope(productionDb, {
           campaignId: rollbackLegacy.campaignId,
@@ -360,16 +470,183 @@ describe("workflow durable data", () => {
           campaignId: rollbackLegacy.campaignId,
         }),
       ).toMatchObject({
-        presentationThreadId: "thread-rollback-legacy",
-        parentRunId: "wfr_rollback_legacy",
-        rootRunId: "wfr_rollback_legacy",
-        campaignId: "wfr_rollback_legacy",
+        presentationThreadId: "thread-legacy",
+        parentRunId: "wfr_legacy",
+        rootRunId: "wfr_legacy",
+        campaignId: "wfr_legacy",
       });
       expect(
         countRunsForCampaign(productionDb, rollbackLegacy.campaignId),
       ).toBe(2);
     } finally {
       await harness.dispose();
+    }
+  });
+
+  it("recovers a divergent revision-1 canonical identity into lossless quarantine", async () => {
+    const { bb, harness } = createFakePluginHost({ pluginId: "workflows" });
+    const divergentDb = bb.storage.database();
+    try {
+      const foundationIndex = 18;
+      expect(migrations[foundationIndex]).toBe(
+        artifactRepositoryFoundationMigration,
+      );
+      bb.storage.migrate(divergentDb, migrations.slice(0, foundationIndex));
+      const content = "# Requirements\n";
+      const digest = createHash("sha256").update(content).digest("hex");
+      divergentDb
+        .prepare(
+          `INSERT INTO workflow_artifact_blobs
+             (sha256, content_type, content, byte_length, created_at)
+           VALUES (?, 'text/markdown', ?, ?, 1)`,
+        )
+        .run(digest, content, Buffer.byteLength(content));
+      const insertRevision1Mount = divergentDb.prepare(
+        `INSERT INTO workflow_artifacts
+           (campaign_id, project_id, environment_id, presentation_thread_id,
+            id, kind, title, content_type, created_at, updated_at)
+         VALUES ('wfr_legacy', 'project-1', 'environment-1', ?, 'requirements',
+           'requirements', ?, 'text/markdown', 1, 1)`,
+      );
+      insertRevision1Mount.run("thread-a", "Requirements");
+      insertRevision1Mount.run("thread-b", "Conflicting requirements");
+      const insertRevision = divergentDb.prepare(
+        `INSERT INTO workflow_artifact_revisions
+           (campaign_id, project_id, environment_id, presentation_thread_id,
+            artifact_id, revision, blob_sha256, status, created_at)
+         VALUES ('wfr_legacy', 'project-1', 'environment-1', ?,
+           'requirements', 1, ?, 'draft', 1)`,
+      );
+      insertRevision.run("thread-a", digest);
+      insertRevision.run("thread-b", digest);
+      bb.storage.migrate(
+        divergentDb,
+        createWorkflowMigrationPlanV2(migrations) as never,
+      );
+
+      expect(
+        divergentDb
+          .prepare("SELECT id FROM _bb_migrations ORDER BY id")
+          .pluck()
+          .all(),
+      ).toEqual(Array.from({ length: migrations.length }, (_, id) => id));
+      expect(
+        divergentDb
+          .prepare("SELECT count(*) FROM workflow_artifacts")
+          .pluck()
+          .get(),
+      ).toBe(0);
+      expect(
+        divergentDb
+          .prepare("SELECT count(*) FROM workflow_artifact_recovery_rows")
+          .pluck()
+          .get(),
+      ).toBe(4);
+      expect(
+        divergentDb
+          .prepare("SELECT count(*) FROM workflow_artifact_recovery_blobs")
+          .pluck()
+          .get(),
+      ).toBe(1);
+      expect(
+        divergentDb
+          .prepare("SELECT count(*) FROM workflow_artifact_presentation_grants")
+          .pluck()
+          .get(),
+      ).toBe(2);
+      expect(
+        divergentDb
+          .prepare("SELECT recovery_id FROM _bb_migration_recoveries")
+          .pluck()
+          .get(),
+      ).toBe("artifact-review-v6:hash-bound-pre18-quarantine-recovery-v1");
+    } finally {
+      await harness.dispose();
+    }
+  });
+
+  it("backfills mixed-version null origin scope once and keeps artifact authority fail-closed for later null rows", () => {
+    const mixedDb = new Database(":memory:");
+    try {
+      mixedDb.pragma("foreign_keys = ON");
+      const scopeGuardIndex = 19;
+      expect(migrations[scopeGuardIndex]).toContain(
+        "workflow_runs_artifact_scope_insert_guard",
+      );
+      mixedDb.exec(migrations.slice(0, scopeGuardIndex).join("\n"));
+
+      // An older binary that predates presentation/campaign columns writes
+      // rows with null origin scope into a shared data directory.
+      const olderBinaryInsert = mixedDb.prepare(
+        `INSERT INTO workflow_runs (
+           id, project_id, origin_thread_id, environment_id,
+           origin_provider, origin_model, origin_reasoning_level,
+           origin_permission_mode, name, source, source_hash, args_json,
+           status, created_at
+         ) VALUES (?, 'project-1', ?, 'environment-1', 'codex', 'gpt-test',
+           'medium', 'full', 'mixed-version-workflow', 'return null',
+           'mixed-version-hash', 'null', 'queued', ?)`,
+      );
+      const rawScope = mixedDb.prepare(
+        `SELECT campaign_id AS campaignId,
+           presentation_thread_id AS presentationThreadId
+         FROM workflow_runs WHERE id = ?`,
+      );
+      olderBinaryInsert.run("wfr_pre_guard", "thread-pre-guard", 1);
+      expect(rawScope.get("wfr_pre_guard")).toEqual({
+        campaignId: null,
+        presentationThreadId: null,
+      });
+
+      mixedDb.exec(migrations.slice(scopeGuardIndex).join("\n"));
+      expect(rawScope.get("wfr_pre_guard")).toEqual({
+        campaignId: "wfr_pre_guard",
+        presentationThreadId: "thread-pre-guard",
+      });
+
+      // The backfill is one-shot: a later mixed-version row stays readable
+      // through the compatibility COALESCE but cannot become artifact
+      // authority even with a valid presentation grant.
+      olderBinaryInsert.run("wfr_post_guard", "thread-post-guard", 2);
+      expect(rawScope.get("wfr_post_guard")).toEqual({
+        campaignId: null,
+        presentationThreadId: null,
+      });
+      expect(getRunRequired(mixedDb, "wfr_post_guard")).toMatchObject({
+        campaignId: "wfr_post_guard",
+        presentationThreadId: "thread-post-guard",
+        workflowArtifactLiveChanges: false,
+      });
+      mixedDb
+        .prepare(
+          `INSERT INTO workflow_artifact_presentation_grants
+             (campaign_id, project_id, environment_id, presentation_thread_id,
+              presentation_run_id, granted_at)
+           VALUES
+             ('wfr_pre_guard', 'project-1', 'environment-1', 'thread-pre-guard', 'wfr_pre_guard', 3),
+             ('wfr_post_guard', 'project-1', 'environment-1', 'thread-post-guard', 'wfr_post_guard', 3)`,
+        )
+        .run();
+      expect(
+        resolveLocalArtifactOwnerScope(mixedDb, {
+          runId: "wfr_pre_guard",
+          presentationThreadId: "thread-pre-guard",
+        }),
+      ).toEqual({
+        actorKey: LOCAL_ARTIFACT_OWNER_ACTOR_KEY,
+        campaignId: "wfr_pre_guard",
+        projectId: "project-1",
+        environmentId: "environment-1",
+        presentationThreadId: "thread-pre-guard",
+      });
+      expect(() =>
+        resolveLocalArtifactOwnerScope(mixedDb, {
+          runId: "wfr_post_guard",
+          presentationThreadId: "thread-post-guard",
+        }),
+      ).toThrow(/origin scope is unavailable/);
+    } finally {
+      mixedDb.close();
     }
   });
 

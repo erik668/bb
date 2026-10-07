@@ -1,0 +1,614 @@
+{
+  "schemaVersion": "bb-artifact-review-v3-construction-c0-authority-v1",
+  "successorSeamId": "bb-artifact-review-v3-construction-c0:revision-1",
+  "bindingSynthesis": {
+    "runId": "wfr_bb6478f8-e7eb-4681-b743-66ec49cce5c6",
+    "workflowName": "artifact-review-v12-construction-admission",
+    "sourceByteLength": 8230,
+    "sourceSha256": "d823a03ec11dd20dc273d105520e937984e586a41347a325457e62b17cb9afb9",
+    "terminalStatus": "succeeded",
+    "decisionClass": "contract-preserving"
+  },
+  "contract": {
+    "architectureRevision": 2,
+    "contractId": "bb-artifact-review-service:revision-1",
+    "authority": "server-assigned-local-owner-over-origin-campaign-project-environment",
+    "presentation": "grant-and-provenance-only",
+    "saved": "committed-only",
+    "bytes": "content-addressed",
+    "retention": "append-only",
+    "migrationIds": "0..22",
+    "rollout": "dark",
+    "maliciousWriterAuthenticityClaim": false,
+    "sharedHostMutation": false,
+    "crossEnvironmentContinuation": false,
+    "bootstrap": false,
+    "deployment": false
+  },
+  "scope": {
+    "oracleWritePaths": [
+      "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-construction-c0.json",
+      "plugins/workflows/src/artifact-recovery-v3-construction.schema.json",
+      "plugins/workflows/src/artifact-recovery-v3-construction.test.ts"
+    ],
+    "constructionPaths": [
+      "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+      "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+      "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+      "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+      "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+      "packages/plugin-sdk/src/backend-contract.ts",
+      "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+      "packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts",
+      "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+      "apps/server/src/services/plugins/plugin-api.ts",
+      "apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts"
+    ],
+    "ledgerPath": "output/artifact-review-shakedown/oracle/recovery-v3-construction-c0-ledger.json",
+    "approvalPath": "output/artifact-review-shakedown/oracle/recovery-v3-construction-c0-approval.json",
+    "ledgerMustBeAbsent": true,
+    "approvalMustBeAbsent": true,
+    "productValueAdded": false
+  },
+  "identities": {
+    "acceptedDesign": {
+      "path": ".architect/design-lab/workflow-artifact-review.md",
+      "byteLength": 52165,
+      "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+    },
+    "contextPacket": {
+      "path": ".architect/context-packets/artifact-review-service-build.md",
+      "byteLength": 13331,
+      "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+    },
+    "v8Approval": {
+      "path": "output/artifact-review-shakedown/oracle/invariant-ownership-boundary-v8-approval.json",
+      "byteLength": 7659,
+      "sha256": "117b322e0b524e1a6a7900389dfc0eaeb1cafe63f7c68427817572f7b10e6a4d"
+    },
+    "v12": {
+      "approval": {
+        "path": "output/artifact-review-shakedown/oracle/recovery-authority-v12-approval.json",
+        "byteLength": 8740,
+        "sha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0"
+      },
+      "ledger": {
+        "path": "output/artifact-review-shakedown/oracle/recovery-authority-v12-a0-ledger.json",
+        "byteLength": 10077,
+        "sha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7"
+      },
+      "candidateManifest": {
+        "encoding": "UTF-8 JSON.stringify of path.localeCompare-sorted {path,sha256} entries with no terminal newline",
+        "byteLength": 798,
+        "sha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b",
+        "entries": [
+          {
+            "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v12.json",
+            "byteLength": 2418865,
+            "sha256": "dce9f6220e07452f0ad0aea5efe34dbd518e8bc689d6c5f9a558652fd7d64225"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v12-oracle-dsl.schema.json",
+            "byteLength": 4365548,
+            "sha256": "1757d6d75991b4df7e42a1172706d7abc3447d9c769845b86ee80a533177cf0e"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v12-oracle.test.ts",
+            "byteLength": 21799,
+            "sha256": "6d99c62c80eb3d7a30c3df45701c293ed760b539e0aa575c7045c28b1aac0e4c"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v12-reference-interpreter.ts",
+            "byteLength": 65010,
+            "sha256": "274ec43fb0dcebf719d99e5541c2a56ded9e2ed23233ed00903d3322ea95f9c5"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v12-runner-conformance.json",
+            "byteLength": 7199,
+            "sha256": "eaeca2940663a8662a82189c95aee5424e4152b9431fa7ec15b6583eab3f1d6a"
+          }
+        ]
+      }
+    },
+    "failedLineage": {
+      "v9": {
+        "disposition": "failed-design-lineage-only",
+        "terminalVerdict": "blocked",
+        "approvalPresent": false,
+        "bootstrapAllowed": false,
+        "adoptionAllowed": false,
+        "aliasAllowed": false,
+        "manifestByteLength": 186,
+        "manifestSha256": "c1ba6500c384cc2a7e15fc8f1e1ec50d5016b3d3976d1ddaa1d3fb221d122e7b",
+        "files": [
+          {
+            "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v9.json",
+            "byteLength": 155571,
+            "sha256": "4b9c4b91ee8e3a9384c92cb3fb5366be85e6cfc85756f9fe5d6026be42fd2428"
+          }
+        ]
+      },
+      "v10": {
+        "disposition": "failed-proof-lineage-only",
+        "terminalVerdict": "blocked",
+        "approvalPresent": false,
+        "manifestByteLength": 642,
+        "manifestSha256": "742c0301f129e559e3cb27460485b81cde84871f0720648e569c2284ac91ad50",
+        "files": [
+          {
+            "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v10.json",
+            "byteLength": 2189525,
+            "sha256": "95e637c55895583fcb046021d1dddc6e4a054180467ed3a9bd7e0071d61aa38b"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v10-oracle-dsl.schema.json",
+            "byteLength": 730123,
+            "sha256": "3d89e61f60f271a844c2ea7bf1a60bb4a7575fffd9f6fe6d5df8331c8c636b7a"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v10-oracle.test.ts",
+            "byteLength": 14986,
+            "sha256": "a8b745dfe2f847322ab93e8801c82f7d23e1bbd30647a82a5cc7f89dd79c0a65"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v10-runner-conformance.json",
+            "byteLength": 6599,
+            "sha256": "2f0f2ddaf9166877c2e238dcae56a10a866dd1ced8dbb67512cbdce271cff6ab"
+          }
+        ]
+      },
+      "v11": {
+        "disposition": "failed-proof-lineage-only",
+        "terminalVerdict": "blocked",
+        "approvalPresent": false,
+        "manifestByteLength": 798,
+        "manifestSha256": "fa96f5f142fb5629e5d72a1b800dcdef0b286314feb5bf80ac2eb8ee92072117",
+        "files": [
+          {
+            "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v11.json",
+            "byteLength": 2167232,
+            "sha256": "930a23241a670e6e3a31862ac415499aa561286f6802c0ae7929a27a387a3187"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v11-oracle-dsl.schema.json",
+            "byteLength": 2922578,
+            "sha256": "d112f8c813887b3bc6a04f937aa1eda2a932d4708570483364202149eb9ac942"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v11-oracle.test.ts",
+            "byteLength": 33650,
+            "sha256": "826c19de36c5bbf70487b8fe431fefcc45e613e759a8cb2650ecb8deb3850860"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v11-reference-interpreter.ts",
+            "byteLength": 48140,
+            "sha256": "9b76cd1a81a4b0958ef4c1ef7442639f97c3bd218e91bf43998d77e9e8b848b0"
+          },
+          {
+            "path": "plugins/workflows/src/artifact-recovery-v11-runner-conformance.json",
+            "byteLength": 14046,
+            "sha256": "acaaa98f0c0c97abafef4b970e1c9cd26e1fa1e7f25ae2a57275a84d6abf0a2a"
+          }
+        ]
+      },
+      "v6Receipt": {
+        "path": "output/artifact-review-shakedown/section-1/v6-recovery.receipt.json",
+        "byteLength": 4227,
+        "sha256": "912abd52c73c9e5ad623c922717f2b64438a75e8d14c97dbeaa14dee86fcd439",
+        "admitted": false
+      }
+    },
+    "migrations": {
+      "source": {
+        "path": "plugins/workflows/src/data.ts",
+        "byteLength": 35080,
+        "sha256": "4dc6842cb404de9f2487785d83362e41b33bbed2500b5bfc4194a918e6e11a91"
+      },
+      "count": 23,
+      "vectorEncoding": "id-colon-sha256-semicolon-no-terminal",
+      "vectorByteLength": 1553,
+      "vectorSha256": "2d4aa4a4dc215e4a3c51e763dfde370cf2a33741130f7ec3d2082c334251ec7c",
+      "entries": [
+        {
+          "id": 0,
+          "byteLength": 1935,
+          "sha256": "cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6"
+        },
+        {
+          "id": 1,
+          "byteLength": 534,
+          "sha256": "25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071"
+        },
+        {
+          "id": 2,
+          "byteLength": 386,
+          "sha256": "caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d"
+        },
+        {
+          "id": 3,
+          "byteLength": 350,
+          "sha256": "d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1"
+        },
+        {
+          "id": 4,
+          "byteLength": 156,
+          "sha256": "ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14"
+        },
+        {
+          "id": 5,
+          "byteLength": 117,
+          "sha256": "8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1"
+        },
+        {
+          "id": 6,
+          "byteLength": 90,
+          "sha256": "e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465"
+        },
+        {
+          "id": 7,
+          "byteLength": 89,
+          "sha256": "eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337"
+        },
+        {
+          "id": 8,
+          "byteLength": 385,
+          "sha256": "a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2"
+        },
+        {
+          "id": 9,
+          "byteLength": 69,
+          "sha256": "e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89"
+        },
+        {
+          "id": 10,
+          "byteLength": 64,
+          "sha256": "bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d"
+        },
+        {
+          "id": 11,
+          "byteLength": 565,
+          "sha256": "89f614b25f424c27f61d6308f1d93373420fff3cea5a4958b471668bf31ccf24"
+        },
+        {
+          "id": 12,
+          "byteLength": 667,
+          "sha256": "5c980eccd9a3a40da158ef41806df8f212b494cbc60b2768762bf05fe58c09c2"
+        },
+        {
+          "id": 13,
+          "byteLength": 243,
+          "sha256": "5951a693ab7a49e5f1b4cecb2e4bc6385853584de204f48b974aaa3fb19e2bfa"
+        },
+        {
+          "id": 14,
+          "byteLength": 8918,
+          "sha256": "1767f3322d25f443f073ff49cada30950ace97d2d348d57696d1baeee7d7a3e3"
+        },
+        {
+          "id": 15,
+          "byteLength": 1907,
+          "sha256": "65e86c96105b3f48f8e0faa5f168e7f5e0d66f916cd4c1ea6d6f8a8a89111f83"
+        },
+        {
+          "id": 16,
+          "byteLength": 150,
+          "sha256": "5b44b70d6b98aa04374afeefff2860733465d4a1156ac33917b15646073014d8"
+        },
+        {
+          "id": 17,
+          "byteLength": 204,
+          "sha256": "d147cd626d4887587d4efa99fea9a9f801960d6c9c18b0fb8ac6c9a0b636f01e"
+        },
+        {
+          "id": 18,
+          "byteLength": 20249,
+          "sha256": "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d"
+        },
+        {
+          "id": 19,
+          "byteLength": 849,
+          "sha256": "03afb93d68a7018bed783ce9bb72665b52a9c6f544564956d35dbda7d65997a3"
+        },
+        {
+          "id": 20,
+          "byteLength": 4012,
+          "sha256": "1d0f7ebcbc92d9bc7e175a4b70ac430ef42498191b4c57ff46620f82af17434e"
+        },
+        {
+          "id": 21,
+          "byteLength": 634,
+          "sha256": "57defc2f33da6307d6887fcb357dcf030fd614b56a342f310796ae1fe2b81e14"
+        },
+        {
+          "id": 22,
+          "byteLength": 3157,
+          "sha256": "045811cf8748bb6ca9a33242449f58a2c72dc8e42972e4acc63f2807bef0053e"
+        }
+      ]
+    },
+    "worktreeBaseline": {
+      "root": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details",
+      "head": "e2b88b053c1e9823e56d71e7f7861fd351d94d5d",
+      "branch": "feature/workflow-detail-ledger",
+      "dirty": true,
+      "indexClean": true,
+      "porcelainV1ZEntryCount": 61,
+      "porcelainV1ZSha256": "f1503b2f44ba721b9e20ff20b1650391a7f5071ea1608d77e656134f3e55ad86",
+      "unrelatedManifestEncoding": "UTF-8 JSON.stringify of path.localeCompare-sorted {path,status,byteLength,sha256} entries from git status --porcelain=v1 -z --untracked-files=all excluding all successor-owned paths",
+      "unrelatedFileCount": 73,
+      "unrelatedManifestByteLength": 12957,
+      "unrelatedManifestSha256": "0e105a9db29341421910f5d63bdfb733db2d600638acf5035c1943614ded7659"
+    }
+  },
+  "sentinelCatalog": [
+    {
+      "id": "v12-fake-early-completion",
+      "provenance": "v12-construction-sentinel",
+      "arm": "fake",
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+      "symbol": "projectArtifactRecoveryV3Fake",
+      "requiredTokens": ["projectArtifactRecoveryV3Fake"],
+      "orderedTokens": [],
+      "killerId": "divergence-fake-early-completion",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "v12-fake-omit-edge",
+      "provenance": "v12-construction-sentinel",
+      "arm": "fake",
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+      "symbol": "createArtifactRecoveryV3FakeAdapter",
+      "requiredTokens": ["createArtifactRecoveryV3FakeAdapter"],
+      "orderedTokens": [],
+      "killerId": "divergence-fake-omit-edge",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "v12-fake-reorder-ledger",
+      "provenance": "v12-construction-sentinel",
+      "arm": "fake",
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+      "symbol": "artifactRecoveryV3FakeContractVectors",
+      "requiredTokens": ["artifactRecoveryV3FakeContractVectors"],
+      "orderedTokens": [],
+      "killerId": "divergence-fake-reorder-ledger",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "v12-production-duplicate-row",
+      "provenance": "v12-construction-sentinel",
+      "arm": "production",
+      "path": "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+      "symbol": "artifactRecoveryV3Capability",
+      "requiredTokens": ["artifactRecoveryV3Capability"],
+      "orderedTokens": [],
+      "killerId": "divergence-production-duplicate-row",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "v12-production-omit-grant",
+      "provenance": "v12-construction-sentinel",
+      "arm": "production",
+      "path": "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+      "symbol": "ArtifactReviewV3Contract",
+      "requiredTokens": ["ArtifactReviewV3Contract"],
+      "orderedTokens": [],
+      "killerId": "divergence-production-omit-grant",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "v12-production-retarget-blob",
+      "provenance": "v12-construction-sentinel",
+      "arm": "production",
+      "path": "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+      "symbol": "projectArtifactReviewV3",
+      "requiredTokens": ["projectArtifactReviewV3"],
+      "orderedTokens": [],
+      "killerId": "divergence-production-retarget-blob",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "sdk-plan-and-public-migrate-v3",
+      "provenance": "current-seam",
+      "arm": "shared",
+      "path": "packages/plugin-sdk/src/backend-contract.ts",
+      "symbol": "PluginMigrationPlanV3",
+      "requiredTokens": [
+        "export interface PluginMigrationPlanV3",
+        "readonly version: 3",
+        "readonly authorityId: string",
+        "verifyCompleted(",
+        "statements: string[] | PluginMigrationPlanV2 | PluginMigrationPlanV3"
+      ],
+      "orderedTokens": [],
+      "killerId": "contract-shape-no-plugin-self-attestation",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-symbol"
+    },
+    {
+      "id": "production-v3-version-dispatch",
+      "provenance": "current-seam",
+      "arm": "production",
+      "path": "apps/server/src/services/plugins/plugin-api.ts",
+      "symbol": "migrateWithPlanV3",
+      "requiredTokens": [
+        "function migrateWithPlanV3",
+        "statements.version === 3",
+        "migrateWithPlanV3(database, statements)",
+        "migrateWithPlanV2(database, statements)"
+      ],
+      "orderedTokens": [
+        "statements.version === 3",
+        "migrateWithPlanV3(database, statements)",
+        "migrateWithPlanV2(database, statements)"
+      ],
+      "killerId": "production-v3-fallthrough-to-v2-or-database",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-symbol-or-order"
+    },
+    {
+      "id": "fake-v3-version-dispatch",
+      "provenance": "current-seam",
+      "arm": "fake",
+      "path": "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+      "symbol": "fakeMigrateWithPlanV3",
+      "requiredTokens": [
+        "function fakeMigrateWithPlanV3",
+        "statements.version === 3",
+        "fakeMigrateWithPlanV3(database, statements)",
+        "fakeMigrateWithPlanV2(database, statements)"
+      ],
+      "orderedTokens": [
+        "statements.version === 3",
+        "fakeMigrateWithPlanV3(database, statements)",
+        "fakeMigrateWithPlanV2(database, statements)"
+      ],
+      "killerId": "fake-v3-fallthrough-to-v2-or-database",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-symbol-or-order"
+    },
+    {
+      "id": "host-static-authority-resolution",
+      "provenance": "current-seam",
+      "arm": "production",
+      "path": "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+      "symbol": "resolveArtifactReviewV3Authority",
+      "requiredTokens": [
+        "resolveArtifactReviewV3Authority",
+        "bb-plugin-migration-completed-state-v3",
+        "version: 1"
+      ],
+      "orderedTokens": [],
+      "killerId": "host-authority-before-database",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "host-append-only-completion-writing",
+      "provenance": "current-seam",
+      "arm": "production",
+      "path": "apps/server/src/services/plugins/plugin-api.ts",
+      "symbol": "appendPluginMigrationCompletionV3",
+      "requiredTokens": [
+        "appendPluginMigrationCompletionV3",
+        "_bb_plugin_migration_completions",
+        "INSERT INTO"
+      ],
+      "orderedTokens": [],
+      "killerId": "host-owned-terminal-completion-in-transaction",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-symbol"
+    },
+    {
+      "id": "reopened-verify-completed",
+      "provenance": "current-seam",
+      "arm": "production",
+      "path": "apps/server/src/services/plugins/plugin-api.ts",
+      "symbol": "verifyCompletedMigrationV3",
+      "requiredTokens": [
+        "verifyCompletedMigrationV3",
+        "reopenPluginDatabaseForVerification",
+        "verifyCompleted("
+      ],
+      "orderedTokens": [
+        "reopenPluginDatabaseForVerification",
+        "verifyCompleted("
+      ],
+      "killerId": "reopened-independent-completed-state-verification",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-symbol-or-order"
+    },
+    {
+      "id": "before-consumer-gate",
+      "provenance": "current-seam",
+      "arm": "plugin",
+      "path": "plugins/workflows/src/server.ts",
+      "symbol": "plugin",
+      "requiredTokens": [
+        "bb.storage.migrate(db, createWorkflowMigrationPlanV2(migrations) as never);",
+        "const service = createWorkflowService",
+        "registerWorkflowCli(bb, service);"
+      ],
+      "orderedTokens": [
+        "bb.storage.migrate(db, createWorkflowMigrationPlanV2(migrations) as never);",
+        "const service = createWorkflowService",
+        "registerWorkflowCli(bb, service);"
+      ],
+      "killerId": "consumer-registration-before-migration-verification",
+      "expectedPrebuild": "present",
+      "allowedFailure": "none"
+    },
+    {
+      "id": "pure-sdk-reducer",
+      "provenance": "current-seam",
+      "arm": "shared",
+      "path": "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+      "symbol": "reduceArtifactReviewV3",
+      "requiredTokens": ["reduceArtifactReviewV3", "readonly trace"],
+      "orderedTokens": [],
+      "killerId": "shared-reducer-not-copied-adapter-logic",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    },
+    {
+      "id": "independent-expected-trace-corpus",
+      "provenance": "current-seam-v12-by-reference",
+      "arm": "independent",
+      "path": "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+      "symbol": "artifactRecoveryV3ExpectedTraceCorpus",
+      "requiredTokens": ["artifactRecoveryV3ExpectedTraceCorpus"],
+      "orderedTokens": [],
+      "killerId": "production-and-fake-cannot-self-approve",
+      "expectedPrebuild": "missing-construction",
+      "allowedFailure": "missing-path-or-symbol"
+    }
+  ],
+  "negativeControls": [
+    {
+      "id": "fallthrough-to-v2",
+      "sentinelId": "production-v3-version-dispatch",
+      "expectedReason": "v3-fallthrough-to-v2"
+    },
+    {
+      "id": "plugin-self-attestation",
+      "sentinelId": "sdk-plan-and-public-migrate-v3",
+      "expectedReason": "plugin-supplied-expected-identity"
+    },
+    {
+      "id": "database-before-authority-admission",
+      "sentinelId": "host-static-authority-resolution",
+      "expectedReason": "database-before-authority"
+    },
+    {
+      "id": "copied-production-fake-decision-logic",
+      "sentinelId": "pure-sdk-reducer",
+      "expectedReason": "copied-adapter-decision-logic"
+    },
+    {
+      "id": "missing-reopened-verification",
+      "sentinelId": "reopened-verify-completed",
+      "expectedReason": "verification-without-reopen"
+    },
+    {
+      "id": "consumer-reachability",
+      "sentinelId": "before-consumer-gate",
+      "expectedReason": "consumer-before-verification"
+    }
+  ],
+  "prebuildOracle": {
+    "selected": 15,
+    "passed": 1,
+    "failed": 14,
+    "skipped": 0,
+    "expectedFailureClass": "missing-v3-construction",
+    "approvalPresenceIsFailure": false,
+    "databaseAccessAllowed": false,
+    "productionImportsAllowed": false
+  }
+}

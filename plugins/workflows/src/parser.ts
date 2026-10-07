@@ -275,6 +275,7 @@ function readMetadata(node: ObjectExpression): ParsedWorkflow["metadata"] {
   const allowed = new Set([
     "name",
     "description",
+    "workflowArtifactLiveChanges",
     "inputSchema",
     "outputSchema",
     "phases",
@@ -290,6 +291,13 @@ function readMetadata(node: ObjectExpression): ParsedWorkflow["metadata"] {
     throw new Error(
       "meta.name must be a lowercase kebab-case name up to 64 characters",
     );
+  }
+  const workflowArtifactLiveChanges =
+    value.workflowArtifactLiveChanges === undefined
+      ? false
+      : value.workflowArtifactLiveChanges;
+  if (typeof workflowArtifactLiveChanges !== "boolean") {
+    throw new Error("meta.workflowArtifactLiveChanges must be a boolean when provided");
   }
   if (
     typeof value.description !== "string" ||
@@ -347,6 +355,7 @@ function readMetadata(node: ObjectExpression): ParsedWorkflow["metadata"] {
   return {
     name: value.name,
     description: value.description,
+    workflowArtifactLiveChanges,
     inputSchema,
     outputSchema,
     phases,

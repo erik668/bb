@@ -1,9 +1,11 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   PLUGIN_CLI_OUTPUT_MAX_BYTES,
   type BbPluginApi,
   type PluginAgentConfigurationContext,
+  type PluginMigrationPlanV2,
 } from "../../backend-contract.js";
 import { defineRpcContract } from "../../rpc-contract.js";
 import { createFakePluginHost, makeThreadResponse } from "../index.js";
@@ -193,6 +195,80 @@ describe("storage", () => {
     ]);
     const rows = again.prepare("SELECT body, starred FROM notes").all();
     expect(rows).toEqual([{ body: "hello", starred: 0 }]);
+  });
+
+  it("matches the production V2 recovery transaction and host receipt", () => {
+    const { bb } = createFakePluginHost();
+    const db = bb.storage.database();
+    const sha256 = (value: string) =>
+      createHash("sha256").update(value).digest("hex");
+    const statements = [
+      "CREATE TABLE source_rows (scope TEXT NOT NULL, value TEXT NOT NULL)",
+      ...Array.from(
+        { length: 17 },
+        (_, index) => `CREATE TABLE migration_${index + 1} (id INTEGER)`,
+      ),
+      "CREATE UNIQUE INDEX source_rows_scope_unique ON source_rows(scope)",
+      ...Array.from(
+        { length: 4 },
+        (_, index) => `CREATE TABLE recovery_${index + 19} (id INTEGER)`,
+      ),
+    ];
+    bb.storage.migrate(db, statements.slice(0, 18));
+    db.exec("INSERT INTO source_rows VALUES ('same', 'a'), ('same', 'b')");
+    const recipeJson = JSON.stringify({ recoveryId: "fake-v2" });
+    const plan: PluginMigrationPlanV2 = {
+      version: 2,
+      statements,
+      statementSha256: statements.map(sha256),
+      recovery: {
+        descriptor: {
+          recoveryId: "fake-v2",
+          beforeMigrationId: 18,
+          migration18Sha256: sha256(statements[18]!),
+          preSchemaFingerprintAlgorithm:
+            "SHA-256(JSON.stringify sqlite_master rows ordered by type,name,tbl_name; keys type,name,tableName,sql)",
+          preSchemaFingerprintSha256: sha256(
+            JSON.stringify(
+              db
+                .prepare(
+                  `SELECT type, name, tbl_name AS tableName, sql
+                   FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'
+                   ORDER BY type, name, tbl_name`,
+                )
+                .all(),
+            ),
+          ),
+          recoveryRecipeSha256: sha256(recipeJson),
+        },
+        recoveryRecipeJson: recipeJson,
+        recover(context) {
+          context.database.exec("DELETE FROM source_rows WHERE value = 'b'");
+          for (let id = 18; id <= 22; id += 1) context.executeMigration(id);
+          return {
+            activeGraphSha256: sha256("active"),
+            quarantineGraphSha256: sha256("quarantine"),
+            stagedRowCount: 1,
+            restoredGrantCount: 0,
+            receiptSha256: sha256("receipt"),
+          };
+        },
+      },
+    };
+    bb.storage.migrate(db, plan);
+    bb.storage.migrate(db, plan);
+    expect(db.prepare("SELECT * FROM source_rows").all()).toEqual([
+      { scope: "same", value: "a" },
+    ]);
+    expect(
+      db
+        .prepare("SELECT recovery_id FROM _bb_migration_recoveries")
+        .pluck()
+        .all(),
+    ).toEqual(["fake-v2"]);
+    expect(
+      db.prepare("SELECT count(*) FROM _bb_migrations").pluck().get(),
+    ).toBe(23);
   });
 
   it("database() replaces a handle the plugin closed itself, like the host", () => {

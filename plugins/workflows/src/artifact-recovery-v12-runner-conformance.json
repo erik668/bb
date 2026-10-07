@@ -1,0 +1,256 @@
+{
+  "schemaVersion": "artifact-recovery-v12-runner-conformance-1",
+  "dslId": "bb-keyed-sqlite-oracle-dsl-v12",
+  "canonicalizationVersion": "bb-cjson-2",
+  "successorSeamId": "bb-artifact-review-oracle-proof-v12:revision-1",
+  "phaseOrder": [
+    "baseline-admission",
+    "mutant-construction",
+    "derived-view-admission",
+    "semantic-execution",
+    "kill-classification",
+    "negative-control"
+  ],
+  "phaseBoundaries": {
+    "baselineAdmission": {
+      "input": "immutable-raw-authority-bytes",
+      "runCount": 1,
+      "mayIncrementKills": false,
+      "wholeAuthorityPreflight": true
+    },
+    "mutantConstruction": {
+      "freshEphemeralViewPerMutant": true,
+      "patchApplicationsPerMutant": 1,
+      "descriptorOutsideMutatedSubject": true,
+      "baselineOracleOutsideMutatedSubject": true,
+      "killerIdsOutsideMutatedSubject": true,
+      "declaredReasonOutsideMutatedSubject": true
+    },
+    "derivedViewAdmission": {
+      "classificationOnly": true,
+      "wholeAuthorityPreflight": false,
+      "allowedFailures": ["invalid-mutant", "harness-error"],
+      "mayIncrementKills": false
+    },
+    "semanticExecution": {
+      "killerStartedRequired": true,
+      "killerCompletedRequiredForKill": true,
+      "declaredCaseOrTypedPredicateRequired": true
+    },
+    "killClassification": {
+      "exactDeclaredReasonRequired": true,
+      "genericExceptionsCountAsKill": false,
+      "preflightRejectionsCountAsKill": false,
+      "wrongReasonsCountAsKill": false,
+      "setupFailuresCountAsKill": false
+    }
+  },
+  "opcodeVectors": [
+    "open",
+    "materializeFixture",
+    "admitAuthority",
+    "assertNoDbAccess",
+    "observe",
+    "reduce",
+    "begin",
+    "executeEffects",
+    "verifyCompleted",
+    "commit",
+    "rollback",
+    "close",
+    "reopen",
+    "constructConsumers",
+    "assertExpectedSnapshot"
+  ],
+  "traceComparator": {
+    "representation": "complete-literal-ordered-string-array",
+    "length": "exact",
+    "position": "exact",
+    "stringValue": "utf8-byte-exact",
+    "normalization": "none",
+    "prefixes": false,
+    "aliases": false,
+    "categories": false,
+    "wildcards": false
+  },
+  "selfCheckVectors": {
+    "rawAdmission": {
+      "accepted": [
+        {
+          "id": "minimal-object",
+          "utf8Hex": "7b2261223a317d"
+        },
+        {
+          "id": "escaped-scalar",
+          "utf8Hex": "7b225c7530306539223a225c7532306163227d"
+        }
+      ],
+      "rejected": [
+        {
+          "id": "duplicate-root-key",
+          "utf8Hex": "7b2261223a312c2261223a327d",
+          "error": "E_DUPLICATE_KEY"
+        },
+        {
+          "id": "utf8-overlong",
+          "utf8Hex": "c0af",
+          "error": "E_INVALID_UTF8"
+        },
+        {
+          "id": "lone-surrogate",
+          "utf8Hex": "7b2261223a225c7564383030227d",
+          "error": "E_LONE_SURROGATE"
+        },
+        {
+          "id": "negative-zero",
+          "utf8Hex": "7b2261223a2d307d",
+          "error": "E_NONCANONICAL_NUMBER"
+        },
+        {
+          "id": "bom",
+          "utf8Hex": "efbbbf7b7d",
+          "error": "E_BOM"
+        }
+      ]
+    },
+    "literalTrace": [
+      {
+        "id": "exact",
+        "actual": ["open", "observed:ordinary", "close"],
+        "expected": ["open", "observed:ordinary", "close"],
+        "equal": true,
+        "mismatchIndex": null
+      },
+      {
+        "id": "prefix-is-not-equal",
+        "actual": ["observed:ordinary:extra"],
+        "expected": ["observed:ordinary"],
+        "equal": false,
+        "mismatchIndex": 0
+      },
+      {
+        "id": "length-is-exact",
+        "actual": ["open"],
+        "expected": ["open", "close"],
+        "equal": false,
+        "mismatchIndex": 1
+      }
+    ],
+    "patch": {
+      "document": {
+        "semantic": "baseline",
+        "outside": "immutable"
+      },
+      "operation": {
+        "op": "replace",
+        "path": "/semantic",
+        "value": "mutated"
+      },
+      "result": {
+        "semantic": "mutated",
+        "outside": "immutable"
+      },
+      "secondApplicationError": "E_PATCH_NO_EFFECT"
+    }
+  },
+  "observerInventory": {
+    "case-outcome": 161,
+    "digest-predicate": 9,
+    "canonicalization-predicate": 1,
+    "sqlite-normalization-predicate": 1,
+    "static-digest-admission-predicate": 1
+  },
+  "typedPredicateObservers": {
+    "mutant-fault-v3-static-digest-admission": "static-digest-admission-predicate",
+    "mutant-state-collision-free-pre18": "digest-predicate",
+    "mutant-state-completed-ordinary-restart": "digest-predicate",
+    "mutant-state-completed-recovered-restart": "digest-predicate",
+    "mutant-state-exact-blocked-pre18": "digest-predicate",
+    "mutant-state-failed-ledger": "digest-predicate",
+    "mutant-state-fresh": "digest-predicate",
+    "mutant-state-full-ledger-no-completion": "digest-predicate",
+    "mutant-state-future-ledger": "canonicalization-predicate",
+    "mutant-state-malformed-ledger": "sqlite-normalization-predicate",
+    "mutant-state-noncontiguous-ledger": "digest-predicate",
+    "mutant-state-strict-prefix-successor": "digest-predicate"
+  },
+  "negativeControls": {
+    "trace-literal-substitution": {
+      "catalogMember": false,
+      "sameCompiledRunner": true,
+      "requiredOutcome": "trace-mismatch",
+      "requiredGateOutcome": "expected-red"
+    },
+    "semantically-inert-mutant": {
+      "catalogMember": false,
+      "sameCompiledRunner": true,
+      "requiredOutcome": "survived-or-uncovered",
+      "requiredGateOutcome": "expected-red"
+    },
+    "pre-killer-broken-harness": {
+      "catalogMember": false,
+      "sameCompiledRunner": true,
+      "requiredOutcome": "harness-error",
+      "requiredGateOutcome": "expected-red"
+    }
+  },
+  "aggregatePolicy": {
+    "source": "complete-typed-ledger-rows-only",
+    "controlsExcluded": true,
+    "hardCodedKillIncrements": false,
+    "catchBasedKillIncrements": false
+  },
+  "requiredReport": {
+    "selected": 179,
+    "passed": 179,
+    "failed": 0,
+    "skipped": 0,
+    "categoryCounts": {
+      "collision": 57,
+      "corruption": 15,
+      "darkness": 6,
+      "divergence": 9,
+      "edge": 24,
+      "fault": 40,
+      "parity": 3,
+      "restart": 9,
+      "state": 16
+    },
+    "a0MutantsSelected": 173,
+    "a0MutantsKilled": 173,
+    "a0MutantsSurvived": 0,
+    "a0MutantsUncovered": 0,
+    "a0InvalidMutants": 0,
+    "a0HarnessErrors": 0,
+    "constructionSentinels": 6,
+    "constructionSentinelsSelected": 0,
+    "constructionSentinelsPatched": 0,
+    "constructionSentinelsExecuted": 0,
+    "constructionSentinelsConstructed": 0
+  },
+  "interpreterBoundary": {
+    "path": "plugins/workflows/src/artifact-recovery-v12-reference-interpreter.ts",
+    "requiredExports": [
+      "compareV12LiteralTraces",
+      "validateV12Authority",
+      "executeV12Corpus"
+    ],
+    "forbiddenImports": [
+      "./data.js",
+      "./artifact-recovery.js",
+      "./plugin-api.js",
+      "./fake-plugin-host.js",
+      "@get-bb/plugin-sdk",
+      "apps/server",
+      "packages/plugin-sdk"
+    ],
+    "forbiddenSemanticDispatch": [
+      "case-id",
+      "label",
+      "category-name",
+      "filename",
+      "object-key-spelling",
+      "array-position"
+    ]
+  }
+}

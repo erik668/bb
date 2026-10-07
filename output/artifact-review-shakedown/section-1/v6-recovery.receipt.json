@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "recoveryId": "artifact-review-v6:hash-bound-pre18-quarantine-recovery-v1",
+  "contractId": "bb-artifact-review-service:revision-1",
+  "architectureRevision": 2,
+  "designSha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f",
+  "descriptor": {
+    "beforeMigrationId": 18,
+    "migration18Sha256": "aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d",
+    "preSchemaFingerprintSha256": "51a8174aa115545aebc378063c3d1a612ab5561ea22932bd744dea0506fa5afa",
+    "recoveryRecipeSha256": "ecbde76025e9b93e358badb75bdeee20284c1ce7e39e2a824afe416bdeaf5d79"
+  },
+  "files": {
+    "packages/plugin-sdk/src/backend-contract.ts": "56fe24935af704307f136af38f8b31e285989ac18ad9c0524ef3f7da6ddd8a69",
+    "apps/server/src/services/plugins/plugin-api.ts": "80c650c6a81f49a98f015ade11ae029e229ce91661fcfe0107476c9f30234baa",
+    "apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts": "2ee50b3c72822f60639a92a7b8d34b0b6139ca9b4768f7f38e20cd7b6060eead",
+    "packages/plugin-sdk/src/testing/fake-plugin-host.ts": "df47a5e000b584aef7c774fe82778a35a50e76fb6629fd003ca48b5858eb5692",
+    "packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts": "e81af7cc07e0b1bc7950eec180a0580fcd3f6051ef11849fd8206597aedcbb5b",
+    "plugins/workflows/src/artifact-recovery.ts": "508a4cd4eef6d56458d390067a98aa6809890b077d8e33bdee10b53d4f352b8e",
+    "plugins/workflows/src/artifact-recovery.test.ts": "521935567c2863e2ddf664929b9c5707434a085b581f78714831b9c44f6f9166",
+    "plugins/workflows/src/data.ts": "4dc6842cb404de9f2487785d83362e41b33bbed2500b5bfc4194a918e6e11a91",
+    "plugins/workflows/src/data.test.ts": "db51df82473b9bd190f2b5d3456e95e260d8ab1499881ffa8c4cbd7c7a14f5d4",
+    "plugins/workflows/src/server.ts": "4bf574a3d06923254b2f6cf120d87dce9fce413700b7284b13a0d23dae068ceb",
+    "plugins/workflows/src/server-harness.test.ts": "aa8d4a0091d6ee8e6052f11028cb65e3182c824b029357508a398ba7198fca83",
+    "plugins/workflows/src/artifact-review-oracle-fixtures.ts": "a0cc50aa6e81e2d8df5094ec12e1f8da92133b2e6b859742767337609addfcd9",
+    "plugins/workflows/src/artifact-review-oracle.test.ts": "bec871ea787f359d0d324409ec804f0f9545603dbf855fa62499d0019e8a0733"
+  },
+  "verifications": [
+    {
+      "id": "section-1:verification-1",
+      "command": "pnpm --filter @bb/server exec vitest run --config vitest.config.ts src/services/plugins/plugin-api.migration-recovery.test.ts",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-2",
+      "command": "pnpm --filter @get-bb/plugin-sdk exec vitest run --config vitest.config.ts src/testing/__tests__/fake-plugin-host.test.ts",
+      "passed": 44,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-3",
+      "command": "pnpm --filter bb-plugin-workflows exec vitest run --config vitest.config.ts src/artifact-review-oracle.test.ts src/artifact-recovery.test.ts src/data.test.ts src/server-harness.test.ts",
+      "passed": 65,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-4",
+      "command": "pnpm --filter @bb/server typecheck; pnpm --filter bb-plugin-workflows typecheck",
+      "passed": 2,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "id": "section-1:verification-5",
+      "command": "git diff --check -- packages/plugin-sdk/src/backend-contract.ts apps/server/src/services/plugins/plugin-api.ts apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts packages/plugin-sdk/src/testing/fake-plugin-host.ts packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts plugins/workflows/src/artifact-recovery.ts plugins/workflows/src/artifact-recovery.test.ts plugins/workflows/src/data.ts plugins/workflows/src/data.test.ts plugins/workflows/src/server.ts plugins/workflows/src/server-harness.test.ts plugins/workflows/src/artifact-review-oracle-fixtures.ts plugins/workflows/src/artifact-review-oracle.test.ts output/artifact-review-shakedown/section-1/v6-recovery.receipt.json",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0
+    }
+  ],
+  "selectedAssertions": 111,
+  "liveChanges": "dark",
+  "artifactRpcOrUiRegistered": false
+}

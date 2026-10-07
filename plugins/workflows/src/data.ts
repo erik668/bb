@@ -1,26 +1,56 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { ResolvedWorkflowExecutionSelection } from "./cache.js";
-import type { JsonValue, WorkflowAgentOptions } from "./types.js";
 import {
-  MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN,
-  MAX_WORKFLOW_CHECKPOINTS_PER_RUN,
-} from "./workflow-checkpoint.js";
+  artifactRepositoryFoundationMigration,
+  artifactRepositoryFoundationRepairMigration,
+  artifactStorageMigrations,
+} from "./artifact-storage.js";
+import { RECOVERY_MIGRATION_22_SQL } from "./artifact-recovery.js";
+import type { JsonValue } from "./types.js";
 import { MAX_WORKFLOW_RUNS_PER_CAMPAIGN } from "./workflow-campaign.js";
+import { MAX_WORKFLOW_CHECKPOINTS_PER_RUN } from "./workflow-checkpoint.js";
+
+// Every status transition on workflow_runs / workflow_calls lives in the
+// settlement module; this module owns rows, reads, and the migration ledger,
+// and re-exports the settlement verbs for existing importers. The two modules
+// import each other, so neither may touch the other's bindings at top level.
+export {
+  attachCallThread,
+  cancelRun,
+  claimQueuedRun,
+  queueCallProviderRetry,
+  recoverInterruptedRuns,
+  settleCall,
+  settleRun,
+  startCall,
+  storeStructuredResult,
+  upsertWorkflowCheckpoint,
+  type StoreStructuredResultOutcome,
+  type UpsertWorkflowCheckpointOutcome,
+} from "./workflow-terminal-settlement.js";
 
 export type Db = Database.Database;
-type WorkflowRunStatus =
-  | "queued"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
-type WorkflowCallStatus =
-  | "queued"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled";
+
+/** Statuses a run or call may still transition out of. */
+export const WORKFLOW_ACTIVE_STATUSES = ["queued", "running"] as const;
+/** Statuses only the settlement module may write; nothing transitions out. */
+export const WORKFLOW_TERMINAL_STATUSES = [
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+type WorkflowActiveStatus = (typeof WORKFLOW_ACTIVE_STATUSES)[number];
+type WorkflowTerminalStatus = (typeof WORKFLOW_TERMINAL_STATUSES)[number];
+type WorkflowRunStatus = WorkflowActiveStatus | WorkflowTerminalStatus;
+type WorkflowCallStatus = WorkflowActiveStatus | WorkflowTerminalStatus;
+
+export function sqlStringList(values: readonly string[]): string {
+  return values.map((value) => `'${value}'`).join(", ");
+}
+
+/** `IN (...)` operands derived from the closed status sets above. */
+export const ACTIVE_STATUS_SQL = sqlStringList(WORKFLOW_ACTIVE_STATUSES);
+export const TERMINAL_STATUS_SQL = sqlStringList(WORKFLOW_TERMINAL_STATUSES);
 
 export interface WorkflowRunRow {
   id: string;
@@ -40,6 +70,8 @@ export interface WorkflowRunRow {
   sourceHash: string;
   argsJson: string;
   settingsJson: string;
+  /** Immutable definition-level rollout gate captured when the run is created. */
+  workflowArtifactLiveChanges?: boolean;
   status: WorkflowRunStatus;
   resumedFromRunId: string | null;
   resultJson: string | null;
@@ -121,37 +153,32 @@ export interface WorkflowCheckpointRow {
   updatedAt: number;
 }
 
-export type UpsertWorkflowCheckpointOutcome =
-  | "accepted"
-  | "inactive"
-  | "limit_exceeded"
-  | "ownership_conflict"
-  | "kind_conflict";
-
-type StoreStructuredResultOutcome =
-  | "accepted"
-  | "idempotent"
-  | "conflict"
-  | "inactive";
-
-interface RawRunRow extends Omit<WorkflowRunRow, "notificationSent"> {
+interface RawRunRow extends Omit<
+  WorkflowRunRow,
+  "notificationSent" | "workflowArtifactLiveChanges"
+> {
   notificationSent: 0 | 1;
+  workflowArtifactLiveChanges: 0 | 1;
 }
 
 interface RawCallRow extends Omit<WorkflowCallRow, "contextUsageEstimated"> {
   contextUsageEstimated: 0 | 1 | null;
 }
 
-function runRow(value: unknown): WorkflowRunRow {
+export function runRow(value: unknown): WorkflowRunRow {
   const row = value as RawRunRow;
-  return { ...row, notificationSent: row.notificationSent === 1 };
+  return {
+    ...row,
+    notificationSent: row.notificationSent === 1,
+    workflowArtifactLiveChanges: row.workflowArtifactLiveChanges === 1,
+  };
 }
 
-function optionalRun(value: unknown): WorkflowRunRow | null {
+export function optionalRun(value: unknown): WorkflowRunRow | null {
   return value === undefined ? null : runRow(value);
 }
 
-function callRow(value: unknown): WorkflowCallRow {
+export function callRow(value: unknown): WorkflowCallRow {
   const row = value as RawCallRow;
   return {
     ...row,
@@ -162,7 +189,7 @@ function callRow(value: unknown): WorkflowCallRow {
   };
 }
 
-function optionalCall(value: unknown): WorkflowCallRow | null {
+export function optionalCall(value: unknown): WorkflowCallRow | null {
   return value === undefined ? null : callRow(value);
 }
 
@@ -170,7 +197,7 @@ function checkpointRow(value: unknown): WorkflowCheckpointRow {
   return value as WorkflowCheckpointRow;
 }
 
-const RUN_SELECT = `
+export const RUN_SELECT = `
   SELECT id, project_id AS projectId, origin_thread_id AS originThreadId,
     COALESCE(presentation_thread_id, origin_thread_id) AS presentationThreadId,
     parent_run_id AS parentRunId, COALESCE(root_run_id, id) AS rootRunId,
@@ -179,7 +206,8 @@ const RUN_SELECT = `
     origin_model AS originModel, origin_reasoning_level AS originReasoningLevel,
     origin_permission_mode AS originPermissionMode,
     name, source, source_hash AS sourceHash, args_json AS argsJson,
-    settings_json AS settingsJson, status,
+    settings_json AS settingsJson,
+    workflow_artifact_live_changes AS workflowArtifactLiveChanges, status,
     resumed_from_run_id AS resumedFromRunId, result_json AS resultJson, error,
     phase, replay_safety_version AS replaySafetyVersion,
     replay_barrier_index AS replayBarrierIndex,
@@ -191,7 +219,7 @@ const RUN_SELECT = `
     started_at AS startedAt, finished_at AS finishedAt
   FROM workflow_runs`;
 
-const CALL_SELECT = `
+export const CALL_SELECT = `
   SELECT id, run_id AS runId, call_index AS callIndex, cache_key AS cacheKey,
     prompt, options_json AS optionsJson,
     resolved_provider AS resolvedProvider, resolved_model AS resolvedModel,
@@ -210,6 +238,145 @@ const CALL_SELECT = `
     created_at AS createdAt, last_activity_at AS lastActivityAt,
     started_at AS startedAt, finished_at AS finishedAt
   FROM workflow_calls`;
+
+/** Interlock states a call can hold against an admitted contract change. */
+export const CONTRACT_INTERLOCK_STATES = [
+  "pending",
+  "adopted",
+  "blocked",
+  "stop-required",
+] as const;
+
+/**
+ * Artifact revision lifecycle. `artifact-storage.ts` (artifact persistence
+ * unit) enumerates the same set in the CHECK constraint on
+ * `workflow_artifact_revisions.status`; it cannot import this binding without
+ * a module cycle, so the settlement proof asserts parity against the live
+ * schema. Settlement SQL derives its revision-status literals from this set.
+ */
+export const ARTIFACT_REVISION_STATUSES = [
+  "draft",
+  "accepted-pending-impact",
+  "admitted",
+  "superseded",
+] as const;
+export type ArtifactRevisionStatus =
+  (typeof ARTIFACT_REVISION_STATUSES)[number];
+
+/** Production writers that can retain old-snapshot evidence as stale. */
+export const STALE_EVIDENCE_WRITERS = [
+  "structured-result",
+  "settle-call",
+  "checkpoint",
+  "recovery",
+  "admission",
+] as const;
+
+/**
+ * Contract snapshot binding, campaign transition ledger, per-call interlocks,
+ * and stale evidence. Appended after the artifact storage statement; dormant
+ * until an artifact revision is admitted for a campaign.
+ */
+const contractInterlockMigration = `
+  ALTER TABLE workflow_calls ADD COLUMN contract_snapshot TEXT;
+  CREATE TABLE IF NOT EXISTS workflow_campaign_contract_changes (
+    campaign_id TEXT NOT NULL,
+    project_id TEXT NOT NULL,
+    environment_id TEXT NOT NULL,
+    change_id TEXT NOT NULL,
+    sequence INTEGER NOT NULL CHECK(sequence >= 1),
+    presentation_thread_id TEXT NOT NULL,
+    artifact_id TEXT NOT NULL,
+    artifact_revision INTEGER NOT NULL CHECK(artifact_revision >= 1),
+    old_snapshot TEXT,
+    new_snapshot TEXT NOT NULL,
+    admitted_at INTEGER NOT NULL,
+    PRIMARY KEY (campaign_id, project_id, environment_id, change_id),
+    UNIQUE (campaign_id, project_id, environment_id, sequence)
+  );
+  CREATE TABLE IF NOT EXISTS workflow_call_contract_interlocks (
+    change_id TEXT NOT NULL,
+    call_id TEXT NOT NULL REFERENCES workflow_calls(id) ON DELETE CASCADE,
+    required_sequence INTEGER NOT NULL CHECK(required_sequence >= 1),
+    old_snapshot TEXT,
+    new_snapshot TEXT NOT NULL,
+    state TEXT NOT NULL CHECK(state IN (${sqlStringList(CONTRACT_INTERLOCK_STATES)})),
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (change_id, call_id)
+  );
+  CREATE INDEX IF NOT EXISTS workflow_call_contract_interlocks_call_idx
+    ON workflow_call_contract_interlocks(call_id, state, required_sequence);
+  CREATE TABLE IF NOT EXISTS workflow_call_stale_evidence (
+    id TEXT PRIMARY KEY,
+    call_id TEXT NOT NULL REFERENCES workflow_calls(id) ON DELETE CASCADE,
+    writer TEXT NOT NULL CHECK(writer IN (${sqlStringList(STALE_EVIDENCE_WRITERS)})),
+    evidence_snapshot TEXT,
+    blocking_change_id TEXT NOT NULL,
+    blocking_sequence INTEGER NOT NULL,
+    payload_json TEXT,
+    error TEXT,
+    recorded_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS workflow_call_stale_evidence_call_idx
+    ON workflow_call_stale_evidence(call_id, recorded_at);`;
+
+/** Additive rollout identity: old definitions and all existing runs stay off. */
+const workflowArtifactLiveChangesMigration = `
+  ALTER TABLE workflow_runs ADD COLUMN workflow_artifact_live_changes
+    INTEGER NOT NULL DEFAULT 0 CHECK(workflow_artifact_live_changes IN (0, 1));`;
+
+/** A durable pre-spawn linearization receipt; it never contains a thread ID. */
+const workflowDispatchClaimMigration = `
+  CREATE TABLE IF NOT EXISTS workflow_call_dispatch_claims (
+    call_id TEXT PRIMARY KEY REFERENCES workflow_calls(id) ON DELETE CASCADE,
+    contract_snapshot TEXT,
+    claimed_at INTEGER NOT NULL
+  );`;
+
+/**
+ * Idempotent backfill plus a durable mixed-version guard. Older binaries that
+ * omit the canonical campaign/presentation fields fail closed after v5 rather
+ * than creating an ambiguous origin scope.
+ */
+const workflowArtifactScopeGuardMigration = `
+  UPDATE workflow_runs
+    SET campaign_id = id
+    WHERE campaign_id IS NULL;
+  UPDATE workflow_runs
+    SET presentation_thread_id = origin_thread_id
+    WHERE presentation_thread_id IS NULL;
+  CREATE TRIGGER workflow_runs_artifact_scope_insert_guard
+    BEFORE INSERT ON workflow_runs
+    WHEN (NEW.campaign_id IS NULL OR NEW.presentation_thread_id IS NULL)
+      AND NEW.workflow_artifact_live_changes = 1
+    BEGIN
+      SELECT RAISE(ABORT, 'workflow artifact origin scope is required');
+    END;
+  CREATE TRIGGER workflow_runs_artifact_scope_update_guard
+    BEFORE UPDATE OF campaign_id, presentation_thread_id ON workflow_runs
+    WHEN (NEW.campaign_id IS NULL OR NEW.presentation_thread_id IS NULL)
+      AND NEW.workflow_artifact_live_changes = 1
+    BEGIN
+      SELECT RAISE(ABORT, 'workflow artifact origin scope is required');
+    END;`;
+
+/** Keep the unreviewed live kernel unreachable until its owning unit admits it. */
+const workflowArtifactFoundationDarkMigration = `
+  UPDATE workflow_runs SET workflow_artifact_live_changes = 0
+    WHERE workflow_artifact_live_changes = 1;
+  CREATE TRIGGER workflow_runs_artifact_live_changes_insert_guard
+    BEFORE INSERT ON workflow_runs
+    WHEN NEW.workflow_artifact_live_changes = 1
+    BEGIN
+      SELECT RAISE(ABORT, 'workflow artifact live changes are not admitted');
+    END;
+  CREATE TRIGGER workflow_runs_artifact_live_changes_update_guard
+    BEFORE UPDATE OF workflow_artifact_live_changes ON workflow_runs
+    WHEN NEW.workflow_artifact_live_changes = 1
+    BEGIN
+      SELECT RAISE(ABORT, 'workflow artifact live changes are not admitted');
+    END;`;
 
 export const migrations = [
   `CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -326,6 +493,15 @@ export const migrations = [
    UPDATE workflow_runs SET campaign_id = id WHERE campaign_id IS NULL;
    CREATE INDEX IF NOT EXISTS workflow_runs_campaign_created_idx
      ON workflow_runs(campaign_id, created_at ASC);`,
+  ...artifactStorageMigrations,
+  contractInterlockMigration,
+  workflowArtifactLiveChangesMigration,
+  workflowDispatchClaimMigration,
+  artifactRepositoryFoundationMigration,
+  workflowArtifactScopeGuardMigration,
+  artifactRepositoryFoundationRepairMigration,
+  workflowArtifactFoundationDarkMigration,
+  RECOVERY_MIGRATION_22_SQL,
 ];
 
 type CreateWorkflowRunInput = Omit<
@@ -346,7 +522,8 @@ type CreateWorkflowRunInput = Omit<
   | "createdAt"
   | "startedAt"
   | "finishedAt"
-> & { campaignId?: string };
+  | "workflowArtifactLiveChanges"
+> & { campaignId?: string; workflowArtifactLiveChanges?: boolean };
 
 export function createRun(
   db: Db,
@@ -385,16 +562,23 @@ export function createRun(
        parent_run_id, root_run_id, campaign_id, environment_id, origin_provider,
        origin_model, origin_reasoning_level, origin_permission_mode,
        name, source, source_hash,
-       args_json, settings_json, status, resumed_from_run_id,
+       args_json, settings_json, workflow_artifact_live_changes, status, resumed_from_run_id,
        replay_safety_version, created_at
      ) VALUES (
        @id, @projectId, @originThreadId, @presentationThreadId,
        @parentRunId, @rootRunId, @campaignId, @environmentId, @originProvider,
        @originModel, @originReasoningLevel, @originPermissionMode,
        @name, @source, @sourceHash,
-       @argsJson, @settingsJson, 'queued', @resumedFromRunId, 1, @now
+       @argsJson, @settingsJson, @workflowArtifactLiveChanges, 'queued', @resumedFromRunId, 1, @now
      )`,
-    ).run({ id, now, ...input, rootRunId, campaignId });
+    ).run({
+      id,
+      now,
+      ...input,
+      workflowArtifactLiveChanges: input.workflowArtifactLiveChanges ? 1 : 0,
+      rootRunId,
+      campaignId,
+    });
   })();
   return getRunRequired(db, id);
 }
@@ -443,7 +627,7 @@ export function listActiveRunsForOriginThread(
 ): WorkflowRunRow[] {
   return db
     .prepare(
-      `${RUN_SELECT} WHERE origin_thread_id = ? AND status IN ('queued', 'running')
+      `${RUN_SELECT} WHERE origin_thread_id = ? AND status IN (${ACTIVE_STATUS_SQL})
        ORDER BY created_at DESC, workflow_runs.rowid DESC`,
     )
     .all(originThreadId)
@@ -458,7 +642,7 @@ export function listActiveRunsForThread(
     .prepare(
       `${RUN_SELECT}
        WHERE (origin_thread_id = ? OR presentation_thread_id = ?)
-         AND status IN ('queued', 'running')
+         AND status IN (${ACTIVE_STATUS_SQL})
        ORDER BY created_at DESC, workflow_runs.rowid DESC`,
     )
     .all(threadId, threadId)
@@ -537,218 +721,10 @@ export function listRunsForCampaign(
     ) as WorkflowCampaignRunSummaryRow[];
 }
 
-export function claimQueuedRun(
-  db: Db,
-  maxActiveRuns: number,
-): WorkflowRunRow | null {
-  return db.transaction(() => {
-    const active = db
-      .prepare(
-        `SELECT COUNT(*) AS count FROM workflow_runs WHERE status = 'running'`,
-      )
-      .get() as { count: number };
-    if (active.count >= maxActiveRuns) return null;
-    const row = optionalRun(
-      db
-        .prepare(
-          `${RUN_SELECT} WHERE status = 'queued' ORDER BY created_at LIMIT 1`,
-        )
-        .get(),
-    );
-    if (row === null) return null;
-    const changed = db
-      .prepare(
-        `UPDATE workflow_runs SET status = 'running', started_at = COALESCE(started_at, ?)
-         WHERE id = ? AND status = 'queued'`,
-      )
-      .run(Date.now(), row.id).changes;
-    return changed === 1 ? getRunRequired(db, row.id) : null;
-  })();
-}
-
-function interruptWorkflowCheckpoints(
-  db: Db,
-  args: { runId?: string; sourceCallId?: string; now: number },
-): void {
-  const selector =
-    args.runId === undefined
-      ? "source_call_id = @sourceCallId"
-      : "run_id = @runId";
-  db.prepare(
-    `UPDATE workflow_checkpoints
-     SET checkpoint_json = json_set(
-       checkpoint_json, '$.status', 'interrupted'
-     ), updated_at = @now
-     WHERE ${selector}
-       AND json_extract(checkpoint_json, '$.status') IN ('pending', 'running')`,
-  ).run(args);
-}
-
-export function settleRun(
-  db: Db,
-  args: {
-    id: string;
-    status: Extract<WorkflowRunStatus, "succeeded" | "failed" | "cancelled">;
-    result: JsonValue | null;
-    error: string | null;
-  },
-): WorkflowCallRow[] {
-  return db.transaction(() => {
-    const outstanding = db
-      .prepare(
-        `${CALL_SELECT} WHERE run_id = ? AND status IN ('queued', 'running')`,
-      )
-      .all(args.id)
-      .map(callRow);
-    const now = Date.now();
-    const changed = db
-      .prepare(
-        `UPDATE workflow_runs SET status = @status, result_json = @resultJson,
-         error = @error, finished_at = @now
-         WHERE id = @id AND status IN ('queued', 'running')`,
-      )
-      .run({
-        id: args.id,
-        status: args.status,
-        resultJson:
-          args.status === "succeeded" ? JSON.stringify(args.result) : null,
-        error: args.error,
-        now,
-      }).changes;
-    if (changed === 0) return [];
-    db.prepare(
-      `UPDATE workflow_calls SET status = 'cancelled',
-       error = 'Parent workflow finished before this call', finished_at = ?
-       WHERE run_id = ? AND status IN ('queued', 'running')`,
-    ).run(now, args.id);
-    interruptWorkflowCheckpoints(db, { runId: args.id, now });
-    return outstanding;
-  })();
-}
-
 export function updateRunPhase(db: Db, id: string, phase: string): void {
   db.prepare(
     `UPDATE workflow_runs SET phase = ? WHERE id = ? AND status = 'running'`,
   ).run(phase, id);
-}
-
-export function upsertWorkflowCheckpoint(
-  db: Db,
-  input: {
-    runId: string;
-    checkpointId: string;
-    checkpointJson: string;
-    phase: string | null;
-    sourceCallId: string | null;
-  },
-): UpsertWorkflowCheckpointOutcome {
-  return db.transaction(() => {
-    const run = db
-      .prepare(`SELECT status FROM workflow_runs WHERE id = ?`)
-      .get(input.runId) as { status: WorkflowRunStatus } | undefined;
-    if (run?.status !== "running") return "inactive";
-
-    const existing = db
-      .prepare(
-        `SELECT length(CAST(checkpoint_json AS BLOB)) AS bytes,
-           source_call_id AS sourceCallId,
-           json_extract(checkpoint_json, '$.kind') AS kind,
-           CASE WHEN json_extract(checkpoint_json, '$.status') IN ('pending', 'running')
-             THEN 4 ELSE 0 END AS interruptionReserveBytes
-         FROM workflow_checkpoints
-         WHERE run_id = ? AND checkpoint_id = ?`,
-      )
-      .get(input.runId, input.checkpointId) as
-      | {
-          bytes: number;
-          sourceCallId: string | null;
-          kind: string;
-          interruptionReserveBytes: number;
-        }
-      | undefined;
-    const incoming = JSON.parse(input.checkpointJson) as {
-      kind: string;
-      status: string;
-    };
-    if (
-      existing !== undefined &&
-      input.sourceCallId !== null &&
-      existing.sourceCallId !== input.sourceCallId
-    ) {
-      return "ownership_conflict";
-    }
-    if (
-      existing !== undefined &&
-      typeof existing.kind === "string" &&
-      typeof incoming.kind === "string" &&
-      existing.kind !== incoming.kind
-    ) {
-      return "kind_conflict";
-    }
-    const totals = db
-      .prepare(
-        `SELECT COUNT(*) AS count,
-           COALESCE(SUM(length(CAST(checkpoint_json AS BLOB))), 0) AS bytes,
-           COALESCE(SUM(CASE
-             WHEN json_extract(checkpoint_json, '$.status') IN ('pending', 'running')
-             THEN 4 ELSE 0 END), 0) AS interruptionReserveBytes,
-           COALESCE(MAX(ordinal), -1) AS maximumOrdinal
-         FROM workflow_checkpoints WHERE run_id = ?`,
-      )
-      .get(input.runId) as {
-      count: number;
-      bytes: number;
-      interruptionReserveBytes: number;
-      maximumOrdinal: number;
-    };
-    const checkpointBytes = Buffer.byteLength(input.checkpointJson, "utf8");
-    const incomingInterruptionReserveBytes = ["pending", "running"].includes(
-      incoming.status,
-    )
-      ? 4
-      : 0;
-    const nextReservedTotalBytes =
-      totals.bytes +
-      totals.interruptionReserveBytes -
-      (existing?.bytes ?? 0) -
-      (existing?.interruptionReserveBytes ?? 0) +
-      checkpointBytes +
-      incomingInterruptionReserveBytes;
-    if (
-      nextReservedTotalBytes > MAX_WORKFLOW_CHECKPOINT_BYTES_PER_RUN ||
-      (existing === undefined &&
-        totals.count >= MAX_WORKFLOW_CHECKPOINTS_PER_RUN)
-    ) {
-      return "limit_exceeded";
-    }
-
-    const now = Date.now();
-    if (existing !== undefined) {
-      db.prepare(
-        `UPDATE workflow_checkpoints
-         SET checkpoint_json = @checkpointJson, phase = @phase,
-           source_call_id = COALESCE(@sourceCallId, source_call_id),
-           updated_at = @now
-         WHERE run_id = @runId AND checkpoint_id = @checkpointId`,
-      ).run({ ...input, now });
-      return "accepted";
-    }
-    db.prepare(
-      `INSERT INTO workflow_checkpoints (
-         id, run_id, checkpoint_id, checkpoint_json, phase, source_call_id,
-         ordinal, created_at, updated_at
-       ) VALUES (
-         @id, @runId, @checkpointId, @checkpointJson, @phase, @sourceCallId,
-         @ordinal, @now, @now
-       )`,
-    ).run({
-      id: `wcp_${randomUUID()}`,
-      ...input,
-      ordinal: totals.maximumOrdinal + 1,
-      now,
-    });
-    return "accepted";
-  })();
 }
 
 export function listWorkflowCheckpointsForRun(
@@ -820,44 +796,6 @@ export function beginNotificationAttempt(db: Db, id: string): boolean {
       )
       .run(id).changes === 1
   );
-}
-
-export function recoverInterruptedRuns(db: Db): string[] {
-  return db.transaction(() => {
-    const runRows = db
-      .prepare(`SELECT id FROM workflow_runs WHERE status = 'running'`)
-      .all() as Array<{ id: string }>;
-    const childRows = db
-      .prepare(
-        `SELECT calls.child_thread_id AS childThreadId
-         FROM workflow_calls calls
-         JOIN workflow_runs runs ON runs.id = calls.run_id
-         WHERE runs.status = 'running' AND calls.status = 'running'
-           AND calls.child_thread_id IS NOT NULL`,
-      )
-      .all() as Array<{ childThreadId: string }>;
-    const now = Date.now();
-    for (const run of runRows) {
-      interruptWorkflowCheckpoints(db, { runId: run.id, now });
-    }
-    db.prepare(
-      `UPDATE workflow_calls SET status = 'succeeded', error = NULL, finished_at = ?
-       WHERE status = 'running' AND result_json IS NOT NULL AND run_id IN (
-         SELECT id FROM workflow_runs WHERE status = 'running'
-       )`,
-    ).run(now);
-    db.prepare(
-      `UPDATE workflow_calls SET status = 'cancelled', error = 'Plugin restarted', finished_at = ?
-       WHERE status IN ('queued', 'running') AND run_id IN (
-         SELECT id FROM workflow_runs WHERE status = 'running'
-       )`,
-    ).run(now);
-    db.prepare(
-      `UPDATE workflow_runs SET status = 'queued', error = NULL, finished_at = NULL
-       WHERE status = 'running'`,
-    ).run();
-    return childRows.map((row) => row.childThreadId);
-  })();
 }
 
 export function getCall(
@@ -941,114 +879,6 @@ export function listTimedOutRuns(
     .map(runRow);
 }
 
-export function startCall(
-  db: Db,
-  args: {
-    runId: string;
-    callIndex: number;
-    cacheKey: string;
-    prompt: string;
-    options: WorkflowAgentOptions;
-    selection: ResolvedWorkflowExecutionSelection;
-    replay: {
-      callId: string;
-      result: Exclude<JsonValue, null>;
-      observedContextUsedTokens: number | null;
-      observedModelContextWindow: number | null;
-      contextUsageEstimated: boolean | null;
-    } | null;
-  },
-): WorkflowCallRow {
-  return db.transaction(() => {
-    const parent = getRun(db, args.runId);
-    if (parent?.status !== "running") {
-      throw new Error(`Workflow run ${args.runId} is not running`);
-    }
-    const existing = getCall(db, args.runId, args.callIndex);
-    const now = Date.now();
-    const id = existing?.id ?? `wfc_${randomUUID()}`;
-    const {
-      contextRequirement: _contextRequirement,
-      contextProfile: _contextProfile,
-      ...storedOptions
-    } = args.options;
-    db.prepare(
-      `INSERT INTO workflow_calls (
-       id, run_id, call_index, cache_key, prompt, options_json,
-       resolved_provider, resolved_model, resolved_reasoning_level,
-       resolved_permission_mode, status, prompt_bytes, context_minimum_tokens,
-       context_profile_json,
-       observed_context_used_tokens, observed_model_context_window,
-       context_usage_estimated, result_json, replayed_from_call_id,
-       replay_source, created_at, started_at, finished_at
-     ) VALUES (
-       @id, @runId, @callIndex, @cacheKey, @prompt, @optionsJson,
-       @resolvedProvider, @resolvedModel, @resolvedReasoningLevel,
-       @resolvedPermissionMode, @status, @promptBytes, @contextMinimumTokens,
-       @contextProfileJson,
-       @observedContextUsedTokens, @observedModelContextWindow,
-       @contextUsageEstimated, @resultJson, @replayedFromCallId,
-       @replaySource, @now, @now, @finishedAt
-     ) ON CONFLICT(run_id, call_index) DO UPDATE SET
-       cache_key = excluded.cache_key, prompt = excluded.prompt,
-       options_json = excluded.options_json,
-       resolved_provider = excluded.resolved_provider,
-       resolved_model = excluded.resolved_model,
-       resolved_reasoning_level = excluded.resolved_reasoning_level,
-       resolved_permission_mode = excluded.resolved_permission_mode,
-       status = excluded.status,
-       child_thread_id = NULL, repair_attempts = 0,
-       prompt_bytes = excluded.prompt_bytes,
-       context_minimum_tokens = excluded.context_minimum_tokens,
-       context_profile_json = excluded.context_profile_json,
-       observed_context_used_tokens = excluded.observed_context_used_tokens,
-       observed_model_context_window = excluded.observed_model_context_window,
-       context_usage_estimated = excluded.context_usage_estimated,
-       result_json = excluded.result_json, error = NULL,
-       replayed_from_call_id = excluded.replayed_from_call_id,
-       replay_source = excluded.replay_source,
-       started_at = excluded.started_at, finished_at = excluded.finished_at`,
-    ).run({
-      id,
-      runId: args.runId,
-      callIndex: args.callIndex,
-      cacheKey: args.cacheKey,
-      prompt: args.prompt,
-      optionsJson: JSON.stringify(storedOptions),
-      resolvedProvider: args.selection.providerId,
-      resolvedModel: args.selection.model,
-      resolvedReasoningLevel: args.selection.reasoningLevel,
-      resolvedPermissionMode: args.selection.permissionMode,
-      status: args.replay === null ? "queued" : "succeeded",
-      promptBytes: Buffer.byteLength(args.prompt, "utf8"),
-      contextMinimumTokens:
-        args.options.contextRequirement?.minimumTokens ?? null,
-      contextProfileJson:
-        args.options.contextProfile === null ||
-        args.options.contextProfile === undefined
-          ? null
-          : JSON.stringify(args.options.contextProfile),
-      observedContextUsedTokens: args.replay?.observedContextUsedTokens ?? null,
-      observedModelContextWindow:
-        args.replay?.observedModelContextWindow ?? null,
-      contextUsageEstimated:
-        args.replay?.contextUsageEstimated === undefined ||
-        args.replay.contextUsageEstimated === null
-          ? null
-          : args.replay.contextUsageEstimated
-            ? 1
-            : 0,
-      resultJson:
-        args.replay === null ? null : JSON.stringify(args.replay.result),
-      replayedFromCallId: args.replay?.callId ?? null,
-      replaySource: args.replay === null ? null : "resumed-run",
-      now,
-      finishedAt: args.replay === null ? null : now,
-    });
-    return getCall(db, args.runId, args.callIndex)!;
-  })();
-}
-
 export function recordCallContextUsage(
   db: Db,
   callId: string,
@@ -1104,74 +934,6 @@ export function markCallReplayedSameRun(db: Db, callId: string): void {
   ).run(callId);
 }
 
-export function attachCallThread(
-  db: Db,
-  callId: string,
-  threadId: string,
-): boolean {
-  return (
-    db
-      .prepare(
-        `UPDATE workflow_calls SET status = 'running', child_thread_id = ?,
-         error = NULL, started_at = ?, last_activity_at = ?
-       WHERE id = ? AND status = 'queued'
-         AND EXISTS (
-           SELECT 1 FROM workflow_runs
-           WHERE workflow_runs.id = workflow_calls.run_id
-             AND workflow_runs.status = 'running'
-         )`,
-      )
-      .run(threadId, Date.now(), Date.now(), callId).changes === 1
-  );
-}
-
-export function queueCallProviderRetry(
-  db: Db,
-  callId: string,
-  error: string,
-): WorkflowCallRow | null {
-  const changed = db
-    .prepare(
-      `UPDATE workflow_calls SET status = 'queued', child_thread_id = NULL,
-       provider_retry_attempts = provider_retry_attempts + 1,
-       error = ?, started_at = NULL, last_activity_at = ?, finished_at = NULL
-       WHERE id = ? AND status IN ('queued', 'failed') AND result_json IS NULL`,
-    )
-    .run(error, Date.now(), callId).changes;
-  return changed === 0
-    ? null
-    : optionalCall(db.prepare(`${CALL_SELECT} WHERE id = ?`).get(callId));
-}
-
-export function storeStructuredResult(
-  db: Db,
-  callId: string,
-  result: JsonValue,
-): StoreStructuredResultOutcome {
-  const resultJson = JSON.stringify(result);
-  return db.transaction(() => {
-    const changed = db
-      .prepare(
-        `UPDATE workflow_calls SET result_json = ?, last_activity_at = ?
-         WHERE id = ? AND status = 'running' AND result_json IS NULL`,
-      )
-      .run(resultJson, Date.now(), callId).changes;
-    if (changed === 1) return "accepted";
-
-    const row = optionalCall(
-      db.prepare(`${CALL_SELECT} WHERE id = ?`).get(callId),
-    );
-    if (row?.resultJson === null || row === null) return "inactive";
-    try {
-      return equalJsonValues(JSON.parse(row.resultJson), result)
-        ? "idempotent"
-        : "conflict";
-    } catch {
-      return "conflict";
-    }
-  })();
-}
-
 export function incrementRepairAttempts(db: Db, callId: string): number | null {
   const changed = db
     .prepare(
@@ -1188,91 +950,12 @@ export function incrementRepairAttempts(db: Db, callId: string): number | null {
   return row.repairAttempts;
 }
 
-export function settleCall(
-  db: Db,
-  args: {
-    id: string;
-    status: Extract<WorkflowCallStatus, "succeeded" | "failed" | "cancelled">;
-    result: JsonValue | null;
-    error: string | null;
-  },
-): string | null {
-  return db.transaction(() => {
-    const call = db
-      .prepare(`SELECT run_id AS runId FROM workflow_calls WHERE id = ?`)
-      .get(args.id) as { runId: string } | undefined;
-    if (call === undefined) return null;
-    const now = Date.now();
-    const changed = db
-      .prepare(
-        `UPDATE workflow_calls SET status = @status,
-         result_json = COALESCE(result_json, @resultJson), error = @error,
-         finished_at = @now
-         WHERE id = @id AND status IN ('queued', 'running')`,
-      )
-      .run({
-        id: args.id,
-        status: args.status,
-        resultJson:
-          args.status === "succeeded" ? JSON.stringify(args.result) : null,
-        error: args.error,
-        now,
-      }).changes;
-    if (changed === 0) return null;
-    interruptWorkflowCheckpoints(db, { sourceCallId: args.id, now });
-    return call.runId;
-  })();
-}
-
-function equalJsonValues(left: JsonValue, right: JsonValue): boolean {
-  if (left === right) return true;
-  if (left === null || right === null || typeof left !== typeof right) {
-    return false;
-  }
-  if (Array.isArray(left) || Array.isArray(right)) {
-    return (
-      Array.isArray(left) &&
-      Array.isArray(right) &&
-      left.length === right.length &&
-      left.every((value, index) => equalJsonValues(value, right[index]!))
-    );
-  }
-  if (typeof left !== "object" || typeof right !== "object") return false;
-  const leftKeys = Object.keys(left).sort();
-  const rightKeys = Object.keys(right).sort();
-  return (
-    leftKeys.length === rightKeys.length &&
-    leftKeys.every(
-      (key, index) =>
-        key === rightKeys[index] && equalJsonValues(left[key]!, right[key]!),
-    )
-  );
-}
-
-export function cancelRun(db: Db, id: string): boolean {
-  return db.transaction(() => {
-    const now = Date.now();
-    const changed = db
-      .prepare(
-        `UPDATE workflow_runs SET status = 'cancelled', error = 'Cancelled', finished_at = ?
-         WHERE id = ? AND status IN ('queued', 'running')`,
-      )
-      .run(now, id).changes;
-    db.prepare(
-      `UPDATE workflow_calls SET status = 'cancelled', error = 'Cancelled', finished_at = ?
-       WHERE run_id = ? AND status IN ('queued', 'running')`,
-    ).run(now, id);
-    if (changed === 1) interruptWorkflowCheckpoints(db, { runId: id, now });
-    return changed === 1;
-  })();
-}
-
 export function activeChildThreadsForRun(db: Db, runId: string): string[] {
   return (
     db
       .prepare(
         `SELECT child_thread_id AS childThreadId FROM workflow_calls
-         WHERE run_id = ? AND status IN ('queued', 'running')
+         WHERE run_id = ? AND status IN (${ACTIVE_STATUS_SQL})
            AND child_thread_id IS NOT NULL`,
       )
       .all(runId) as Array<{ childThreadId: string }>
@@ -1287,7 +970,7 @@ export function listPendingNotificationRuns(
   return db
     .prepare(
       `${RUN_SELECT} WHERE notification_sent = 0
-       AND status IN ('succeeded', 'failed', 'cancelled')
+       AND status IN (${TERMINAL_STATUS_SQL})
        AND (notification_next_attempt_at IS NULL OR notification_next_attempt_at <= ?)
        ORDER BY finished_at, id LIMIT ?`,
     )
@@ -1304,7 +987,7 @@ export function deleteExpiredTerminalRuns(
     .prepare(
       `WITH RECURSIVE retained(id, resumed_from_run_id) AS (
          SELECT id, resumed_from_run_id FROM workflow_runs
-         WHERE status IN ('queued', 'running')
+         WHERE status IN (${ACTIVE_STATUS_SQL})
            OR finished_at + json_extract(settings_json, '$.retentionDays') * 86400000 > ?
          UNION
          SELECT parent.id, parent.resumed_from_run_id
@@ -1312,7 +995,7 @@ export function deleteExpiredTerminalRuns(
          JOIN retained child ON child.resumed_from_run_id = parent.id
        ), expired_candidates(id, resumed_from_run_id) AS (
          SELECT id, resumed_from_run_id FROM workflow_runs
-         WHERE status IN ('succeeded', 'failed', 'cancelled')
+         WHERE status IN (${TERMINAL_STATUS_SQL})
            AND notification_sent = 1
            AND finished_at + json_extract(settings_json, '$.retentionDays') * 86400000 <= ?
            AND id NOT IN (SELECT id FROM retained)

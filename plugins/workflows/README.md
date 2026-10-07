@@ -44,23 +44,21 @@ that thread's latest run.
 
 Execution ownership and human presentation are tracked separately. The origin
 thread still owns the environment, permissions, and completion notification;
-the presentation thread receives the active card, realtime updates, and
-inspector access. A visible top-level launch presents in its origin thread. A
-workflow launched from a hidden worker inherits its parent run's presentation
-thread and root run, or otherwise falls back to its nearest visible ancestor.
-CLI launches can override the presentation target with `--present-in
-<thread-id>`. Independent continuation runs join a build story with `--campaign
+the presentation thread receives the active and latest-completed card,
+realtime updates, and inspector access. A parented launcher presents on its
+root visible parent, including across project and environment boundaries. A
+standalone launcher presents in itself unless it explicitly selects the human
+conversation with `--present-in <thread-id>` or `presentationThreadId` on
+`bb_workflow_run`. Independent continuation runs join a build story with `--campaign
 <campaign-id>` or the `campaignId` field on `bb_workflow_run`; causal children
 and resumed runs inherit it and reject conflicts. A campaign is restricted to
 one project, environment, and presentation thread and at most 100 runs.
 `status`, `list`, and
 `history` expose `originThreadId`,
 `presentationThreadId`, `parentRunId`, `rootRunId`, and `campaignId` for
-provenance. A
-presentation target must be a visible thread in the same project and
-environment and must be the origin or one of its ancestors. It must also be
-available from the same BB server; this does not federate workflow state across
-servers. The inspector and `details` command always list all campaign runs, but
+provenance. A presentation target must be visible and available from the same
+BB server; this does not federate workflow state across servers. The inspector
+and `details` command always list all campaign runs, but
 hydrate checkpoint ledgers for only the selected run plus the newest runs, up
 to four ledgers total. The selected ledger stays in the primary checkpoint
 field instead of being duplicated in the campaign aggregate. Older runs are
@@ -69,10 +67,11 @@ while keeping its full chronology visible.
 
 Both surfaces are implemented by the plugin app with `@bb/shared-ui` controls
 and BB theme tokens. Directive attributes and restored panel parameters are
-treated as untrusted input. The backend additionally binds every requested run
-to the directive message or panel thread, so a run ID from an unrelated thread
-cannot be inspected through these UI RPCs. Only the origin thread may stop a
-run. The service publishes a deduplicated `workflow-runs` realtime signal for
+treated as untrusted input. The backend binds every requested run to the
+directive message or panel thread, so an unrelated thread cannot inspect a run
+by copying its ID. Assign the human-facing conversation as the presentation
+thread when the run starts; only the origin thread may stop it. The service
+publishes a deduplicated `workflow-runs` realtime signal for
 the origin and presentation threads when a run starts, is claimed, settles, or
 is cancelled, so the composer status surface learns about new runs without a
 standing poll; it and the active message cards poll once per second only while

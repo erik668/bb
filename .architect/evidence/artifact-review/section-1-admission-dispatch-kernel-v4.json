@@ -1,0 +1,49 @@
+{
+  "section": "artifact-review-admission-dispatch-kernel-v4",
+  "status": "passed",
+  "scope": "production terminal writers, atomic admission/dispatch snapshot boundary, and retained blocked settlement",
+  "commands": [
+    {
+      "verificationId": "section-1:verification-1",
+      "command": "pnpm --filter bb-plugin-workflows test -- workflow-terminal-settlement.test.ts data.test.ts service-policy.test.ts",
+      "status": "passed",
+      "testFiles": 3,
+      "passed": 86,
+      "failed": 0,
+      "skipped": 0
+    },
+    {
+      "verificationId": "section-1:verification-2",
+      "command": "pace-agent-runtime heavy --name artifact-review-typecheck -- pnpm --filter bb-plugin-workflows typecheck",
+      "status": "passed"
+    },
+    {
+      "command": "git diff --check -- plugins/workflows/src/workflow-terminal-settlement.ts plugins/workflows/src/workflow-terminal-settlement.test.ts plugins/workflows/src/service.ts plugins/workflows/src/data.ts plugins/workflows/src/data.test.ts plugins/workflows/src/service-policy.ts plugins/workflows/src/service-policy.test.ts",
+      "status": "passed"
+    }
+  ],
+  "artifacts": {
+    "plugins/workflows/src/workflow-terminal-settlement.ts": "3bdfe4517a9bbc3790fca655eb7ddafca9bd9e3120ac16c24a322e065996823b",
+    "plugins/workflows/src/workflow-terminal-settlement.test.ts": "ccf1a9981e0346405c984488489c9189316da71d13697f33173e484800ad18f8",
+    "plugins/workflows/src/service.ts": "3ed81e4e1d6bc0f5454a9505ac5a40862527289ba89e4d28040144d171fc0757",
+    "plugins/workflows/src/data.ts": "f26d17de1afd1f5e5446a4d2ff78d3263f3c6857298a6ed8f9b0835522679b07",
+    "plugins/workflows/src/data.test.ts": "4306e003c5407b3f72270a3853d9963f7dad10426c9ed458548dc7b508c4d367",
+    "plugins/workflows/src/service-policy.ts": "d1801856aed028087fadd0850f94ad106905279e1ef4860b4ccdf842bada751b",
+    "plugins/workflows/src/service-policy.test.ts": "d4ddaf4c15f2673067569f958d7a91e51530bc4c0ab49bed04479eaefa120d11"
+  },
+  "ownerOperations": [
+    {
+      "kind": "update",
+      "artifactIds": [
+        "section-1-service-policy-kernel",
+        "section-1-service-policy-kernel-tests"
+      ],
+      "summary": "Updated the production fail-closed gate and its focused policy test as owned kernel artifacts; their final content identities are bound in this receipt."
+    }
+  ],
+  "boundaries": [
+    "Feature remains definition-level and off by default.",
+    "Prompt rebuilding, delivery, acknowledgement, steering, inspector UI, and steward remain later-unit work.",
+    "Whole-run cancellation remains the authoritative conservative fallback."
+  ]
+}

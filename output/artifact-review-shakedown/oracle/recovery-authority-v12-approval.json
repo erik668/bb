@@ -1,0 +1,240 @@
+{
+  "schemaVersion": "artifact-review-recovery-authority-v12-approval-v1",
+  "approvalState": "approved",
+  "generatedAt": "2026-08-27T10:35:12Z",
+  "scope": "oracle-A0-only/no-V3/no-rollout",
+  "successorSeamId": "bb-artifact-review-oracle-proof-v12:revision-1",
+  "architecture": {
+    "revision": 2,
+    "bindingWorkflowRunId": "wfr_b33bb153-1c95-4136-8c1b-027e953710ae",
+    "decisionClass": "contract-preserving"
+  },
+  "contract": {
+    "id": "bb-artifact-review-service:revision-1",
+    "revision": 1,
+    "authorityScope": "local-owner-origin-derived",
+    "presentationScope": "grant-only",
+    "durability": "committed-only",
+    "retention": "append-only",
+    "rollout": "dark"
+  },
+  "candidateManifest": {
+    "encoding": "UTF-8 JSON.stringify of path.localeCompare-sorted {path,sha256} entries with no terminal newline",
+    "byteLength": 798,
+    "sha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b",
+    "ledgerExcluded": true,
+    "entries": [
+      {
+        "path": "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-recovery-v12.json",
+        "sha256": "dce9f6220e07452f0ad0aea5efe34dbd518e8bc689d6c5f9a558652fd7d64225"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-oracle-dsl.schema.json",
+        "sha256": "1757d6d75991b4df7e42a1172706d7abc3447d9c769845b86ee80a533177cf0e"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-oracle.test.ts",
+        "sha256": "6d99c62c80eb3d7a30c3df45701c293ed760b539e0aa575c7045c28b1aac0e4c"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-reference-interpreter.ts",
+        "sha256": "274ec43fb0dcebf719d99e5541c2a56ded9e2ed23233ed00903d3322ea95f9c5"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-recovery-v12-runner-conformance.json",
+        "sha256": "eaeca2940663a8662a82189c95aee5424e4152b9431fa7ec15b6583eab3f1d6a"
+      }
+    ]
+  },
+  "baselineAdmission": {
+    "runs": 1,
+    "rawAuthoritySha256": "dce9f6220e07452f0ad0aea5efe34dbd518e8bc689d6c5f9a558652fd7d64225",
+    "contractRootSha256": "097beb11bb7480dbeb15e568f1a75e8774fc2882114f6dabb899fd80ed1bbd46",
+    "selected": 179,
+    "passed": 179,
+    "failed": 0,
+    "skipped": 0,
+    "immutableBeforeMutation": true,
+    "rejectionsCountAsKills": false
+  },
+  "a0": {
+    "selected": 173,
+    "patchApplied": 173,
+    "killerStarted": 173,
+    "killerCompleted": 173,
+    "killed": 173,
+    "survived": 0,
+    "uncovered": 0,
+    "invalidMutants": 0,
+    "harnessErrors": 0,
+    "missingRows": 0,
+    "duplicateRows": 0,
+    "completeTypedRowBinding": {
+      "encoding": "UTF-8 JSON.stringify(report.ledgerRows) with interpreter emission order and no terminal newline",
+      "rowCount": 173,
+      "byteLength": 245500,
+      "sha256": "a8d4a6be1c68084f13be4cdc92b604370a33b865a385e61eefa8659f12a87efb"
+    }
+  },
+  "negativeControls": [
+    {
+      "controlId": "trace-literal-substitution",
+      "sameCompiledRunner": true,
+      "catalogMember": false,
+      "selected": true,
+      "patchApplied": true,
+      "killerStarted": true,
+      "killerCompleted": true,
+      "failurePhase": "semantic-execution",
+      "outcome": "trace-mismatch",
+      "gateOutcome": "expected-red",
+      "traceIndex": 3,
+      "expectedLiteral": "observed:ordinary",
+      "actualLiteral": "observed:ordinary:substituted"
+    },
+    {
+      "controlId": "semantically-inert-mutant",
+      "sameCompiledRunner": true,
+      "catalogMember": false,
+      "selected": true,
+      "patchApplied": true,
+      "killerStarted": true,
+      "killerCompleted": true,
+      "failurePhase": "negative-control",
+      "outcome": "survived",
+      "gateOutcome": "expected-red"
+    },
+    {
+      "controlId": "pre-killer-broken-harness",
+      "sameCompiledRunner": true,
+      "catalogMember": false,
+      "selected": true,
+      "patchApplied": false,
+      "killerStarted": false,
+      "killerCompleted": false,
+      "failurePhase": "mutant-construction",
+      "outcome": "harness-error",
+      "gateOutcome": "expected-red"
+    }
+  ],
+  "ledger": {
+    "path": "output/artifact-review-shakedown/oracle/recovery-authority-v12-a0-ledger.json",
+    "sha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7",
+    "schemaVersion": "artifact-review-v12-a0-ledger-1",
+    "verdict": "pass",
+    "findings": []
+  },
+  "roleProvenance": {
+    "identitiesMustBeDistinct": true,
+    "approvalRecorderMayEditCandidateOrLedger": false,
+    "roles": [
+      {
+        "role": "authority-and-corpus-author",
+        "identity": "thread:thr_hnjzb8hpp2",
+        "threadId": "thr_hnjzb8hpp2"
+      },
+      {
+        "role": "harness-implementer",
+        "identity": "thread:thr_26kwgjuhu3",
+        "threadId": "thr_26kwgjuhu3"
+      },
+      {
+        "role": "independent-a0-reviewer",
+        "identity": "thread:thr_hcz4n7nqcy",
+        "threadId": "thr_hcz4n7nqcy",
+        "verdict": "pass",
+        "findings": []
+      },
+      {
+        "role": "approval-recorder",
+        "identity": "workflow:wfr_5350d9c1-75b0-404d-abde-3dad7dedc5de:approval-recorder-gate",
+        "workflowRunId": "wfr_5350d9c1-75b0-404d-abde-3dad7dedc5de",
+        "executingThreadId": "thr_tq9x3kan5p"
+      }
+    ]
+  },
+  "lineage": {
+    "failedV11": {
+      "workflowRunId": "wfr_b0339d5b-b40f-4444-bbff-d593c297aaa3",
+      "terminalVerdict": "blocked",
+      "approvalPresent": false,
+      "candidateManifestByteLength": 798,
+      "candidateManifestSha256": "fa96f5f142fb5629e5d72a1b800dcdef0b286314feb5bf80ac2eb8ee92072117",
+      "immutable": true
+    },
+    "failedEnvelope": {
+      "ledgerName": "malformedHandoff",
+      "workflowRunId": "wfr_7de68f56-f302-463d-9387-2f82628615bf",
+      "candidateManifestBytes": 0,
+      "candidateFindingAuthority": false,
+      "humanAuthority": false
+    },
+    "continuationWorkflowRunId": "wfr_5350d9c1-75b0-404d-abde-3dad7dedc5de"
+  },
+  "authorityEvidence": {
+    "acceptedDesignSha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f",
+    "contextPacketSha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44",
+    "v8ApprovalSha256": "117b322e0b524e1a6a7900389dfc0eaeb1cafe63f7c68427817572f7b10e6a4d"
+  },
+  "verification": {
+    "focusedOracle": {
+      "command": "pnpm --dir plugins/workflows exec vitest run src/artifact-recovery-v12-oracle.test.ts",
+      "filesPassed": 1,
+      "testsPassed": 6,
+      "testsFailed": 0
+    },
+    "packageTypecheck": {
+      "command": "pace-agent-runtime heavy --name v12-approval-typecheck -- pnpm --dir plugins/workflows typecheck",
+      "passed": true,
+      "diagnostics": 0
+    },
+    "candidateManifestStableAfterCommands": true,
+    "ledgerStableAfterCommands": true,
+    "v11ApprovalAbsent": true,
+    "v12ApprovalAbsentBeforeRecorderWrite": true,
+    "unrelatedDirtyState": {
+      "encoding": "UTF-8 JSON.stringify of path.localeCompare-sorted {path,sha256} entries for git-modified and untracked files excluding candidate, ledger, and approval",
+      "fileCount": 71,
+      "byteLength": 10157,
+      "sha256BeforeCommands": "b698f9df0e99a96f8d1948dd9b81d9dbcf7bb46d41015236d6e884006c2d7cbb",
+      "sha256AfterCommands": "b698f9df0e99a96f8d1948dd9b81d9dbcf7bb46d41015236d6e884006c2d7cbb"
+    },
+    "findings": []
+  },
+  "repairBudget": {
+    "postFreezeCandidate": 0,
+    "postFreezeLedger": 0,
+    "approvalRecorder": 0
+  },
+  "scopeStatement": {
+    "oracleA0Only": true,
+    "v3Constructed": false,
+    "featureActivated": false,
+    "rpcActivated": false,
+    "uiActivated": false,
+    "rendererActivated": false,
+    "liveDeliveryActivated": false,
+    "sdkConstructed": false,
+    "hostConstructed": false,
+    "pluginConstructed": false,
+    "productionConstructed": false,
+    "fakeConstructed": false,
+    "bootstrapAuthorized": false,
+    "adoptionAuthorized": false,
+    "deploymentAuthorized": false,
+    "rolloutAuthorized": false
+  },
+  "repository": {
+    "worktree": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details",
+    "head": "e2b88b053c1e9823e56d71e7f7861fd351d94d5d",
+    "branch": "feature/workflow-detail-ledger",
+    "dirty": true
+  },
+  "statements": [
+    "This approval binds only the exact five-file V12 oracle A0 candidate and its exact independent-review ledger.",
+    "No V3 construction, SDK, host, plugin, production, fake, RPC, UI, renderer, live delivery, adoption, deployment, or rollout is approved or activated.",
+    "The failed V11 candidate and failed-envelope handoff remain historical non-approval lineage.",
+    "Candidate and ledger bytes were not edited; the approval recorder consumed zero repair budget.",
+    "Unrelated dirty bytes were preserved."
+  ]
+}

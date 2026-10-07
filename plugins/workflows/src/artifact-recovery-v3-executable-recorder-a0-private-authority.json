@@ -1,0 +1,1783 @@
+{
+  "schemaVersion": "bb-artifact-review-v3-executable-recorder-a0-private-authority-v1",
+  "successorSeamId": "bb-artifact-review-v3-executable-recorder-a0:independent-harness-admission-v1",
+  "visibility": "recorder-private-join-only; never candidate-readable",
+  "joinRule": {
+    "algorithm": "sha256",
+    "input": "canonical-json-public-stimulus",
+    "terminalNewline": false,
+    "ordering": "same ordinal as public rows"
+  },
+  "targetConstructionRed": {
+    "boundary": "real artifact-review-v3 construction module/factory",
+    "attemptsPerRun": 1,
+    "expectedCode": "E_A0_TARGET_CONSTRUCTION_ABSENT",
+    "sideEffectsAllowed": [],
+    "positiveEvidence": false,
+    "aggregateDisposition": "separate-from-134-positive-rows"
+  },
+  "rows": [
+    {
+      "stimulusDigest": "9045f071b2090a153cf70d5752cda3a06921bbf71269bb9321ad5e0a601275df",
+      "caseId": "behavior:ordinary-empty",
+      "category": "behavior",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "phaseTraceRef": "ordinary",
+        "v12TraceRef": "v12Ordinary",
+        "snapshotRef": "ordinary",
+        "physicalRef": "ordinary",
+        "saved": "after-reopened-host-verification"
+      }
+    },
+    {
+      "stimulusDigest": "5c3a09f298863c57f65bc4d03e4ade36a0986416316847c21f9593ab717b8fa2",
+      "caseId": "behavior:ordinary-idempotent",
+      "category": "behavior",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "phaseTraceRef": "ordinary",
+        "v12TraceRef": "v12Ordinary",
+        "snapshotRef": "ordinary",
+        "physicalRef": "ordinary",
+        "saved": "after-reopened-host-verification"
+      }
+    },
+    {
+      "stimulusDigest": "8f9ff19a00d10b043da5a67ede1eb3f0b576efe9427cc930ed9e472c9251b01c",
+      "caseId": "behavior:exact-migration-18-recovery",
+      "category": "behavior",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-recovered",
+        "error": null,
+        "phaseTraceRef": "exactRecovery",
+        "v12TraceRef": "v12ExactRecovery",
+        "snapshotRef": "recovered",
+        "physicalRef": "exactRecovery",
+        "saved": "after-reopened-host-verification"
+      }
+    },
+    {
+      "stimulusDigest": "e8f3cc34bc10fdb7a76c6c786f3ee6754dcd1994ba15338e683f2e735f6bd0e3",
+      "caseId": "behavior:strict-prefix-successor",
+      "category": "behavior",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "phaseTraceRef": "strictPrefix",
+        "v12TraceRef": "v12StrictPrefix",
+        "snapshotRef": "strictPrefix",
+        "physicalRef": "strictPrefix",
+        "saved": "after-reopened-host-verification"
+      }
+    },
+    {
+      "stimulusDigest": "cdb19a7b4992042d7fc13feecdd2475f11dc941807fb273628795c02b5d635fa",
+      "caseId": "behavior:full-ledger-without-completion",
+      "category": "behavior",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNKNOWN_COMPLETION",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "f066dedfa80c48dcab874db91cf102d7659ed3f144201d6c30c4088c663e1ed4",
+      "caseId": "behavior:recovery-wrong-prefix",
+      "category": "behavior",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_LEDGER_NONCONTIGUOUS",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "94e07f94fc32e4f953e9d03f1cf748f5e9186b16fdaa47ef7d515e6b9dbbf581",
+      "caseId": "behavior:recovery-wrong-error",
+      "category": "behavior",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "cc00c99dedd21b9115fe9c227e6e7a67cd85d696107a97734c5542f56beb0d88",
+      "caseId": "behavior:v2-non-adoption",
+      "category": "behavior",
+      "adapter": "production-admission",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "legacy-v2-only",
+        "error": null,
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never-v3"
+      }
+    },
+    {
+      "stimulusDigest": "28e12b194ebc9a4a8b84e90fbccc1ce751ce71f750f37e9e9e79054d771422da",
+      "caseId": "behavior:v6-non-adoption",
+      "category": "behavior",
+      "adapter": "production-admission",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "ab4ccb911a073684665a0fc9e750864cca7a2b47dc41ee5450ebb3fa7aad6a57",
+      "caseId": "behavior:failed-v9-non-adoption",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "47a0e27e5b7566f18466442d5e88d778b586a2d81672982da4b053093d79743a",
+      "caseId": "behavior:failed-v10-non-adoption",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "c48a8d7ac2979c9806a451fbf11b2c212a73f8d659ec330600712abbe2616401",
+      "caseId": "behavior:failed-v11-non-adoption",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "baab07c950b609500c0b351711e20c0ff4ead1792130c042754028b1ff0c31c4",
+      "caseId": "behavior:malformed-ledger",
+      "category": "behavior",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_LEDGER_MALFORMED",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "90b3cbce221f742b0ac433a77e4953f0fe78ffa88f0547b8674b52b3dc76adb5",
+      "caseId": "behavior:duplicate-ledger",
+      "category": "behavior",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_LEDGER_MALFORMED",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "833b979191a4112da72fe877fbbd8f973992832ceeb2d04cfbc2d84e8fc69a6b",
+      "caseId": "behavior:future-ledger",
+      "category": "behavior",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_LEDGER_FUTURE",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "0392c70d99409c6867f4541c2de702a1f9af8bd119187fa50718c0db8b6e076d",
+      "caseId": "behavior:missing-authority",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "f5ce4eb487d1f338416c9c4f157b6ad9c224fb221fb5800302b07d7d8ed3eb70",
+      "caseId": "behavior:conflicting-authority",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "phaseTraceRef": "preflightRejected",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "4efa29f392edc3e70d51af114895e93660d23bbce3b3f580e2d8016f83b76a60",
+      "caseId": "behavior:malformed-completion",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_COMPLETION_MISMATCH",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "ac708d8848a4904bc85c18690b52bd91f17ea035f7b83ae7097c73652db50414",
+      "caseId": "behavior:duplicate-completion",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_COMPLETION_MISMATCH",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "e5c203a8c771e2c5f4d0cac71a99ebf132cdf71b196331982e4227323b9a1221",
+      "caseId": "behavior:conflicting-completion",
+      "category": "behavior",
+      "adapter": "independent-observer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "fail-closed",
+        "error": "E_COMPLETION_MISMATCH",
+        "phaseTraceRef": "failedClosed",
+        "v12TraceRef": null,
+        "snapshotRef": "pre18",
+        "saved": "never"
+      }
+    },
+    {
+      "stimulusDigest": "8c72eca793b21f183d8c8e9063edaad9f28816dfc91289c5660439efa086f871",
+      "caseId": "corruption:all-zero-roots",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_ROOT_OR_COUNT_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "5cd17c9ad1580e41093e72b4a179d6a45210b57b10500d59f47206f85970b8ef",
+      "caseId": "corruption:wrong-nonzero-root",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_ROOT_OR_COUNT_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "38fd7774277d9cd1a3d01444b4fc79e31bd1f1b67614115108ca41a717d2ccbf",
+      "caseId": "corruption:wrong-count",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_ROOT_OR_COUNT_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "2beb6f3725fe98f300d07ddaca4102abe484b9f74472833b56bcae1672f65127",
+      "caseId": "corruption:reordered-statements",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_STATIC_DIGEST_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "79f7be8a4fe286409d20aa80dbc6972592d7d42358f5ee697bd789fcaf017e63",
+      "caseId": "corruption:changed-migration-bytes",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_STATIC_DIGEST_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "d64d748ed04343768ff741c9fdc0c8c596f6471c895d8e37de5d5888172369ac",
+      "caseId": "corruption:wrong-origin-campaign",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_ORIGIN_SCOPE_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "234ed0a3fb262d820433c9121082c560f93c05005d7a7bb97f7224f9644fb4bf",
+      "caseId": "corruption:wrong-origin-project",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_ORIGIN_SCOPE_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "bc62bc9d4b6f5ea9502fc22a132c114846e183313676f705ae38baeef63be377",
+      "caseId": "corruption:wrong-origin-environment",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_ORIGIN_SCOPE_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "6fe0e7113ad0e735033a48c850c4bc32fb63cbbb730c426c5345314026a60955",
+      "caseId": "corruption:wrong-local-owner",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_LOCAL_OWNER_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "f81234eaefc9f279c95762554ab7001ed9f19be4d4692c64028f64a7baf4ca52",
+      "caseId": "corruption:invalid-presentation-grant",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_PRESENTATION_GRANT_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "33726e6d1b109bc361e1ce2e44b67e0c5995888ee50db8f29143069c89db8cf4",
+      "caseId": "corruption:missing-blob",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_BLOB_OBJECT_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "9c164d0785e3662cae1c195d0284397f614a108b262243b1d230dec544eab651",
+      "caseId": "corruption:altered-blob-bytes",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_BLOB_OBJECT_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "ca95f10c61ef5e2b8eb114106a5f782dd6ca1a548daac3e72734e9edd79fae75",
+      "caseId": "corruption:retargeted-blob",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_RELATIONSHIP_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "46082ba5d1e622cc3e0f0e7f8a8c007630e2525030d48cbd5650f7fe4c6f6cf9",
+      "caseId": "corruption:broken-relationship",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_RELATIONSHIP_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "bd57eca6037efea95ddaa5bd60285f684001702839e431a17bbb0bcce0fc65cc",
+      "caseId": "corruption:missing-completion",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_UNKNOWN_COMPLETION",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "0575a4ca162deb49bb36d4edba1005e92de33c299a37838530699a9f74fdfb7c",
+      "caseId": "corruption:duplicate-completion-row",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_COMPLETION_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "2307b20441016d10a962954c5c3980695be00bff4ee67e514134bba2f6825a2b",
+      "caseId": "corruption:post-reopen-root-mismatch",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_REOPEN_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "25b570d28be55fde8573ac42507792e4a86aaaa3a24429987f0fc852337397da",
+      "caseId": "corruption:post-reopen-count-mismatch",
+      "category": "corruption",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_REOPEN_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "38f046949bbd2956b57e028f0ecfed1270a8b4c690d351ade0fc5af46e40d796",
+      "caseId": "fault:plan-validation",
+      "category": "fault",
+      "adapter": "production-admission",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+        "snapshotRef": "absent-database",
+        "rollback": false
+      }
+    },
+    {
+      "stimulusDigest": "8647eb5e701c5f2f6734076dc194e16a11cc5930b1a43bce8be08a34bf1ab0dd",
+      "caseId": "fault:capability-resolution",
+      "category": "fault",
+      "adapter": "production-admission",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+        "snapshotRef": "absent-database",
+        "rollback": false
+      }
+    },
+    {
+      "stimulusDigest": "a3900978dfae5dc4b15c563d100e2abfaecbc66d0d9e9d2f0f8760fc95090e71",
+      "caseId": "fault:authority-resolution",
+      "category": "fault",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "snapshotRef": "absent-database",
+        "rollback": false
+      }
+    },
+    {
+      "stimulusDigest": "0b6aa6551a71a09f55e9bdb11a2eddddd8f559c3f62dec07a268f8963431e1d3",
+      "caseId": "fault:digest-admission",
+      "category": "fault",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_STATIC_DIGEST_MISMATCH",
+        "snapshotRef": "absent-database",
+        "rollback": false
+      }
+    },
+    {
+      "stimulusDigest": "134eb80c2dfd4031c19c27f75532b75d127e74aa69ce9bf65945d83ba967c575",
+      "caseId": "fault:database-open",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_DATABASE_OPEN",
+        "snapshotRef": "absent-database",
+        "rollback": false
+      }
+    },
+    {
+      "stimulusDigest": "ab1667b6965dd14ccfa2e1ba9c5209d820dda5b122295587cc937f800c4c66d1",
+      "caseId": "fault:classification",
+      "category": "fault",
+      "adapter": "reducer",
+      "observerId": "reducer-observation-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_CLASSIFICATION",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "f375c474ed70278eaef347ff24a45bc947bfff4e50f9ba235d15915d1cd70c6c",
+      "caseId": "fault:migration-0",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "c42576b333785f1d836c8503c72c1c63fe6be3e4d17c59929824ebeb8536e977",
+      "caseId": "fault:migration-1",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "68d7023b14978cd2bd08764c4a8e19c1bc022c14c1d577a51f9c8931fd954987",
+      "caseId": "fault:migration-2",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "bc3c633dfed61b14b583fd9fdd4ea93d7ae23bc26519f3c4ba47d3e9a689057e",
+      "caseId": "fault:migration-3",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "62592431161af4415a3afca36267c7c36cc44e5b55cfebf294701c28d0d37a11",
+      "caseId": "fault:migration-4",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "82432292fba38889c28864283bbb62699821d408c0b2f7225a1ee0a1ef35d829",
+      "caseId": "fault:migration-5",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "2112a4bd996d88bc5f4da1962b06f41db3bd56969b312c65b441ae0b8ab9217a",
+      "caseId": "fault:migration-6",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "497416c1565db0754cd35730a613368e15e02e65f34158f23aaec315def440f1",
+      "caseId": "fault:migration-7",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "37a8e2156e3476fcadb5cb767f9699b8031783bf9c27f090bb9f204dd11baa6d",
+      "caseId": "fault:migration-8",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "8ab173ac03e8955d215cca420b4091ad41489094dad2e399fdbc1985633545a5",
+      "caseId": "fault:migration-9",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "ad41c0aed463776d2ba2b25d6cbe4cbb87dcc7b992ac1027f116c17e584b0592",
+      "caseId": "fault:migration-10",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "3262cac7855cb893c52ed43b746bbd2dce41c55cd94d3308d763a24a9b680595",
+      "caseId": "fault:migration-11",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "5ef3449c0dcbc0fbe338e2098e480c72ba9bfbcbf9c00ef8d2d8c1bd821662b4",
+      "caseId": "fault:migration-12",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "d8edb4271150e65f831cbcd8291c28f0fdd8472d46a0cf44e75293f8b25d3603",
+      "caseId": "fault:migration-13",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "03b54770e3ef87b42200d0f14f6a0761aa7ddfae1941a1d5c31f0713ce968df1",
+      "caseId": "fault:migration-14",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "3fa2f122a88e28e68f3c425fb4fb3cd5baf9b7b5f6487c853944c7d45c0acce5",
+      "caseId": "fault:migration-15",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "a9d69aac47eee0fe00e096c8e7e52c236eacbad7e21d6042d89f525fc35f2730",
+      "caseId": "fault:migration-16",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "aa7d256c7c5330e5fed8012edd2f0f22ec7e994d89dc27bf8104495b273c695a",
+      "caseId": "fault:migration-17",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "6b2f64a57c66846facf336b61a686cd793216c9ae5a387425d97171d6354fa2c",
+      "caseId": "fault:migration-18-unclassified",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "506168e2f42e8bd896d7dad6d99aca9a9b3d4a3fbaa20418152ca395f38fad3c",
+      "caseId": "fault:migration-19",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "563fc6d62c290e68958ea2a2ed5ab53219b1b76ce25ac23a63ca4914cfdff9e1",
+      "caseId": "fault:migration-20",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "8a106a67a686559e8fa952f40eb590b45e1f1c5cd209d8c4242cdf72adeca381",
+      "caseId": "fault:migration-21",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "be1c17b0d1058641660b007269660570864c936f816a28cff3978f6daa6b5272",
+      "caseId": "fault:migration-22",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "ab7638aaa68aa53d35a80893db8b0a9937fd5fe60caa1b9a275caeb7256d8afa",
+      "caseId": "fault:recovery",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "24719b188a22ae314e1eb7104473794841fc9fcd7c9f60c4541fb7783f44678f",
+      "caseId": "fault:host-observation",
+      "category": "fault",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "22c5d688079dabb671fa173b67705a34a79f4584da44450eff363edc98d837c7",
+      "caseId": "fault:completion-append",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "fe15e5f6e8dc7db0b9de3ab4fec4ea75554dc5b90a3e5b7e62cd58869e283144",
+      "caseId": "fault:commit",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_COMMIT_VERIFY",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "ed364eca2469efeb16b3a5bcd67301c09dee1ddf29e72137233261a9565ba12a",
+      "caseId": "fault:close",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_COMMIT_VERIFY",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "24162f8e92b2a5eeacd4915403623a17e17a5d6e3777fb5dc5dfa3095a56e954",
+      "caseId": "fault:reopen",
+      "category": "fault",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_COMMIT_VERIFY",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "5662d82159ae9dd9d402dac697fc4ef20f7eb8bb1cb96102647fee7a306f41c3",
+      "caseId": "fault:restart-observation",
+      "category": "fault",
+      "adapter": "independent-observer",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_REOPEN_MISMATCH",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "aff52ca75420d6bb726d716d3e008b47c189d1f34205907032a3040692d36285",
+      "caseId": "fault:consumer-construction",
+      "category": "fault",
+      "adapter": "darkness-consumer",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_CONSUMER_BLOCKED",
+        "snapshotRef": "ordinary",
+        "rollback": true
+      }
+    },
+    {
+      "stimulusDigest": "4e1ef05f1c84f796f066e06769cb7fb1ba2ed6c070cbe79ef170ba1f3df246d4",
+      "caseId": "dispatch:unknown-version",
+      "category": "dispatch",
+      "adapter": "production-admission",
+      "observerId": "sqlite-absence-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+        "database": "absent"
+      }
+    },
+    {
+      "stimulusDigest": "38ae9b4c9b0fb000d4fc068f4c0c4adf51e6488f4d6149167af24affb227656f",
+      "caseId": "dispatch:missing-version",
+      "category": "dispatch",
+      "adapter": "production-admission",
+      "observerId": "sqlite-absence-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+        "database": "absent"
+      }
+    },
+    {
+      "stimulusDigest": "f5ed8389f055912b9f95d2caee9d69c826d7a88336afa56b850e8e9edad59e5e",
+      "caseId": "dispatch:unknown-capability",
+      "category": "dispatch",
+      "adapter": "production-admission",
+      "observerId": "sqlite-absence-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNSUPPORTED_PLAN_OR_CAPABILITY",
+        "database": "absent"
+      }
+    },
+    {
+      "stimulusDigest": "b50c43c4d5bc71bec18df4cbfcb08977e9af5df30e047588593c3f738724a941",
+      "caseId": "dispatch:unknown-authority",
+      "category": "dispatch",
+      "adapter": "production-admission",
+      "observerId": "sqlite-absence-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_UNKNOWN_AUTHORITY",
+        "database": "absent"
+      }
+    },
+    {
+      "stimulusDigest": "ddb694703a2e95af58b443fd9a20a2e937e97a8dfd7a178fb6e44bd2e532e354",
+      "caseId": "dispatch:wrong-digest",
+      "category": "dispatch",
+      "adapter": "production-admission",
+      "observerId": "sqlite-absence-v1",
+      "expected": {
+        "decision": "preflight-rejected",
+        "error": "E_STATIC_DIGEST_MISMATCH",
+        "database": "absent"
+      }
+    },
+    {
+      "stimulusDigest": "b31240e85031b63ca3f1ac66ae3821d8824a7264a946d8c47e411169ab3519a3",
+      "caseId": "parity:ordinary:production",
+      "category": "parity",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "ordinary"
+      }
+    },
+    {
+      "stimulusDigest": "71e4af20d89f11223c0a47721c2d26c5bdd47064a30a82656856538a7283ca55",
+      "caseId": "parity:ordinary:sdk-fake",
+      "category": "parity",
+      "adapter": "sdk-fake",
+      "observerId": "sdk-sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "ordinary"
+      }
+    },
+    {
+      "stimulusDigest": "c3d8af418b5f4dc06a32260411985ec063ada553ac8d8c90ea061b177dcc6fe0",
+      "caseId": "parity:ordinary:workflows-fake",
+      "category": "parity",
+      "adapter": "workflows-fake",
+      "observerId": "recorder-fake-state-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "ordinary"
+      }
+    },
+    {
+      "stimulusDigest": "76a66c36c1ce2d59bf2207849aeb38b5e6643919f4d7f5f4b876b7f8579ab9d2",
+      "caseId": "parity:recovered:production",
+      "category": "parity",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-recovered",
+        "error": null,
+        "snapshotRef": "recovered"
+      }
+    },
+    {
+      "stimulusDigest": "a32d3a41a60343920c8fcefd4fc537fb63062afb147138e3a6ba3a75fb5e001b",
+      "caseId": "parity:recovered:sdk-fake",
+      "category": "parity",
+      "adapter": "sdk-fake",
+      "observerId": "sdk-sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-recovered",
+        "error": null,
+        "snapshotRef": "recovered"
+      }
+    },
+    {
+      "stimulusDigest": "1a4cd7b30364f93c8757427bbb9e524d83fd14eeb5d5131c1ad20fbc4703f883",
+      "caseId": "parity:recovered:workflows-fake",
+      "category": "parity",
+      "adapter": "workflows-fake",
+      "observerId": "recorder-fake-state-v1",
+      "expected": {
+        "decision": "complete-recovered",
+        "error": null,
+        "snapshotRef": "recovered"
+      }
+    },
+    {
+      "stimulusDigest": "25158b068d08cb10e8d88ee14a240827b7de2062087e684d154eb7043225e248",
+      "caseId": "parity:strict-prefix:production",
+      "category": "parity",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "strictPrefix"
+      }
+    },
+    {
+      "stimulusDigest": "352035c05fc167fe4032c9d11f2f82b2672775a80e46acf4e806f71ded0ed236",
+      "caseId": "parity:strict-prefix:sdk-fake",
+      "category": "parity",
+      "adapter": "sdk-fake",
+      "observerId": "sdk-sqlite-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "strictPrefix"
+      }
+    },
+    {
+      "stimulusDigest": "92839fd9dceaf100eaeca67af2dbf28602b3c6df01f61dd91a903d628875123f",
+      "caseId": "parity:strict-prefix:workflows-fake",
+      "category": "parity",
+      "adapter": "workflows-fake",
+      "observerId": "recorder-fake-state-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "strictPrefix"
+      }
+    },
+    {
+      "stimulusDigest": "e53033b368017babcff82e637cfd091081cb688607f29998796457a389e73ae6",
+      "caseId": "parity:rollback:production",
+      "category": "parity",
+      "adapter": "production",
+      "observerId": "sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18"
+      }
+    },
+    {
+      "stimulusDigest": "fd923d6351d9a1e875bc7558b81900b5051696a56359fa29647d6f02781273ba",
+      "caseId": "parity:rollback:sdk-fake",
+      "category": "parity",
+      "adapter": "sdk-fake",
+      "observerId": "sdk-sqlite-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18"
+      }
+    },
+    {
+      "stimulusDigest": "be3073ae3ba1d40c50179f876cb096e9fac46b2d5ab3a46aae90c5b00a29f3f8",
+      "caseId": "parity:rollback:workflows-fake",
+      "category": "parity",
+      "adapter": "workflows-fake",
+      "observerId": "recorder-fake-state-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18"
+      }
+    },
+    {
+      "stimulusDigest": "f840641d8eb82e6cbddaf561f617a0e09aa3151f66796f69f4eba87d43362c8e",
+      "caseId": "reopen:ordinary",
+      "category": "reopen",
+      "adapter": "production",
+      "observerId": "fresh-host-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "ordinary",
+        "independentHostObservation": true
+      }
+    },
+    {
+      "stimulusDigest": "d06cc0f7b62eff1e8a9a9cba60de64eae1d249398a12bba2e3ba25e0296b0286",
+      "caseId": "reopen:recovered",
+      "category": "reopen",
+      "adapter": "production",
+      "observerId": "fresh-host-readonly-v1",
+      "expected": {
+        "decision": "complete-recovered",
+        "error": null,
+        "snapshotRef": "recovered",
+        "independentHostObservation": true
+      }
+    },
+    {
+      "stimulusDigest": "f0629d2f6439f026cdc24b20c5fff24fb86970bfda5eb82cdb86e7639f6b7cee",
+      "caseId": "reopen:strict-prefix",
+      "category": "reopen",
+      "adapter": "production",
+      "observerId": "fresh-host-readonly-v1",
+      "expected": {
+        "decision": "complete-ordinary",
+        "error": null,
+        "snapshotRef": "strictPrefix",
+        "independentHostObservation": true
+      }
+    },
+    {
+      "stimulusDigest": "20684f4aad8c8f1157daba46d29cced03d589ccc6a4877067758c0b5228e65ab",
+      "caseId": "reopen:corruption",
+      "category": "reopen",
+      "adapter": "production",
+      "observerId": "fresh-host-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_POST_REOPEN_MISMATCH",
+        "snapshotRef": "ordinary",
+        "independentHostObservation": true
+      }
+    },
+    {
+      "stimulusDigest": "9ffc14abd29bb9de2f7d83c58b4a1c2e755e567e7bdacaa01809f44f8844705f",
+      "caseId": "reopen:injected-fault",
+      "category": "reopen",
+      "adapter": "production",
+      "observerId": "fresh-host-readonly-v1",
+      "expected": {
+        "decision": "failed-closed",
+        "error": "E_TRANSACTION_ROLLBACK",
+        "snapshotRef": "pre18",
+        "independentHostObservation": true
+      }
+    },
+    {
+      "stimulusDigest": "1fd5a41ce560fe6095c9f22697c05531883358fd33209211272f86186de8efff",
+      "caseId": "sdk:source-index",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "source-index",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "65295ce21b7fa648e43fa45401ada678d541b123b9d33e243323f995aae50e49",
+      "caseId": "sdk:normal-package-import",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "normal-package-import",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "ec532c2e392e63b22a00ee827ec4d51107e802d2f4518b65de5018afc39d3b53",
+      "caseId": "sdk:direct-dist-index",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "direct-dist-index",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "4b223f04e7cea451cbfa338579506041d9ef2cc9da505895ac7b65abd7811655",
+      "caseId": "sdk:testing-entrypoint",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "testing-entrypoint",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "e2073fbf71843f12c7aa4d635c07ec11ae8f2be86e02b0045bc89bc6f4d2a13b",
+      "caseId": "sdk:bundled-bb-plugin-sdk-dts",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "bundled-bb-plugin-sdk-dts",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "b540e682044e0625b25e25040e3acb317e81d7ce16a9d74dabaefe2e702ed463",
+      "caseId": "sdk:workflows-tsconfig",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "workflows-tsconfig",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "beee494de01b0cb3fbf199d40f352361dbdd48bd7c8aff2060e150efd0993871",
+      "caseId": "sdk:runtime:index",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:index",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "62e4059a19e08a277871aaaa40923e3a4f92cac0325b2ffcd268b707fb2f6672",
+      "caseId": "sdk:runtime:app",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:app",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "1a846b753bbc5fd312e061be4db0880c1f0db46e838c386e5eb2fed53104b2de",
+      "caseId": "sdk:runtime:provider-bridge",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:provider-bridge",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "cf51a9af1ec2f6ce5482efe26d9d1e7d0015411dc0092674aba001944da4ffe6",
+      "caseId": "sdk:runtime:host",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:host",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "952934ab29cf8afe4b655e9707c869caa3861b31b83d532bb9a84bd7093ae6c1",
+      "caseId": "sdk:runtime:internal-composer-customization-validation",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:internal-composer-customization-validation",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "13ef126ad6dcfc6d96dff2c9e4545cce80ef480379c1fa78e4b67f58ede301d8",
+      "caseId": "sdk:runtime:internal-composer-view",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:internal-composer-view",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "cbf417c477d8fe7895a897ade4f4c7b5d8bd4b61c2e25ecc7399586906cb0bd0",
+      "caseId": "sdk:runtime:internal-file-navigation-validation",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:internal-file-navigation-validation",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "88b5aaebb6efbd0fcf0c0742f0814099daca01d962b4acb8cf465997947bba1f",
+      "caseId": "sdk:runtime:internal-host-policy",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:internal-host-policy",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "29e3043fe0d71b4ab1421ff04f15d9668fc99d00f63929b19cd3d09d1565c651",
+      "caseId": "sdk:runtime:internal-plugin-app-collector",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:internal-plugin-app-collector",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "590edf92ea20b5f8173cf095a26b20674d1943c60fb42eeac770380f646512c1",
+      "caseId": "sdk:runtime:testing-index",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:testing-index",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "ee72fcb406e82ceb64d3c15d657c168dbd75ccccb64ef7ab2c082bc71b886552",
+      "caseId": "sdk:runtime:testing-app",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:testing-app",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "35107d8cfc7c641766332e3a7a09ead901778d016d0faf06688f90c392c71a65",
+      "caseId": "sdk:runtime:testing-host",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "runtime:testing-host",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "6ea1c36252c8286a8278eabe84fe5b811e9aa1f772172e57324a5be9ee5bf79c",
+      "caseId": "sdk:declaration:bb-plugin-sdk",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:bb-plugin-sdk",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "f60d0b761a8e7c7527598d4b9cd7500a2ff47914c0b38ef151851b685d69c6a3",
+      "caseId": "sdk:declaration:bb-plugin-sdk-app",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:bb-plugin-sdk-app",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "c6c4502348901ce7ceb09743db9b4aa19566623f1865bf3d432b48e1f1cd6c00",
+      "caseId": "sdk:declaration:bb-plugin-sdk-provider-bridge",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:bb-plugin-sdk-provider-bridge",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "1491fa1c9e75a6645609058435783fdb8610fcf94046284d1a0ed6a94f74d848",
+      "caseId": "sdk:declaration:bb-plugin-sdk-host",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:bb-plugin-sdk-host",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "a1c5083b9be78e3b3cd544773f85cb7ce10b1d1d6a9d9272239fda46bbe065be",
+      "caseId": "sdk:declaration:composer-customization-validation",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:composer-customization-validation",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "d340fd006924b2c82b3efa8d78242a2d7643c252253eaa629e3ea1e4656477dd",
+      "caseId": "sdk:declaration:composer-view",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:composer-view",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "c7d45973402af16841b58f6e24007bb1efd477fcc749a0efcc04070417646106",
+      "caseId": "sdk:declaration:file-navigation-validation",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:file-navigation-validation",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "3ec53d4f517235ad9c650d726fb8dd75dfd44ed3be0fc26465f3174ddfd5d484",
+      "caseId": "sdk:declaration:host-policy",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:host-policy",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "9f9e769095a96530262ea30cedab560b84e26c02dda5064123b7f518deddf762",
+      "caseId": "sdk:declaration:plugin-app-collector",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:plugin-app-collector",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "c4ce1567319dfad3009498f83a2c7506ddb1e05e6847cbe6302ac2a76afbd496",
+      "caseId": "sdk:declaration:testing",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:testing",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "0fa47888f1d1c2c1abde11a80b27c8dc75d38b1fc736eb13008ac98772879dca",
+      "caseId": "sdk:declaration:testing-app",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:testing-app",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "0c4e0c8685f0f2caf5c49e61633a9a748672633418119c6420f1254fbf8f05f7",
+      "caseId": "sdk:declaration:testing-host",
+      "category": "sdk",
+      "adapter": "sdk",
+      "observerId": "sdk-execution-v1",
+      "expected": {
+        "status": "executed",
+        "surface": "declaration:testing-host",
+        "positive": true,
+        "negative": true
+      }
+    },
+    {
+      "stimulusDigest": "c943bfec00d0ac2fb4f1480e9b9b5352c1fbf121302bf8cc49bfd9fa7f82d1b7",
+      "caseId": "darkness:feature",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "feature",
+        "consumerCount": 0
+      }
+    },
+    {
+      "stimulusDigest": "acf03c6675743f684717d6f8e536adfa40982fd06bbcc02e815c021a834636c1",
+      "caseId": "darkness:artifact-rpc",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "artifact-rpc",
+        "consumerCount": 0
+      }
+    },
+    {
+      "stimulusDigest": "8528fc5132306d9c13689c6c89085b2802379d82d54d749f9dbea08e7ada491f",
+      "caseId": "darkness:ui",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "ui",
+        "consumerCount": 0
+      }
+    },
+    {
+      "stimulusDigest": "61a50fa0aa3a496ac054192415703d400ccbd1e726b44e8a15565aeb4ad9aee5",
+      "caseId": "darkness:renderer",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "renderer",
+        "consumerCount": 0
+      }
+    },
+    {
+      "stimulusDigest": "4ea22e96c98861f989c707625bc96d9f8d5a4d62935cd9aa9cd4e21a916fb8e5",
+      "caseId": "darkness:live-changes",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "live-changes",
+        "consumerCount": 0
+      }
+    },
+    {
+      "stimulusDigest": "52928e343d5a8049ba024c65c4dc2ff5d5cb4f209ea7fa66f4bd4bebaa78a33e",
+      "caseId": "darkness:deployment",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "deployment",
+        "consumerCount": 0
+      }
+    },
+    {
+      "stimulusDigest": "bf7aa6485d55ff7c446186947bf71e527c77e63e2eb7ffd444548ae47e1a5953",
+      "caseId": "darkness:rollout",
+      "category": "darkness",
+      "adapter": "static",
+      "observerId": "darkness-static-v1",
+      "expected": {
+        "status": "dark",
+        "surface": "rollout",
+        "consumerCount": 0
+      }
+    }
+  ]
+}

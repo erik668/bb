@@ -1,0 +1,1 @@
+- [artifact-review foundation v5 owner unit](CHECKPOINT-artifact-review-foundation-v5.md) — complete; result returned inline after bridge call went inactive

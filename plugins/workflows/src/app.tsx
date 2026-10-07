@@ -83,6 +83,7 @@ interface SharedWorkflowView {
 }
 
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
+const MAX_RENDERED_DAG_EDGES = 200;
 const WORKFLOW_PANEL_ACTION_ID = "workflow-run";
 const WORKFLOW_CARD_ROW_HEIGHT = 32;
 const WORKFLOW_HEADER_GROUP_CLASS = activityRowClass(
@@ -200,17 +201,29 @@ function formatDuration(startedAt: number | null, finishedAt: number | null) {
 }
 
 /** Matches the native workflow card's one-second-delayed live duration. */
-function WorkflowDuration({ startedAt }: { startedAt: number }) {
+function WorkflowDuration({
+  startedAt,
+  finishedAt,
+}: {
+  startedAt: number;
+  finishedAt: number | null;
+}) {
   const [elapsed, setElapsed] = useState(() => Date.now() - startedAt);
   useEffect(() => {
+    if (finishedAt !== null) {
+      setElapsed(finishedAt - startedAt);
+      return;
+    }
     setElapsed(Date.now() - startedAt);
     const interval = window.setInterval(() => {
       setElapsed(Date.now() - startedAt);
     }, 1_000);
     return () => window.clearInterval(interval);
-  }, [startedAt]);
-  if (elapsed <= 1_000) return null;
-  return <>{formatDuration(0, elapsed)}</>;
+  }, [finishedAt, startedAt]);
+  const durationMs =
+    finishedAt === null ? elapsed : Math.max(0, finishedAt - startedAt);
+  if (durationMs <= 1_000) return null;
+  return <>{formatDuration(0, durationMs)}</>;
 }
 
 function WorkflowDetailScroll({
@@ -427,8 +440,7 @@ function useWorkflowRun(
   });
 
   const shouldPoll =
-    state.status === "error" ||
-    (state.status === "ready" && state.run !== null && isRunActive(state.run));
+    state.status === "ready" && state.run !== null && isRunActive(state.run);
   useVisibleActivePolling(refresh, shouldPoll);
 
   return { state, refresh };
@@ -579,7 +591,7 @@ function useActiveWorkflowRuns(threadId: string): {
   const refresh = useCallback(async () => {
     const sequence = ++requestSequence.current;
     try {
-      const result = await rpc.call("workflowActiveRuns", { threadId });
+      const result = await rpc.call("workflowThreadRuns", { threadId });
       if (sequence === requestSequence.current) {
         setState({ status: "ready", runs: result.runs });
       }
@@ -675,6 +687,9 @@ function WorkflowComposerCard({
   const bodyId = useId();
   const toggleId = useId();
   const shared = buildSharedWorkflowView(run);
+  const active = isRunActive(run);
+  const activityState = runActivityState(run);
+  const pillState = runPillState(run.status);
   const settledAgents = settledAgentCount(shared.progress.agents);
   const agentCount = shared.progress.agents.length;
 
@@ -700,12 +715,12 @@ function WorkflowComposerCard({
         >
           <Icon
             name="Workflow"
-            className={activityIconClass("active", "size-3.5 shrink-0")}
+            className={activityIconClass(activityState, "size-3.5 shrink-0")}
             aria-hidden
           />
           <span className="flex min-w-0 flex-1 items-center gap-1.5 text-left">
             <span
-              className={activityTextClass("active", "min-w-0 truncate")}
+              className={activityTextClass(activityState, "min-w-0 truncate")}
               title={run.name}
             >
               {run.name}
@@ -718,7 +733,7 @@ function WorkflowComposerCard({
             {agentCount === 0 ? null : (
               <span
                 className={activityMetaClass(
-                  "active",
+                  activityState,
                   "shrink-0 text-2xs tabular-nums",
                 )}
               >
@@ -728,24 +743,28 @@ function WorkflowComposerCard({
             {run.startedAt === null ? null : (
               <span
                 className={activityMetaClass(
-                  "active",
+                  activityState,
                   "shrink-0 text-2xs tabular-nums",
                 )}
               >
-                <WorkflowDuration startedAt={run.startedAt} />
+                <WorkflowDuration
+                  startedAt={run.startedAt}
+                  finishedAt={run.finishedAt}
+                />
               </span>
             )}
           </span>
           <Icon
             name="ChevronDown"
             className={cn(
-              activityIconClass("active"),
+              activityIconClass(activityState),
               "size-3.5 shrink-0 transition-transform duration-200",
               expanded && "rotate-180",
             )}
             aria-hidden
           />
         </button>
+        {pillState === null ? null : <WorkflowStatusPill state={pillState} />}
         <button
           type="button"
           aria-label={`Open workflow ${run.name} in side panel`}
@@ -764,7 +783,7 @@ function WorkflowComposerCard({
       <WorkflowPhaseStrip
         progress={shared.progress}
         currentPhaseIndex={shared.currentPhaseIndex}
-        settled={false}
+        settled={!active}
         className="px-3 pb-2"
       />
       <section
@@ -794,17 +813,29 @@ function WorkflowStatusBannerLoaded({ threadId }: { threadId: string }) {
   const { state } = useActiveWorkflowRuns(threadId);
 
   if (state.status !== "ready" || state.runs.length === 0) return null;
+  const activeCount = state.runs.filter(isRunActive).length;
   const relatedCount = state.runs.filter(
     (run) => run.originThreadId !== threadId,
   ).length;
 
   return (
-    <section aria-label="Active workflows" className="space-y-2">
+    <section
+      aria-label={activeCount === 0 ? "Latest workflow" : "Active workflows"}
+      className="space-y-2"
+    >
       <div className="flex items-center justify-between px-0.5 text-2xs font-medium text-subtle-foreground">
         <span>
-          {relatedCount > 0 ? "Related workflows" : "Active workflows"}
+          {activeCount === 0
+            ? relatedCount > 0
+              ? "Latest related workflow"
+              : "Latest workflow"
+            : relatedCount > 0
+              ? "Related workflows"
+              : "Active workflows"}
         </span>
-        <span className="tabular-nums">{state.runs.length} active</span>
+        <span className="tabular-nums">
+          {activeCount === 0 ? "Latest" : `${activeCount} active`}
+        </span>
       </div>
       {state.runs.map((run) => (
         <WorkflowComposerCard key={run.id} run={run} threadId={threadId} />
@@ -1140,6 +1171,16 @@ interface BuildDagView {
   diagnosticTitle: string;
 }
 
+interface BuildDagEdge {
+  from: string;
+  to: string;
+}
+
+interface BuildDagEdgesView {
+  edges: BuildDagEdge[];
+  truncated: boolean;
+}
+
 function buildDagLayers(
   checkpoints: WorkflowCheckpointView[],
   checkpointDetailsOmitted = false,
@@ -1266,13 +1307,95 @@ function CampaignRunList({ runs }: { runs: WorkflowCampaignView["runs"] }) {
   );
 }
 
+function buildDagEdges(graph: BuildDagView): BuildDagEdgesView {
+  const nodeIds = new Set(graph.layers.flat().map((node) => node.id));
+  const edges: BuildDagEdge[] = [];
+  for (const layer of graph.layers) {
+    for (const node of layer) {
+      for (const dependencyId of node.dependsOn) {
+        if (!nodeIds.has(dependencyId)) continue;
+        if (edges.length === MAX_RENDERED_DAG_EDGES) {
+          return { edges, truncated: true };
+        }
+        edges.push({ from: dependencyId, to: node.id });
+      }
+    }
+  }
+  return { edges, truncated: false };
+}
+
+function dagEdgeKey(edge: BuildDagEdge): string {
+  return JSON.stringify([edge.from, edge.to]);
+}
+
+function connectorPath(
+  root: DOMRect,
+  from: DOMRect,
+  to: DOMRect,
+): string {
+  const startX = from.left + from.width / 2 - root.left;
+  const startY = from.bottom - root.top;
+  const endX = to.left + to.width / 2 - root.left;
+  const endY = to.top - root.top - 2;
+  const controlY = startY + Math.max(12, (endY - startY) / 2);
+  return `M ${startX} ${startY} C ${startX} ${controlY}, ${endX} ${controlY}, ${endX} ${endY}`;
+}
+
 function WorkflowDag({ graph }: { graph: BuildDagView }) {
-  if (graph.layers.length === 0) return null;
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const nodeRefs = useRef(new Map<string, HTMLDivElement>());
+  const edgeView = useMemo(() => buildDagEdges(graph), [graph]);
+  const edges = edgeView.edges;
+  const [edgePaths, setEdgePaths] = useState(new Map<string, string>());
+  const markerId = useId().replaceAll(":", "");
   const labels = new Map(
     graph.layers.flat().map((node) => [node.id, node.title]),
   );
+  const measureEdges = useCallback(() => {
+    const root = containerRef.current;
+    if (root === null) return;
+    const rootRect = root.getBoundingClientRect();
+    const measured = new Map<string, string>();
+    for (const edge of edges) {
+      const from = nodeRefs.current.get(edge.from);
+      const to = nodeRefs.current.get(edge.to);
+      if (from === undefined || to === undefined) continue;
+      measured.set(
+        dagEdgeKey(edge),
+        connectorPath(
+          rootRect,
+          from.getBoundingClientRect(),
+          to.getBoundingClientRect(),
+        ),
+      );
+    }
+    setEdgePaths(measured);
+  }, [edges]);
+
+  useEffect(() => {
+    measureEdges();
+    const root = containerRef.current;
+    if (root === null || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measureEdges);
+    observer.observe(root);
+    const observedNodeIds = new Set(
+      edges.flatMap((edge) => [edge.from, edge.to]),
+    );
+    for (const nodeId of observedNodeIds) {
+      const element = nodeRefs.current.get(nodeId);
+      if (element !== undefined) observer.observe(element);
+    }
+    return () => observer.disconnect();
+  }, [edges, measureEdges]);
+
+  if (graph.layers.length === 0) return null;
+
   return (
-    <div aria-label="Build dependency graph" className="space-y-1.5">
+    <div
+      ref={containerRef}
+      aria-label="Build dependency graph"
+      className="relative space-y-1.5"
+    >
       <p className="text-2xs font-medium text-subtle-foreground">Build DAG</p>
       {graph.diagnostics.length === 0 ? null : (
         <div
@@ -1287,16 +1410,56 @@ function WorkflowDag({ graph }: { graph: BuildDagView }) {
           </ul>
         </div>
       )}
-      {graph.layers.map((layer, index) => (
-        <div key={layer.map((node) => node.id).join(":")}>
-          {index === 0 ? null : (
-            <div
-              className="flex justify-center py-0.5 text-subtle-foreground"
-              aria-hidden
+      {edgeView.truncated ? (
+        <div
+          role="status"
+          className="relative z-10 rounded border border-border-seam bg-muted/30 px-2 py-1.5 text-2xs text-subtle-foreground"
+        >
+          Showing the first {MAX_RENDERED_DAG_EDGES} dependency connectors.
+          Exact prerequisites remain listed on each card.
+        </div>
+      ) : null}
+      {edges.length === 0 ? null : (
+        <svg
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-0 size-full overflow-visible text-subtle-foreground"
+        >
+          <defs>
+            <marker
+              id={markerId}
+              markerWidth="6"
+              markerHeight="6"
+              refX="5"
+              refY="3"
+              orient="auto"
+              markerUnits="strokeWidth"
             >
-              <Icon name="ArrowDown" className="size-3" />
-            </div>
-          )}
+              <path d="M 0 0 L 6 3 L 0 6 z" fill="currentColor" />
+            </marker>
+          </defs>
+          {edges.map((edge) => {
+            const key = dagEdgeKey(edge);
+            return (
+              <path
+                key={key}
+                data-dag-edge-from={edge.from}
+                data-dag-edge-to={edge.to}
+                d={edgePaths.get(key) ?? ""}
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.25"
+                markerEnd={`url(#${markerId})`}
+                vectorEffect="non-scaling-stroke"
+              />
+            );
+          })}
+        </svg>
+      )}
+      {graph.layers.map((layer, index) => (
+        <div
+          key={JSON.stringify(layer.map((node) => node.id))}
+          className={cn("relative z-10", index > 0 && "pt-5")}
+        >
           <div
             className="grid gap-1.5"
             style={{
@@ -1306,7 +1469,12 @@ function WorkflowDag({ graph }: { graph: BuildDagView }) {
             {layer.map((node) => (
               <div
                 key={node.id}
-                className="min-w-0 rounded border border-border-seam bg-muted/30 px-2 py-1.5"
+                ref={(element) => {
+                  if (element === null) nodeRefs.current.delete(node.id);
+                  else nodeRefs.current.set(node.id, element);
+                }}
+                data-dag-node={node.id}
+                className="min-w-0 rounded border border-border-seam bg-card px-2 py-1.5"
               >
                 <div className="flex items-start gap-1.5">
                   <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">

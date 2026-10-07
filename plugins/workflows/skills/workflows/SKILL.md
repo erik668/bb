@@ -453,18 +453,18 @@ remains authoritative.
 
 Runs distinguish execution ownership from human presentation. The origin
 thread continues to own the environment, permissions, and completion
-notification. The presentation thread receives the active progress card,
-realtime updates, and inspector access. A workflow launched from a hidden
-worker inherits its parent run's presentation thread and root run, or otherwise
-uses its nearest visible ancestor. For a CLI launch, `--present-in <thread-id>`
-explicitly selects the presentation thread without moving execution. The
+notification. The presentation thread receives the active and latest-completed
+progress card, realtime updates, and inspector access. A parented launcher uses
+its root visible parent, including across project and environment boundaries.
+A standalone launcher must set `--present-in <thread-id>` or
+`presentationThreadId` on `bb_workflow_run` to select the human-facing
+conversation without moving execution. The
 bounded `status` and `list` output and both `history` run-record forms include
 `originThreadId`, `presentationThreadId`, `parentRunId`, and `rootRunId`. The
-presentation target must be a visible thread in the same project and
-environment, must be the origin or one of its ancestors, and must be available
-from the same BB server; workflows do not federate state across servers.
-Presentation-thread inspection is read-only; stop control remains with the
-origin thread.
+presentation target must be visible and available from the same BB server;
+workflows do not federate state across servers. The target receives read-only
+card and inspector access; copying a run ID into an unrelated thread does not
+grant access. Stop control remains with the origin thread.
 
 `list` also returns compact summaries; it is safe for discovery but is not a
 substitute for the redirected detailed history.

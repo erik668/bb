@@ -46,6 +46,8 @@ interface WorkflowPhase {
 interface WorkflowMetadata {
   name: string;
   description: string;
+  /** Opt-in definition gate for durable artifact-change enforcement. */
+  workflowArtifactLiveChanges: boolean;
   inputSchema: JsonSchema | null;
   outputSchema: JsonSchema | null;
   phases: WorkflowPhase[];

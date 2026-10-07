@@ -10,6 +10,7 @@ import type {
   ExperimentalHostClient,
   ExperimentalHostSignals,
 } from "./host-contract.js";
+export * from "./artifact-review-v3-contract.js";
 
 /**
  * The backend plugin API contract — the `bb` object handed to a plugin's
@@ -111,6 +112,88 @@ export interface PluginKvStorage {
   list(prefix?: string): Promise<string[]>;
 }
 
+export interface PluginMigrationRecoveryDescriptorV2 {
+  readonly recoveryId: string;
+  readonly beforeMigrationId: number;
+  readonly migration18Sha256: string;
+  readonly preSchemaFingerprintAlgorithm: string;
+  readonly preSchemaFingerprintSha256: string;
+  readonly recoveryRecipeSha256: string;
+}
+
+export interface PluginMigrationRecoveryResultV2 {
+  readonly activeGraphSha256: string;
+  readonly quarantineGraphSha256: string;
+  readonly stagedRowCount: number;
+  readonly restoredGrantCount: number;
+  readonly receiptSha256: string;
+}
+
+export interface PluginMigrationRecoveryContextV2 {
+  readonly database: Database.Database;
+  readonly descriptor: PluginMigrationRecoveryDescriptorV2;
+  /** Executes and records one immutable original migration inside the host transaction. */
+  executeMigration(migrationId: number): void;
+}
+
+export interface PluginMigrationPlanV2 {
+  readonly version: 2;
+  readonly statements: readonly string[];
+  /** SHA-256 for every statement, in migration-id order. */
+  readonly statementSha256: readonly string[];
+  readonly recovery: {
+    readonly descriptor: PluginMigrationRecoveryDescriptorV2;
+    /** Canonical JSON whose SHA-256 is bound by the descriptor. */
+    readonly recoveryRecipeJson: string;
+    recover(
+      context: PluginMigrationRecoveryContextV2,
+    ): PluginMigrationRecoveryResultV2;
+  };
+}
+
+export type PluginMigrationSqlValueV3 =
+  | string
+  | number
+  | bigint
+  | Uint8Array
+  | null;
+
+/**
+ * A non-authoritative domain mutation proposed by a V3 candidate. The host
+ * accepts only one parameterized INSERT, UPDATE, or DELETE per item and never
+ * permits these statements to address host-owned `_bb_` tables.
+ */
+export interface PluginMigrationDomainEffectV3 {
+  readonly sql: string;
+  readonly values?: readonly PluginMigrationSqlValueV3[];
+}
+
+/**
+ * Input-only V3 construction request. It deliberately has no database/path,
+ * transaction identity, spent claim, expected relation, summary, or callback.
+ * The host resolves all authority and durable ancestry from its own SQLite
+ * path, keys, constraints, and committed rows.
+ */
+export interface PluginMigrationCandidateEffectsV3 {
+  readonly version: 3;
+  /** Immutable product migrations; the host admits their exact 0..22 hashes. */
+  readonly statements: readonly string[];
+  readonly gate: {
+    readonly recorderNonce: string;
+    readonly stimulusId: string;
+  };
+  readonly operation: {
+    readonly kind: string;
+    readonly payload: Uint8Array;
+  };
+  readonly launch: { readonly payload: Uint8Array };
+  readonly query: { readonly payload: Uint8Array };
+  /** Applied after the migration suffix in both ordinary and recovery legs. */
+  readonly domainEffects: readonly PluginMigrationDomainEffectV3[];
+  /** Applied before migration 18 only when the recorder selects recovery. */
+  readonly recoveryEffects: readonly PluginMigrationDomainEffectV3[];
+}
+
 export interface PluginStorage {
   /** Namespaced JSON key-value rows in bb.db; values ≤256KB each. */
   kv: PluginKvStorage;
@@ -128,7 +211,16 @@ export interface PluginStorage {
    * `_bb_migrations` table; unapplied statements run in one transaction.
    * Append-only — never reorder or edit shipped statements.
    */
-  migrate(db: Database.Database, statements: string[]): void;
+  migrate(
+    db: Database.Database,
+    statements: string[] | PluginMigrationPlanV2,
+  ): void;
+  /**
+   * Dark V3 construction seam. Unlike the admitted overload above, this form
+   * accepts no caller-selected database and closes its host writer before it
+   * returns. A later `database()` call vends a fresh writable handle.
+   */
+  migrate(effects: PluginMigrationCandidateEffectsV3): void;
 }
 
 // ---------------------------------------------------------------------------

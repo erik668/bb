@@ -1,0 +1,107 @@
+{
+  "schemaVersion": "artifact-review-mutation-proof-boundary-approval-v1",
+  "approvalState": "approved",
+  "generatedAt": "2026-08-27T03:26:26Z",
+  "scope": "expected-outcomes-only",
+  "seam": {
+    "id": "artifact-review-v7:discriminated-mutation-proof-boundary-v1"
+  },
+  "contract": {
+    "id": "bb-artifact-review-service:revision-1",
+    "revision": 1
+  },
+  "architecture": {
+    "revision": 2,
+    "synthesisRunId": "wfr_473e2b42-b3bd-45f2-88bc-ac9be2a3a6e4"
+  },
+  "authority": {
+    "acceptedDesign": {
+      "path": ".architect/design-lab/workflow-artifact-review.md",
+      "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+    },
+    "contextPacket": {
+      "path": ".architect/context-packets/artifact-review-service-build.md",
+      "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+    }
+  },
+  "candidate": {
+    "manifestSha256": "320109d245dd94c8a65947f81cee412bc5c6f08fcc4b9b8c96064785a8116e12",
+    "manifestEncoding": "UTF-8 JSON.stringify of path-localeCompare-sorted {path,sha256} array with no terminal newline",
+    "manifest": [
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-contract.ts",
+        "sha256": "887b4749db30db96fbfb8cde652a6899554ad8cd340fce9eeda7606201eec012"
+      },
+      {
+        "path": "plugins/workflows/src/artifact-review-mutation-decision-table.ts",
+        "sha256": "2f8e22d0dfc6d24311acda6d5ef14d5691dfb05ba97ad89f3b5977e58b50b6bc"
+      }
+    ],
+    "counts": {
+      "validRows": 37,
+      "negativeRows": 12,
+      "metamorphicRules": 6
+    },
+    "expectedOutcomeDistribution": {
+      "reject-authority-input": 1,
+      "new-mutation": 28,
+      "replay-committed": 2,
+      "idempotency-conflict": 3,
+      "pending-not-saved": 1,
+      "saved-after-commit": 1,
+      "retryable-after-response-loss": 1
+    },
+    "contractExpectedOutputLiteralMatches": 0
+  },
+  "independentReview": {
+    "verdict": "pass",
+    "reviewedContractSha256": "887b4749db30db96fbfb8cde652a6899554ad8cd340fce9eeda7606201eec012",
+    "reviewedTableSha256": "2f8e22d0dfc6d24311acda6d5ef14d5691dfb05ba97ad89f3b5977e58b50b6bc",
+    "reviewedManifestSha256": "320109d245dd94c8a65947f81cee412bc5c6f08fcc4b9b8c96064785a8116e12",
+    "counts": {
+      "validRows": 37,
+      "negativeRows": 12,
+      "metamorphicRules": 6
+    },
+    "findingCounts": {
+      "critical": 0,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "findings": []
+  },
+  "repository": {
+    "worktree": "/Users/erik/.bb/personal-workspaces/env_88g5eb749t/bb-workflow-details",
+    "remote": "https://github.com/ymichael/bb.git",
+    "head": "e2b88b053c1e9823e56d71e7f7861fd351d94d5d",
+    "branch": "feature/workflow-detail-ledger",
+    "dirty": true,
+    "worktreeStatusSha256BeforeReceipt": "401f53d8db11a97c99d7a55f14113d6e6b66dbae9723a2206eb70a1a8bdb33c3",
+    "worktreeStatusEntryCountBeforeReceipt": 56,
+    "worktreeStatusCommand": "git status --porcelain=v1 --untracked-files=all | shasum -a 256"
+  },
+  "lineage": {
+    "architectureRunId": "wfr_473e2b42-b3bd-45f2-88bc-ac9be2a3a6e4",
+    "priorBlockedFreeze": {
+      "runId": "wfr_11f1b631-fff2-4ba2-bf13-229b7745c59a",
+      "state": "blocked"
+    },
+    "predecessorRepair": {
+      "state": "consumed",
+      "initialContractSha256": "15fa152cc6868a61165db482a784b362276178707fb2a97bc2141e517ba17c7a",
+      "initialTableSha256": "d8fd13c52b4ac5927b78bb3747d527af0155ba4ac6ec13dd5c061e88837ef19c"
+    },
+    "successorPostFreezeRepairBudget": 0
+  },
+  "limitations": {
+    "expectedOutcomes": "frozen",
+    "referenceModel": "unapproved",
+    "integration": "unapproved",
+    "production": "unapproved"
+  },
+  "statements": [
+    "Expected outcomes only are frozen; reference model, integration, and production remain unapproved.",
+    "Predecessor repair consumed; successor post-freeze repair budget zero."
+  ]
+}

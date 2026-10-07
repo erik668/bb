@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "section": "section-1",
+  "unit": "artifact-review-canonical-repository-foundation-v5",
+  "adjudication": "owner-verification-only",
+  "immutableInputs": {
+    "design": {
+      "selector": ".architect/design-lab/workflow-artifact-review.md",
+      "sha256": "d97f8c76f09a92ce242977d0b676a19fb3dd48c1a5e6223602378783721f175f"
+    },
+    "contextPacket": {
+      "selector": ".architect/context-packets/artifact-review-service-build.md",
+      "sha256": "40b147a61a59f48c2a52cccdcf2b54e516dae79967bb760c8033d9ba5401cc44"
+    }
+  },
+  "priorPasses": {
+    "correctionPass": "selected operations had no failures; foundation-design-input inventoried",
+    "repairPass": "incomplete-approved-constraint-contradiction: claimed migration 18 blocks divergent revision-1 databases before later append-only migrations run"
+  },
+  "completionPass": {
+    "status": "complete",
+    "adjudicatedContradiction": {
+      "claim": "Applied migration 18 cannot be rewritten, but on a valid divergent revision-1 database it fails before any later append-only repair migration can execute.",
+      "verdict": "accepted fail-closed behavior, not an approved-constraint contradiction",
+      "rationale": [
+        "The accepted design requires canonical identity collisions to fail closed and forbids destructive rewrite of applied migrations; a UNIQUE failure in migration 18 is that behavior.",
+        "Host bb.storage.migrate applies every pending statement inside one transaction (apps/server/src/services/plugins/plugin-api.ts:570; fake host packages/plugin-sdk/src/testing/fake-plugin-host.ts:919), so a failing 18 rolls back 18-21 atomically, keeps _bb_migrations at 0..17, and preserves all revision-1 rows - proven at the host runner in data.test.ts.",
+        "Revision-1 workflow_artifacts tables have no production writer in plugins/workflows/src (only workflow-terminal-settlement.ts writes post-foundation *_v2 tables) and no durable ledger on this host has applied migrations 14-21 (/Users/erik/.bb/plugins/workflows/data.db is at id 13), so divergent revision-1 data can arise only from tests or manual SQL.",
+        "Preempting or replacing migration 18 would require destructive migration authority, which the unit forbids; the accepted behavior is recorded as a risk with its precondition."
+      ]
+    },
+    "added": [
+      "data.test.ts: mixed-version null origin scope is backfilled exactly once by migration 19, later null rows stay raw-null, RUN_SELECT COALESCE keeps feature-off reads compatible, and resolveLocalArtifactOwnerScope fails closed on the raw-null row while succeeding on the backfilled row",
+      "data.test.ts: a divergent revision-1 canonical identity fails closed at the host migration runner with UNIQUE, leaves _bb_migrations at 0..17, keeps both revision-1 rows, and leaves sqlite_master identical to the pre-foundation schema"
+    ],
+    "unresolved": []
+  },
+  "migrationLineage": {
+    "revision1MigrationIndex": 14,
+    "preservedLaterMigrationIndexes": [
+      15,
+      16,
+      17
+    ],
+    "canonicalFoundationMigrationIndex": 18,
+    "mixedVersionScopeGuardMigrationIndex": 19,
+    "foundationRepairMigrationIndex": 20,
+    "foundationDarkGateMigrationIndex": 21,
+    "totalMigrations": 22
+  },
+  "verifications": [
+    {
+      "id": "section-1:verification-1",
+      "kind": "test",
+      "command": "pnpm --filter bb-plugin-workflows test -- src/artifact-storage.test.ts src/data.test.ts --no-file-parallelism",
+      "status": "passed",
+      "passed": 38,
+      "failed": 0,
+      "skipped": 0,
+      "summary": "2 files, 38 tests passed, 715ms"
+    },
+    {
+      "id": "section-1:verification-2",
+      "kind": "command",
+      "command": "pace-agent-runtime heavy --name bb-plugin-workflows-typecheck -- pnpm --filter bb-plugin-workflows exec tsc --noEmit",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "summary": "exit 0, no diagnostics"
+    },
+    {
+      "id": "section-1:verification-3",
+      "kind": "command",
+      "command": "pnpm exec prettier --check plugins/workflows/src/artifact-storage.ts plugins/workflows/src/artifact-storage.test.ts plugins/workflows/src/data.ts plugins/workflows/src/data.test.ts && git diff --check -- plugins/workflows/src/data.ts plugins/workflows/src/data.test.ts .architect/evidence/artifact-review/section-1-foundation.json && node -e 'const fs=require(\"node:fs\"),c=require(\"node:crypto\");const h=p=>c.createHash(\"sha256\").update(fs.readFileSync(p)).digest(\"hex\");const r=JSON.parse(fs.readFileSync(\".architect/evidence/artifact-review/section-1-foundation.json\",\"utf8\"));const ok=r.unit===\"artifact-review-canonical-repository-foundation-v5\"&&r.verifications.length===3&&r.verifications.every(v=>v.status===\"passed\"&&v.failed===0&&v.skipped===0)&&r.verifications[0].kind===\"test\"&&r.verifications[0].passed>0&&r.immutableInputs.design.sha256===h(r.immutableInputs.design.selector)&&Object.entries(r.finalHashes).every(([p,x])=>h(p)===x)&&r.faultInjection.every(f=>f.status===\"killed\"&&f.restored===true)&&r.migrationLineage.totalMigrations===22&&r.completionPass.unresolved.length===0;if(!ok)process.exit(1)'",
+      "status": "passed",
+      "passed": 1,
+      "failed": 0,
+      "skipped": 0,
+      "summary": "prettier check on 4 owned files, git diff --check, evidence invariant script recomputing owned-file and design-input hashes from disk"
+    }
+  ],
+  "faultInjection": [
+    {
+      "mutation": "drop the raw campaign_id/presentation_thread_id IS NOT NULL predicate from resolveLocalArtifactOwnerScope (artifact-storage.ts)",
+      "command": "pnpm --filter bb-plugin-workflows test -- src/data.test.ts --no-file-parallelism -t \"mixed-version null origin scope\"",
+      "status": "killed",
+      "failed": 1,
+      "restored": true,
+      "restoredSha256": "13f92392d9b2725c28cf5718a90f4e9158b1e1635891366288a3064c957e09f1"
+    },
+    {
+      "mutation": "assert no campaign tables exist after the failed host migrate (wrong oracle: workflow_campaign_contract_changes predates migration 18)",
+      "command": "pnpm --filter bb-plugin-workflows test -- src/data.test.ts --no-file-parallelism -t \"divergent revision-1 canonical identity\"",
+      "status": "killed",
+      "failed": 1,
+      "restored": true,
+      "note": "oracle replaced with a full sqlite_master snapshot equality before/after the failed migrate"
+    }
+  ],
+  "faultCoverage": [
+    "applied revision-1 rows survive append-only correction without migration-ID renumbering",
+    "two presentation mounts resolve one origin-scoped canonical artifact and snapshot",
+    "invalid grants, blob corruption, and snapshot digest corruption fail closed without blocking unrelated workflow plugin registration",
+    "divergent revision-1 canonical identity fails closed at the host migration runner: ledger unchanged, rows preserved, schema unchanged",
+    "local-owner actor key is service-derived; scope derivation fails closed on raw-null origin scope and succeeds on backfilled scope",
+    "mixed-version null scope is backfilled exactly once and feature-off COALESCE reads stay compatible; all live enablement is rejected",
+    "normalized campaign work aliases preserve continuation provenance",
+    "transition-bound outbox and acknowledgement rows reject phantom change and call identities",
+    "normalized campaign work, snapshot, transition receipt, acknowledgement receipt, and outbox tables remain dark"
+  ],
+  "finalHashes": {
+    "plugins/workflows/src/artifact-storage.ts": "13f92392d9b2725c28cf5718a90f4e9158b1e1635891366288a3064c957e09f1",
+    "plugins/workflows/src/artifact-storage.test.ts": "053bb844b8ddb67718bd22f277899d1bce53075973ba9c20148ea714e2410694",
+    "plugins/workflows/src/data.ts": "93d5862ef75e9b44a41fde1649f1986271dd7aeb62f0ddaaff37bdd820680963",
+    "plugins/workflows/src/data.test.ts": "bbbbd1dc3d7c6f9e54067d6581a2880264df4314ac0dc78eed5c21ec4697c909"
+  },
+  "limits": [
+    "No artifact RPC, admission transaction, prompt rebuild, delivery, acknowledgement tool, steering, UI, steward, or live propagation path is enabled by this unit.",
+    "A revision-1 database made divergent by test or manual SQL blocks plugin startup at migration 18 by design; no production writer can produce that state and no known durable ledger has applied migrations 14-21.",
+    "verifyArtifactStorageIntegrity is not yet wired into server startup because no artifact RPC exists; the later production unit owns that wiring.",
+    "The receipt records owner verification only; independent review remains workflow-owned."
+  ]
+}

@@ -9,10 +9,7 @@ import {
 } from "./cache.js";
 import {
   activeChildThreadsForRun,
-  attachCallThread,
   beginNotificationAttempt,
-  cancelRun,
-  claimQueuedRun,
   countCallsForRun,
   countRunsForCampaign,
   createRun,
@@ -35,17 +32,10 @@ import {
   listTimedOutRuns,
   markCallReplayedSameRun,
   markNotificationSent,
-  queueCallProviderRetry,
   recordCallContextUsage,
   recordNotificationFailure,
-  recoverInterruptedRuns,
   settleNotificationUndeliverable,
-  settleCall,
-  settleRun,
-  startCall,
-  storeStructuredResult,
   updateRunPhase,
-  upsertWorkflowCheckpoint,
   type Db,
   type WorkflowCallCounts,
   type WorkflowCallRow,
@@ -54,6 +44,13 @@ import {
   type WorkflowRunRow,
 } from "./data.js";
 import { parseWorkflowSource } from "./parser.js";
+import {
+  callContractSnapshot,
+  replaySnapshotIsCurrent,
+  settleWorkflowTransition,
+  type SettleCallOutcome,
+  type WorkflowStatusTransition,
+} from "./workflow-terminal-settlement.js";
 import { WORKFLOW_RUNS_REALTIME_CHANNEL } from "./realtime-channel.js";
 import { executeWorkflowScript } from "./runtime.js";
 import {
@@ -114,6 +111,8 @@ const selectedExecutionSchema = z.object({
 type ResolvedSelection = z.infer<typeof selectedExecutionSchema>;
 
 const MAX_REPAIR_ATTEMPTS = 2;
+const STALE_EVIDENCE_MESSAGE =
+  "This result was produced on a superseded contract snapshot and is retained as stale evidence; it cannot settle the workflow call until the admitted change is adopted";
 const WORKER_PROMPT_VERSION = "workflow-worker-prompt-v1";
 const RESULT_PROTOCOL_VERSION = "workflow-result-protocol-v1";
 const SCHEMA_LIMITS = { bytes: 64 * 1024, nodes: 4_096, depth: 64 };
@@ -603,11 +602,42 @@ export function createWorkflowService(
     }
   }
 
-  function settleCallAndPublish(args: Parameters<typeof settleCall>[1]): void {
-    const runId = settleCall(db, args);
-    if (runId === null) return;
+  /** Re-reads a run after a settlement transition and publishes its change. */
+  function publishRunById(runId: string): void {
     const run = getRun(db, runId);
     if (run !== null) publishRunChanged(run);
+  }
+
+  /**
+   * Settles a call through the consolidated settlement entry point and wakes
+   * its orchestrator waiter. A stale outcome leaves the call running and the
+   * waiter pending: the old-snapshot result is retained as evidence but never
+   * promoted to the orchestrator.
+   */
+  function settleCallAndWake(
+    call: WorkflowCallRow,
+    args: Omit<
+      Extract<WorkflowStatusTransition, { kind: "settle-call" }>,
+      "kind" | "id"
+    >,
+  ): SettleCallOutcome {
+    const outcome = settleWorkflowTransition(db, {
+      kind: "settle-call",
+      id: call.id,
+      ...args,
+    });
+    if (outcome.kind === "stale") {
+      bb.log.warn(
+        `[${call.runId}] Call ${call.callIndex + 1} finished on a superseded contract snapshot; ` +
+          `its result is retained as stale evidence pending change ${outcome.block.changeId}`,
+      );
+      return outcome;
+    }
+    if (outcome.kind === "settled") {
+      publishRunById(outcome.runId);
+    }
+    wakeCall(call);
+    return outcome;
   }
 
   async function stopChild(threadId: string): Promise<void> {
@@ -650,12 +680,14 @@ export function createWorkflowService(
     };
   }
 
-  async function nearestVisiblePresentationThread(
+  async function rootVisiblePresentationThread(
     origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
   ): Promise<string> {
     let current = origin;
+    let presentationThreadId =
+      current.visibility === "visible" ? current.id : null;
     const visited = new Set<string>();
-    while (current.visibility === "hidden" && current.parentThreadId !== null) {
+    while (typeof current.parentThreadId === "string") {
       if (visited.has(current.id)) {
         throw new Error("Workflow presentation ancestry contains a cycle");
       }
@@ -663,42 +695,33 @@ export function createWorkflowService(
       const parent = await bb.sdk.threads.get({
         threadId: current.parentThreadId,
       });
-      assertPresentationScope(origin, parent);
       current = parent;
+      if (current.visibility === "visible") {
+        presentationThreadId = current.id;
+      }
     }
-    return current.id;
-  }
-
-  function assertPresentationScope(
-    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
-    presentation: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
-  ): void {
-    if (presentation.projectId !== origin.projectId) {
-      throw new Error(
-        "Workflow presentation thread must use the origin project",
-      );
-    }
-    if (presentation.environmentId !== origin.environmentId) {
-      throw new Error(
-        "Workflow presentation thread must use the origin environment",
-      );
-    }
+    return presentationThreadId ?? origin.id;
   }
 
   async function resolveExplicitPresentationThread(
-    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
     targetThreadId: string,
   ): Promise<string> {
+    const target = await bb.sdk.threads.get({ threadId: targetThreadId });
+    if (target.visibility === "hidden") {
+      throw new Error("Workflow presentation thread must be visible");
+    }
+    return target.id;
+  }
+
+  async function assertPresentationAncestor(
+    origin: Awaited<ReturnType<typeof bb.sdk.threads.get>>,
+    targetThreadId: string,
+  ): Promise<void> {
     let current = origin;
     const visited = new Set<string>();
     while (true) {
-      if (current.id === targetThreadId) {
-        if (current.visibility === "hidden") {
-          throw new Error("Workflow presentation thread must be visible");
-        }
-        return current.id;
-      }
-      if (current.parentThreadId === null) {
+      if (current.id === targetThreadId) return;
+      if (typeof current.parentThreadId !== "string") {
         throw new Error(
           "Workflow presentation thread must be the origin or one of its ancestors",
         );
@@ -707,11 +730,9 @@ export function createWorkflowService(
         throw new Error("Workflow presentation ancestry contains a cycle");
       }
       visited.add(current.id);
-      const parent = await bb.sdk.threads.get({
+      current = await bb.sdk.threads.get({
         threadId: current.parentThreadId,
       });
-      assertPresentationScope(origin, parent);
-      current = parent;
     }
   }
 
@@ -772,7 +793,7 @@ export function createWorkflowService(
       (input.presentationThreadId === undefined ||
         input.presentationThreadId === null)
     ) {
-      await resolveExplicitPresentationThread(
+      await assertPresentationAncestor(
         origin,
         existingCampaignRun.presentationThreadId,
       );
@@ -843,10 +864,9 @@ export function createWorkflowService(
         parentRun?.presentationThreadId ??
         previousRun?.presentationThreadId ??
         existingCampaignRun?.presentationThreadId ??
-        (await nearestVisiblePresentationThread(origin));
+        (await rootVisiblePresentationThread(origin));
     } else {
       presentationThreadId = await resolveExplicitPresentationThread(
-        origin,
         input.presentationThreadId,
       );
     }
@@ -907,6 +927,7 @@ export function createWorkflowService(
       settingsJson: JSON.stringify(
         workflowRunSettingsSnapshot(currentSettings),
       ),
+      workflowArtifactLiveChanges: parsed.metadata.workflowArtifactLiveChanges,
       resumedFromRunId: input.resumedFromRunId,
     });
     publishRunChanged(created);
@@ -1251,6 +1272,7 @@ export function createWorkflowService(
       const cacheKey = resolvedIdentity.cacheKey;
       selection = resolvedIdentity.selection;
       const sameRunCall = getCall(db, run.id, callIndex);
+      let started: WorkflowCallRow | null = null;
       if (replay.prefix) {
         if (sameRunCall !== null) {
           const sourceRun = getRunRequired(db, run.id);
@@ -1266,7 +1288,15 @@ export function createWorkflowService(
               status: sameRunCall.status,
               result,
             });
-            if (sameRunCall.cacheKey === cacheKey && reuse.reusable) {
+            if (
+              sameRunCall.cacheKey === cacheKey &&
+              reuse.reusable &&
+              replaySnapshotIsCurrent(
+                db,
+                sourceRun,
+                callContractSnapshot(db, sameRunCall.id),
+              )
+            ) {
               markCallReplayedSameRun(db, sameRunCall.id);
               return reuse.result;
             }
@@ -1291,7 +1321,8 @@ export function createWorkflowService(
               candidate === null ? null : { status: candidate.status, result },
             );
             if (candidate?.cacheKey === cacheKey && reuse.reusable) {
-              startCall(db, {
+              const replayed = settleWorkflowTransition(db, {
+                kind: "start-call",
                 runId: run.id,
                 callIndex,
                 cacheKey,
@@ -1306,24 +1337,31 @@ export function createWorkflowService(
                   observedModelContextWindow:
                     candidate.observedModelContextWindow,
                   contextUsageEstimated: candidate.contextUsageEstimated,
+                  contractSnapshot: callContractSnapshot(db, candidate.id),
                 },
               });
-              return reuse.result;
+              if (replayed.status === "succeeded") return reuse.result;
+              // The stored result was produced under a superseded contract
+              // snapshot, so the call was queued for fresh dispatch instead.
+              started = replayed;
             }
           }
           replay.prefix = false;
         }
       }
 
-      call = startCall(db, {
-        runId: run.id,
-        callIndex,
-        cacheKey,
-        prompt,
-        options,
-        selection,
-        replay: null,
-      });
+      call =
+        started ??
+        settleWorkflowTransition(db, {
+          kind: "start-call",
+          runId: run.id,
+          callIndex,
+          cacheKey,
+          prompt,
+          options,
+          selection,
+          replay: null,
+        });
     } finally {
       replayDecision.release();
     }
@@ -1333,6 +1371,17 @@ export function createWorkflowService(
         const releaseAdmission = await globalAgentAdmission.acquire(signal);
         try {
           throwIfCancelled(signal);
+          const dispatch = settleWorkflowTransition(db, {
+            kind: "claim-call-dispatch",
+            callId: call.id,
+          });
+          if (dispatch.kind !== "claimed") {
+            throw new Error(
+              dispatch.kind === "blocked"
+                ? `Workflow dispatch is blocked by admitted change ${dispatch.block.changeId}`
+                : "Workflow dispatch is no longer active",
+            );
+          }
           const child = await bb.sdk.threads.spawn({
             projectId: run.projectId,
             environment: { type: "reuse", environmentId: run.environmentId },
@@ -1348,7 +1397,11 @@ export function createWorkflowService(
             await stopChild(child.id);
             throw new Error("Workflow cancelled");
           }
-          const attached = attachCallThread(db, call.id, child.id);
+          const attached = settleWorkflowTransition(db, {
+            kind: "attach-call-thread",
+            callId: call.id,
+            threadId: child.id,
+          });
           if (!attached || signal.aborted) {
             await stopChild(child.id);
             throw new Error("Workflow cancelled");
@@ -1394,7 +1447,11 @@ export function createWorkflowService(
           throw error;
         }
         const detail = message(error);
-        const queued = queueCallProviderRetry(db, call.id, detail);
+        const queued = settleWorkflowTransition(db, {
+          kind: "queue-call-provider-retry",
+          callId: call.id,
+          error: detail,
+        });
         if (queued === null) throw error;
         call = queued;
         bb.log.warn(
@@ -1453,13 +1510,11 @@ export function createWorkflowService(
     const options = optionsForCall(call);
     if (options.outputSchema !== null) {
       if (call.resultJson !== null) {
-        settleCallAndPublish({
-          id: call.id,
+        settleCallAndWake(call, {
           status: "succeeded",
           result: parseJson(call.resultJson, "structured result"),
           error: null,
         });
-        wakeCall(call);
         return;
       }
 
@@ -1490,15 +1545,22 @@ export function createWorkflowService(
         }
       }
       if (fallback.parsed && fallback.validation.valid) {
-        const stored = storeStructuredResult(db, call.id, fallback.value);
+        const stored = settleWorkflowTransition(db, {
+          kind: "store-structured-result",
+          callId: call.id,
+          result: fallback.value,
+        });
+        if (stored === "stale") {
+          // Retained as stale evidence; the call stays running until the
+          // admitted change is adopted, so this idle is not a repair failure.
+          return;
+        }
         if (stored === "accepted" || stored === "idempotent") {
-          settleCallAndPublish({
-            id: call.id,
+          settleCallAndWake(call, {
             status: "succeeded",
             result: fallback.value,
             error: null,
           });
-          wakeCall(call);
           return;
         }
       }
@@ -1515,13 +1577,11 @@ export function createWorkflowService(
         : fallback.error;
       if (attempts > MAX_REPAIR_ATTEMPTS) {
         const error = `Structured output failed after ${MAX_REPAIR_ATTEMPTS} corrective turns: ${detail}`;
-        settleCallAndPublish({
-          id: call.id,
+        settleCallAndWake(call, {
           status: "failed",
           result: null,
           error,
         });
-        wakeCall(call);
         await stopChild(threadId);
         return;
       }
@@ -1543,24 +1603,20 @@ export function createWorkflowService(
         return;
       } catch (error) {
         const correctionError = `Could not request structured-output correction: ${message(error)}`;
-        settleCallAndPublish({
-          id: call.id,
+        settleCallAndWake(call, {
           status: "failed",
           result: null,
           error: correctionError,
         });
-        wakeCall(call);
         await stopChild(threadId);
       }
     } else {
-      settleCallAndPublish({
-        id: call.id,
+      settleCallAndWake(call, {
         status: "succeeded",
         result: output ?? "",
         error: null,
       });
     }
-    wakeCall(call);
   }
 
   function onThreadIdle(threadId: string, output: string | null): void {
@@ -1589,13 +1645,11 @@ export function createWorkflowService(
   function failThreadCall(threadId: string, error: string): void {
     const call = getCallByChildThread(db, threadId);
     if (call === null || call.status !== "running") return;
-    settleCallAndPublish({
-      id: call.id,
+    settleCallAndWake(call, {
       status: "failed",
       result: null,
       error,
     });
-    wakeCall(call);
   }
 
   async function submitStructuredResult(
@@ -1622,15 +1676,20 @@ export function createWorkflowService(
     const resolved = resolveStructuredValue(options.outputSchema, value);
     const validation = resolved.validation;
     if (validation.valid) {
-      const stored = storeStructuredResult(db, call.id, resolved.value);
+      const stored = settleWorkflowTransition(db, {
+        kind: "store-structured-result",
+        callId: call.id,
+        result: resolved.value,
+      });
+      if (stored === "stale") {
+        return { ok: false, terminal: false, error: STALE_EVIDENCE_MESSAGE };
+      }
       if (stored === "accepted") {
-        settleCallAndPublish({
-          id: call.id,
+        settleCallAndWake(call, {
           status: "succeeded",
           result: resolved.value,
           error: null,
         });
-        wakeCall(call);
         await stopChild(threadId);
         return { ok: true };
       }
@@ -1665,13 +1724,11 @@ export function createWorkflowService(
     }
     if (attempts > MAX_REPAIR_ATTEMPTS) {
       const error = `Structured output failed after ${MAX_REPAIR_ATTEMPTS} corrective retries: ${validation.error}`;
-      settleCallAndPublish({
-        id: call.id,
+      settleCallAndWake(call, {
         status: "failed",
         result: null,
         error,
       });
-      wakeCall(call);
       await stopChild(threadId);
       return { ok: false, terminal: true, error };
     }
@@ -1709,7 +1766,8 @@ export function createWorkflowService(
     }
     const { checkpoint, json } = serialized;
     const options = parseStoredAgentOptions(JSON.parse(call.optionsJson));
-    const outcome = upsertWorkflowCheckpoint(db, {
+    const outcome = settleWorkflowTransition(db, {
+      kind: "record-checkpoint",
       runId: call.runId,
       checkpointId: checkpoint.id,
       checkpointJson: json,
@@ -1720,7 +1778,9 @@ export function createWorkflowService(
       const error =
         outcome === "inactive"
           ? "This workflow call is no longer active"
-          : outcome === "ownership_conflict"
+          : outcome === "stale"
+            ? STALE_EVIDENCE_MESSAGE
+            : outcome === "ownership_conflict"
             ? "This checkpoint ID is owned by the workflow or another worker"
             : outcome === "kind_conflict"
               ? "A checkpoint ID cannot change checkpoint kind"
@@ -1731,8 +1791,7 @@ export function createWorkflowService(
         error,
       };
     }
-    const run = getRun(db, call.runId);
-    if (run !== null) publishRunChanged(run);
+    publishRunById(call.runId);
     return { ok: true };
   }
 
@@ -1807,11 +1866,13 @@ export function createWorkflowService(
   }
 
   async function settleRunAndStopOutstanding(
-    args: Parameters<typeof settleRun>[1],
+    args: Omit<Extract<WorkflowStatusTransition, { kind: "settle-run" }>, "kind">,
   ): Promise<void> {
-    const outstanding = settleRun(db, args);
-    const settled = getRun(db, args.id);
-    if (settled !== null) publishRunChanged(settled);
+    const { outstanding } = settleWorkflowTransition(db, {
+      kind: "settle-run",
+      ...args,
+    });
+    publishRunById(args.id);
     controllers.get(args.id)?.abort();
     for (const call of outstanding) wakeCall(call);
     await stopChildren(
@@ -1955,7 +2016,8 @@ export function createWorkflowService(
       },
       checkpoint(value, phase) {
         const { checkpoint, json } = serializeWorkflowCheckpoint(value);
-        const outcome = upsertWorkflowCheckpoint(db, {
+        const outcome = settleWorkflowTransition(db, {
+          kind: "record-checkpoint",
           runId: run.id,
           checkpointId: checkpoint.id,
           checkpointJson: json,
@@ -1964,6 +2026,13 @@ export function createWorkflowService(
         });
         if (outcome === "inactive")
           throw new Error("Workflow is no longer active");
+        if (outcome === "stale") {
+          // Orchestrator checkpoints carry no source call and cannot be
+          // interlocked; this branch only keeps the outcome union exhaustive.
+          throw new Error(
+            "Workflow checkpoint was recorded on a superseded contract snapshot",
+          );
+        }
         if (outcome === "limit_exceeded") {
           throw new Error(
             "Workflow checkpoint storage limit reached; update an existing checkpoint or reduce its detail",
@@ -2100,12 +2169,18 @@ export function createWorkflowService(
       },
       { once: true },
     );
-    await stopChildren(recoverInterruptedRuns(db));
+    await stopChildren(
+      settleWorkflowTransition(db, { kind: "recover-interrupted-runs" })
+        .childThreadIds,
+    );
     const active = new Set<Promise<void>>();
     let nextMaintenanceAt = 0;
     while (!signal.aborted) {
       while (active.size < currentSettings.maxActiveRuns) {
-        const run = claimQueuedRun(db, currentSettings.maxActiveRuns);
+        const run = settleWorkflowTransition(db, {
+          kind: "claim-queued-run",
+          maxActiveRuns: currentSettings.maxActiveRuns,
+        });
         if (run === null) break;
         publishRunChanged(run);
         const controller = new AbortController();
@@ -2137,17 +2212,20 @@ export function createWorkflowService(
     for (const controller of controllers.values()) controller.abort();
     await Promise.allSettled(active);
     await Promise.allSettled(handlerTasks);
-    await stopChildren(recoverInterruptedRuns(db));
+    await stopChildren(
+      settleWorkflowTransition(db, { kind: "recover-interrupted-runs" })
+        .childThreadIds,
+    );
     await Promise.allSettled(childStops.values());
   }
 
   async function stop(runId: string): Promise<boolean> {
     const childThreadIds = activeChildThreadsForRun(db, runId);
-    const stopped = cancelRun(db, runId);
-    if (stopped) {
-      const run = getRun(db, runId);
-      if (run !== null) publishRunChanged(run);
-    }
+    const stopped = settleWorkflowTransition(db, {
+      kind: "cancel-run",
+      id: runId,
+    });
+    if (stopped) publishRunById(runId);
     controllers.get(runId)?.abort();
     await stopChildren(childThreadIds);
     return stopped;

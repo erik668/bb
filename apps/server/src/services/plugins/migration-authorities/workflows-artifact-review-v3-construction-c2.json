@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "bb-artifact-review-v3-construction-c2-authority-v1",
+  "successorSeamId": "bb-artifact-review-v3-construction-c2:recorder-owned-independent-effects-and-sdk-execution-v1",
+  "contract": {
+    "architectureRevision": 2,
+    "contractId": "bb-artifact-review-service:revision-1",
+    "authorityRule": "server-assigned-local-owner-over-origin-campaign-project-environment",
+    "presentationRule": "grant-and-provenance-only",
+    "savedRule": "committed-only-after-independent-fresh-host-reopen",
+    "byteRule": "content-addressed",
+    "retentionRule": "append-only-non-destructive",
+    "migrationRange": "0..22",
+    "rollout": "dark",
+    "maliciousWriterAuthenticityClaim": false,
+    "sharedHostMutation": false,
+    "crossEnvironmentContinuation": false,
+    "bootstrap": false,
+    "deployment": false,
+    "adoption": false
+  },
+  "bindings": {
+    "synthesis": {
+      "runId": "wfr_ee94e5c0-990d-4041-997d-8980ec83c896",
+      "path": "/Users/erik/.bb/thread-storage/v3-c2-contract.json"
+    },
+    "v12": {
+      "approvalSha256": "c28b4884022b615491ba826ca6a6a2604d97c39b914d4ee44fdc406e30ea28e0",
+      "ledgerSha256": "ee24d026bffba3b976dfbc0363193459b0c7d98c22f362b2d9a18b01b0c1e1d7",
+      "manifestByteLength": 798,
+      "manifestSha256": "c074fc850151672da17f2b6478782a90becacef0a5641154c731033cb90a8a3b"
+    },
+    "failedC0": {
+      "disposition": "immutable-failed-lineage-only",
+      "manifestByteLength": 556,
+      "manifestSha256": "d0e9c7a124fdc3f3f00f7608f919a59fd3eaaeafd1a0135eee7a3e848cd93069",
+      "files": [
+        {"path":"apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-construction-c0.json","byteLength":23829,"sha256":"3be9d1508dac92e46eaa4719bbe97fdc2e09ce578a44d64c280784533be16074"},
+        {"path":"plugins/workflows/src/artifact-recovery-v3-construction.schema.json","byteLength":14346,"sha256":"ec20efd31bfe51bbcf8288157e10891152aec77fcbb6139199f9efee46d7039d"},
+        {"path":"plugins/workflows/src/artifact-recovery-v3-construction.test.ts","byteLength":17141,"sha256":"b169b89aca9971695481bf996ba2c89e9a129e3619383bc7f24393a439abe357"}
+      ],
+      "candidateManifestMustRemainAbsent": true,
+      "ledgerMustRemainAbsent": true,
+      "approvalMustRemainAbsent": true
+    },
+    "failedC1": {
+      "disposition": "immutable-failed-lineage-only",
+      "manifestByteLength": 747,
+      "manifestSha256": "f448ed2b2c1e0a14e6d3a389c19ad227757a41012052da6e805d835748c75d6d",
+      "files": [
+        {"path":"apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-construction-c1.json","byteLength":14042,"sha256":"6aa253047e945ec34ade6bd2f6c4f13e8f16213a5fd6dc3082855ae4b702c16f"},
+        {"path":"plugins/workflows/src/artifact-recovery-v3-construction-c1.schema.json","byteLength":33334,"sha256":"5465a0c4b046725d6aec5efa8ab78e171826b192a3829bad6955503b8c231fd5"},
+        {"path":"plugins/workflows/src/artifact-recovery-v3-construction-c1-corpus.json","byteLength":37379,"sha256":"c5a385f8e2f88612de77315c9a3d7d13dcf15f30b2d94e917b108ec5c84f93ee"},
+        {"path":"plugins/workflows/src/artifact-recovery-v3-construction-c1-oracle.test.ts","byteLength":21365,"sha256":"0771c787231232942b0e1477ba459aa7c6ff486ddd0429477bd0fa212f43082d"},
+        {"path":"output/artifact-review-shakedown/oracle/recovery-v3-construction-c1-oracle-manifest.json","byteLength":747,"sha256":"f448ed2b2c1e0a14e6d3a389c19ad227757a41012052da6e805d835748c75d6d"}
+      ],
+      "candidateManifestMustRemainAbsent": true,
+      "ledgerMustRemainAbsent": true,
+      "approvalMustRemainAbsent": true
+    }
+  },
+  "inventory": {
+    "selected": 134,
+    "categories": {"behavior":20,"corruption":18,"fault":37,"dispatch":5,"parity":12,"reopen":5,"sdk":30,"darkness":7},
+    "adapters": {"production":42,"sdkFake":4,"workflowsFake":4},
+    "prebuild": {"passed":134,"constructionRed":134,"candidateSuccess":0,"skipped":0},
+    "postbuild": {"executed":134,"observed":134,"passed":134,"failed":0,"skipped":0}
+  },
+  "pathClosure": {
+    "oraclePaths": [
+      "apps/server/src/services/plugins/migration-authorities/workflows-artifact-review-v3-construction-c2.json",
+      "plugins/workflows/src/artifact-recovery-v3-construction-c2.schema.json",
+      "plugins/workflows/src/artifact-recovery-v3-construction-c2-stimuli.json",
+      "plugins/workflows/src/artifact-recovery-v3-construction-c2-expected.json",
+      "plugins/workflows/src/artifact-recovery-v3-construction-c2-candidate-runner.ts",
+      "plugins/workflows/src/artifact-recovery-v3-construction-c2-independent-observer.ts",
+      "plugins/workflows/src/artifact-recovery-v3-construction-c2-oracle.test.ts",
+      "output/artifact-review-shakedown/oracle/recovery-v3-construction-c2-prebuild-provenance.json",
+      "output/artifact-review-shakedown/oracle/recovery-v3-construction-c2-oracle-manifest.json"
+    ],
+    "mutableConstructionPaths": [
+      "plugins/workflows/src/artifact-recovery-v3-fake-projection.ts",
+      "plugins/workflows/src/artifact-recovery-v3-fake-adapter.ts",
+      "plugins/workflows/src/artifact-recovery-v3-fake-contract-vectors.ts",
+      "plugins/workflows/src/artifact-recovery-v3-capability-registry.ts",
+      "packages/plugin-sdk/src/artifact-review-v3-contract.ts",
+      "packages/plugin-sdk/src/backend-contract.ts",
+      "packages/plugin-sdk/src/testing/fake-plugin-host.ts",
+      "packages/plugin-sdk/src/testing/__tests__/fake-plugin-host.test.ts",
+      "apps/server/src/services/plugins/artifact-review-v3-projection.ts",
+      "apps/server/src/services/plugins/plugin-api.ts",
+      "apps/server/src/services/plugins/plugin-api.migration-recovery.test.ts"
+    ],
+    "generatedSdkOutputs": [
+      "packages/plugin-sdk/dist/index.js","packages/plugin-sdk/dist/app.js","packages/plugin-sdk/dist/provider-bridge.js","packages/plugin-sdk/dist/host.js","packages/plugin-sdk/dist/internal/composer-customization-validation.js","packages/plugin-sdk/dist/internal/composer-view.js","packages/plugin-sdk/dist/internal/file-navigation-validation.js","packages/plugin-sdk/dist/internal/host-policy.js","packages/plugin-sdk/dist/internal/plugin-app-collector.js","packages/plugin-sdk/dist/testing/index.js","packages/plugin-sdk/dist/testing/app.js","packages/plugin-sdk/dist/testing/host.js",
+      "packages/plugin-sdk/bundled-types/bb-plugin-sdk.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-app.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-provider-bridge.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-host.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-internal-composer-customization-validation.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-internal-composer-view.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-internal-file-navigation-validation.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-internal-host-policy.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-internal-plugin-app-collector.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing-app.d.ts","packages/plugin-sdk/bundled-types/bb-plugin-sdk-testing-host.d.ts"
+    ]
+  },
+  "migrationVector": {
+    "encoding": "id-colon-sha256-semicolon-no-terminal",
+    "byteLength": 1553,
+    "sha256": "2d4aa4a4dc215e4a3c51e763dfde370cf2a33741130f7ec3d2082c334251ec7c",
+    "hashes": ["cb3f719d56d0d09658bef9a0f021ed11496d29c58d9d9c078d239f9dbe78afa6","25757204d3d451e18471a5122c763c0713f59ea85372aa0ed49400bf599e5071","caf5bb39ebbd7372639f2421d50ce8427231529489c25c30d1ca71c105ac603d","d2b6765d51e13028cc32da4b8668d00468a97ae02be20bce217099d6362d3ea1","ba7ff8bfedbd1f8dc16210aede0bd5deeeb4b340090022355629730d6dd54c14","8f7b44eb0118c659b96d5f867e01b4fb2a126891c5f3a6dc499641be742337b1","e2cfdd1965dbb3320046ee9ea102f118a1392a570bc5074ca058ae5e507d7465","eac1a950ae997157aaa3c69c13065ee3d8e74e4e733b1e371c290160a71b9337","a8fb5039dfa92cad024ee86cd5982e28ac541c7c4a96b0b0db5544889372c1d2","e9288122a6224c3e6d88f56a45c88900157d7161425fefcf83ead399db6f9b89","bc4f2cb47b1c15a87b574678dadf01ea9dbe424a2e71253cbeb1a9cec9829c4d","89f614b25f424c27f61d6308f1d93373420fff3cea5a4958b471668bf31ccf24","5c980eccd9a3a40da158ef41806df8f212b494cbc60b2768762bf05fe58c09c2","5951a693ab7a49e5f1b4cecb2e4bc6385853584de204f48b974aaa3fb19e2bfa","1767f3322d25f443f073ff49cada30950ace97d2d348d57696d1baeee7d7a3e3","65e86c96105b3f48f8e0faa5f168e7f5e0d66f916cd4c1ea6d6f8a8a89111f83","5b44b70d6b98aa04374afeefff2860733465d4a1156ac33917b15646073014d8","d147cd626d4887587d4efa99fea9a9f801960d6c9c18b0fb8ac6c9a0b636f01e","aa760982bf7d933ab902f867062d4c11482e64a177b49db5ccdf3ec56dc0f91d","03afb93d68a7018bed783ce9bb72665b52a9c6f544564956d35dbda7d65997a3","1d0f7ebcbc92d9bc7e175a4b70ac430ef42498191b4c57ff46620f82af17434e","57defc2f33da6307d6887fcb357dcf030fd614b56a342f310796ae1fe2b81e14","045811cf8748bb6ca9a33242449f58a2c72dc8e42972e4acc63f2807bef0053e"]
+  },
+  "negativeControls": [
+    "expectation-import-or-read","id-or-category-echo","literal-or-all-zero-self-attestation","database-path-selection","candidate-returned-observation-trust","post-return-observation-tamper","production-substituted-by-fake","synthetic-execute-case-hook","sdk-zero-selection-or-skip","missing-or-stale-runtime-output","missing-or-stale-declaration-output","same-handle-or-cache-reopen","uncommitted-write","missing-rollback","pre-db-creation-on-rejection","phase-hash-misuse","feature-or-consumer-lit"
+  ],
+  "proofLifecycle": {
+    "prebuildPinsMutableStartHashes": true,
+    "postbuildPinsMutableStartHashes": false,
+    "postbuildRehashesImmutableLineage": true,
+    "candidateManifestBeforePostbuild": false,
+    "ledgerAfterTwoFreshGreens": true,
+    "approvalAfterLedger": true,
+    "skipStateAllowed": false
+  }
+}
