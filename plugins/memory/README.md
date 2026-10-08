@@ -13,6 +13,8 @@ duplicated or conflicting memories split between Codex, Claude Code, and bb.
   `bb.agents.contributeInstructions`;
 - CLI-only agent access through `bb memory` (no native agent tools);
 - FTS5 search followed by full-record reads;
+- a routing contract for optional RLM-style deep retrieval over external,
+  typed projections of adapter-ready sources while keeping FTS as the fast path;
 - explicit provenance, tags, kinds, importance, pinning, and version history;
 - evidence-backed candidate memories and adversarial challenges;
 - workspace-owner-only promotion and rejection through Settings, with durable
@@ -72,6 +74,9 @@ memory through the CLI.
 - Retrieval is FTS5 keyword search in this version; embeddings and automatic
   background PR ingestion remain deferred. The bundled `memory-dreaming` skill
   provides the evidence-first synthesis/challenge phase when explicitly loaded.
+  Broad cross-artifact questions may use a separately invoked BB Workflow that
+  keeps source bodies external and recursively inspects symbolic handles. The
+  plugin itself remains model-neutral and does not silently launch model calls.
 - The safety scanner is a guardrail, not a substitute for avoiding sensitive
   memory content.
 
