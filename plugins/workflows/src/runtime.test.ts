@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import { executeWorkflowScript } from "./runtime.js";
-import type { WorkflowCapabilities } from "./types.js";
+import {
+  WorkflowHumanInputRequiredError,
+  type WorkflowCapabilities,
+} from "./types.js";
 
 describe("workflow QuickJS runtime", () => {
   it("awaits multiple concurrent host agents", async () => {
@@ -1037,5 +1040,62 @@ describe("workflow QuickJS runtime", () => {
       capabilities: { agent: async () => null, log: vi.fn(), phase: vi.fn() },
     });
     expect(result).toBe("blocked");
+  });
+
+  it("returns a validated human response through the QuickJS bridge", async () => {
+    const human = vi.fn(async () => "approve" as const);
+    const result = await executeWorkflowScript({
+      args: null,
+      body: `
+        return await human({
+          id: "design-approval",
+          artifact: { revision: 1, summary: "Review me" },
+          schema: { enum: ["approve", "abort"] },
+        });
+      `,
+      capabilities: {
+        agent: async () => null,
+        human,
+        log: vi.fn(),
+        phase: vi.fn(),
+      },
+    });
+
+    expect(result).toBe("approve");
+    expect(human).toHaveBeenCalledWith(
+      {
+        id: "design-approval",
+        artifact: { revision: 1, summary: "Review me" },
+        schema: { enum: ["approve", "abort"] },
+      },
+      expect.any(AbortSignal),
+    );
+  });
+
+  it("does not let guest code swallow a durable human pause", async () => {
+    await expect(
+      executeWorkflowScript({
+        args: null,
+        body: `
+          try {
+            await human({ id: "gate", artifact: null, schema: true });
+          } catch {
+            return "guest tried to continue";
+          }
+          return "unreachable";
+        `,
+        capabilities: {
+          agent: async () => null,
+          human: async () => {
+            throw new WorkflowHumanInputRequiredError("gate");
+          },
+          log: vi.fn(),
+          phase: vi.fn(),
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "WorkflowHumanInputRequiredError",
+      gateId: "gate",
+    });
   });
 });

@@ -21,7 +21,7 @@ const sourceInputFields = {
     .string()
     .min(1)
     .describe(
-      "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/parallel()/pipeline()/phase().",
+      "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/human()/parallel()/pipeline()/phase().",
     )
     .optional(),
   source: z
@@ -133,12 +133,26 @@ export default async function plugin(bb: BbPluginApi) {
       if (latest === null) throw new Error(`Unknown workflow run ${runId}`);
       return { stopped, run: buildWorkflowRunView(latest) };
     },
+    workflowRespondHuman({ threadId, runId, gateId, response }) {
+      const run = workflowForThread(threadId, runId);
+      if (run === null) throw new Error(`Unknown workflow run ${runId}`);
+      const result = service.respondHuman(
+        run.id,
+        gateId,
+        response,
+        "interactive-user",
+      );
+      return {
+        accepted: result.accepted,
+        run: buildWorkflowRunView(result.run),
+      };
+    },
   });
 
   bb.agents.registerTool({
     name: "bb_workflow_run",
     description:
-      "Execute a workflow script that orchestrates multiple subagents deterministically. Workflows run in the background — this tool returns immediately with a run ID and a `previewDirective`. After a successful call, emit that directive exactly once on its own line (not in a code fence) so BB renders live progress in chat. A completion notification is sent to the origin thread. Use `bb workflows status <run-id>` for a compact summary. For detailed history, redirect a bounded JSONL page from `bb workflows history <run-id> --cursor <call-index> --limit <1-100>` into `$BB_THREAD_STORAGE`, then inspect the file with normal filesystem tools.",
+      "Execute a workflow script that orchestrates multiple subagents and durable human gates deterministically. Workflows run in the background — this tool returns immediately with a run ID and a `previewDirective`. After a successful call, emit that directive exactly once on its own line (not in a code fence) so BB renders live progress in chat. A terminal completion notification is sent to the origin thread; human gates appear as waiting_for_input and resume through the workflow panel or `bb workflows respond`. Use `bb workflows status <run-id>` for a compact summary. For detailed history, redirect a bounded JSONL page from `bb workflows history <run-id> --cursor <call-index> --limit <1-100>` into `$BB_THREAD_STORAGE`, then inspect the file with normal filesystem tools.",
     parameters: runInputSchema,
     async execute(input, ctx) {
       try {
@@ -208,7 +222,7 @@ export default async function plugin(bb: BbPluginApi) {
       tools: ["bb_workflow_run"],
       skills: ["workflows"],
       instructions:
-        "When bb_workflow_run succeeds, copy its previewDirective into your response exactly once as a standalone line. Do not wrap it in backticks or a code fence, and do not invent or edit the run ID. The directive renders live workflow progress in BB chat. `bb workflows status <run-id>` returns a compact summary. For detailed history, redirect `bb workflows history <run-id> --cursor <call-index> --limit <1-100>` into a file under `$BB_THREAD_STORAGE`, then inspect that JSONL file with normal filesystem tools. Use each page record's `nextCursor` to continue.",
+        "When bb_workflow_run succeeds, copy its previewDirective into your response exactly once as a standalone line. Do not wrap it in backticks or a code fence, and do not invent or edit the run ID. The directive renders live workflow progress in BB chat. `bb workflows status <run-id>` returns a compact summary. A run at waiting_for_input must be answered by the user in the workflow panel or with `bb workflows respond <run-id> --gate <gate-id> --value '<json>'`; do not invent the human response. For detailed history, redirect `bb workflows history <run-id> --cursor <call-index> --limit <1-100>` into a file under `$BB_THREAD_STORAGE`, then inspect that JSONL file with normal filesystem tools. Use each page record's `nextCursor` to continue.",
     };
   });
 

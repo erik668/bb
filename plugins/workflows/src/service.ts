@@ -4,27 +4,32 @@ import type { BbPluginApi } from "@bb/plugin-sdk";
 import { z } from "zod";
 import {
   WORKFLOW_CALL_CACHE_VERSION,
+  canonicalizeJson,
   computeWorkflowCallCacheKey,
   reusableSuccessfulResult,
 } from "./cache.js";
 import {
   activeChildThreadsForRun,
+  answerHumanGate,
   attachCallThread,
   beginNotificationAttempt,
   cancelRun,
   claimQueuedRun,
   countCallsForRun,
+  createHumanGate,
   createRun,
   deleteExpiredTerminalRuns,
   getCall,
   getCallByChildThread,
   getLatestRunForOriginThread,
+  getHumanGate,
   getResumeCall,
   getRun,
   getRunRequired,
   incrementRepairAttempts,
   listCallsForRun,
   listCallsForRunPage,
+  listHumanGatesForRun,
   listActiveRunsForOriginThread,
   listRuns,
   listPendingNotificationRuns,
@@ -32,6 +37,7 @@ import {
   listTimedOutRuns,
   markCallReplayedSameRun,
   markNotificationSent,
+  pauseRunForHuman,
   queueCallProviderRetry,
   recordNotificationFailure,
   recoverInterruptedRuns,
@@ -44,6 +50,7 @@ import {
   type Db,
   type WorkflowCallCounts,
   type WorkflowCallRow,
+  type WorkflowHumanGateRow,
   type WorkflowRunRow,
 } from "./data.js";
 import { parseWorkflowSource } from "./parser.js";
@@ -54,13 +61,15 @@ import {
   type WorkflowSettings,
 } from "./settings.js";
 import { workflowReferenceToSourceInput } from "./source-resolution.js";
-import type {
-  JsonSchema,
-  JsonValue,
-  NestedWorkflowContext,
-  WorkflowAgentOptions,
-  WorkflowCapabilities,
-  WorkflowReference,
+import {
+  WorkflowHumanInputRequiredError,
+  type WorkflowHumanRequest,
+  type JsonSchema,
+  type JsonValue,
+  type NestedWorkflowContext,
+  type WorkflowAgentOptions,
+  type WorkflowCapabilities,
+  type WorkflowReference,
 } from "./types.js";
 import { parseStoredAgentOptions } from "./validation.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
@@ -99,6 +108,79 @@ const PROVIDER_RETRY_DELAYS_MS = [1_000, 4_000] as const;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+interface GlobalAdmissionCall {
+  signal: AbortSignal;
+  run: () => Promise<JsonValue>;
+  resolve: (value: JsonValue) => void;
+  reject: (error: unknown) => void;
+  abort: () => void;
+  state: "queued" | "active" | "settled";
+}
+
+class GlobalAgentAdmission {
+  private active = 0;
+  private readonly queue: GlobalAdmissionCall[] = [];
+
+  constructor(private readonly limit: () => number) {}
+
+  schedule(
+    run: () => Promise<JsonValue>,
+    signal: AbortSignal,
+  ): Promise<JsonValue> {
+    if (signal.aborted) return Promise.reject(new Error("Workflow cancelled"));
+    return new Promise((resolve, reject) => {
+      const call: GlobalAdmissionCall = {
+        signal,
+        run,
+        resolve,
+        reject,
+        state: "queued",
+        abort: () => {
+          if (call.state !== "queued") return;
+          call.state = "settled";
+          reject(new Error("Workflow cancelled"));
+          this.drain();
+        },
+      };
+      signal.addEventListener("abort", call.abort, { once: true });
+      this.queue.push(call);
+      this.drain();
+    });
+  }
+
+  refresh(): void {
+    this.drain();
+  }
+
+  private drain(): void {
+    while (this.active < this.limit() && this.queue.length > 0) {
+      const call = this.queue.shift();
+      if (call === undefined || call.state !== "queued") continue;
+      call.state = "active";
+      this.active += 1;
+      void Promise.resolve()
+        .then(call.run)
+        .then(
+          (value) => this.finish(call, { value }),
+          (error) => this.finish(call, { error }),
+        );
+    }
+  }
+
+  private finish(
+    call: GlobalAdmissionCall,
+    settlement: { value: JsonValue } | { error: unknown },
+  ): void {
+    if (call.state !== "active") return;
+    call.state = "settled";
+    call.signal.removeEventListener("abort", call.abort);
+    this.active -= 1;
+    if ("value" in settlement) call.resolve(settlement.value);
+    else call.reject(settlement.error);
+    this.drain();
+  }
 }
 
 export function isRetryableProviderFailure(error: unknown): boolean {
@@ -177,6 +259,17 @@ function parseJson(text: string, path: string): JsonValue {
   } catch (error) {
     throw new Error(`${path} is corrupt: ${message(error)}`);
   }
+}
+
+function parseJsonSchema(text: string, path: string): JsonSchema {
+  const value = parseJson(text, path);
+  if (
+    typeof value === "boolean" ||
+    (value !== null && !Array.isArray(value) && typeof value === "object")
+  ) {
+    return value;
+  }
+  throw new Error(`${path} is corrupt: expected a JSON Schema`);
 }
 
 function normalizeWholeOutputJsonFence(text: string): string {
@@ -364,6 +457,12 @@ export interface WorkflowService {
   inspectActiveForThread(threadId: string): WorkflowRunInspection[];
   list(projectId: string, limit: number): WorkflowRunRow[];
   stop(runId: string): Promise<boolean>;
+  respondHuman(
+    runId: string,
+    gateId: string,
+    response: JsonValue,
+    respondedBy: string,
+  ): { accepted: boolean; run: WorkflowRunInspection };
   updateSettings(settings: WorkflowSettings): void;
   runWorker(signal: AbortSignal): Promise<void>;
   onThreadIdle(threadId: string, output: string | null): void;
@@ -393,13 +492,21 @@ export interface WorkflowCallInspection extends WorkflowCallRow {
   source: "cached" | "live";
 }
 
+export interface WorkflowHumanGateInspection extends WorkflowHumanGateRow {
+  artifact: JsonValue;
+  responseSchema: JsonSchema;
+  response: JsonValue | null;
+}
+
 export interface WorkflowRunInspection extends WorkflowRunRow {
   calls: WorkflowCallInspection[];
+  humanGates: WorkflowHumanGateInspection[];
 }
 
 export interface WorkflowRunInspectionPage {
   run: WorkflowRunRow;
   calls: WorkflowCallInspection[];
+  humanGates: WorkflowHumanGateInspection[];
   callCounts: WorkflowCallCounts;
 }
 
@@ -410,8 +517,10 @@ export function createWorkflowService(
 ): WorkflowService {
   let shuttingDown = false;
   let currentSettings = initialSettings;
+  const globalAgentAdmission = new GlobalAgentAdmission(
+    () => currentSettings.maxGlobalConcurrentAgents,
+  );
   const controllers = new Map<string, AbortController>();
-  const idleHandlers = new Set<string>();
   const handlerTasks = new Set<Promise<void>>();
   const idleHandlerTasks = new Map<string, Promise<void>>();
   const childStops = new Map<string, Promise<void>>();
@@ -493,7 +602,11 @@ export function createWorkflowService(
           `Cannot resume unknown workflow run ${input.resumedFromRunId}`,
         );
       }
-      if (previous.status === "queued" || previous.status === "running") {
+      if (
+        previous.status === "queued" ||
+        previous.status === "running" ||
+        previous.status === "waiting_for_input"
+      ) {
         throw new Error(
           `Cannot resume workflow run ${input.resumedFromRunId} before it is terminal`,
         );
@@ -543,12 +656,30 @@ export function createWorkflowService(
     };
   }
 
+  function inspectHumanGate(
+    gate: WorkflowHumanGateRow,
+  ): WorkflowHumanGateInspection {
+    return {
+      ...gate,
+      artifact: parseJson(gate.artifactJson, "workflow human gate artifact"),
+      responseSchema: parseJsonSchema(
+        gate.responseSchemaJson,
+        "workflow human gate response schema",
+      ),
+      response:
+        gate.responseJson === null
+          ? null
+          : parseJson(gate.responseJson, "workflow human gate response"),
+    };
+  }
+
   function inspect(runId: string): WorkflowRunInspection | null {
     const run = getRun(db, runId);
     if (run === null) return null;
     return {
       ...run,
       calls: listCallsForRun(db, runId).map(inspectCall),
+      humanGates: listHumanGatesForRun(db, runId).map(inspectHumanGate),
     };
   }
 
@@ -572,6 +703,7 @@ export function createWorkflowService(
         afterCallIndex,
         limit,
       }).map(inspectCall),
+      humanGates: listHumanGatesForRun(db, runId).map(inspectHumanGate),
       callCounts: countCallsForRun(db, runId),
     };
   }
@@ -591,6 +723,103 @@ export function createWorkflowService(
       }
       return inspection;
     });
+  }
+
+  async function requestHuman(
+    run: WorkflowRunRow,
+    request: WorkflowHumanRequest,
+    signal: AbortSignal,
+  ): Promise<JsonValue> {
+    throwIfCancelled(signal);
+    assertBoundedJson(request.artifact, "Human gate artifact", VALUE_LIMITS);
+    assertBoundedJson(
+      request.schema,
+      "Human gate response schema",
+      SCHEMA_LIMITS,
+    );
+    const artifactDigest = createHash("sha256")
+      .update(canonicalizeJson(request.artifact), "utf8")
+      .digest("hex");
+    const gate = createHumanGate(db, {
+      runId: run.id,
+      gateId: request.id,
+      artifact: request.artifact,
+      artifactDigest,
+      responseSchema: request.schema,
+    });
+    if (gate.artifactDigest !== artifactDigest) {
+      throw new Error(
+        `Human gate ${JSON.stringify(request.id)} cannot be rebound to a changed artifact`,
+      );
+    }
+    const storedSchema = parseJsonSchema(
+      gate.responseSchemaJson,
+      "workflow human gate response schema",
+    );
+    if (canonicalizeJson(storedSchema) !== canonicalizeJson(request.schema)) {
+      throw new Error(
+        `Human gate ${JSON.stringify(request.id)} cannot change its response schema`,
+      );
+    }
+    if (gate.status === "answered") {
+      if (gate.responseJson === null) {
+        throw new Error(
+          `Human gate ${JSON.stringify(request.id)} is corrupt: answered without a response`,
+        );
+      }
+      const response = parseJson(
+        gate.responseJson,
+        "workflow human gate response",
+      );
+      const validation = validateValue(request.schema, response);
+      if (!validation.valid) {
+        throw new Error(
+          `Stored response for human gate ${JSON.stringify(request.id)} is invalid: ${validation.error}`,
+        );
+      }
+      return response;
+    }
+    throw new WorkflowHumanInputRequiredError(request.id);
+  }
+
+  function respondHuman(
+    runId: string,
+    gateId: string,
+    response: JsonValue,
+    respondedBy: string,
+  ): { accepted: boolean; run: WorkflowRunInspection } {
+    if (gateId.trim() === "")
+      throw new Error("Human gate ID must not be empty");
+    if (respondedBy.trim() === "") {
+      throw new Error("Human responder identity must not be empty");
+    }
+    assertBoundedJson(response, "Human gate response", VALUE_LIMITS);
+    const gate = getHumanGate(db, runId, gateId);
+    if (gate === null) {
+      throw new Error(`Unknown human gate ${JSON.stringify(gateId)}`);
+    }
+    const schema = parseJsonSchema(
+      gate.responseSchemaJson,
+      "workflow human gate response schema",
+    );
+    const validation = validateValue(schema, response);
+    if (!validation.valid) {
+      throw new Error(`Human response is invalid: ${validation.error}`);
+    }
+    const outcome = answerHumanGate(db, {
+      runId,
+      gateId,
+      response,
+      respondedBy,
+    });
+    if (outcome === "inactive") {
+      throw new Error(
+        `Human gate ${JSON.stringify(gateId)} is not awaiting input`,
+      );
+    }
+    const run = inspect(runId);
+    if (run === null) throw new Error(`Unknown workflow run ${runId}`);
+    return { accepted: outcome === "accepted", run };
   }
 
   async function validateSelection(
@@ -813,56 +1042,60 @@ export function createWorkflowService(
     }
     while (true) {
       try {
-        throwIfCancelled(signal);
-        const child = await bb.sdk.threads.spawn({
-          projectId: run.projectId,
-          environment: { type: "reuse", environmentId: run.environmentId },
-          prompt: childPrompt(run, prompt, options),
-          title: options.title ?? `${run.name} · ${callIndex + 1}`,
-          providerId: selection.providerId,
-          model: selection.model,
-          reasoningLevel: selection.reasoningLevel,
-          permissionMode: selection.permissionMode,
-          visibility: "hidden",
-        });
-        if (signal.aborted) {
-          await stopChild(child.id);
-          throw new Error("Workflow cancelled");
-        }
-        const attached = attachCallThread(db, call.id, child.id);
-        if (!attached || signal.aborted) {
-          await stopChild(child.id);
-          throw new Error("Workflow cancelled");
-        }
-        const stopOnAbort = () => void stopChild(child.id);
-        signal.addEventListener("abort", stopOnAbort, { once: true });
-        try {
-          const current = await bb.sdk.threads.get({ threadId: child.id });
+        return await globalAgentAdmission.schedule(async () => {
           throwIfCancelled(signal);
-          if (current.status === "idle") {
-            const output = await bb.sdk.threads.output({ threadId: child.id });
-            throwIfCancelled(signal);
-            onThreadIdle(child.id, output.output);
-          } else if (current.status === "error") {
-            failThreadCall(
-              child.id,
-              "Workflow worker failed before attachment completed",
-            );
-          }
-        } catch (error) {
+          const child = await bb.sdk.threads.spawn({
+            projectId: run.projectId,
+            environment: { type: "reuse", environmentId: run.environmentId },
+            prompt: childPrompt(run, prompt, options),
+            title: options.title ?? `${run.name} · ${callIndex + 1}`,
+            providerId: selection.providerId,
+            model: selection.model,
+            reasoningLevel: selection.reasoningLevel,
+            permissionMode: selection.permissionMode,
+            visibility: "hidden",
+          });
           if (signal.aborted) {
             await stopChild(child.id);
-            throw error;
+            throw new Error("Workflow cancelled");
           }
-          bb.log.warn(
-            `Could not reconcile new workflow worker ${child.id}: ${message(error)}`,
-          );
-        }
-        try {
-          return await waitForCall(call, signal);
-        } finally {
-          signal.removeEventListener("abort", stopOnAbort);
-        }
+          const attached = attachCallThread(db, call.id, child.id);
+          if (!attached || signal.aborted) {
+            await stopChild(child.id);
+            throw new Error("Workflow cancelled");
+          }
+          const stopOnAbort = () => void stopChild(child.id);
+          signal.addEventListener("abort", stopOnAbort, { once: true });
+          try {
+            const current = await bb.sdk.threads.get({ threadId: child.id });
+            throwIfCancelled(signal);
+            if (current.status === "idle") {
+              const output = await bb.sdk.threads.output({
+                threadId: child.id,
+              });
+              throwIfCancelled(signal);
+              onThreadIdle(child.id, output.output);
+            } else if (current.status === "error") {
+              failThreadCall(
+                child.id,
+                "Workflow worker failed before attachment completed",
+              );
+            }
+          } catch (error) {
+            if (signal.aborted) {
+              await stopChild(child.id);
+              throw error;
+            }
+            bb.log.warn(
+              `Could not reconcile new workflow worker ${child.id}: ${message(error)}`,
+            );
+          }
+          try {
+            return await waitForCall(call, signal);
+          } finally {
+            signal.removeEventListener("abort", stopOnAbort);
+          }
+        }, signal);
       } catch (error) {
         throwIfCancelled(signal);
         const delay = PROVIDER_RETRY_DELAYS_MS[call.providerRetryAttempts];
@@ -1016,9 +1249,10 @@ export function createWorkflowService(
 
   function onThreadIdle(threadId: string, output: string | null): void {
     const call = getCallByChildThread(db, threadId);
-    if (call === null || idleHandlers.has(call.id)) return;
-    idleHandlers.add(call.id);
-    const task = handleThreadIdle(threadId, output)
+    if (call === null) return;
+    const previous = idleHandlerTasks.get(call.id) ?? Promise.resolve();
+    const task = previous
+      .then(() => handleThreadIdle(threadId, output))
       .catch((error) => {
         bb.log.error(
           `Could not handle idle workflow worker ${threadId}: ${message(error)}`,
@@ -1027,14 +1261,17 @@ export function createWorkflowService(
           threadId,
           `Could not handle worker result: ${message(error)}`,
         );
-      })
-      .finally(() => {
-        idleHandlers.delete(call.id);
-        idleHandlerTasks.delete(call.id);
-        handlerTasks.delete(task);
       });
     handlerTasks.add(task);
     idleHandlerTasks.set(call.id, task);
+    void task
+      .finally(() => {
+        if (idleHandlerTasks.get(call.id) === task) {
+          idleHandlerTasks.delete(call.id);
+        }
+        handlerTasks.delete(task);
+      })
+      .catch(() => undefined);
   }
 
   function failThreadCall(threadId: string, error: string): void {
@@ -1205,6 +1442,16 @@ export function createWorkflowService(
     );
   }
 
+  async function pauseRunAndStopOutstanding(runId: string): Promise<void> {
+    const outstanding = pauseRunForHuman(db, runId);
+    for (const call of outstanding) wakeCall(call);
+    await stopChildren(
+      outstanding.flatMap((call) =>
+        call.childThreadId === null ? [] : [call.childThreadId],
+      ),
+    );
+  }
+
   async function executeRun(
     run: WorkflowRunRow,
     signal: AbortSignal,
@@ -1329,6 +1576,9 @@ export function createWorkflowService(
         }
         return result;
       },
+      human(request, callSignal) {
+        return requestHuman(run, request, callSignal);
+      },
       log(text) {
         bb.log.info(`[${run.id}] ${text}`);
       },
@@ -1363,6 +1613,10 @@ export function createWorkflowService(
     } catch (error) {
       const latest = getRunRequired(db, run.id);
       if (shuttingDown && signal.aborted && latest.status === "running") {
+        return;
+      }
+      if (error instanceof WorkflowHumanInputRequiredError) {
+        await pauseRunAndStopOutstanding(run.id);
         return;
       }
       if (latest.status !== "cancelled") {
@@ -1511,8 +1765,10 @@ export function createWorkflowService(
     inspectActiveForThread,
     list: (projectId, limit) => listRuns(db, { projectId, limit }),
     stop,
+    respondHuman,
     updateSettings(settings) {
       currentSettings = settings;
+      globalAgentAdmission.refresh();
     },
     runWorker,
     onThreadIdle,

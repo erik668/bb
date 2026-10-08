@@ -75,7 +75,7 @@ export const meta = {
     { title: "Verify", detail: "Adversarial verification" },
   ],
 };
-// script body starts here — use agent()/parallel()/pipeline()/phase()/log()
+// script body starts here — use agent()/human()/parallel()/pipeline()/phase()/log()
 phase("Review");
 const reviews = await parallel([
   () => agent(`Review correctness: ${args.task}`),
@@ -113,6 +113,18 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
   explicitly assigns this agent to a progress group; use this inside
   `pipeline()`/`parallel()` stages to avoid races on the global `phase()` state —
   same phase string → same group.
+- `human({ id, artifact, schema })`: persist a replay-safe human gate. `id` is
+  stable within the run, `artifact` is the exact JSON value being reviewed, and
+  `schema` validates the JSON response. The run moves to `waiting_for_input`;
+  the user responds in the workflow panel or with `bb workflows respond`.
+  Execution restarts from the beginning, reuses the unchanged successful agent
+  prefix, and `human()` returns the recorded response. A changed artifact or
+  schema under the same gate ID fails closed. Keep gates on sequential awaited
+  control flow, never inside `parallel()` or a fire-and-forget branch. This
+  makes the checkpoint and answer replay-safe; it does not make arbitrary
+  worker effects exactly once. An incomplete post-gate worker may rerun after a
+  crash. For mutable suffixes, use a separate phase-per-run workflow or an
+  external idempotency key and durable effect receipt.
 - `pipeline(items, stage1, stage2, ...)`: run each item through all stages
   independently, NO barrier between stages. Item A can be in stage 3 while item
   B is still in stage 1. This is the DEFAULT for multi-stage work. Wall-clock =
@@ -420,6 +432,17 @@ without rendering a user-facing message. Delivery is duplicate-tolerant
 at-least-once because `threads.send` has no idempotency key. CLI status polling
 remains authoritative.
 
+`waiting_for_input` is durable but not terminal. Do not invent a response or
+start a separate resume run. Ask the user to answer in the workflow panel, or
+use their explicit JSON decision with:
+
+```bash
+bb workflows respond <run-id> --gate <gate-id> --value '<json>'
+```
+
+BB validates and records the response, queues the same run, replays the script,
+returns the stored value from `human()`, and continues the live suffix.
+
 `list` also returns compact summaries; it is safe for discovery but is not a
 substitute for the redirected detailed history.
 
@@ -477,6 +500,7 @@ bb workflows status <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>
+bb workflows respond <run-id> --gate <gate-id> --value '<json>'
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json
 ```
@@ -495,8 +519,9 @@ so no parent notification applies; a hidden thread that does have a parent
 still reports its turns and blockers to it. Workflows does not create a
 temporary Workflow folder.
 
-`maxActiveRuns` is live plugin-global dispatch policy. Shared parent/child agent
-concurrency and call count, total run timeout, retention, and UTF-8
-completion-message size are snapshotted per run. `status` is bounded
-to compact progress and call counts. Paged JSONL `history` carries ordered
-call-level execution, cache, child-thread, repair, result, and error details.
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global
+admission policy. Per-run shared parent/child concurrency and call count, total
+run timeout, retention, and UTF-8 completion-message size are snapshotted per
+run. `status` is bounded to compact progress and call counts. Paged JSONL
+`history` carries ordered call-level execution, cache, child-thread, repair,
+result, and error details.

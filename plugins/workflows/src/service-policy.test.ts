@@ -209,6 +209,7 @@ describe("workflow service policy integration", () => {
   it("applies live settings to future run snapshots without mutating existing runs", async () => {
     const initial = {
       maxActiveRuns: "1",
+      maxGlobalConcurrentAgents: "3",
       maxConcurrentAgents: "2",
       maxAgentCalls: "3",
       totalRunTimeoutMs: "120000",
@@ -248,6 +249,7 @@ describe("workflow service policy integration", () => {
     ) as { runId: string };
     const next = {
       maxActiveRuns: "2",
+      maxGlobalConcurrentAgents: "6",
       maxConcurrentAgents: "4",
       maxAgentCalls: "8",
       totalRunTimeoutMs: "180000",
@@ -574,6 +576,45 @@ describe("workflow service policy integration", () => {
     await worker;
   });
 
+  it("caps agent concurrency across simultaneously active runs", async () => {
+    const test = setup({
+      ...DEFAULT_WORKFLOW_SETTINGS,
+      maxActiveRuns: 2,
+      maxGlobalConcurrentAgents: 1,
+      maxConcurrentAgents: 2,
+    });
+    harnesses.push(test.harness);
+    const parallelSource = source(
+      `return await Promise.all([agent("first"), agent("second")]);`,
+      "global-agent-admission",
+    );
+    const first = await test.start(parallelSource);
+    const second = await test.start(parallelSource);
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(1));
+      expect(getRunRequired(test.db, first.id).status).toBe("running");
+      expect(getRunRequired(test.db, second.id).status).toBe("running");
+
+      test.service.onThreadIdle("child-1", "one");
+      await eventually(() => expect(test.childCount()).toBe(2));
+      test.service.onThreadIdle("child-2", "two");
+      await eventually(() => expect(test.childCount()).toBe(3));
+      test.service.onThreadIdle("child-3", "three");
+      await eventually(() => expect(test.childCount()).toBe(4));
+      test.service.onThreadIdle("child-4", "four");
+
+      await eventually(() => {
+        expect(getRunRequired(test.db, first.id).status).toBe("succeeded");
+        expect(getRunRequired(test.db, second.id).status).toBe("succeeded");
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
   it.each([
     ["JSON-labelled", '```json\r\n{"answer":42}\r\n```'],
     ["unlabelled", '```\n{"answer":42}\n```'],
@@ -726,6 +767,69 @@ describe("workflow service policy integration", () => {
           status: "succeeded",
           repairAttempts: 1,
           error: null,
+        });
+      });
+    } finally {
+      controller.abort();
+      await worker;
+    }
+  });
+
+  it("preserves repaired structured results across a parallel barrier", async () => {
+    const test = setup();
+    harnesses.push(test.harness);
+    const run = await test.start(
+      source(`return await parallel([
+        () => agent("repair-left", {
+          outputSchema: {
+            type: "object",
+            required: ["answer"],
+            properties: { answer: { type: "number" } }
+          }
+        }),
+        () => agent("repair-right", {
+          outputSchema: {
+            type: "object",
+            required: ["answer"],
+            properties: { answer: { type: "number" } }
+          }
+        })
+      ]);`),
+    );
+    const controller = new AbortController();
+    const worker = test.service.runWorker(controller.signal);
+    try {
+      await eventually(() => expect(test.childCount()).toBe(2));
+
+      test.service.onThreadIdle("child-1", '{"answer":"invalid"}');
+      test.service.onThreadIdle("child-2", '{"answer":"invalid"}');
+      await eventually(() => {
+        expect(
+          test.harness.sdk
+            .callsTo("threads.send")
+            .filter(([input]) =>
+              ["child-1", "child-2"].includes(
+                (input as { threadId: string }).threadId,
+              ),
+            ),
+        ).toHaveLength(2);
+      });
+
+      test.service.onThreadIdle("child-2", '{"answer":2}');
+      test.service.onThreadIdle("child-1", '{"answer":1}');
+
+      await eventually(() => {
+        expect(getRunRequired(test.db, run.id)).toMatchObject({
+          status: "succeeded",
+          resultJson: '[{"answer":1},{"answer":2}]',
+        });
+        expect(getCall(test.db, run.id, 0)).toMatchObject({
+          status: "succeeded",
+          repairAttempts: 1,
+        });
+        expect(getCall(test.db, run.id, 1)).toMatchObject({
+          status: "succeeded",
+          repairAttempts: 1,
         });
       });
     } finally {

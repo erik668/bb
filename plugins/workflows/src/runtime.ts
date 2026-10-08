@@ -6,16 +6,18 @@ import {
   type QuickJSHandle,
   type QuickJSRuntime,
 } from "quickjs-emscripten-core";
-import type {
-  ExecuteWorkflowScriptArgs,
-  JsonValue,
-  WorkflowAgentOptions,
-  WorkflowBudgetSnapshot,
-  WorkflowExecutionScheduler,
-  WorkflowReference,
-  WorkflowRuntimeLimits,
+import {
+  WorkflowHumanInputRequiredError,
+  type WorkflowHumanRequest,
+  type ExecuteWorkflowScriptArgs,
+  type JsonValue,
+  type WorkflowAgentOptions,
+  type WorkflowBudgetSnapshot,
+  type WorkflowExecutionScheduler,
+  type WorkflowReference,
+  type WorkflowRuntimeLimits,
 } from "./types.js";
-import { parseAgentOptions } from "./validation.js";
+import { assertValidJsonSchema, parseAgentOptions } from "./validation.js";
 
 const DEFAULT_LIMITS: WorkflowRuntimeLimits = {
   memoryLimitBytes: 32 * 1024 * 1024,
@@ -134,6 +136,35 @@ function parseWorkflowReference(value: JsonValue): WorkflowReference {
   if (key === "name") return { name: referenceValue };
   if (key === "script") return { script: referenceValue };
   return { scriptPath: referenceValue };
+}
+
+function parseHumanRequest(value: JsonValue): WorkflowHumanRequest {
+  if (value === null || Array.isArray(value) || typeof value !== "object") {
+    throw new Error("human request must be an object");
+  }
+  const keys = Object.keys(value).sort();
+  if (
+    keys.length !== 3 ||
+    keys[0] !== "artifact" ||
+    keys[1] !== "id" ||
+    keys[2] !== "schema"
+  ) {
+    throw new Error(
+      "human request must contain exactly id, artifact, and schema",
+    );
+  }
+  if (typeof value.id !== "string" || value.id.trim() === "") {
+    throw new Error("human request id must be a non-empty string");
+  }
+  const schema = value.schema;
+  if (
+    typeof schema !== "boolean" &&
+    (schema === null || Array.isArray(schema) || typeof schema !== "object")
+  ) {
+    throw new Error("human request schema must be a JSON Schema");
+  }
+  assertValidJsonSchema(schema, "human request schema");
+  return { id: value.id, artifact: value.artifact!, schema };
 }
 
 function normalizeLimits(
@@ -552,6 +583,114 @@ function installWorkflowFunction(
   return { close };
 }
 
+interface PendingHumanCall {
+  controller: AbortController;
+  deferred: QuickJSDeferredPromise;
+}
+
+function installHumanFunction(
+  vm: QuickJSContext,
+  runtime: QuickJSRuntime,
+  capabilities: ExecuteWorkflowScriptArgs["capabilities"],
+  enterVm: () => void,
+  signal: AbortSignal | undefined,
+  onPause: (error: WorkflowHumanInputRequiredError) => void,
+): { close(reason?: string): void } {
+  const pending = new Set<PendingHumanCall>();
+  let closed = false;
+
+  const rejectImmediately = (message: string): QuickJSHandle => {
+    const deferred = vm.newPromise();
+    const promise = deferred.handle.dup();
+    const error = vm.newError(message);
+    deferred.reject(error);
+    error.dispose();
+    deferred.dispose();
+    return promise;
+  };
+
+  const finish = (
+    call: PendingHumanCall,
+    settlement: { value: JsonValue } | { error: unknown },
+  ) => {
+    if (closed || !pending.delete(call)) return;
+    if ("value" in settlement) {
+      const handle = jsonToHandle(vm, settlement.value);
+      call.deferred.resolve(handle);
+      handle.dispose();
+    } else {
+      if (settlement.error instanceof WorkflowHumanInputRequiredError) {
+        onPause(settlement.error);
+      }
+      const handle = vm.newError(errorMessage(settlement.error));
+      call.deferred.reject(handle);
+      handle.dispose();
+    }
+    call.deferred.dispose();
+    enterVm();
+    vm.unwrapResult(runtime.executePendingJobs());
+  };
+
+  const fn = vm.newFunction("human", (...handles) => {
+    if (closed) return rejectImmediately("Workflow is no longer running");
+    if (capabilities.human === undefined) {
+      return rejectImmediately(
+        "human() is unavailable: configure the workflow host capability for human input",
+      );
+    }
+    let request: WorkflowHumanRequest;
+    try {
+      request = parseHumanRequest(
+        handles[0] ? dumpJson(vm, handles[0], "human request") : null,
+      );
+    } catch (error) {
+      return rejectImmediately(errorMessage(error));
+    }
+    const call: PendingHumanCall = {
+      controller: new AbortController(),
+      deferred: vm.newPromise(),
+    };
+    pending.add(call);
+    void capabilities
+      .human(request, call.controller.signal)
+      .then(
+        (value) => {
+          assertJsonValue(value, "human response");
+          finish(call, { value });
+        },
+        (error) => finish(call, { error }),
+      )
+      .catch((error) => finish(call, { error }));
+    return call.deferred.handle;
+  });
+  vm.setProp(vm.global, "human", fn);
+  fn.dispose();
+
+  const close = (reason?: string) => {
+    if (closed) return;
+    closed = true;
+    signal?.removeEventListener("abort", abort);
+    for (const call of pending) {
+      call.controller.abort(reason);
+      if (reason !== undefined && call.deferred.alive) {
+        const error = vm.newError(reason);
+        call.deferred.reject(error);
+        error.dispose();
+      }
+      call.deferred.dispose();
+    }
+    pending.clear();
+    if (reason !== undefined) {
+      enterVm();
+      vm.unwrapResult(runtime.executePendingJobs());
+    }
+  };
+  const abort = () => close("Workflow cancelled");
+  signal?.addEventListener("abort", abort, { once: true });
+  if (signal?.aborted === true) abort();
+  return { close };
+}
+
 function installHostVoidFunction(
   vm: QuickJSContext,
   name: string,
@@ -727,6 +866,8 @@ export async function executeWorkflowScript({
   const vm = runtime.newContext();
   let agentBridge: { close(reason?: string): void } | undefined;
   let workflowBridge: { close: (reason?: string) => void } | undefined;
+  let humanBridge: { close: (reason?: string) => void } | undefined;
+  let humanPause: WorkflowHumanInputRequiredError | undefined;
   let currentPhase: string | null = null;
 
   try {
@@ -755,6 +896,16 @@ export async function executeWorkflowScript({
       enterVm,
       signal,
     );
+    humanBridge = installHumanFunction(
+      vm,
+      runtime,
+      capabilities,
+      enterVm,
+      signal,
+      (error) => {
+        humanPause = error;
+      },
+    );
     installHostVoidFunction(vm, "log", (handles) => {
       capabilities.log(handles[0] ? vm.getString(handles[0]) : "");
     });
@@ -779,8 +930,15 @@ export async function executeWorkflowScript({
       enterVm();
       vm.unwrapResult(runtime.executePendingJobs());
       const settled = await nativeSettlement;
-      const value = vm.unwrapResult(settled);
+      let value: QuickJSHandle;
       try {
+        value = vm.unwrapResult(settled);
+      } catch (error) {
+        if (humanPause !== undefined) throw humanPause;
+        throw error;
+      }
+      try {
+        if (humanPause !== undefined) throw humanPause;
         return dumpJson(vm, value, "workflow result");
       } finally {
         value.dispose();
@@ -794,6 +952,7 @@ export async function executeWorkflowScript({
     }
     throw error;
   } finally {
+    humanBridge?.close();
     workflowBridge?.close();
     agentBridge?.close();
     vm.dispose();

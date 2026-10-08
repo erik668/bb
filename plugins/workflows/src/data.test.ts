@@ -1,16 +1,20 @@
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  answerHumanGate,
   attachCallThread,
   cancelRun,
   countCallsForRun,
+  createHumanGate,
   createRun,
   deleteExpiredTerminalRuns,
   getCall,
+  getHumanGate,
   getRunRequired,
   incrementRepairAttempts,
   listCallsForRunPage,
   migrations,
+  pauseRunForHuman,
   queueCallProviderRetry,
   recoverInterruptedRuns,
   settleCall,
@@ -85,6 +89,47 @@ describe("workflow durable data", () => {
       replaySafetyVersion: 0,
       replayBarrierIndex: null,
     });
+  });
+
+  it("keeps a human gate durable across restart and resumes idempotently", () => {
+    const run = newRun();
+    markRunning(run.id);
+    createHumanGate(db, {
+      runId: run.id,
+      gateId: "design-approval",
+      artifact: { revision: 1, summary: "Review me" },
+      artifactDigest: "digest-1",
+      responseSchema: { enum: ["approve", "abort"] },
+    });
+
+    expect(pauseRunForHuman(db, run.id)).toEqual([]);
+    expect(getRunRequired(db, run.id).status).toBe("waiting_for_input");
+    expect(recoverInterruptedRuns(db)).toEqual([]);
+    expect(getRunRequired(db, run.id).status).toBe("waiting_for_input");
+    expect(getHumanGate(db, run.id, "design-approval")).toMatchObject({
+      status: "pending",
+      artifactJson: '{"revision":1,"summary":"Review me"}',
+      artifactDigest: "digest-1",
+      responseSchemaJson: '{"enum":["approve","abort"]}',
+    });
+
+    expect(
+      answerHumanGate(db, {
+        runId: run.id,
+        gateId: "design-approval",
+        response: "approve",
+        respondedBy: "test-user",
+      }),
+    ).toBe("accepted");
+    expect(getRunRequired(db, run.id).status).toBe("queued");
+    expect(
+      answerHumanGate(db, {
+        runId: run.id,
+        gateId: "design-approval",
+        response: "approve",
+        respondedBy: "test-user",
+      }),
+    ).toBe("idempotent");
   });
 
   it("stores successful calls for deterministic replay", () => {

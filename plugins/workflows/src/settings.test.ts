@@ -14,6 +14,7 @@ function rawSettings(
 ) {
   return {
     maxActiveRuns: "4",
+    maxGlobalConcurrentAgents: "12",
     maxConcurrentAgents: "8",
     maxAgentCalls: "100",
     totalRunTimeoutMs: "86400000",
@@ -27,6 +28,8 @@ describe("workflow settings policy", () => {
   it("keeps descriptor defaults and immutable internal defaults aligned", () => {
     const descriptorDefaults = {
       maxActiveRuns: WORKFLOW_SETTING_DESCRIPTORS.maxActiveRuns.default,
+      maxGlobalConcurrentAgents:
+        WORKFLOW_SETTING_DESCRIPTORS.maxGlobalConcurrentAgents.default,
       maxConcurrentAgents:
         WORKFLOW_SETTING_DESCRIPTORS.maxConcurrentAgents.default,
       maxAgentCalls: WORKFLOW_SETTING_DESCRIPTORS.maxAgentCalls.default,
@@ -45,6 +48,7 @@ describe("workflow settings policy", () => {
   it("parses every custom value and deliberately trims surrounding whitespace", () => {
     const parsed = parseWorkflowSettings({
       maxActiveRuns: "  12\t",
+      maxGlobalConcurrentAgents: "24",
       maxConcurrentAgents: "16",
       maxAgentCalls: "750",
       totalRunTimeoutMs: "172800000",
@@ -54,6 +58,7 @@ describe("workflow settings policy", () => {
 
     expect(parsed).toEqual({
       maxActiveRuns: 12,
+      maxGlobalConcurrentAgents: 24,
       maxConcurrentAgents: 16,
       maxAgentCalls: 750,
       totalRunTimeoutMs: 172_800_000,
@@ -88,6 +93,7 @@ describe("workflow settings policy", () => {
 
   it.each([
     ["maxActiveRuns", "0", "33", "Maximum active runs"],
+    ["maxGlobalConcurrentAgents", "0", "65", "Global agent concurrency"],
     ["maxConcurrentAgents", "0", "65", "Per-run agent concurrency"],
     ["maxAgentCalls", "0", "1001", "Maximum agent calls"],
     ["totalRunTimeoutMs", "59999", "604800001", "Total run timeout"],
@@ -180,6 +186,11 @@ describe("workflow settings policy", () => {
         workerStallTimeoutMs: 1_800_000,
       }),
     ).toEqual(DEFAULT_WORKFLOW_SETTINGS);
+    const { maxGlobalConcurrentAgents: _removed, ...legacySnapshot } =
+      DEFAULT_WORKFLOW_SETTINGS;
+    expect(parseStoredWorkflowSettings(legacySnapshot)).toEqual(
+      DEFAULT_WORKFLOW_SETTINGS,
+    );
     expect(() => parseStoredWorkflowSettings({ maxActiveRuns: 4 })).toThrow(
       "unexpected fields",
     );

@@ -7,6 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { z } from "zod";
 import {
   activityIconClass,
   activityMetaClass,
@@ -59,6 +60,7 @@ interface SharedWorkflowView {
 }
 
 const ACTIVE_POLL_INTERVAL_MS = 1_000;
+const jsonValueSchema = z.json();
 const WORKFLOW_PANEL_ACTION_ID = "workflow-run";
 const WORKFLOW_CARD_ROW_HEIGHT = 32;
 const WORKFLOW_HEADER_GROUP_CLASS = activityRowClass(
@@ -96,7 +98,11 @@ function panelRunId(params: unknown): string | null | undefined {
 }
 
 function isRunActive(run: WorkflowRunView): boolean {
-  return run.status === "queued" || run.status === "running";
+  return (
+    run.status === "queued" ||
+    run.status === "running" ||
+    run.status === "waiting_for_input"
+  );
 }
 
 function runTerminalState(
@@ -111,6 +117,7 @@ function runTerminalState(
       return "cancelled";
     case "queued":
     case "running":
+    case "waiting_for_input":
       return undefined;
   }
 }
@@ -135,6 +142,8 @@ function runPillState(
       return "queued";
     case "running":
       return null;
+    case "waiting_for_input":
+      return null;
     case "succeeded":
       return "completed";
     case "failed":
@@ -148,6 +157,7 @@ function runActivityState(run: WorkflowRunView): ActivityRowState {
   switch (run.status) {
     case "queued":
     case "running":
+    case "waiting_for_input":
       return "active";
     case "succeeded":
       return "completed";
@@ -824,11 +834,19 @@ function WorkflowRunPanelLoaded({
   const { state, refresh } = useWorkflowRun(threadId, runId);
   const [stopping, setStopping] = useState(false);
   const [stopError, setStopError] = useState<string | null>(null);
+  const [humanResponse, setHumanResponse] = useState("null");
+  const [responding, setResponding] = useState(false);
+  const [responseError, setResponseError] = useState<string | null>(null);
   const run = state.status === "ready" ? state.run : null;
   const shared = useMemo(
     () => (run === null ? null : buildSharedWorkflowView(run)),
     [run],
   );
+  const pendingGate = run?.humanGates.find((gate) => gate.status === "pending");
+  useEffect(() => {
+    setHumanResponse("null");
+    setResponseError(null);
+  }, [pendingGate?.id, pendingGate?.artifactDigest]);
   if (state.status === "loading") return <LoadingPreview />;
   if (state.status === "error") {
     return <EmptyOrError>{state.message}</EmptyOrError>;
@@ -857,6 +875,25 @@ function WorkflowRunPanelLoaded({
       setStopError(error instanceof Error ? error.message : String(error));
     } finally {
       setStopping(false);
+    }
+  };
+  const respond = async () => {
+    if (pendingGate === undefined) return;
+    setResponding(true);
+    setResponseError(null);
+    try {
+      const response = jsonValueSchema.parse(JSON.parse(humanResponse));
+      await rpc.call("workflowRespondHuman", {
+        threadId,
+        runId: run.id,
+        gateId: pendingGate.id,
+        response,
+      });
+      await refresh();
+    } catch (error) {
+      setResponseError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setResponding(false);
     }
   };
   return (
@@ -907,6 +944,55 @@ function WorkflowRunPanelLoaded({
           </div>
         )}
         <div className="my-4 h-px bg-border-seam" />
+        {pendingGate === undefined ? null : (
+          <section className="rounded-md border border-border bg-surface-recessed p-3">
+            <div className="flex items-center gap-2">
+              <Icon name="UserRound" className="size-4 text-muted-foreground" />
+              <h3 className="text-xs font-medium text-foreground">
+                Waiting for human input
+              </h3>
+            </div>
+            <p className="mt-2 font-mono text-2xs text-subtle-foreground">
+              {pendingGate.id} · sha256:
+              {pendingGate.artifactDigest.slice(0, 12)}
+            </p>
+            <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-background p-2 text-2xs text-muted-foreground">
+              {JSON.stringify(pendingGate.artifact, null, 2)}
+            </pre>
+            <label className="mt-3 block text-2xs font-medium text-muted-foreground">
+              Response JSON
+              <textarea
+                className="mt-1 min-h-24 w-full rounded-md border border-border bg-background p-2 font-mono text-xs text-foreground"
+                value={humanResponse}
+                onChange={(event) => setHumanResponse(event.target.value)}
+                disabled={responding}
+              />
+            </label>
+            <details className="mt-2 text-2xs text-subtle-foreground">
+              <summary className="cursor-pointer">Response schema</summary>
+              <pre className="mt-1 overflow-auto whitespace-pre-wrap">
+                {JSON.stringify(pendingGate.responseSchema, null, 2)}
+              </pre>
+            </details>
+            {responseError === null ? null : (
+              <div className="mt-2 text-xs text-destructive-text" role="alert">
+                {responseError}
+              </div>
+            )}
+            <Button
+              type="button"
+              size="sm"
+              className="mt-3 w-full"
+              disabled={responding}
+              onClick={() => void respond()}
+            >
+              {responding ? "Submitting…" : "Submit and resume"}
+            </Button>
+          </section>
+        )}
+        {pendingGate === undefined ? null : (
+          <div className="my-4 h-px bg-border-seam" />
+        )}
         <h3 className="mb-2 text-xs font-medium text-muted-foreground">
           Phases
         </h3>

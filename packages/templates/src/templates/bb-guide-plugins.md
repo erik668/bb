@@ -48,14 +48,16 @@ Extensions → Plugins or run `bb plugin enable workflows` before using:
   bb workflows history <run-id> [--cursor <call-index>] [--limit <1-100>]
   bb workflows list [--limit <1-50>]
   bb workflows stop <run-id>
+  bb workflows respond <run-id> --gate <gate-id> --value '<json>'
 
-Commands must run from a BB project thread. Workflows has six plugin
+Commands must run from a BB project thread. Workflows has seven plugin
 settings, configurable with `bb plugin config workflows set <key> <value>`:
-`maxActiveRuns` (default 4, range 1–32), `maxConcurrentAgents` (8, 1–64),
-`maxAgentCalls` (100, 1–1000), `totalRunTimeoutMs` (86400000, 60000–604800000),
+`maxActiveRuns` (default 4, range 1–32), `maxGlobalConcurrentAgents` (12, 1–64),
+`maxConcurrentAgents` (8, 1–64), `maxAgentCalls` (100, 1–1000),
+`totalRunTimeoutMs` (86400000, 60000–604800000),
 `retentionDays` (30, 1–3650), and `maxNotificationBytes` (16384,
-1024–262144). `maxActiveRuns` applies live; the other five are snapshotted for
-each new run. Settings changes do not require a plugin reload.
+1024–262144). The first two apply live; the other five are snapshotted for each
+new run. Settings changes do not require a plugin reload.
 
 `status` is a bounded polling summary, and `list` returns only compact run
 summaries. Detailed run and call records are paged JSONL: redirect `history`
@@ -66,6 +68,17 @@ remote hosts without granting the plugin arbitrary filesystem access. Use `bb
 provider list --environment "$BB_ENVIRONMENT_ID" --json` and then `bb provider
 models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json` before writing
 an explicit selection; never guess ACP model IDs.
+
+`human({ id, artifact, schema })` is a durable, replay-safe checkpoint. It
+stores the reviewed artifact and response schema and moves the run to
+`waiting_for_input`. Never invent the answer: use the workflow panel or
+`bb workflows respond` to submit schema-valid JSON. The same run is requeued,
+reuses its unchanged successful prefix from the same-run cache, and runs only
+the post-gate suffix live. Reusing a gate ID with a changed artifact or schema
+fails closed. The checkpoint and answer are replay-safe, but arbitrary worker
+effects are not exactly once: an incomplete post-gate worker may rerun after a
+crash. Use phase-per-run for mutable suffixes unless the external effect has a
+durable idempotency key and receipt.
 
 The Memory plugin is an opt-in install, bundled with the app:
 `bb plugin install memory`. Once installed, it injects a compact global and

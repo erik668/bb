@@ -4,6 +4,7 @@ import { z } from "zod";
 export const workflowRunStatusSchema = z.enum([
   "queued",
   "running",
+  "waiting_for_input",
   "succeeded",
   "failed",
   "cancelled",
@@ -46,6 +47,20 @@ export const workflowPhaseViewSchema = z
   })
   .strict();
 
+export const workflowHumanGateViewSchema = z
+  .object({
+    id: z.string(),
+    status: z.enum(["pending", "answered"]),
+    artifact: z.json(),
+    artifactDigest: z.string(),
+    responseSchema: z.json(),
+    response: z.json().nullable(),
+    respondedBy: z.string().nullable(),
+    createdAt: z.number(),
+    respondedAt: z.number().nullable(),
+  })
+  .strict();
+
 export const workflowRunViewSchema = z
   .object({
     id: z.string(),
@@ -55,6 +70,7 @@ export const workflowRunViewSchema = z
     currentPhase: z.string().nullable(),
     phases: z.array(workflowPhaseViewSchema),
     unphasedCalls: z.array(workflowCallViewSchema),
+    humanGates: z.array(workflowHumanGateViewSchema),
     resultAvailable: z.boolean(),
     error: z.string().nullable(),
     createdAt: z.number(),
@@ -94,8 +110,22 @@ export const workflowUiRpcContract = defineRpcContract({
       .object({ stopped: z.boolean(), run: workflowRunViewSchema })
       .strict(),
   },
+  workflowRespondHuman: {
+    input: z
+      .object({
+        threadId: z.string().trim().min(1),
+        runId: z.string().trim().min(1),
+        gateId: z.string().trim().min(1),
+        response: z.json(),
+      })
+      .strict(),
+    output: z
+      .object({ accepted: z.boolean(), run: workflowRunViewSchema })
+      .strict(),
+  },
 });
 
 export type WorkflowCallView = z.infer<typeof workflowCallViewSchema>;
 export type WorkflowPhaseView = z.infer<typeof workflowPhaseViewSchema>;
+export type WorkflowHumanGateView = z.infer<typeof workflowHumanGateViewSchema>;
 export type WorkflowRunView = z.infer<typeof workflowRunViewSchema>;

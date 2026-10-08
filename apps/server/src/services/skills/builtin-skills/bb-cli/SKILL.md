@@ -582,17 +582,28 @@ add <key-or-comment-id> --file <path>` (task key = task-level; comment ID
   from the final page record's `nextCursor`. This shell redirection writes on
   the thread's execution host, including remote hosts; do not print the raw
   history into the agent transcript. Cancel with `bb workflows stop <run-id>`.
+- A workflow may pause at `human({ id, artifact, schema })`. Treat
+  `waiting_for_input` as a durable human checkpoint: never invent or infer the
+  answer. The user can respond in the workflow panel or with `bb workflows
+respond <run-id> --gate <gate-id> --value '<json>'`. BB validates and records
+  that response, requeues the same run, and replays the unchanged successful
+  pre-gate calls from the same-run cache before executing the live suffix. The
+  checkpoint is replay-safe, but arbitrary worker effects are not exactly once:
+  an incomplete post-gate worker may rerun after a crash. Use phase-per-run for
+  mutable suffixes unless the external effect has a durable idempotency key and
+  receipt.
 - Before choosing an explicit provider/model/reasoning tuple, run `bb provider
 list --environment "$BB_ENVIRONMENT_ID" --json`, then query only the chosen
   provider with `bb provider models <provider-id> --environment
 "$BB_ENVIRONMENT_ID" --json`. Never guess ACP model IDs. Run every Workflows
   command from a BB project thread.
-- Configure its six settings with `bb plugin config workflows set <key>
-<value>`: `maxActiveRuns` (default 4, range 1–32), `maxConcurrentAgents` (8,
-  1–64), `maxAgentCalls` (100, 1–1000), `totalRunTimeoutMs` (86400000,
+- Configure its seven settings with `bb plugin config workflows set <key>
+<value>`: `maxActiveRuns` (default 4, range 1–32),
+  `maxGlobalConcurrentAgents` (12, 1–64), `maxConcurrentAgents` (8, 1–64),
+  `maxAgentCalls` (100, 1–1000), `totalRunTimeoutMs` (86400000,
   60000–604800000),
   `retentionDays` (30, 1–3650), and `maxNotificationBytes` (16384,
-  1024–262144). `maxActiveRuns` applies live; the other five are snapshotted per
+  1024–262144). The first two apply live; the other five are snapshotted per
   run. No plugin reload is needed after changing them.
 
 ## Theming

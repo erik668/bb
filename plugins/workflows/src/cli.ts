@@ -6,6 +6,7 @@ import type {
 import type { JsonValue } from "./types.js";
 import type {
   WorkflowCallInspection,
+  WorkflowHumanGateInspection,
   WorkflowRunInspectionPage,
   WorkflowService,
 } from "./service.js";
@@ -106,13 +107,16 @@ function sourceInput(
   };
 }
 
-function parseJsonOption(value: string | undefined): JsonValue {
+function parseJsonOption(
+  value: string | undefined,
+  name = "--args",
+): JsonValue {
   if (value === undefined) return null;
   try {
     return JSON.parse(value) as JsonValue;
   } catch (error) {
     throw new Error(
-      `--args must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
+      `${name} must be valid JSON: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
 }
@@ -200,7 +204,7 @@ function inlineRunResult(run: WorkflowRunRow): {
 }
 
 function statusSummary(page: WorkflowRunInspectionPage) {
-  const { run, callCounts } = page;
+  const { run, callCounts, humanGates } = page;
   const result = inlineRunResult(run);
   const name = boundedText(run.name, STATUS_DISPLAY_TEXT_MAX_BYTES);
   const phase = boundedText(run.phase, STATUS_DISPLAY_TEXT_MAX_BYTES);
@@ -255,6 +259,15 @@ function statusSummary(page: WorkflowRunInspectionPage) {
     error: error.value,
     errorTruncated: error.truncated,
     calls: callCounts,
+    humanGates: humanGates.map((gate) => ({
+      id: gate.gateId,
+      status: gate.status,
+      artifactDigest: gate.artifactDigest,
+      responseSchema: gate.responseSchema,
+      respondedBy: gate.respondedBy,
+      createdAt: gate.createdAt,
+      respondedAt: gate.respondedAt,
+    })),
     notification: {
       outcome: run.notificationOutcome,
       attemptCount: run.notificationAttemptCount,
@@ -346,6 +359,27 @@ function callLogRecord(call: WorkflowCallInspection, exportedAt: number) {
   };
 }
 
+function humanGateLogRecord(
+  gate: WorkflowHumanGateInspection,
+  exportedAt: number,
+) {
+  return {
+    type: "human-gate",
+    logVersion: 1,
+    exportedAt,
+    runId: gate.runId,
+    gateId: gate.gateId,
+    status: gate.status,
+    artifact: gate.artifact,
+    artifactDigest: gate.artifactDigest,
+    responseSchema: gate.responseSchema,
+    response: gate.response,
+    respondedBy: gate.respondedBy,
+    createdAt: gate.createdAt,
+    respondedAt: gate.respondedAt,
+  };
+}
+
 export function registerWorkflowCli(
   bb: BbPluginApi,
   service: WorkflowService,
@@ -386,6 +420,12 @@ export function registerWorkflowCli(
         name: "stop",
         summary: "Cancel a workflow run",
         usage: "bb workflows stop <run-id>",
+      },
+      {
+        name: "respond",
+        summary: "Answer a pending human gate and resume the workflow",
+        usage:
+          "bb workflows respond <run-id> --gate <gate-id> --value '<json>'",
       },
     ],
     async run(argv, ctx) {
@@ -478,6 +518,11 @@ export function registerWorkflowCli(
               ? runLogRecord(page.run, exportedAt)
               : runReferenceLogRecord(page.run, exportedAt),
             ...calls.map((call) => callLogRecord(call, exportedAt)),
+            ...(cursor === 0
+              ? page.humanGates.map((gate) =>
+                  humanGateLogRecord(gate, exportedAt),
+                )
+              : []),
             {
               type: "page",
               logVersion: 1,
@@ -516,8 +561,37 @@ export function registerWorkflowCli(
           }
           return success({ runId, stopped: await service.stop(runId) });
         }
+        if (command === "respond") {
+          const { options, positionals } = parseArguments(
+            argv.slice(1),
+            ["--gate", "--value"],
+            "respond",
+          );
+          const context = requireContext(ctx);
+          const runId = positionals[0]!;
+          const gateId = options.get("--gate");
+          const value = options.get("--value");
+          if (gateId === undefined) throw new Error("--gate is required");
+          if (value === undefined) throw new Error("--value is required");
+          const run = service.get(runId);
+          if (run === null || run.projectId !== context.projectId) {
+            throw new Error(`Unknown workflow run ${runId}`);
+          }
+          const result = service.respondHuman(
+            runId,
+            gateId,
+            parseJsonOption(value, "--value"),
+            "cli-user",
+          );
+          return success({
+            runId,
+            gateId,
+            accepted: result.accepted,
+            status: result.run.status,
+          });
+        }
         return failure(
-          "Usage: bb workflows <run|validate|status|history|list|stop> [options]",
+          "Usage: bb workflows <run|validate|status|history|list|stop|respond> [options]",
         );
       } catch (error) {
         return failure(error instanceof Error ? error.message : String(error));

@@ -87,6 +87,7 @@ describe("workflow UI view", () => {
         call(2, null),
         call(3, "Dynamic A"),
       ],
+      humanGates: [],
     };
 
     const view = buildWorkflowRunView(run);

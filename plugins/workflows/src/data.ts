@@ -7,6 +7,7 @@ export type Db = Database.Database;
 export type WorkflowRunStatus =
   | "queued"
   | "running"
+  | "waiting_for_input"
   | "succeeded"
   | "failed"
   | "cancelled";
@@ -83,6 +84,23 @@ export interface WorkflowCallCounts {
   cancelled: number;
 }
 
+export type WorkflowHumanGateStatus = "pending" | "answered";
+
+export interface WorkflowHumanGateRow {
+  runId: string;
+  gateId: string;
+  artifactJson: string;
+  artifactDigest: string;
+  responseSchemaJson: string;
+  responseJson: string | null;
+  status: WorkflowHumanGateStatus;
+  respondedBy: string | null;
+  createdAt: number;
+  respondedAt: number | null;
+}
+
+export type AnswerHumanGateOutcome = "accepted" | "idempotent" | "inactive";
+
 export type StoreStructuredResultOutcome =
   | "accepted"
   | "idempotent"
@@ -108,6 +126,14 @@ function callRow(value: unknown): WorkflowCallRow {
 
 function optionalCall(value: unknown): WorkflowCallRow | null {
   return value === undefined ? null : callRow(value);
+}
+
+function humanGateRow(value: unknown): WorkflowHumanGateRow {
+  return value as WorkflowHumanGateRow;
+}
+
+function optionalHumanGate(value: unknown): WorkflowHumanGateRow | null {
+  return value === undefined ? null : humanGateRow(value);
 }
 
 const RUN_SELECT = `
@@ -141,6 +167,14 @@ const CALL_SELECT = `
     created_at AS createdAt, last_activity_at AS lastActivityAt,
     started_at AS startedAt, finished_at AS finishedAt
   FROM workflow_calls`;
+
+const HUMAN_GATE_SELECT = `
+  SELECT run_id AS runId, gate_id AS gateId, artifact_json AS artifactJson,
+    artifact_digest AS artifactDigest,
+    response_schema_json AS responseSchemaJson,
+    response_json AS responseJson, status, responded_by AS respondedBy,
+    created_at AS createdAt, responded_at AS respondedAt
+  FROM workflow_human_gates`;
 
 export const migrations = [
   `CREATE TABLE IF NOT EXISTS workflow_runs (
@@ -221,6 +255,21 @@ export const migrations = [
   `UPDATE workflow_runs SET replay_barrier_index = NULL
      WHERE replay_safety_version = 1;`,
   `ALTER TABLE workflow_calls ADD COLUMN provider_retry_attempts INTEGER NOT NULL DEFAULT 0;`,
+  `CREATE TABLE IF NOT EXISTS workflow_human_gates (
+     run_id TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+     gate_id TEXT NOT NULL,
+     artifact_json TEXT NOT NULL,
+     artifact_digest TEXT NOT NULL,
+     response_schema_json TEXT NOT NULL,
+     response_json TEXT,
+     status TEXT NOT NULL,
+     responded_by TEXT,
+     created_at INTEGER NOT NULL,
+     responded_at INTEGER,
+     PRIMARY KEY (run_id, gate_id)
+   );
+   CREATE INDEX IF NOT EXISTS workflow_human_gates_pending_idx
+     ON workflow_human_gates(run_id, status);`,
 ];
 
 export function createRun(
@@ -292,7 +341,7 @@ export function listActiveRunsForOriginThread(
 ): WorkflowRunRow[] {
   return db
     .prepare(
-      `${RUN_SELECT} WHERE origin_thread_id = ? AND status IN ('queued', 'running')
+      `${RUN_SELECT} WHERE origin_thread_id = ? AND status IN ('queued', 'running', 'waiting_for_input')
        ORDER BY created_at DESC, workflow_runs.rowid DESC`,
     )
     .all(originThreadId)
@@ -385,6 +434,149 @@ export function updateRunPhase(db: Db, id: string, phase: string): void {
   db.prepare(
     `UPDATE workflow_runs SET phase = ? WHERE id = ? AND status = 'running'`,
   ).run(phase, id);
+}
+
+export function getHumanGate(
+  db: Db,
+  runId: string,
+  gateId: string,
+): WorkflowHumanGateRow | null {
+  return optionalHumanGate(
+    db
+      .prepare(`${HUMAN_GATE_SELECT} WHERE run_id = ? AND gate_id = ?`)
+      .get(runId, gateId),
+  );
+}
+
+export function listHumanGatesForRun(
+  db: Db,
+  runId: string,
+): WorkflowHumanGateRow[] {
+  return db
+    .prepare(
+      `${HUMAN_GATE_SELECT} WHERE run_id = ? ORDER BY created_at, gate_id`,
+    )
+    .all(runId)
+    .map(humanGateRow);
+}
+
+export function createHumanGate(
+  db: Db,
+  input: {
+    runId: string;
+    gateId: string;
+    artifact: JsonValue;
+    artifactDigest: string;
+    responseSchema: JsonValue;
+  },
+): WorkflowHumanGateRow {
+  return db.transaction(() => {
+    const existing = getHumanGate(db, input.runId, input.gateId);
+    if (existing !== null) return existing;
+    const otherPending = db
+      .prepare(
+        `${HUMAN_GATE_SELECT} WHERE run_id = ? AND status = 'pending' LIMIT 1`,
+      )
+      .get(input.runId);
+    if (otherPending !== undefined) {
+      const gate = humanGateRow(otherPending);
+      throw new Error(
+        `Workflow run already awaits human gate ${JSON.stringify(gate.gateId)}`,
+      );
+    }
+    db.prepare(
+      `INSERT INTO workflow_human_gates (
+         run_id, gate_id, artifact_json, artifact_digest,
+         response_schema_json, status, created_at
+       ) VALUES (
+         @runId, @gateId, @artifactJson, @artifactDigest,
+         @responseSchemaJson, 'pending', @now
+       )`,
+    ).run({
+      runId: input.runId,
+      gateId: input.gateId,
+      artifactJson: JSON.stringify(input.artifact),
+      artifactDigest: input.artifactDigest,
+      responseSchemaJson: JSON.stringify(input.responseSchema),
+      now: Date.now(),
+    });
+    return getHumanGate(db, input.runId, input.gateId)!;
+  })();
+}
+
+export function pauseRunForHuman(db: Db, runId: string): WorkflowCallRow[] {
+  return db.transaction(() => {
+    const outstanding = db
+      .prepare(
+        `${CALL_SELECT} WHERE run_id = ? AND status IN ('queued', 'running')`,
+      )
+      .all(runId)
+      .map(callRow);
+    const now = Date.now();
+    const changed = db
+      .prepare(
+        `UPDATE workflow_runs SET status = 'waiting_for_input', error = NULL
+         WHERE id = ? AND status = 'running'`,
+      )
+      .run(runId).changes;
+    if (changed === 0) return [];
+    db.prepare(
+      `UPDATE workflow_calls SET status = 'cancelled',
+       error = 'Parent workflow paused for human input', finished_at = ?
+       WHERE run_id = ? AND status IN ('queued', 'running')`,
+    ).run(now, runId);
+    return outstanding;
+  })();
+}
+
+export function answerHumanGate(
+  db: Db,
+  input: {
+    runId: string;
+    gateId: string;
+    response: JsonValue;
+    respondedBy: string;
+  },
+): AnswerHumanGateOutcome {
+  return db.transaction(() => {
+    const gate = getHumanGate(db, input.runId, input.gateId);
+    if (gate === null) return "inactive";
+    if (gate.status === "answered") {
+      if (
+        gate.responseJson !== null &&
+        equalJsonValues(JSON.parse(gate.responseJson), input.response)
+      ) {
+        return "idempotent";
+      }
+      return "inactive";
+    }
+    const run = getRun(db, input.runId);
+    if (run?.status !== "waiting_for_input") return "inactive";
+    const now = Date.now();
+    const changed = db
+      .prepare(
+        `UPDATE workflow_human_gates SET status = 'answered',
+         response_json = @responseJson, responded_by = @respondedBy,
+         responded_at = @now
+         WHERE run_id = @runId AND gate_id = @gateId AND status = 'pending'`,
+      )
+      .run({
+        runId: input.runId,
+        gateId: input.gateId,
+        responseJson: JSON.stringify(input.response),
+        respondedBy: input.respondedBy,
+        now,
+      }).changes;
+    if (changed === 0) return "inactive";
+    const queued = db
+      .prepare(
+        `UPDATE workflow_runs SET status = 'queued', error = NULL, finished_at = NULL
+         WHERE id = ? AND status = 'waiting_for_input'`,
+      )
+      .run(input.runId).changes;
+    if (queued !== 1) throw new Error("Could not resume the waiting workflow");
+    return "accepted";
+  })();
 }
 
 export function markNotificationSent(db: Db, id: string): void {
@@ -767,7 +959,7 @@ export function cancelRun(db: Db, id: string): boolean {
     const changed = db
       .prepare(
         `UPDATE workflow_runs SET status = 'cancelled', error = 'Cancelled', finished_at = ?
-         WHERE id = ? AND status IN ('queued', 'running')`,
+         WHERE id = ? AND status IN ('queued', 'running', 'waiting_for_input')`,
       )
       .run(now, id).changes;
     db.prepare(
@@ -815,7 +1007,7 @@ export function deleteExpiredTerminalRuns(
     .prepare(
       `WITH RECURSIVE retained(id, resumed_from_run_id) AS (
          SELECT id, resumed_from_run_id FROM workflow_runs
-         WHERE status IN ('queued', 'running')
+         WHERE status IN ('queued', 'running', 'waiting_for_input')
            OR finished_at + json_extract(settings_json, '$.retentionDays') * 86400000 > ?
          UNION
          SELECT parent.id, parent.resumed_from_run_id

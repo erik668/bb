@@ -75,6 +75,7 @@ const run: WorkflowRunView = {
     },
   ],
   unphasedCalls: [],
+  humanGates: [],
   resultAvailable: false,
   error: null,
   createdAt: 900,
@@ -606,6 +607,73 @@ describe("workflow thread panel", () => {
       ).toBe(true);
       expect(slot.getByText("Cancelled")).toBeTruthy();
     });
+  });
+
+  it("submits a schema-backed human response and resumes the run", async () => {
+    let current: WorkflowRunView = {
+      ...run,
+      status: "waiting_for_input",
+      humanGates: [
+        {
+          id: "design-approval",
+          status: "pending",
+          artifact: { id: "design-1", revision: 1, summary: "Review me" },
+          artifactDigest:
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          responseSchema: { enum: ["approve", "abort"] },
+          response: null,
+          respondedBy: null,
+          createdAt: 3_000,
+          respondedAt: null,
+        },
+      ],
+    };
+    const slot = renderSlot(
+      app.threadPanelActions[0]!,
+      { threadId: "thr_origin", params: { runId: run.id } },
+      {
+        rpc: {
+          workflowRunView: () => ({ run: current }),
+          workflowRespondHuman: (input) => {
+            expect(input).toEqual({
+              threadId: "thr_origin",
+              runId: run.id,
+              gateId: "design-approval",
+              response: "approve",
+            });
+            current = {
+              ...current,
+              status: "queued",
+              humanGates: [
+                {
+                  ...current.humanGates[0]!,
+                  status: "answered",
+                  response: "approve",
+                  respondedBy: "interactive-user",
+                  respondedAt: 4_000,
+                },
+              ],
+            };
+            return { accepted: true, run: current };
+          },
+        },
+      },
+    );
+
+    await slot.findByText("Waiting for human input");
+    expect(
+      slot.getByText(/design-approval · sha256:aaaaaaaaaaaa/),
+    ).toBeTruthy();
+    fireEvent.change(slot.getByLabelText("Response JSON"), {
+      target: { value: '"approve"' },
+    });
+    fireEvent.click(slot.getByRole("button", { name: "Submit and resume" }));
+    await waitFor(() =>
+      expect(
+        slot.rpcCalls.some((call) => call.method === "workflowRespondHuman"),
+      ).toBe(true),
+    );
+    expect(slot.queryByText("Waiting for human input")).toBeNull();
   });
 
   it("rejects restored panel params with unknown fields", async () => {

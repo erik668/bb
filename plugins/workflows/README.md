@@ -24,12 +24,13 @@ The authoring agent emits that returned value exactly once on a standalone
 line. BB replaces the directive with a compact live run card in chat. The card
 shows run state, declared phases, the active phase's workers, elapsed time, and
 an action that opens the full workflow inspector in the thread's right panel.
-While a thread has queued or running workflows, the plugin also contributes a
+While a thread has queued, running, or human-waiting workflows, the plugin also contributes a
 status card above that thread's composer. It lists every active run with its
 current phase and agent-call progress and lets the user stop a run in place;
 the card disappears when the thread has no active runs.
 The panel shows every phase and worker, links attached workers to their BB
-threads, reports cache and result state, and can stop an active run. It may also
+threads, reports cache and result state, renders pending gate artifacts and
+schemas, and can submit JSON responses or stop an active run. It may also
 be opened directly from the thread panel action, in which case it shows that
 thread's latest run.
 
@@ -90,6 +91,26 @@ including file edits and other writes, because resume is restricted to the same
 environment workspace where those effects remain. Runs created before
 replay-safety metadata existed replay nothing.
 
+`human({ id, artifact, schema })` creates a durable gate. BB stores the artifact,
+its canonical SHA-256 digest, and the safe response schema, then moves the run
+to `waiting_for_input`. The plugin can restart indefinitely in that state. A
+response from the workflow panel or `bb workflows respond` is validated,
+recorded with responder provenance and timestamp, and moves the same run back
+to `queued`. The script replays from the beginning: successful pre-gate agent
+calls are same-run cache hits, `human()` returns the recorded answer, and the
+post-gate suffix runs live. Reusing a gate ID with a changed artifact or schema
+fails closed. Keep `human()` on sequential control flow; do not put a human gate
+inside `parallel()` or an un-awaited branch.
+
+This guarantee covers the checkpoint record and answer replay, not an
+exactly-once transaction around arbitrary worker effects. As elsewhere in
+Workflows, a worker that changes external or workspace state and then crashes
+before its result is durably recorded is incomplete and may run again after a
+restart. Keep mutable approval workflows phase-per-run, or make every
+post-checkpoint effect externally idempotent with a durable key/receipt. Use
+same-run `human()` continuation only for read-only or otherwise replay-safe
+suffixes.
+
 Agent calls retry transient provider failures twice with bounded backoff before
 the failure reaches the workflow script. Retryability comes from an explicit
 SDK `retryable` marker when available or conservative overload, rate-limit,
@@ -119,9 +140,10 @@ and phase/progress record. A child cannot invoke a grandchild.
 
 ## Settings
 
-Workflows declares six plugin settings:
+Workflows declares seven plugin settings:
 
 - `maxActiveRuns` limits runs dispatched at once across the plugin.
+- `maxGlobalConcurrentAgents` limits live agent calls across all active runs.
 - `maxConcurrentAgents` limits live agent calls within one run, including its
   child workflow.
 - `maxAgentCalls` bounds the shared parent/child call count.
@@ -130,10 +152,11 @@ Workflows declares six plugin settings:
   and retained resume ancestors.
 - `maxNotificationBytes` bounds completion messages by UTF-8 byte length.
 
-`maxActiveRuns` is live plugin-global dispatch policy: changing it immediately
-changes how many queued runs the worker may claim. The other five values are
-snapshotted into each new run and remain fixed for that run, including a resumed
-run. Saving settings does not require a plugin reload.
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global admission
+policy: changing them immediately changes how many queued runs or agent calls
+may proceed. The other five values are snapshotted into each new run and remain
+fixed for that run, including a resumed run. Saving settings does not require a
+plugin reload.
 Terminal runs send an agent-only completion input back to the origin thread. It
 steers an active origin immediately or starts a turn when the origin is idle,
 while remaining absent from the user-facing timeline and search. Polling the
@@ -167,11 +190,13 @@ bb workflows status <run-id>
 bb workflows history <run-id> --cursor 0 --limit 100
 bb workflows list --limit 20
 bb workflows stop <run-id>
+bb workflows respond <run-id> --gate <gate-id> --value '<json>'
 bb provider list --environment "$BB_ENVIRONMENT_ID" --json
 bb provider models <provider-id> --environment "$BB_ENVIRONMENT_ID" --json
 ```
 
 `status` is deliberately bounded: it returns run state, phase, call counts,
+human gate IDs, digests, schemas, and response provenance,
 notification state, and only a small final result. It omits source, arguments,
 and call history so polling cannot be truncated into invalid JSON.
 `list` is likewise bounded and returns compact run summaries rather than source
@@ -193,7 +218,8 @@ The final `page` record reports `hasMore` and `nextCursor`. Fetch the next page
 with that cursor and append it to the same file. A full `run` record appears on
 the first page, later pages include a small `run-reference`, and every call
 record includes requested options, resolved provider/model/reasoning/permission,
-cache/live state, child thread ID, repairs, result, and error. Pages are
+cache/live state, child thread ID, repairs, result, and error. The first page
+also includes complete `human-gate` records. Pages are
 snapshots; while a run is active, rewrite the file from cursor `0` when a fresh
 detailed view is needed.
 

@@ -76,6 +76,21 @@ export interface NestedWorkflowContext {
   depth: 1;
 }
 
+export interface WorkflowHumanRequest {
+  id: string;
+  artifact: JsonValue;
+  schema: JsonSchema;
+}
+
+export class WorkflowHumanInputRequiredError extends Error {
+  constructor(readonly gateId: string) {
+    super(
+      `Workflow is waiting for human input at gate ${JSON.stringify(gateId)}`,
+    );
+    this.name = "WorkflowHumanInputRequiredError";
+  }
+}
+
 export interface WorkflowCapabilities {
   agent(
     prompt: string,
@@ -86,6 +101,10 @@ export interface WorkflowCapabilities {
     nameOrRef: WorkflowReference,
     args: JsonValue,
     context: NestedWorkflowContext,
+  ): Promise<JsonValue>;
+  human?(
+    request: WorkflowHumanRequest,
+    signal: AbortSignal,
   ): Promise<JsonValue>;
   log(message: string): void;
   phase(title: string): void;
