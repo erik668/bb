@@ -64,6 +64,7 @@ import type {
 } from "./types.js";
 import { parseStoredAgentOptions } from "./validation.js";
 import { prepareWorkflowSource } from "./workflow-input.js";
+import { createWorkflowCheckRunner } from "./check-runner.js";
 
 const executionValuesSchema = z.object({
   model: z.string().min(1),
@@ -96,6 +97,7 @@ const VALUE_LIMITS = { bytes: 1024 * 1024, nodes: 100_000, depth: 128 };
 const NOTIFICATION_RETRY_BASE_MS = 1_000;
 const NOTIFICATION_RETRY_MAX_MS = 60 * 60 * 1_000;
 const PROVIDER_RETRY_DELAYS_MS = [1_000, 4_000] as const;
+const MAX_WORKFLOW_CHECK_CALLS = 32;
 
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -408,6 +410,7 @@ export function createWorkflowService(
   db: Db,
   initialSettings: WorkflowSettings = DEFAULT_WORKFLOW_SETTINGS,
 ): WorkflowService {
+  const runWorkflowCheck = createWorkflowCheckRunner(bb);
   let shuttingDown = false;
   let currentSettings = initialSettings;
   const controllers = new Map<string, AbortController>();
@@ -665,9 +668,7 @@ export function createWorkflowService(
     const permissionMode = executionValuesSchema.shape.permissionMode.parse(
       run.originPermissionMode,
     );
-    if (
-      !provider.capabilities.permissionModes.includes(permissionMode)
-    ) {
+    if (!provider.capabilities.permissionModes.includes(permissionMode)) {
       throw new Error(
         `Permission mode ${JSON.stringify(run.originPermissionMode)} is not supported by provider ${requested.provider}`,
       );
@@ -1230,8 +1231,17 @@ export function createWorkflowService(
     let previousCacheKey = Promise.resolve<string | null>(null);
     let previousReplayDecision = Promise.resolve();
     let nestedLaunchQueue = Promise.resolve();
+    let checkRunning = false;
+    let checkCalls = 0;
     const capabilities: WorkflowCapabilities = {
       agent(prompt, options, callSignal) {
+        if (checkRunning) {
+          return Promise.reject(
+            new Error(
+              "Workflow agent calls cannot overlap a deterministic check",
+            ),
+          );
+        }
         const index = callIndex;
         callIndex += 1;
         const computeIdentity = async (previousKey: string | null) => {
@@ -1284,6 +1294,34 @@ export function createWorkflowService(
           })
           .catch(() => undefined);
         return call;
+      },
+      async check(request, checkSignal) {
+        checkCalls += 1;
+        if (checkCalls > MAX_WORKFLOW_CHECK_CALLS) {
+          throw new Error(
+            `Workflow exceeded the ${MAX_WORKFLOW_CHECK_CALLS} deterministic-check limit`,
+          );
+        }
+        if (checkRunning || inFlightCalls.size > 0) {
+          throw new Error(
+            "Workflow checks must run sequentially and cannot overlap agent calls",
+          );
+        }
+        checkRunning = true;
+        replay.prefix = false;
+        previousCacheKey = Promise.resolve(null);
+        try {
+          await previousReplayDecision;
+          return await runWorkflowCheck({
+            environmentId: run.environmentId,
+            projectId: run.projectId,
+            permissionMode: run.originPermissionMode,
+            request,
+            signal: checkSignal,
+          });
+        } finally {
+          checkRunning = false;
+        }
       },
       async workflow(
         reference: WorkflowReference,

@@ -75,7 +75,7 @@ export const meta = {
     { title: "Verify", detail: "Adversarial verification" },
   ],
 };
-// script body starts here — use agent()/parallel()/pipeline()/phase()/log()
+// script body starts here — use agent()/check()/parallel()/pipeline()/phase()/log()
 phase("Review");
 const reviews = await parallel([
   () => agent(`Review correctness: ${args.task}`),
@@ -106,6 +106,18 @@ and per-agent result schemas; rejection errors identify the unsafe schema path.
 
 ## Script body hooks
 
+- `check(request)`: run a named deterministic suite from the origin workspace's
+  SHA-256-pinned `.bb/workflow-checks.json` before admitting downstream agent
+  work. The request contains `suite`, `manifestSha256`, `contractSha256`, and
+  `candidateSha256`. Each suite pins its expected receipt version and every
+  project-owned implementation input digest, verified before and after the
+  process. This detects stable or persistent drift, not an adversarial
+  concurrent swap-and-restore. Checks require `full` origin
+  permission, run without a shell, accept only a bounded fail-closed JSON receipt, never replay on resume,
+  and prevent every later `agent()` call from replaying. Await checks
+  sequentially; they cannot overlap agents or other checks, and a run may invoke
+  at most 32. Suite code is trusted and must be non-mutating; this capability is
+  not an atomic source snapshot or OS read-only sandbox.
 - `agent(prompt: string, opts?)`: spawn a BB worker. Without `schema`, returns
   its final text as a string. With `schema` (a JSON Schema), the worker is forced
   to call `bb_workflow_result` and `agent()` returns the validated value — no
@@ -154,8 +166,9 @@ an async context — use `await` directly. Standard JS built-ins (`JSON`, `Math`
 `Array`, etc.) are available — EXCEPT wall-clock and random-number operations,
 which throw because they would break resume. Pass timestamps in via `args`,
 stamp results after the workflow returns, and for randomness vary the agent
-prompt/label by index. No filesystem, shell, network, imports, or Node.js API
-access.
+prompt/label by index. No direct filesystem, shell, network, imports, or Node.js
+API access exists. The sole host-execution capability is the named,
+manifest-pinned `check()` hook described above.
 
 Workers spawned by `agent()` are normal BB threads and retain the tools and
 workspace access allowed by their BB permission mode. The QuickJS script itself

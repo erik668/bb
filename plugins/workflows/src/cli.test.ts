@@ -166,7 +166,7 @@ describe("workflows CLI argument validation", () => {
       properties: {
         script: {
           description:
-            "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/parallel()/pipeline()/phase().",
+            "Self-contained workflow script. Must begin with `export const meta = { name, description, phases }` (pure literal, no computed values) followed by the script body using agent()/check()/parallel()/pipeline()/phase().",
         },
         args: {
           description:
@@ -204,10 +204,10 @@ describe("workflows CLI argument validation", () => {
       },
       host: { id: "host-test", name: "host" },
       provider: {
-      id: "codex",
-      model: "gpt-test",
-      capabilities: { supportsNativeUserQuestion: false },
-    },
+        id: "codex",
+        model: "gpt-test",
+        capabilities: { supportsNativeUserQuestion: false },
+      },
       origin: { kind: null, pluginId: null },
     });
     expect(author.tools.map((tool) => tool.name)).toEqual(["bb_workflow_run"]);
