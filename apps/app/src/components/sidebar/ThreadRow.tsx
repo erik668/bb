@@ -5,6 +5,7 @@ import {
   type CSSProperties,
   type MouseEventHandler,
   type PointerEventHandler,
+  type ReactElement,
   type ReactNode,
   useRef,
 } from "react";
@@ -497,6 +498,25 @@ function ThreadTrailingIndicator({
   );
 }
 
+function ThreadRowStatusTooltip({
+  children,
+  label,
+}: {
+  children: ReactElement;
+  label: string | null;
+}) {
+  if (label === null) {
+    return children;
+  }
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>{children}</TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
 function ThreadRowComponent({
   projectId,
   thread,
@@ -678,44 +698,53 @@ function ThreadRowComponent({
   const rowLinkRef = useRef<HTMLAnchorElement>(null);
   const rowContent = (
     <>
-      <NavLink
-        ref={rowLinkRef}
-        to={getThreadRoutePath({ projectId, threadId: thread.id })}
-        data-sidebar-thread-shortcut-target=""
-        data-sidebar-thread-id={thread.id}
-        onClick={(event) => {
-          if (isEditing) {
-            event.preventDefault();
-            event.stopPropagation();
-            return;
-          }
-          // Selecting a thread/agent row restores its conversation without
-          // disturbing any other thread's collapsed conversation state.
-          setConversationCollapsed(false);
-          // Cmd/Ctrl-click is the split feature's second entry point: open the
-          // thread in the split instead of replacing the focused pane. Match the
-          // drag rules (right split / focus if open / replace at the cap).
-          if (splitAvailable && (event.metaKey || event.ctrlKey)) {
-            event.preventDefault();
-            openInSplit();
-            return;
-          }
-          // A first click may navigate and remount this row. Remember that
-          // click so the second click of a double-click can still open the
-          // editor after the remount.
-          if (consumeSidebarTitleDoubleClick(thread.id)) {
-            event.preventDefault();
-            event.stopPropagation();
-            startEditing();
-            return;
-          }
-          onProjectSelect?.();
-        }}
-        onDoubleClick={isEditing ? undefined : startTitleEditing}
-        aria-label={linkLabel}
-        aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
-        className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
-      />
+      <ThreadRowStatusTooltip
+        label={
+          trailingIndicatorResolution.pluginStatusIsVisible &&
+          pluginThreadRowStatus !== null
+            ? `${labelTitle} — ${pluginThreadRowStatus.label}`
+            : null
+        }
+      >
+        <NavLink
+          ref={rowLinkRef}
+          to={getThreadRoutePath({ projectId, threadId: thread.id })}
+          data-sidebar-thread-shortcut-target=""
+          data-sidebar-thread-id={thread.id}
+          onClick={(event) => {
+            if (isEditing) {
+              event.preventDefault();
+              event.stopPropagation();
+              return;
+            }
+            // Selecting a thread/agent row restores its conversation without
+            // disturbing any other thread's collapsed conversation state.
+            setConversationCollapsed(false);
+            // Cmd/Ctrl-click is the split feature's second entry point: open the
+            // thread in the split instead of replacing the focused pane. Match the
+            // drag rules (right split / focus if open / replace at the cap).
+            if (splitAvailable && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              openInSplit();
+              return;
+            }
+            // A first click may navigate and remount this row. Remember that
+            // click so the second click of a double-click can still open the
+            // editor after the remount.
+            if (consumeSidebarTitleDoubleClick(thread.id)) {
+              event.preventDefault();
+              event.stopPropagation();
+              startEditing();
+              return;
+            }
+            onProjectSelect?.();
+          }}
+          onDoubleClick={isEditing ? undefined : startTitleEditing}
+          aria-label={linkLabel}
+          aria-keyshortcuts={shortcut?.ariaKeyshortcuts}
+          className="absolute inset-0 rounded-md outline-none ring-sidebar-ring focus-visible:ring-2"
+        />
+      </ThreadRowStatusTooltip>
       <span className="flex min-w-0 flex-1 items-center gap-1.5">
         {isEditing ? (
           <span className="relative z-10 min-w-0 flex-1 overflow-visible">

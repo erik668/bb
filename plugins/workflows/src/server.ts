@@ -132,6 +132,12 @@ export default async function plugin(bb: BbPluginApi) {
       const run = workflowForThread(threadId, runId);
       return { run: run === null ? null : buildWorkflowRunView(run) };
     },
+    workflowThreadStatuses({ threadId }) {
+      return { statuses: service.inspectActiveThreadStatuses(threadId) };
+    },
+    workflowAllActiveThreadStatuses() {
+      return { statuses: service.inspectAllActiveThreadStatuses() };
+    },
     async workflowStopRun({ threadId, runId }) {
       const run = workflowForThread(threadId, runId);
       if (run === null) throw new Error(`Unknown workflow run ${runId}`);

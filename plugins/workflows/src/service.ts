@@ -23,6 +23,8 @@ import {
   getRun,
   getRunRequired,
   incrementRepairAttempts,
+  listActiveWorkflowThreadStatuses,
+  listActiveWorkflowThreadStatusesForThread,
   listCallsForRun,
   listCallsForRunPage,
   listActiveRunsForOriginThread,
@@ -43,6 +45,7 @@ import {
   updateRunPhase,
   type Db,
   type WorkflowCallCounts,
+  type ActiveWorkflowThreadStatusRow,
   type WorkflowCallRow,
   type WorkflowRunRow,
 } from "./data.js";
@@ -362,6 +365,10 @@ export interface WorkflowService {
   ): WorkflowRunInspectionPage | null;
   inspectLatestForThread(threadId: string): WorkflowRunInspection | null;
   inspectActiveForThread(threadId: string): WorkflowRunInspection[];
+  inspectActiveThreadStatuses(
+    threadId: string,
+  ): WorkflowThreadStatusInspection[];
+  inspectAllActiveThreadStatuses(): WorkflowThreadStatusInspection[];
   list(projectId: string, limit: number): WorkflowRunRow[];
   stop(runId: string): Promise<boolean>;
   updateSettings(settings: WorkflowSettings): void;
@@ -402,6 +409,24 @@ export interface WorkflowRunInspectionPage {
   calls: WorkflowCallInspection[];
   callCounts: WorkflowCallCounts;
 }
+
+export type WorkflowThreadStatusInspection =
+  | {
+      role: "origin";
+      threadId: string;
+      runId: string;
+      runName: string;
+      runStatus: "queued" | "running";
+      activePhases: Array<string | null>;
+    }
+  | {
+      role: "worker";
+      threadId: string;
+      runId: string;
+      runName: string;
+      callStatus: "queued" | "running";
+      phase: string | null;
+    };
 
 export function createWorkflowService(
   bb: BbPluginApi,
@@ -591,6 +616,66 @@ export function createWorkflowService(
       }
       return inspection;
     });
+  }
+
+  function threadStatusesFromRows(
+    rows: ActiveWorkflowThreadStatusRow[],
+  ): WorkflowThreadStatusInspection[] {
+    const byRun = new Map<string, ActiveWorkflowThreadStatusRow[]>();
+    for (const row of rows) {
+      const runRows = byRun.get(row.runId);
+      if (runRows === undefined) byRun.set(row.runId, [row]);
+      else runRows.push(row);
+    }
+
+    const statuses: WorkflowThreadStatusInspection[] = [];
+    for (const runRows of byRun.values()) {
+      const run = runRows[0]!;
+      const activePhases = [
+        ...new Set(
+          runRows
+            .filter((row) => row.callStatus !== null)
+            .map((row) => row.callPhase),
+        ),
+      ];
+      statuses.push({
+        role: "origin",
+        threadId: run.originThreadId,
+        runId: run.runId,
+        runName: run.runName,
+        runStatus: run.runStatus,
+        activePhases:
+          activePhases.length > 0
+            ? activePhases
+            : run.runPhase === null
+              ? []
+              : [run.runPhase],
+      });
+      for (const row of runRows) {
+        if (row.childThreadId === null || row.callStatus === null) continue;
+        statuses.push({
+          role: "worker",
+          threadId: row.childThreadId,
+          runId: row.runId,
+          runName: row.runName,
+          callStatus: row.callStatus,
+          phase: row.callPhase,
+        });
+      }
+    }
+    return statuses;
+  }
+
+  function inspectActiveThreadStatuses(
+    threadId: string,
+  ): WorkflowThreadStatusInspection[] {
+    return threadStatusesFromRows(
+      listActiveWorkflowThreadStatusesForThread(db, threadId),
+    ).filter((status) => status.threadId === threadId);
+  }
+
+  function inspectAllActiveThreadStatuses(): WorkflowThreadStatusInspection[] {
+    return threadStatusesFromRows(listActiveWorkflowThreadStatuses(db));
   }
 
   async function validateSelection(
@@ -1509,6 +1594,8 @@ export function createWorkflowService(
     inspectPage,
     inspectLatestForThread,
     inspectActiveForThread,
+    inspectActiveThreadStatuses,
+    inspectAllActiveThreadStatuses,
     list: (projectId, limit) => listRuns(db, { projectId, limit }),
     stop,
     updateSettings(settings) {
