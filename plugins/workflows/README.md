@@ -65,6 +65,56 @@ fields and malformed entries are rejected. Declaration order is preserved.
 An agent-level `phase` applies only to that call and does not change the current
 phase.
 
+Agent calls may declare an exact context-capacity requirement without imposing
+a token or spend budget:
+
+```js
+await agent("Audit the whole subsystem and its history", {
+  contextRequirement: { minimumTokens: 1_000_000 },
+});
+```
+
+The call history records the UTF-8 task-prompt size plus, on a best-effort
+basis, the model context window and current context usage reported by the worker
+thread. Telemetry never delays call settlement and may appear shortly after a
+call becomes terminal. The UI reports the requirement as `fit`, `undersized`,
+or `unknown`; calls without a requirement are `untracked`. This is
+observability, not a termination limit.
+Provider model discovery does not currently advertise context capacity, so the
+fit result is grounded in the spawned thread's runtime report rather than a
+model-name guess.
+
+Agent calls may also declare a phase-specific context manifest:
+
+```js
+await agent("Implement the approved durable transition", {
+  contextProfile: {
+    requiredSkills: ["code-navigation", "implementation-loop"],
+    memoryQueries: ["workflow replay and rollback compatibility"],
+    artifactRefs: [".architect/design/approved-design.md"],
+    stopCondition: "The targeted replay tests pass",
+  },
+});
+```
+
+Workflows validates and canonicalizes this manifest, persists it on the call,
+includes it in replay/cache identity, and injects it into that worker's prompt.
+Calls without a manifest retain the prior worker prompt and cache identity.
+Each array accepts at most 32 unique non-empty strings; skill names are capped
+at 160 characters, memory queries and artifact references at 512 characters,
+and the stop condition at 2,048 characters. Control and invisible characters
+are rejected. Missing arrays become empty arrays, and a wholly empty manifest
+becomes `null`.
+
+This is progressive phase guidance, not capability isolation. Workflows does
+not prune the globally advertised skill catalog, verify that a required skill
+exists, invoke the BB Memory plugin, authenticate an artifact reference, or
+treat the list as a security allowlist. A worker is told to load the named
+skills and to stop if one is unavailable. Memory queries are advisory and may
+be stale; artifact references remain caller supplied. Those boundaries keep
+design workers from automatically receiving implementation/testing procedures
+while still letting later phases request them explicitly.
+
 Workflow input follows the native Claude source modes: provide exactly one of
 an inline `script`, a workspace `scriptPath`, or a workflow `name`. The older
 `source` field remains an explicit alias for inline `script`; `script` and
@@ -90,6 +140,11 @@ including file edits and other writes, because resume is restricted to the same
 environment workspace where those effects remain. Runs created before
 replay-safety metadata existed replay nothing.
 
+Context requirements and phase profiles use additive call columns while the
+stored agent-options JSON retains the prior strict shape. An older Workflows
+build can therefore read calls created by this build; it simply ignores the
+context and telemetry columns until the newer build is restored.
+
 Agent calls retry transient provider failures twice with bounded backoff before
 the failure reaches the workflow script. Retryability comes from an explicit
 SDK `retryable` marker when available or conservative overload, rate-limit,
@@ -100,6 +155,12 @@ persisted on the call so a plugin restart cannot reset the retry budget.
 Worker output is either the final assistant text or an Ajv-validated value
 submitted through `bb_workflow_result`. Structured workers receive two
 corrective retries after their initial invalid attempt.
+
+`parallel(thunks)` starts every thunk, waits for every started thunk to settle,
+and rejects the aggregate if any thunk fails. Partial results must be explicit
+in the workflow source, for example `() => agent("optional").catch(() => null)`;
+the helper never converts a failed or cancelled branch into a successful
+synthetic `null` on its own.
 
 Workflow workers use BB's generic hidden-thread visibility. They remain
 out of sidebar organization without contributing unread/pending favicon
@@ -119,9 +180,12 @@ and phase/progress record. A child cannot invoke a grandchild.
 
 ## Settings
 
-Workflows declares six plugin settings:
+Workflows declares seven plugin settings:
 
 - `maxActiveRuns` limits runs dispatched at once across the plugin.
+- `maxGlobalConcurrentAgents` limits live agent calls across all workflow runs
+  as host admission control. It defaults to two, remains configurable up to 64,
+  and is not a spend budget.
 - `maxConcurrentAgents` limits live agent calls within one run, including its
   child workflow.
 - `maxAgentCalls` bounds the shared parent/child call count.
@@ -130,10 +194,10 @@ Workflows declares six plugin settings:
   and retained resume ancestors.
 - `maxNotificationBytes` bounds completion messages by UTF-8 byte length.
 
-`maxActiveRuns` is live plugin-global dispatch policy: changing it immediately
-changes how many queued runs the worker may claim. The other five values are
-snapshotted into each new run and remain fixed for that run, including a resumed
-run. Saving settings does not require a plugin reload.
+`maxActiveRuns` and `maxGlobalConcurrentAgents` are live plugin-global policy:
+changing them immediately changes run dispatch or agent admission. The other
+five values are snapshotted into each new run and remain fixed for that run,
+including a resumed run. Saving settings does not require a plugin reload.
 Terminal runs send an agent-only completion input back to the origin thread. It
 steers an active origin immediately or starts a turn when the origin is idle,
 while remaining absent from the user-facing timeline and search. Polling the

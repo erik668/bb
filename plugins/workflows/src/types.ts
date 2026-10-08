@@ -13,9 +13,27 @@ export interface ExplicitModelSelection {
   reasoningLevel: string;
 }
 
+export interface WorkflowContextRequirement {
+  /** Smallest model context window that is considered a fit for this task. */
+  minimumTokens: number;
+}
+
+export interface WorkflowContextProfile {
+  /** Skills the worker must load before performing the relevant phase work. */
+  requiredSkills: string[];
+  /** Advisory memory searches to perform only when relevant and available. */
+  memoryQueries: string[];
+  /** Caller-supplied artifact references that ground this phase. */
+  artifactRefs: string[];
+  /** Explicit boundary for completing this phase call. */
+  stopCondition: string | null;
+}
+
 export interface WorkflowAgentOptions {
   selection: ExplicitModelSelection | null;
   outputSchema: JsonSchema | null;
+  contextRequirement: WorkflowContextRequirement | null;
+  contextProfile: WorkflowContextProfile | null;
   title: string | null;
   phase: string | null;
 }

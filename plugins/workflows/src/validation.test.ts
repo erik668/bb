@@ -123,10 +123,13 @@ describe("workflow agent option validation", () => {
         label: "Correctness review",
         phase: "Review",
         outputSchema: { type: "object" },
+        contextRequirement: { minimumTokens: 1_000_000 },
       }),
     ).toEqual({
       selection: null,
       outputSchema: { type: "object" },
+      contextRequirement: { minimumTokens: 1_000_000 },
+      contextProfile: null,
       title: "Correctness review",
       phase: "Review",
     });
@@ -165,6 +168,16 @@ describe("workflow agent option validation", () => {
     );
     expect(() =>
       parseAgentOptions({
+        contextRequirement: { minimumTokens: 0 },
+      }),
+    ).toThrow("integer from 1 through 10000000");
+    expect(() =>
+      parseAgentOptions({
+        contextRequirement: { minimumTokens: 1_000, extra: true },
+      }),
+    ).toThrow("contain only minimumTokens");
+    expect(() =>
+      parseAgentOptions({
         outputSchema: { type: "string" },
         schema: { type: "number" },
       }),
@@ -184,6 +197,8 @@ describe("workflow agent option validation", () => {
     ).toEqual({
       selection: null,
       outputSchema: null,
+      contextRequirement: null,
+      contextProfile: null,
       title: "Worker",
       phase: null,
     });
@@ -215,5 +230,50 @@ describe("workflow agent option validation", () => {
         phase: null,
       }),
     ).toThrow("stored agent outputSchema.pattern");
+  });
+
+  it("canonicalizes a bounded phase context profile and removes an empty one", () => {
+    expect(
+      parseAgentOptions({
+        contextProfile: {
+          requiredSkills: [" code-navigation ", "implementation-loop"],
+          memoryQueries: [" workflow replay behavior "],
+          artifactRefs: [" .architect/design/approved.md "],
+          stopCondition: " targeted verification passes ",
+        },
+      }).contextProfile,
+    ).toEqual({
+      requiredSkills: ["code-navigation", "implementation-loop"],
+      memoryQueries: ["workflow replay behavior"],
+      artifactRefs: [".architect/design/approved.md"],
+      stopCondition: "targeted verification passes",
+    });
+    expect(parseAgentOptions({ contextProfile: {} }).contextProfile).toBeNull();
+  });
+
+  it.each([
+    [{ unknown: [] }, "Unknown agent options.contextProfile property"],
+    [{ requiredSkills: "testing" }, "requiredSkills must be an array"],
+    [
+      { requiredSkills: ["testing", " testing "] },
+      "requiredSkills must not contain duplicate values",
+    ],
+    [
+      { memoryQueries: ["unsafe\n"] },
+      "contains a control or invisible character",
+    ],
+    [
+      { artifactRefs: Array.from({ length: 33 }, (_, index) => `a-${index}`) },
+      "32-item limit",
+    ],
+    [
+      { requiredSkills: new Array<string>(1) },
+      "must not contain sparse entries",
+    ],
+    [{ requiredSkills: ["s".repeat(161)] }, "160-character limit"],
+    [{ stopCondition: " " }, "stopCondition must be a non-empty string"],
+    [{ stopCondition: "s".repeat(2_049) }, "2048-character limit"],
+  ])("rejects invalid phase context profile %#", (contextProfile, message) => {
+    expect(() => parseAgentOptions({ contextProfile })).toThrow(message);
   });
 });

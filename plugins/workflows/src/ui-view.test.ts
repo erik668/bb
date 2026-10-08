@@ -19,6 +19,12 @@ function call(index: number, phase: string | null): WorkflowCallInspection {
     resolvedPermissionMode: "full",
     status: "succeeded",
     childThreadId: `thr_${index}`,
+    promptBytes: 8,
+    contextMinimumTokens: index === 1 ? 1_000_000 : null,
+    contextProfileJson: null,
+    observedContextUsedTokens: index === 1 ? 180_000 : null,
+    observedModelContextWindow: index === 1 ? 258_400 : null,
+    contextUsageEstimated: index === 1 ? false : null,
     providerRetryAttempts: 0,
     repairAttempts: 0,
     resultJson: '"done"',
@@ -32,6 +38,8 @@ function call(index: number, phase: string | null): WorkflowCallInspection {
     options: {
       selection: null,
       outputSchema: null,
+      contextRequirement: index === 1 ? { minimumTokens: 1_000_000 } : null,
+      contextProfile: null,
       title: `Agent ${index}`,
       phase,
     },
@@ -41,6 +49,7 @@ function call(index: number, phase: string | null): WorkflowCallInspection {
       reasoningLevel: "medium",
       permissionMode: "full",
     },
+    contextFit: index === 1 ? "undersized" : "untracked",
     source: "live",
   };
 }
