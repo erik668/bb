@@ -207,6 +207,10 @@ function readAnchor(threadId: string) {
 beforeEach(() => {
   ResizeObserverMock.instances = [];
   vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+  vi.stubGlobal("CSS", {
+    supports: (property: string, value: string) =>
+      property === "overflow-anchor" && value === "none",
+  });
   installAnimationFrameMocks();
 });
 
