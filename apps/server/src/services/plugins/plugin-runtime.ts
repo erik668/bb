@@ -41,6 +41,7 @@ import {
   getInstalledPlugin,
   listInstalledPlugins,
   prunePluginSchedules,
+  setInstalledPluginEnabled,
   upsertPluginSchedule,
   type InstalledPluginRow,
 } from "@bb/db";
@@ -1224,6 +1225,11 @@ export function createPluginRuntime(context: PluginRuntimeContext) {
   }
 
   async function loadOne(row: InstalledPluginRow): Promise<string | null> {
+    if (row.sourceKind === "builtin" && row.sourceBuiltinName === "workflows") {
+      if (row.enabled) setInstalledPluginEnabled(deps.db, row.id, false);
+      setStatus(row.id, "disabled", "Workflows is not included in this fork.");
+      return null;
+    }
     await populateIdentity(row);
     if (!row.enabled) {
       setStatus(row.id, "disabled");
