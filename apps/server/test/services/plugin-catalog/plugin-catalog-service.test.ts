@@ -291,10 +291,10 @@ describe("plugin catalog service", () => {
     const warnings: string[] = [];
     const registrations = listBundledPluginRegistrations();
     const github = registrations.find((plugin) => plugin.name === "github");
-    const workflows = registrations.find(
-      (plugin) => plugin.name === "workflows",
+    const automations = registrations.find(
+      (plugin) => plugin.name === "automations",
     );
-    if (github === undefined || workflows === undefined) {
+    if (github === undefined || automations === undefined) {
       throw new Error("bundled registration missing");
     }
     const catalog = service({
@@ -303,13 +303,13 @@ describe("plugin catalog service", () => {
           ...github,
           rootDir: missingRoot,
         },
-        workflows,
+        automations,
       ],
       warn: (message) => warnings.push(message),
     });
     const results = await catalog.search("");
     expect(results.map((entry) => entry.entryId)).not.toContain("github");
-    expect(results.map((entry) => entry.entryId)).toContain("workflows");
+    expect(results.map((entry) => entry.entryId)).toContain("automations");
     expect(warnings.some((warning) => warning.includes("github"))).toBe(true);
   });
 
@@ -319,7 +319,7 @@ describe("plugin catalog service", () => {
       (plugin) => plugin.name === "provider-acp",
     );
     const withGlyph = registrations.find(
-      (plugin) => plugin.name === "workflows",
+      (plugin) => plugin.name === "side-chat",
     );
     if (withSvg === undefined || withGlyph === undefined) {
       throw new Error("expected bundled registrations");

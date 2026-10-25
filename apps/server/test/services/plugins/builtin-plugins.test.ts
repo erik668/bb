@@ -16,6 +16,7 @@ import {
   createConnection,
   getInstalledPluginRegistration,
   migrate,
+  upsertInstalledPlugin,
   type DbConnection,
 } from "@bb/db";
 import { PLUGIN_SDK_MAJOR, PLUGIN_SDK_VERSION } from "@bb/domain";
@@ -30,6 +31,7 @@ import { readPluginManifest } from "../../../src/services/plugins/manifest.js";
 import {
   BUILTIN_PLUGIN_NAMES,
   BUILTIN_PLUGINS,
+  BUNDLED_PLUGINS,
   OFFICIAL_PLUGINS,
   resolveBuiltinPluginRootPath,
 } from "../../../src/services/plugins/builtin-registry.js";
@@ -252,7 +254,6 @@ describe("builtin plugin reconciliation", () => {
       ["scheduled-send", "Calendar"],
       ["secrets", "Lock"],
       ["side-chat", "SideChat"],
-      ["workflows", "Workflow"],
     ]);
 
     expect(BUILTIN_PLUGINS).toHaveLength(expectedIcons.size);
@@ -328,6 +329,53 @@ describe("builtin plugin reconciliation", () => {
     expect(service.list()).toMatchObject([
       { id: "builtin-fixture", isOrphanedBuiltin: true },
     ]);
+  });
+
+  it("retires saved workflows even while their old files remain", async () => {
+    upsertInstalledPlugin(db, {
+      id: "builtin-fixture",
+      source: "builtin:workflows",
+      provenance: { kind: "builtin" },
+      sourceIntent: { kind: "builtin", name: "workflows" },
+      exactResolution: { kind: "builtin" },
+      updateState: {
+        lastCheckAt: null,
+        availableCompatibleVersion: null,
+        newestIncompatibleVersion: null,
+        statusDetail: null,
+      },
+      activeArtifactId: null,
+      rootDir: fixtureRoot,
+      version: "0.1.0",
+      enabled: true,
+    });
+    service = createService({
+      db,
+      dataDir: join(workDir, "data"),
+      includeBuiltin: false,
+    });
+    await service.start();
+
+    expect(loadCount()).toBe(0);
+    expect(getInstalledPluginRegistration(db, "builtin-fixture")?.enabled).toBe(
+      false,
+    );
+    expect(service.list()).toMatchObject([
+      { id: "builtin-fixture", enabled: false, status: "disabled" },
+    ]);
+
+    await service.setEnabled("builtin-fixture", true);
+
+    expect(loadCount()).toBe(0);
+    expect(getInstalledPluginRegistration(db, "builtin-fixture")?.enabled).toBe(
+      false,
+    );
+    expect(service.list()).toMatchObject([
+      { id: "builtin-fixture", enabled: false, status: "disabled" },
+    ]);
+    await expect(
+      service.install("builtin:workflows", { kind: "root" }),
+    ).rejects.toThrow('unknown builtin plugin "workflows"');
   });
 
   it("backfills every legacy source form once while preserving registration state", async () => {
@@ -520,29 +568,10 @@ describe("builtin plugin reconciliation", () => {
     ]);
   });
 
-  it("ships Workflows disabled on a fresh database", async () => {
-    const workflows = BUILTIN_PLUGINS.find(
-      (builtin) => builtin.name === "workflows",
+  it("does not bundle or auto-install Workflows", () => {
+    expect(BUNDLED_PLUGINS.map((plugin) => plugin.name)).not.toContain(
+      "workflows",
     );
-    expect(workflows?.defaultEnabled).toBe(false);
-
-    service = createService({
-      db,
-      dataDir: join(workDir, "data"),
-      builtinName: "workflows",
-      defaultEnabled: workflows?.defaultEnabled,
-      rootDir: resolveBuiltinPluginRootPath("workflows"),
-    });
-    await service.start();
-
-    expect(service.list()).toMatchObject([
-      {
-        id: "workflows",
-        source: "builtin:workflows",
-        enabled: false,
-        status: "disabled",
-      },
-    ]);
   });
 
   it("ships Provider usage disabled on a fresh database", async () => {

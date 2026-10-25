@@ -33,10 +33,7 @@
     // The Plugin Guide's API inventory is checked against the SDK's committed
     // declarations, so those files are inputs to this test.
     "@bb/plugin-api-map#test": {
-      "dependsOn": [
-        "//#ensure-native-modules",
-        "topo"
-      ],
+      "dependsOn": ["//#ensure-native-modules", "topo"],
       "inputs": [
         "$TURBO_DEFAULT$",
         // wireframes.test.ts asserts fixture fidelity against the real app
@@ -846,9 +843,6 @@
       "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"]
     },
     "bb-plugin-tasks#typecheck": {
-      "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"]
-    },
-    "bb-plugin-workflows#typecheck": {
       "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"]
     },
     "@bb/plugin-registry#typecheck": {
