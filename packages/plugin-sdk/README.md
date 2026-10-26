@@ -9,6 +9,25 @@ The authoritative contracts are the exported declarations in
 [`src/app-contract.ts`](src/app-contract.ts). Keep author-facing guidance in
 the built-in `bb-plugin-authoring` skill synchronized with those declarations.
 
+## Building declarations
+
+From the repository root, run `pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk`.
+The declaration generator defaults to the available CPU count, capped by the
+number of output bundles. On a memory-constrained host, limit it to one worker:
+
+```sh
+pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk --concurrency=1 -- --concurrency=1
+```
+
+The first `--concurrency` limits Turbo tasks; the argument after `--` limits
+declaration workers. The generator accepts `--concurrency N` or
+`--concurrency=N`, requires one positive safe integer, and caps it to the output
+count. Each slot remains occupied until its worker exits successfully with a
+result. On failure, queued bundles stop and active workers finish before the
+build rejects. Concurrency limits the number of workers, not their memory use;
+Node heap settings and host resource limits still apply. Generated declarations
+remain uncommitted build outputs.
+
 ## Composer customization
 
 Composer UI extensions register through `app.composer.customize(...)`. A

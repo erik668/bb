@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,13 +33,17 @@ const autoDenySessionOptions = {
 
 let harness: ReturnType<typeof createBridgeJsonRpcTestHarness>;
 let workspaceDir: string;
+let requestLogPath: string;
 
 beforeEach(() => {
   workspaceDir = mkdtempSync(join(tmpdir(), "bb-codex-signature-ws-"));
+  requestLogPath = join(workspaceDir, "requests.jsonl");
+  const scriptPath = join(workspaceDir, "script.json");
+  writeFileSync(scriptPath, JSON.stringify({ requestLogPath }), "utf8");
   vi.stubEnv("BB_CODEX_BRIDGE_APP_SERVER_COMMAND", process.execPath);
   vi.stubEnv(
     "BB_CODEX_BRIDGE_APP_SERVER_ARGS",
-    JSON.stringify([fakeAppServerPath]),
+    JSON.stringify([fakeAppServerPath, scriptPath]),
   );
   harness = createBridgeJsonRpcTestHarness(handleLine);
 });
@@ -84,28 +88,99 @@ it("keeps the constructed session for a turn whose options carry no envVars", as
   ).toEqual([]);
 }, 30_000);
 
-it("keeps an auto-reviewed session when only escalation intent changes", async () => {
-  harness.sendRequest(1, "thread/start", {
-    threadId: THREAD_ID,
-    cwd: workspaceDir,
-    instructionMode: "append",
-    options: autoAskSessionOptions,
-  });
-  const started = await harness.waitForResponse(1);
-  const providerThreadId = (started.result as { providerThreadId: string })
-    .providerThreadId;
+it.each([
+  {
+    label: "ask to deny",
+    initialOptions: autoAskSessionOptions,
+    initialApprovalPolicy: "on-request",
+    turnOptions: autoDenySessionOptions,
+    turnApprovalPolicy: "never",
+  },
+  {
+    label: "deny to ask",
+    initialOptions: autoDenySessionOptions,
+    initialApprovalPolicy: "never",
+    turnOptions: autoAskSessionOptions,
+    turnApprovalPolicy: "on-request",
+  },
+])(
+  "rebuilds an auto-reviewed session when escalation changes from $label",
+  async ({
+    initialOptions,
+    initialApprovalPolicy,
+    turnOptions,
+    turnApprovalPolicy,
+  }) => {
+    harness.sendRequest(1, "thread/start", {
+      threadId: THREAD_ID,
+      cwd: workspaceDir,
+      instructionMode: "append",
+      options: initialOptions,
+    });
+    const started = await harness.waitForResponse(1);
+    expect(started.error).toBeUndefined();
+    const providerThreadId = (started.result as { providerThreadId: string })
+      .providerThreadId;
 
-  harness.sendRequest(2, "turn/start", {
-    threadId: THREAD_ID,
-    providerThreadId,
-    clientRequestId: "creq_signature3",
-    input: [{ type: "text", text: "say hello", mentions: [] }],
-    options: autoDenySessionOptions,
-  });
-  const turn = await harness.waitForResponse(2);
+    harness.sendRequest(2, "turn/start", {
+      threadId: THREAD_ID,
+      providerThreadId,
+      clientRequestId: "creq_signature3",
+      input: [{ type: "text", text: "say hello", mentions: [] }],
+      options: turnOptions,
+    });
+    const turn = await harness.waitForResponse(2);
 
-  expect(turn.error).toBeUndefined();
-  expect(
-    harness.messages.filter((message) => message.method === "session/replaced"),
-  ).toEqual([]);
-}, 30_000);
+    expect(turn.error).toBeUndefined();
+    expect(
+      harness.messages.filter(
+        (message) => message.method === "session/replaced",
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        params: expect.objectContaining({
+          threadId: THREAD_ID,
+          providerThreadId,
+          contextLost: false,
+        }),
+      }),
+    ]);
+    const requests = readFileSync(requestLogPath, "utf8")
+      .trim()
+      .split("\n")
+      .map((line): unknown => JSON.parse(line));
+    expect(requests).toEqual(
+      expect.arrayContaining([
+        {
+          method: "thread/start",
+          params: expect.objectContaining({
+            approvalPolicy: initialApprovalPolicy,
+            approvalsReviewer: "auto_review",
+            sandbox: "workspace-write",
+          }),
+        },
+        {
+          method: "thread/resume",
+          params: expect.objectContaining({
+            threadId: providerThreadId,
+            approvalPolicy: turnApprovalPolicy,
+            approvalsReviewer: "auto_review",
+            sandbox: "workspace-write",
+          }),
+        },
+        {
+          method: "turn/start",
+          params: expect.objectContaining({
+            threadId: providerThreadId,
+            approvalPolicy: turnApprovalPolicy,
+            approvalsReviewer: "auto_review",
+            sandboxPolicy: expect.objectContaining({
+              type: "workspaceWrite",
+            }),
+          }),
+        },
+      ]),
+    );
+  },
+  30_000,
+);
