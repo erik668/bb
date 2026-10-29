@@ -10,6 +10,7 @@ import {
   createEmptyFixedPanelTabsState,
   createNewTabFixedPanelTab,
   createTerminalFixedPanelTab,
+  createPluginPanelFixedPanelTab,
   createThreadInfoFixedPanelTab,
   FIXED_PANEL_TABS_IDLE_EXPIRY_MS,
   getFixedPanelTabsStateStorageKey,
@@ -18,6 +19,7 @@ import {
 import {
   resetFixedPanelTabsStorageMaintenanceForTest,
   useFixedPanelTabsState,
+  useReconciledFixedPanelTabsState,
   useFixedPanelTabsStorageMaintenance,
   useSetFixedSecondaryPanelTab,
   useSetFixedRightTerminalActiveTerminal,
@@ -156,6 +158,58 @@ describe("fixed panel tab server sync", () => {
     expect(result.current.state.secondary.activeTabId).toBe(
       createTerminalFixedPanelTab({ terminalId: "source" }).id,
     );
+  });
+
+  it("keeps existing local side chats when initialization races the first migration", async () => {
+    const threadId = "sync-initialize-migration";
+    const info = createThreadInfoFixedPanelTab();
+    const sideChat = createPluginPanelFixedPanelTab({
+      pluginId: "side-chat",
+      actionId: "side-chat",
+      title: "Side chat",
+      paramsJson: JSON.stringify({
+        threadId: "thr_local",
+        sourceThreadId: threadId,
+      }),
+    });
+    window.localStorage.setItem(
+      getFixedPanelTabsStateStorageKey({ threadId }),
+      serializeFixedPanelTabsState({
+        state: createEmptyFixedPanelTabsState({
+          lastUsedAt: Date.now(),
+          secondary: {
+            activeTabId: sideChat.id,
+            isOpen: true,
+            tabs: [sideChat],
+          },
+        }),
+      }),
+    );
+    apiMocks.getThreadTabs.mockResolvedValue({ revision: 0, tabs: [] });
+    apiMocks.updateThreadTabs.mockImplementation(
+      async ({ tabs, expectedRevision }) => ({
+        revision: expectedRevision + 1,
+        tabs,
+      }),
+    );
+    const queryClient = createTestQueryClient();
+    const { result } = renderHook(
+      () =>
+        useReconciledFixedPanelTabsState({
+          fixedTabs: [info],
+          panelStateId: threadId,
+          syncThreadId: threadId,
+        }),
+      { wrapper: createQueryWrapper(queryClient) },
+    );
+    await waitFor(() =>
+      expect(apiMocks.updateThreadTabs).toHaveBeenCalledWith({
+        threadId,
+        expectedRevision: 0,
+        tabs: [info, sideChat],
+      }),
+    );
+    expect(result.current.secondary.tabs).toEqual([info, sideChat]);
   });
 
   it("keeps non-thread panel tabs local", () => {

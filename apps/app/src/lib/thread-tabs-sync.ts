@@ -257,11 +257,12 @@ async function persistThreadTabs({
 }: PersistThreadTabsArgs): Promise<void> {
   let current = await readCurrentThreadTabs({ queryClient, threadId });
   for (let attempt = 1; attempt <= MAX_WRITE_ATTEMPTS; attempt++) {
-    const tabsToPersist = mergeThreadTabChanges(
-      current.tabs,
-      previousTabs,
-      tabs,
-    );
+    // Revision 0 means no client has saved this thread's tabs yet, so tabs
+    // missing from the server copy were never closed remotely.
+    const tabsToPersist =
+      current.revision === 0
+        ? persistedThreadTabs(tabs)
+        : mergeThreadTabChanges(current.tabs, previousTabs, tabs);
     if (
       !current.tabs.some(
         (tab) => tab.kind === "git-diff" || tab.kind === "thread-info",
