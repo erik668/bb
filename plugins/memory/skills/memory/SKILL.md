@@ -117,6 +117,11 @@ decision reason.
 `bb memory add` remains a compatibility alias for `propose`; it never activates
 memory. Agent CLI attempts to update or forget active memory fail closed.
 
+Never call the owner RPCs (`approveCandidate`, `rejectCandidate`,
+`updateMemory`, `deleteMemory`) through `bb plugin rpc call` or the plugin HTTP
+route. The server cannot tell those calls apart from Settings → Memory, so the
+owner-only rule depends on agents not making them.
+
 For systematic learning from PRs and resolved review feedback, load the bundled
 `memory-dreaming` skill after the evidence is available. That skill also owns
 synthesis from provider-native observations.
