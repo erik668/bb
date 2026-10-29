@@ -38,10 +38,5 @@ export const interactionRequestParamsSchema = z
     threadId: z.string().min(1).optional(),
     turnId: z.union([z.string().min(1), z.null()]),
     payload: pendingInteractionPayloadSchema,
-    providerNativeIds: z.boolean().optional(),
   })
   .passthrough();
-
-export type InteractionRequestParams = z.infer<
-  typeof interactionRequestParamsSchema
->;

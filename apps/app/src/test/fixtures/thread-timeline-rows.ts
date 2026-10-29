@@ -305,7 +305,7 @@ interface SystemRowBase extends TimelineRowBase {
 
 interface DelegationRowArgs extends RowBaseOverrideArgs {
   callId?: string;
-  childRows?: TimelineRow[];
+  childRows?: TimelineRow[] | null;
   description?: string | null;
   durationMs?: number | null;
   id?: string;
@@ -329,10 +329,6 @@ interface TurnRowArgs extends RowBaseOverrideArgs {
   status?: TimelineRowStatus;
   summaryCount?: number;
   turnId?: string;
-}
-
-interface ReadIntentArgs {
-  path: string;
 }
 
 interface RowSequenceArgs {
@@ -481,6 +477,7 @@ export function conversationRow({
     return {
       ...rowBase,
       kind: "conversation",
+      messageSeq: rowBase.sourceSeqEnd,
       role,
       text,
       mentions: [],
@@ -504,19 +501,11 @@ export function conversationRow({
   return {
     ...rowBase,
     kind: "conversation",
+    messageSeq: rowBase.sourceSeqEnd,
     role,
     text,
     attachments,
     turnRequest: null,
-  };
-}
-
-export function readIntent({ path }: ReadIntentArgs): TimelineActivityIntent {
-  return {
-    type: "read",
-    command: `cat ${path}`,
-    name: path.split("/").pop() ?? path,
-    path,
   };
 }
 
@@ -1107,6 +1096,7 @@ export function questionRow({
         { value: "complete", label: "Complete" },
       ],
       allowFreeText: true,
+      required: true,
     },
   ],
   seq,

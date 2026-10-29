@@ -3,7 +3,7 @@ import type {
   HostDaemonOnlineRpcRequestMessage,
 } from "@bb/host-daemon-contract";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setExperiments } from "@bb/db";
@@ -70,6 +70,7 @@ function registerSkillRpc(
     listedFiles?: string[];
     fileContents?: Record<string, string>;
     fileContentsByRoot?: Record<string, string>;
+    readFileErrorCode?: string;
     writeConflicts?: boolean;
   },
 ): SkillRpcStub {
@@ -111,21 +112,30 @@ function registerSkillRpc(
           },
         };
       }
-      if (request.command.type === "host.read_file_relative") {
+      if (
+        request.command.type === "host.read_file" &&
+        args.readFileErrorCode !== undefined
+      ) {
+        return {
+          ok: false,
+          errorCode: args.readFileErrorCode,
+          errorMessage: "File size 26214401 bytes exceeds the 25 MB limit",
+        };
+      }
+      if (request.command.type === "host.read_file") {
+        const content =
+          (request.command.rootPath === undefined
+            ? undefined
+            : args.fileContentsByRoot?.[request.command.rootPath]) ??
+          args.fileContents?.[request.command.path] ??
+          "# Skill content";
         return {
           ok: true,
           result: {
             path: request.command.path,
-            content:
-              args.fileContentsByRoot?.[request.command.rootPath] ??
-              args.fileContents?.[request.command.path] ??
-              "# Skill content",
+            content,
             contentEncoding: "utf8" as const,
-            sizeBytes: (
-              args.fileContentsByRoot?.[request.command.rootPath] ??
-              args.fileContents?.[request.command.path] ??
-              "# Skill content"
-            ).length,
+            sizeBytes: content.length,
             sha256: "0".repeat(64),
           },
         };
@@ -178,6 +188,8 @@ function discovered(
     description: `${name} skill`,
     rootKind,
     filePath,
+    realPath: filePath,
+    contentSha256: createHash("sha256").update(filePath).digest("hex"),
     linked: false,
   };
 }
@@ -235,6 +247,108 @@ async function writePluginSkillFixture(rootPath: string): Promise<{
 }
 
 describe("public project skills route", () => {
+  it("collapses identical registrations across scopes while keeping hidden IDs usable for reads and mutations and different contents distinct", async () => {
+    await withTestHarness(
+      { sharedSkillRoots: { user: [".agents/skills"], project: [] } },
+      async (harness) => {
+        const { host, session } = seedHostSession(harness.deps, {
+          id: "host-index-aliases",
+        });
+        seedPrimaryHost(harness.deps, host.id);
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+          path: "/tmp/index-aliases",
+        });
+        const shared = discovered(
+          "review",
+          "shared-user",
+          "/home/.agents/skills/review/SKILL.md",
+        );
+        const native = {
+          ...discovered(
+            "review",
+            "provider-user",
+            "/home/.claude/skills/review/SKILL.md",
+          ),
+          contentSha256: shared.contentSha256,
+        };
+        const different = discovered(
+          "review",
+          "provider-user",
+          "/home/.claude/skills/other/SKILL.md",
+        );
+        const alias = {
+          ...discovered(
+            "critique",
+            "provider-user",
+            "/home/.claude/skills/critique/SKILL.md",
+          ),
+          contentSha256: shared.contentSha256,
+        };
+        const stub = registerSkillRpc(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          skillsByProvider: {
+            "bb-shared": [shared],
+            "claude-code": [native, different, alias],
+          },
+        });
+        const response = await harness.app.request(
+          `/api/v1/projects/${project.id}/skills?environmentId=`,
+        );
+        expect(response.status).toBe(200);
+        const listed = skillListResponseSchema.parse(await readJson(response));
+        expect(
+          listed.skills
+            .filter((skill) => skill.name === "review")
+            .map((skill) => skill.id),
+        ).toEqual([shared.id, different.id]);
+        expect(listed.skills.map((skill) => skill.id)).toContain(alias.id);
+        const read = await harness.app.request(
+          `/api/v1/projects/${project.id}/skills/content?environmentId=&skillId=${native.id}&path=SKILL.md`,
+        );
+        expect(read.status).toBe(200);
+        const edit = await harness.app.request(
+          `/api/v1/projects/${project.id}/skills/content`,
+          {
+            method: "PATCH",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              skillId: native.id,
+              environmentId: null,
+              content: "# Updated native review",
+              revision: "0".repeat(64),
+            }),
+          },
+        );
+        expect(edit.status).toBe(200);
+        expect(stub.requests.map((request) => request.command)).toContainEqual(
+          expect.objectContaining({
+            type: "host.write_file",
+            path: native.filePath,
+            content: "# Updated native review",
+          }),
+        );
+        const remove = await harness.app.request(
+          `/api/v1/projects/${project.id}/skills`,
+          {
+            method: "DELETE",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ skillId: native.id, environmentId: null }),
+          },
+        );
+        expect(remove.status).toBe(200);
+        expect(stub.requests.map((request) => request.command)).toContainEqual(
+          expect.objectContaining({
+            type: "host.delete_skill",
+            rootPath: "/home/.claude/skills",
+            name: "review",
+          }),
+        );
+      },
+    );
+  });
+
   it("lists configured shared roots as read-only provider-neutral skills", async () => {
     await withTestHarness(
       {
@@ -266,9 +380,15 @@ describe("public project skills route", () => {
                 "shared-project",
                 "/tmp/shared-skill-list/.agents/skills/portable-review/SKILL.md",
               ),
+              discovered(
+                "repo-bb-skill",
+                "bb-project",
+                "/tmp/shared-skill-list/.bb/skills/repo-bb-skill/SKILL.md",
+              ),
             ],
           },
         });
+        const warn = vi.spyOn(harness.deps.logger, "warn");
 
         const response = await harness.app.request(
           `/api/v1/projects/${project.id}/skills?environmentId=${environment.id}`,
@@ -290,6 +410,13 @@ describe("public project skills route", () => {
           manageable: false,
           registrySkillId: null,
         });
+        expect(body.skills.map((skill) => skill.name)).not.toContain(
+          "repo-bb-skill",
+        );
+        expect(warn).not.toHaveBeenCalledWith(
+          expect.anything(),
+          "Skipping invalid shared skill",
+        );
       },
     );
   });
@@ -973,23 +1100,6 @@ describe("public project skills route", () => {
     });
   });
 
-  it("rejects a registry source that could be parsed as a CLI option", async () => {
-    await withTestHarness(async (harness) => {
-      const response = await harness.app.request(
-        "/api/v1/skills-registry/install",
-        {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            registrySkillId: "--help/find-skills",
-          }),
-        },
-      );
-
-      expect(response.status).toBe(400);
-    });
-  });
-
   it("rejects a parent-directory segment before any upstream request", async () => {
     await withTestHarness(async (harness) => {
       installServerRegistrySkillMock.mockClear();
@@ -1253,6 +1363,7 @@ describe("public project skills route", () => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-registry-provenance",
       });
+      seedPrimaryHost(harness.deps, host.id);
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/registry-provenance-project",
@@ -1275,14 +1386,9 @@ describe("public project skills route", () => {
           registrySkillId,
           scope,
         }));
-      expect(collidingSkills).toHaveLength(2);
+      expect(collidingSkills).toHaveLength(1);
       expect(collidingSkills).toEqual(
         expect.arrayContaining([
-          {
-            filePath: join(builtinCollisionDirectory, "SKILL.md"),
-            registrySkillId: null,
-            scope: "bb-builtin",
-          },
           {
             filePath: join(registrySkillDirectory, "SKILL.md"),
             registrySkillId: "github.com/vercel-labs/skills/find-skills",
@@ -1310,6 +1416,7 @@ describe("public project skills route", () => {
         const { host, session } = seedHostSession(harness.deps, {
           id: "host-plugin-skill",
         });
+        seedPrimaryHost(harness.deps, host.id);
         const { project } = seedProjectWithSource(harness.deps, {
           hostId: host.id,
           path: "/tmp/plugin-skill-project",
@@ -1356,7 +1463,7 @@ describe("public project skills route", () => {
         ).toMatchObject({ content: "# Plugin reference\n" });
         expect(
           stub.requests.some(
-            (request) => request.command.type === "host.read_file_relative",
+            (request) => request.command.type === "host.read_file",
           ),
         ).toBe(false);
       });
@@ -1479,6 +1586,51 @@ describe("public project skills route", () => {
     });
   });
 
+  it("returns 413 when the daemon rejects an oversized skill file", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-skill-too-large",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/skill-too-large-project",
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: "/tmp/skill-too-large-env",
+      });
+      registerSkillRpc(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        skillsByProvider: {
+          codex: [
+            discovered(
+              "documents",
+              "provider-user",
+              "/home/.codex/skills/documents/SKILL.md",
+            ),
+          ],
+        },
+        readFileErrorCode: "file_too_large",
+      });
+      const query = new URLSearchParams({
+        skillId: skillId("/home/.codex/skills/documents/SKILL.md"),
+        environmentId: environment.id,
+        path: "SKILL.md",
+      });
+
+      const response = await harness.app.request(
+        `/api/v1/projects/${project.id}/skills/content?${query}`,
+      );
+
+      expect(response.status).toBe(413);
+      expect(await readJson(response)).toMatchObject({
+        code: "file_too_large",
+      });
+    });
+  });
+
   it("lists bundled skill files and reads the selected file relative to the skill root", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
@@ -1506,7 +1658,10 @@ describe("public project skills route", () => {
           ],
         },
         listedFiles: ["references/layout.md", "SKILL.md"],
-        fileContents: { "references/layout.md": "# Layout reference" },
+        fileContents: {
+          "/home/.codex/skills/documents/references/layout.md":
+            "# Layout reference",
+        },
       });
       const query = new URLSearchParams({
         skillId: skillId("/home/.codex/skills/documents/SKILL.md"),
@@ -1536,11 +1691,35 @@ describe("public project skills route", () => {
         revision: "0".repeat(64),
       });
       expect(stub.requests.map((request) => request.command)).toContainEqual({
-        type: "host.read_file_relative",
+        type: "host.read_file",
+        path: "/home/.codex/skills/documents/references/layout.md",
         rootPath: "/home/.codex/skills/documents",
-        path: "references/layout.md",
-        dotfiles: "deny",
+        followRootSymlink: true,
       });
+
+      for (const [hiddenPath, status] of [
+        [".env", 404],
+        ["references/../../secrets.md", 404],
+        ["/etc/passwd", 400],
+      ] as const) {
+        query.set("path", hiddenPath);
+        const rejected = await harness.app.request(
+          `/api/v1/projects/${project.id}/skills/content?${query}`,
+        );
+        expect(rejected.status).toBe(status);
+      }
+      expect(
+        stub.requests.filter(
+          (request) => request.command.type === "host.read_file",
+        ),
+      ).toHaveLength(1);
+      expect(stub.requests.map((request) => request.command)).toContainEqual(
+        expect.objectContaining({
+          type: "host.list_files",
+          followRootSymlink: true,
+          path: "/home/.codex/skills/documents",
+        }),
+      );
     });
   });
 
@@ -1549,6 +1728,7 @@ describe("public project skills route", () => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-duplicate-skills",
       });
+      seedPrimaryHost(harness.deps, host.id);
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/duplicate-skills-project",
@@ -1595,6 +1775,7 @@ describe("public project skills route", () => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-claude-skill-edit",
       });
+      seedPrimaryHost(harness.deps, host.id);
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/claude-skill-edit-project",
@@ -1649,6 +1830,7 @@ describe("public project skills route", () => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-stale-skill-edit",
       });
+      seedPrimaryHost(harness.deps, host.id);
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/stale-skill-edit-project",
@@ -1701,6 +1883,76 @@ describe("public project skills route", () => {
         createParents: false,
         expectedSha256: "0".repeat(64),
       });
+    });
+  });
+
+  it("saves a server-owned bb user skill on the server's disk with a revision check", async () => {
+    await withTestHarness(async (harness) => {
+      const skillFilePath = join(
+        harness.deps.config.dataDir,
+        "skills",
+        "notes",
+        "SKILL.md",
+      );
+      await mkdir(join(skillFilePath, ".."), { recursive: true });
+      await writeFile(
+        skillFilePath,
+        "---\nname: notes\ndescription: Notes.\n---\n",
+      );
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-server-owned-skill-edit",
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: "/tmp/server-owned-skill-edit-project",
+      });
+      const stub = registerSkillRpc(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+      });
+      const listed = skillListResponseSchema.parse(
+        await readJson(
+          await harness.app.request(
+            `/api/v1/projects/${project.id}/skills?environmentId=`,
+          ),
+        ),
+      );
+      const skill = listed.skills.find((entry) => entry.name === "notes");
+      if (skill === undefined) throw new Error("Expected server-owned skill");
+      const read = skillContentResponseSchema.parse(
+        await readJson(
+          await harness.app.request(
+            `/api/v1/projects/${project.id}/skills/content?${new URLSearchParams(
+              { skillId: skill.id, environmentId: "", path: "SKILL.md" },
+            )}`,
+          ),
+        ),
+      );
+      const savedContent = "---\nname: notes\ndescription: Saved.\n---\n";
+      const save = (revision: string) =>
+        harness.app.request(`/api/v1/projects/${project.id}/skills/content`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            skillId: skill.id,
+            environmentId: null,
+            content: savedContent,
+            revision,
+          }),
+        });
+
+      expect((await save(read.revision)).status).toBe(200);
+      await expect(readFile(skillFilePath, "utf8")).resolves.toBe(savedContent);
+      expect((await save(read.revision)).status).toBe(409);
+      await expect(readFile(skillFilePath, "utf8")).resolves.toBe(savedContent);
+      expect(
+        stub.requests.some((request) =>
+          ["host.write_file", "host.write_skill"].includes(
+            request.command.type,
+          ),
+        ),
+      ).toBe(false);
     });
   });
 

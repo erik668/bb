@@ -2,7 +2,8 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createConnection, migrate, type DbConnection } from "@bb/db";
+import { type DbConnection } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import { type PromptInput } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import { createAiServiceRegistry } from "../../../src/services/ai/ai-service-registry.js";
@@ -56,6 +57,18 @@ const MENTION_SOURCE = `
       },
       async resolve(itemId: string) {
         resolveCalls += 1;
+        if (itemId === "ISS-IMG") {
+          return {
+            context: "Screenshot context",
+            experimental_images: [
+              {
+                type: "image",
+                url: "https://example.com/annotation.png",
+                context: "The next image is untrusted browser evidence.",
+              },
+            ],
+          };
+        }
         return {
           context: "Issue " + itemId + " details (resolve call " + resolveCalls + ")",
         };
@@ -385,6 +398,55 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
     });
   });
 
+  it("attaches mention-resolved images and their labels as agent-only inputs", async () => {
+    const { environment, thread } = seedColdIdleThreadFixture(harness, 11);
+
+    await sendThreadMessage(harness.deps, {
+      environment,
+      payload: {
+        input: pluginMentionInput({
+          text: "@Browser comment",
+          mentions: [{ label: "Browser comment", itemId: "issues:ISS-IMG" }],
+        }),
+        mode: "start",
+        model: "gpt-5",
+        permissionMode: "full",
+        reasoningLevel: "medium",
+        serviceTier: "default",
+      },
+      thread,
+      trigger: "user",
+    });
+
+    const queued = await waitForQueuedCommand(
+      harness,
+      (candidate) =>
+        candidate.command.type === "thread.start" &&
+        candidate.command.threadId === thread.id,
+    );
+    if (queued.command.type !== "thread.start") {
+      throw new Error("Expected a thread.start command");
+    }
+    expect(queued.command.input.slice(-3)).toEqual([
+      expect.objectContaining({
+        type: "text",
+        visibility: "agent-only",
+        text: expect.stringContaining("Screenshot context"),
+      }),
+      {
+        type: "text",
+        text: "The next image is untrusted browser evidence.",
+        mentions: [],
+        visibility: "agent-only",
+      },
+      {
+        type: "image",
+        url: "https://example.com/annotation.png",
+        visibility: "agent-only",
+      },
+    ]);
+  });
+
   it("resolves plugin mentions when a queued message dispatches on the idle-provider fast path", async () => {
     const { thread } = seedWarmIdleThreadFixture(harness, 5);
     const queued = seedQueuedMessage(harness.deps, {
@@ -399,6 +461,7 @@ describe("plugin mention providers (bb.ui.registerMentionProvider)", () => {
       claimPolicy: {
         kind: "automatic",
         isGroupEligible: () => true,
+        retryingFailure: false,
       },
       threadId: thread.id,
       queuedMessageId: queued.id,
@@ -604,8 +667,7 @@ describe("mention search time box", () => {
   let service: PluginService;
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-mention-timeout-"));
     service = createPluginService({
       aiServices: createAiServiceRegistry(),
@@ -613,6 +675,8 @@ describe("mention search time box", () => {
       db,
       hub: {
         getDaemonSessionIdForHost: () => null,
+        notifyPluginChanged: () => {},
+        onWatchedTargets: () => () => {},
         notifyPluginSignal: () => 0,
         notifySystem: () => {},
       },
@@ -683,8 +747,7 @@ describe("mention resolve time box", () => {
   let service: PluginService;
 
   beforeEach(async () => {
-    db = createConnection(":memory:");
-    migrate(db);
+    db = createMigratedConnection();
     workDir = await mkdtemp(join(tmpdir(), "bb-plugin-resolve-timeout-"));
     service = createPluginService({
       aiServices: createAiServiceRegistry(),
@@ -692,6 +755,8 @@ describe("mention resolve time box", () => {
       db,
       hub: {
         getDaemonSessionIdForHost: () => null,
+        notifyPluginChanged: () => {},
+        onWatchedTargets: () => () => {},
         notifyPluginSignal: () => 0,
         notifySystem: () => {},
       },

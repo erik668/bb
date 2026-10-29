@@ -1,15 +1,16 @@
 import { z } from "zod";
-import { sourcePinSchema } from "@bb/domain";
-import { supervisorBindingSchema } from "./workflow-supervision.js";
 import {
   activeThinkingSchema,
   callerExecutionInputSourceSchema,
-  conditionalThreadStopOutcomeSchema,
+  completedTurnDisplaySchema,
   environmentSchema,
   hostSchema,
   jsonValueSchema,
+  pluginIdSchema,
+  pluginMetadataSchema,
   pendingInteractionResolutionSchema,
   pendingInteractionSchema,
+  threadTimelineSubscriptionTargetSchema,
   permissionModeInputSchema,
   promptInputSchema,
   clientTurnRequestIdSchema,
@@ -17,25 +18,31 @@ import {
   queuedMessageWaitingOnSchema,
   queuedMessageWaitReasonSchema,
   reasoningLevelSchema,
+  sessionOptionSelectionsSchema,
+  sessionOptionValueSchema,
   rawThreadIdSchema,
   serviceTierSchema,
+  startedOnBehalfOfSchema,
+  threadCreateOriginSchema,
   threadOriginKindSchema,
   threadListEntrySchema,
   threadQueuedMessageSchema,
   threadSearchSourceKindSchema,
   threadStatusSchema,
-  threadStopExpectedTurnIdSchema,
   threadTimelineActivePromptModeSchema,
   threadTimelineGoalSchema,
   threadTimelineModelFallbackSchema,
   threadTimelinePendingTodosSchema,
   threadEventTypeValues,
+  threadParentNotificationsSchema,
   threadVisibilitySchema,
   threadWithRuntimeSchema,
 } from "@bb/domain";
 import type { CallerExecutionInputSource } from "@bb/domain";
+import { THREAD_EVENT_LIST_PAGE_SIZE } from "../common.js";
+import { providerCommandSchema } from "./projects.js";
 import {
-  timelineDeltaSchema,
+  timelineConversationRowSchema,
   timelineRowSchema,
   timelineWorkflowWorkRowSchema,
 } from "../thread-timeline.js";
@@ -48,7 +55,43 @@ import {
   workspaceFileListResponseSchema,
   workspacePathListResponseSchema,
 } from "./shared.js";
-
+import {
+  DEFAULT_TURN_RETRY_REASON,
+  THREAD_MENTION_RESOLVE_MAX_IDS,
+  PLUGIN_THREAD_METADATA_LIST_MAX_IDS,
+  THREAD_ANCESTORS_LIST_MAX_IDS,
+  THREAD_DESCENDANTS_LIST_MAX_IDS,
+  THREAD_CASCADE_LIST_MAX_IDS,
+  THREAD_LIST_MAX_IDS,
+  parseThreadListThreadIds,
+  THREAD_MESSAGE_CONTEXT_LIMIT,
+} from "./thread-client-constants.js";
+import {
+  panelFileSourceSchema,
+  threadOpenSplitSchema,
+  threadPaneActionSchema,
+} from "./thread-signals.js";
+export {
+  panelFileSourceSchema,
+  threadOpenSplitSchema,
+  threadOpenSignalLenientSchema,
+  threadPaneActionSchema,
+  threadPaneActionSignalLenientSchema,
+  threadTimelineSignalLenientSchema,
+  type ReceivedThreadTimelineSignal,
+} from "./thread-signals.js";
+export {
+  DEFAULT_TURN_RETRY_REASON,
+  THREAD_MENTION_RESOLVE_MAX_IDS,
+  PLUGIN_THREAD_METADATA_LIST_MAX_IDS,
+  THREAD_ANCESTORS_LIST_MAX_IDS,
+  THREAD_DESCENDANTS_LIST_MAX_IDS,
+  THREAD_CASCADE_LIST_MAX_IDS,
+  THREAD_LIST_MAX_IDS,
+  parseThreadListThreadIds,
+  THREAD_COUNT_ROOT_PARENT,
+  THREAD_MESSAGE_CONTEXT_LIMIT,
+} from "./thread-client-constants.js";
 export const sendMessageModeSchema = z.enum([
   "queue-if-active",
   "steer-if-active",
@@ -56,30 +99,6 @@ export const sendMessageModeSchema = z.enum([
   "start",
   "steer",
 ]);
-
-export const conditionalThreadStopQuerySchema = z
-  .object({ expectedTurnId: threadStopExpectedTurnIdSchema })
-  .strict();
-export type ConditionalThreadStopQuery = z.infer<
-  typeof conditionalThreadStopQuerySchema
->;
-
-export const threadStopResponseSchema = z
-  .object({
-    ok: z.literal(true),
-    condition: conditionalThreadStopOutcomeSchema.optional(),
-  })
-  .strict();
-export type ThreadStopResponse = z.infer<typeof threadStopResponseSchema>;
-
-export const conditionalThreadStopResponseSchema =
-  threadStopResponseSchema.required({ condition: true });
-export type ConditionalThreadStopResponse = z.infer<
-  typeof conditionalThreadStopResponseSchema
->;
-
-export const threadCreateOriginSchema = z.enum(["app", "cli", "sdk", "plugin"]);
-export type ThreadCreateOrigin = z.infer<typeof threadCreateOriginSchema>;
 
 export const executionInputFieldSourceSchema = callerExecutionInputSourceSchema;
 export type ExecutionInputFieldSource = CallerExecutionInputSource;
@@ -109,33 +128,33 @@ export type ExistingThreadExecutionInputSources = z.infer<
   typeof existingThreadExecutionInputSourcesSchema
 >;
 
-export const startedOnBehalfOfInitiatorSchema = z.enum(["agent", "system"]);
-
-export const startedOnBehalfOfSchema = z.object({
-  initiator: startedOnBehalfOfInitiatorSchema,
-  senderThreadId: z.string().min(1),
-});
-export type StartedOnBehalfOf = z.infer<typeof startedOnBehalfOfSchema>;
-
 export const createThreadRequestSchema = z
   .object({
     projectId: z.string().min(1),
     providerId: z.string().min(1).optional(),
     origin: threadCreateOriginSchema,
     originPluginId: z.string().min(1).optional(),
+    pluginMetadata: pluginMetadataSchema.optional(),
+    lifecycleOwnerThreadId: z.string().min(1).optional(),
     visibility: threadVisibilitySchema.optional(),
     title: z.string().min(1).optional(),
     input: z.array(promptInputSchema),
     model: z.string().min(1).optional(),
     serviceTier: serviceTierSchema.optional(),
     reasoningLevel: reasoningLevelSchema.optional(),
+    sessionOptions: sessionOptionSelectionsSchema.optional(),
     permissionMode: permissionModeInputSchema.optional(),
     executionInputSources: createExecutionInputSourcesSchema.optional(),
     environment: createThreadEnvironmentArgsSchema,
-    experimental_sourcePin: sourcePinSchema.optional(),
-    experimental_supervisor: supervisorBindingSchema.optional(),
     parentThreadId: z.string().min(1).optional(),
+    senderThreadId: z.string().min(1).optional(),
+    /**
+     * Which turn outcomes wake the parent: `auto` (all, the default), `stuck`
+     * (failed, interrupted, or blocked on an approval or question), or `off`.
+     */
+    parentNotifications: threadParentNotificationsSchema.optional(),
     sectionId: z.string().min(1).nullable().optional(),
+    pinned: z.boolean().optional(),
     sourceThreadId: z.string().min(1).optional(),
     sourceSeqEnd: z.number().int().nonnegative().optional(),
     startedOnBehalfOf: startedOnBehalfOfSchema.nullable().default(null),
@@ -148,6 +167,9 @@ export const createThreadRequestSchema = z
      * created and creation runs exactly as it did before the queue existed.
      */
     sendAt: z.number().int().nonnegative().optional(),
+    pluginSubmission: z
+      .object({ pluginId: pluginIdSchema, data: jsonValueSchema })
+      .optional(),
   })
   .superRefine((value, ctx) => {
     if (value.origin === "plugin" && value.originPluginId === undefined) {
@@ -161,6 +183,25 @@ export const createThreadRequestSchema = z
       ctx.addIssue({
         code: "custom",
         message: 'originPluginId requires origin "plugin"',
+        path: ["originPluginId"],
+      });
+    }
+    if (value.pluginMetadata !== undefined && value.origin !== "plugin") {
+      ctx.addIssue({
+        code: "custom",
+        message: 'pluginMetadata requires origin "plugin"',
+        path: ["pluginMetadata"],
+      });
+    }
+    if (
+      value.pluginMetadata !== undefined &&
+      value.originPluginId !== undefined &&
+      !pluginIdSchema.safeParse(value.originPluginId).success
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "pluginMetadata requires originPluginId to be a valid plugin id",
         path: ["originPluginId"],
       });
     }
@@ -197,6 +238,8 @@ export const forkThreadRequestSchema = z
     environment: createThreadEnvironmentArgsSchema.optional(),
     origin: threadCreateOriginSchema.default("sdk"),
     originPluginId: z.string().min(1).optional(),
+    pluginMetadata: pluginMetadataSchema.optional(),
+    lifecycleOwnerThreadId: z.string().min(1).optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -214,10 +257,29 @@ export const forkThreadRequestSchema = z
         path: ["originPluginId"],
       });
     }
+    if (value.pluginMetadata !== undefined && value.origin !== "plugin") {
+      ctx.addIssue({
+        code: "custom",
+        message: 'pluginMetadata requires origin "plugin"',
+        path: ["pluginMetadata"],
+      });
+    }
+    if (
+      value.pluginMetadata !== undefined &&
+      value.originPluginId !== undefined &&
+      !pluginIdSchema.safeParse(value.originPluginId).success
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message:
+          "pluginMetadata requires originPluginId to be a valid plugin id",
+        path: ["originPluginId"],
+      });
+    }
   });
 export type ForkThreadRequest = z.infer<typeof forkThreadRequestSchema>;
 
-const sendMessageRequestBaseSchema = z.object({
+const sendMessageRequestFieldsSchema = z.object({
   input: z.array(promptInputSchema).min(1),
   model: z.string().optional(),
   serviceTier: serviceTierSchema.optional(),
@@ -226,15 +288,27 @@ const sendMessageRequestBaseSchema = z.object({
   executionInputSources: existingThreadExecutionInputSourcesSchema.optional(),
   mode: sendMessageModeSchema,
   senderThreadId: z.string().min(1).optional(),
+  originPluginId: pluginIdSchema.optional(),
+  pluginSubmission: z
+    .object({ pluginId: pluginIdSchema, data: jsonValueSchema })
+    .optional(),
   /**
    * Epoch ms at which this message should dispatch. Present ⇒ nothing is sent
    * now; the message is queued as a row waiting on the clock, and the due
    * sweep re-attempts it then. Absent ⇒ attempt the dispatch now.
    */
   sendAt: z.number().int().nonnegative().optional(),
+  /**
+   * Compact the thread's context with the provider's manual compaction, then
+   * deliver this message once compaction finishes; the response reports
+   * `delivery: "queued"`. Needs an idle or errored thread whose provider
+   * supports manual compaction, and cannot be combined with `sendAt` or
+   * `mode: "steer"`. Absent ⇒ send without compacting.
+   */
+  compactFirst: z.literal(true).optional(),
 });
 
-export const sendMessageRequestSchema = sendMessageRequestBaseSchema;
+export const sendMessageRequestSchema = sendMessageRequestFieldsSchema;
 export type SendMessageRequest = z.infer<typeof sendMessageRequestSchema>;
 
 /**
@@ -266,8 +340,13 @@ export type SendMessageResponse = z.infer<typeof sendMessageResponseSchema>;
 
 // `sendAt` is deliberately dropped: an edit rewrites a message that has
 // already been dispatched, so there is nothing left to schedule.
-export const editMessageRequestSchema = sendMessageRequestBaseSchema
-  .omit({ mode: true, sendAt: true })
+export const editMessageRequestSchema = sendMessageRequestFieldsSchema
+  .omit({
+    mode: true,
+    sendAt: true,
+    pluginSubmission: true,
+    compactFirst: true,
+  })
   .extend({
     operationId: z.string().min(1),
     expectedRequestSequence: z.number().int().nonnegative().optional(),
@@ -289,7 +368,6 @@ export type EditMessageResponse = z.infer<typeof editMessageResponseSchema>;
  * boundary so the queued row, its card and `bb thread queue list` all read the
  * same word whether the retry came from a plugin, the CLI or the app.
  */
-export const DEFAULT_TURN_RETRY_REASON = "Retry";
 
 export const retryTurnRequestSchema = z
   .object({
@@ -365,6 +443,13 @@ export type UpdateQueuedMessageRequest = z.infer<
   typeof updateQueuedMessageRequestSchema
 >;
 
+export const queuedMessageEditHoldResponseSchema = z.object({
+  leaseMs: z.number().int().positive(),
+});
+export type QueuedMessageEditHoldResponse = z.infer<
+  typeof queuedMessageEditHoldResponseSchema
+>;
+
 export const sendQueuedMessageRequestSchema = z.object({
   mode: sendQueuedMessageModeSchema,
 });
@@ -396,8 +481,6 @@ export type SendQueuedMessageResponse = z.infer<
 
 export const threadListResponseSchema = z.array(threadListEntrySchema);
 export type ThreadListResponse = z.infer<typeof threadListResponseSchema>;
-
-export const THREAD_MENTION_RESOLVE_MAX_IDS = 32;
 
 export const resolveThreadMentionsRequestSchema = z
   .object({
@@ -432,9 +515,6 @@ export const threadSearchHighlightRangeSchema = z
   .refine((range) => range.end > range.start, {
     message: "highlight range end must be greater than start",
   });
-export type ThreadSearchHighlightRange = z.infer<
-  typeof threadSearchHighlightRangeSchema
->;
 
 export const threadSearchMatchSchema = z
   .object({
@@ -452,7 +532,6 @@ export const threadSearchResultSchema = z
     matches: z.array(threadSearchMatchSchema),
   })
   .strict();
-export type ThreadSearchResult = z.infer<typeof threadSearchResultSchema>;
 
 export const threadSearchResultGroupSchema = z
   .object({
@@ -460,9 +539,6 @@ export const threadSearchResultGroupSchema = z
     results: z.array(threadSearchResultSchema),
   })
   .strict();
-export type ThreadSearchResultGroup = z.infer<
-  typeof threadSearchResultGroupSchema
->;
 
 export const threadSearchResponseSchema = z
   .object({
@@ -474,6 +550,16 @@ export type ThreadSearchResponse = z.infer<typeof threadSearchResponseSchema>;
 
 export const threadResponseSchema = threadWithRuntimeSchema.extend({
   activeBackgroundAgentCount: z.number().int().nonnegative(),
+  /**
+   * Whether `POST /threads/:id/restore-environment` would build this thread a
+   * replacement workspace right now. True only for a live, settled thread whose
+   * environment was destroyed while the provider that created it is still here
+   * and restores environments, and the machine it stood on is still here — so a
+   * surface can offer the action instead of discovering the refusal by making
+   * the call.
+   */
+  canRestoreEnvironment: z.boolean(),
+  canEditMessages: z.boolean(),
   canSpawnChild: z.boolean(),
   // How many messages are waiting on this thread's queue right now — waiting on
   // the clock, on the running turn, on provisioning, on an interaction, or on
@@ -503,9 +589,145 @@ export const threadGetQuerySchema = z.object({
 });
 export type ThreadGetQuery = z.infer<typeof threadGetQuerySchema>;
 
+export type ThreadPluginMetadataResponse = z.infer<typeof pluginMetadataSchema>;
+export const threadPluginMetadataQuerySchema = z
+  .object({ pluginId: pluginIdSchema })
+  .strict();
+export type ThreadPluginMetadataQuery = z.infer<
+  typeof threadPluginMetadataQuerySchema
+>;
+
+export const pluginThreadMetadataListRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    threadIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(PLUGIN_THREAD_METADATA_LIST_MAX_IDS),
+  })
+  .strict();
+export type PluginThreadMetadataListRequest = z.infer<
+  typeof pluginThreadMetadataListRequestSchema
+>;
+export const pluginThreadMetadataListResponseSchema = z
+  .object({
+    threads: z.array(
+      z
+        .object({ threadId: z.string(), metadata: pluginMetadataSchema })
+        .strict(),
+    ),
+  })
+  .strict();
+export type PluginThreadMetadataListResponse = z.infer<
+  typeof pluginThreadMetadataListResponseSchema
+>;
+
+export const threadAncestorsListRequestSchema = z
+  .object({
+    threadIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(THREAD_ANCESTORS_LIST_MAX_IDS),
+  })
+  .strict();
+export type ThreadAncestorsListRequest = z.infer<
+  typeof threadAncestorsListRequestSchema
+>;
+export const threadAncestorsListResponseSchema = z
+  .object({
+    threads: z.array(
+      z
+        .object({ threadId: z.string(), ancestorIds: z.array(z.string()) })
+        .strict(),
+    ),
+  })
+  .strict();
+export type ThreadAncestorsListResponse = z.infer<
+  typeof threadAncestorsListResponseSchema
+>;
+
+export const threadDescendantsListRequestSchema = z
+  .object({
+    threadIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(THREAD_DESCENDANTS_LIST_MAX_IDS),
+    includeArchived: z.boolean().optional(),
+    includeHidden: z.boolean().optional(),
+  })
+  .strict();
+export type ThreadDescendantsListRequest = z.infer<
+  typeof threadDescendantsListRequestSchema
+>;
+export const threadDescendantsListResponseSchema = z
+  .object({
+    threads: z.array(
+      z
+        .object({ threadId: z.string(), descendantIds: z.array(z.string()) })
+        .strict(),
+    ),
+  })
+  .strict();
+export type ThreadDescendantsListResponse = z.infer<
+  typeof threadDescendantsListResponseSchema
+>;
+export const threadCascadeActionSchema = z.enum(["archive", "delete"]);
+export type ThreadCascadeAction = z.infer<typeof threadCascadeActionSchema>;
+export const threadCascadeListRequestSchema = z
+  .object({
+    threadIds: z
+      .array(z.string().min(1))
+      .min(1)
+      .max(THREAD_CASCADE_LIST_MAX_IDS),
+    action: threadCascadeActionSchema,
+  })
+  .strict();
+export type ThreadCascadeListRequest = z.infer<
+  typeof threadCascadeListRequestSchema
+>;
+export const threadCascadeListResponseSchema = z
+  .object({
+    threads: z.array(
+      z
+        .object({ threadId: z.string(), cascadeThreadIds: z.array(z.string()) })
+        .strict(),
+    ),
+  })
+  .strict();
+export type ThreadCascadeListResponse = z.infer<
+  typeof threadCascadeListResponseSchema
+>;
+export const updateThreadPluginMetadataRequestSchema = z
+  .object({
+    pluginId: pluginIdSchema,
+    set: pluginMetadataSchema.optional(),
+    remove: z.array(z.string()).optional(),
+  })
+  .strict()
+  .superRefine(({ set, remove }, ctx) => {
+    if (remove && new Set(remove).size !== remove.length) {
+      ctx.addIssue({
+        code: "custom",
+        message: "remove contains duplicate keys",
+        path: ["remove"],
+      });
+    }
+    if (set && remove?.some((key) => Object.hasOwn(set, key))) {
+      ctx.addIssue({
+        code: "custom",
+        message: "set and remove overlap",
+        path: ["remove"],
+      });
+    }
+  });
+export type UpdateThreadPluginMetadataRequest = z.infer<
+  typeof updateThreadPluginMetadataRequestSchema
+>;
+
 export const threadWithIncludesResponseSchema = threadResponseSchema.extend({
   environment: environmentSchema.nullable().optional(),
   host: hostSchema.nullable().optional(),
+  environmentHostName: z.string().nullable().optional(),
 });
 export type ThreadWithIncludesResponse = z.infer<
   typeof threadWithIncludesResponseSchema
@@ -559,6 +781,7 @@ export type ThreadQueuedMessageListResponse = z.infer<
 
 export const threadChildSummaryResponseSchema = z.object({
   nonDeletedChildCount: z.number().int().nonnegative(),
+  unarchivedDescendantCount: z.number().int().nonnegative(),
 });
 export type ThreadChildSummaryResponse = z.infer<
   typeof threadChildSummaryResponseSchema
@@ -576,16 +799,23 @@ export const updateThreadRequestSchema = z
     parentThreadId: z.string().min(1).nullable(),
     model: z.string().min(1).nullable(),
     reasoningLevel: reasoningLevelSchema.nullable(),
+    sessionOptions: z.record(
+      z.string().min(1),
+      sessionOptionValueSchema.nullable(),
+    ),
     visibility: threadVisibilitySchema,
+    parentNotifications: threadParentNotificationsSchema,
   })
   .partial()
   .refine(
     (value) =>
+      value.parentNotifications !== undefined ||
       value.title !== undefined ||
       value.sectionId !== undefined ||
       value.parentThreadId !== undefined ||
       value.model !== undefined ||
       value.reasoningLevel !== undefined ||
+      value.sessionOptions !== undefined ||
       value.visibility !== undefined,
     "At least one field must be provided",
   );
@@ -599,16 +829,8 @@ export type ReorderPinnedThreadRequest = z.infer<
   typeof reorderPinnedThreadRequestSchema
 >;
 
-export const panelFileSourceSchema = z.enum(["workspace", "thread-storage"]);
 export type PanelFileSource = z.infer<typeof panelFileSourceSchema>;
 
-export const threadOpenSplitSchema = z.enum([
-  "right",
-  "down",
-  "left",
-  "top",
-  "replace",
-]);
 export type ThreadOpenSplit = z.infer<typeof threadOpenSplitSchema>;
 
 export const threadOpenFileSchema = z
@@ -620,12 +842,6 @@ export const threadOpenFileSchema = z
   .strict();
 export type ThreadOpenFile = z.infer<typeof threadOpenFileSchema>;
 
-const threadOpenFileLenientSchema = z.object({
-  source: panelFileSourceSchema,
-  path: z.string().min(1),
-  lineNumber: z.number().int().positive().nullable(),
-});
-
 export const threadOpenSignalSchema = z
   .object({
     type: z.literal("thread-open"),
@@ -636,14 +852,6 @@ export const threadOpenSignalSchema = z
   })
   .strict();
 export type ThreadOpenSignal = z.infer<typeof threadOpenSignalSchema>;
-
-export const threadOpenSignalLenientSchema = z.object({
-  type: z.literal("thread-open"),
-  projectId: z.string(),
-  threadId: z.string(),
-  split: threadOpenSplitSchema,
-  file: threadOpenFileLenientSchema.nullable(),
-});
 
 export const threadOpenRequestSchema = z
   .object({
@@ -658,13 +866,6 @@ export const threadOpenResponseSchema = z.object({
 });
 export type ThreadOpenResponse = z.infer<typeof threadOpenResponseSchema>;
 
-export const threadPaneActionSchema = z.enum([
-  "maximize",
-  "restore",
-  "toggle",
-  "spotlight",
-  "clear-spotlight",
-]);
 export type ThreadPaneAction = z.infer<typeof threadPaneActionSchema>;
 
 export const threadPaneActionRequestSchema = z
@@ -686,13 +887,6 @@ export type ThreadPaneActionSignal = z.infer<
   typeof threadPaneActionSignalSchema
 >;
 
-export const threadPaneActionSignalLenientSchema = z.object({
-  type: z.literal("thread-pane-action"),
-  projectId: z.string(),
-  threadId: z.string(),
-  action: threadPaneActionSchema,
-});
-
 export const threadPaneActionResponseSchema = z.object({
   delivered: z.number().int().nonnegative(),
 });
@@ -708,8 +902,15 @@ export type ThreadArchiveAllResponse = z.infer<
   typeof threadArchiveAllResponseSchema
 >;
 
+/**
+ * Reads the `threadIds` list filter. The empty string is the empty set, so a
+ * caller with no IDs gets no threads instead of every thread.
+ */
+
 export const threadListQuerySchema = z.object({
   projectId: z.string().min(1).optional(),
+  environmentId: z.string().min(1).optional(),
+  hostId: z.string().min(1).optional(),
   parentThreadId: z.string().min(1).optional(),
   sourceThreadId: z.string().min(1).optional(),
   archived: z.enum(["true", "false"]).optional(),
@@ -719,6 +920,20 @@ export const threadListQuerySchema = z.object({
   originKind: threadOriginKindSchema.optional(),
   originPluginId: z.string().min(1).optional(),
   includeHidden: z.enum(["true", "false"]).optional(),
+  threadIds: z
+    .string()
+    .refine(
+      (value) => {
+        const ids = parseThreadListThreadIds(value);
+        return (
+          ids.length <= THREAD_LIST_MAX_IDS && ids.every((id) => id.length > 0)
+        );
+      },
+      {
+        message: `threadIds must be at most ${THREAD_LIST_MAX_IDS} comma-separated thread IDs`,
+      },
+    )
+    .optional(),
   limit: z.string().regex(/^\d+$/).optional(),
   offset: z.string().regex(/^\d+$/).optional(),
 });
@@ -742,7 +957,6 @@ export type ThreadCountGroupBy = z.infer<typeof threadCountGroupBySchema>;
  * empty string would have been ambiguous with an omitted parameter, and a
  * thread id can never be `"none"` (ids are prefixed `thr_`).
  */
-export const THREAD_COUNT_ROOT_PARENT = "none";
 
 export const threadCountQuerySchema = z.object({
   status: threadStatusSchema.optional(),
@@ -804,7 +1018,6 @@ export const threadRunningEntrySchema = z.object({
   /** The machine it runs on; null while no environment has been chosen. */
   hostId: z.string().nullable(),
 });
-export type ThreadRunningEntry = z.infer<typeof threadRunningEntrySchema>;
 
 export const threadRunningResponseSchema = z.array(threadRunningEntrySchema);
 export type ThreadRunningResponse = z.infer<typeof threadRunningResponseSchema>;
@@ -817,7 +1030,7 @@ export type ThreadSearchQuery = z.infer<typeof threadSearchQuerySchema>;
 
 export const timelinePaginationCursorSchema = z
   .object({
-    anchorSeq: z.number().int().positive(),
+    anchorSeq: z.number().int().nonnegative(),
     anchorId: z.string().min(1),
   })
   .strict();
@@ -827,22 +1040,24 @@ export type TimelinePaginationCursor = z.infer<
 
 export const timelinePageMetadataSchema = z
   .object({
-    kind: z.enum(["latest", "older"]),
-    segmentLimit: z.number().int().positive(),
     returnedSegmentCount: z.number().int().nonnegative(),
-    hasOlderRows: z.boolean(),
     olderCursor: timelinePaginationCursorSchema.nullable(),
+    historySnapshot: z.string(),
+    olderRowsSourceSeqEnd: z.number().int().nonnegative().nullable(),
+    olderRowUpdates: z.array(timelineRowSchema).optional(),
   })
   .strict();
+export type TimelinePageMetadata = z.infer<typeof timelinePageMetadataSchema>;
 
 export const threadTimelineQuerySchema = z
   .object({
     includeNestedRows: z.enum(["true", "false"]),
     segmentLimit: z.string().regex(/^\d+$/),
-    beforeAnchorSeq: z.string().regex(/^[1-9]\d*$/),
+    beforeAnchorSeq: z.string().regex(/^(0|[1-9]\d*)$/),
     beforeAnchorId: z.string().min(1),
     summaryOnly: z.enum(["true", "false"]),
-    afterSequence: z.string().regex(/^\d+$/),
+    afterTag: z.string().min(1),
+    deferContent: z.enum(["true", "false"]),
   })
   .partial()
   .superRefine((query, context) => {
@@ -862,6 +1077,9 @@ export const threadTimelineQuerySchema = z
 export type ThreadTimelineQuery = z.infer<typeof threadTimelineQuerySchema>;
 
 export const timelineTurnSummaryDetailsQuerySchema = z.object({
+  beforeCursor: z.string().min(1).optional(),
+  deferContent: z.enum(["true", "false"]).optional(),
+  itemId: z.string().min(1).optional(),
   turnId: z.string().min(1),
   sourceSeqStart: z.string().regex(/^\d+$/),
   sourceSeqEnd: z.string().regex(/^\d+$/),
@@ -874,7 +1092,13 @@ export const threadEventsQuerySchema = z
   .object({
     afterSeq: z.string().regex(/^\d+$/),
     beforeSeq: z.string().regex(/^\d+$/),
-    limit: z.string().regex(/^\d+$/),
+    limit: z
+      .string()
+      .regex(/^\d+$/)
+      .refine(
+        (value) => Number(value) <= THREAD_EVENT_LIST_PAGE_SIZE,
+        `Thread event limit cannot exceed ${THREAD_EVENT_LIST_PAGE_SIZE}`,
+      ),
     order: z.enum(["asc", "desc"]),
     types: z.string().refine(
       (value) =>
@@ -895,6 +1119,29 @@ export const threadEventWaitQuerySchema = z.object({
 });
 export type ThreadEventWaitQuery = z.infer<typeof threadEventWaitQuerySchema>;
 
+const threadMessageContextCountSchema = z
+  .string()
+  .regex(/^\d+$/)
+  .refine(
+    (value) => Number(value) <= THREAD_MESSAGE_CONTEXT_LIMIT,
+    `Message context cannot exceed ${THREAD_MESSAGE_CONTEXT_LIMIT}`,
+  );
+
+export const threadMessageQuerySchema = z
+  .object({
+    before: threadMessageContextCountSchema,
+    after: threadMessageContextCountSchema,
+  })
+  .partial();
+export type ThreadMessageQuery = z.infer<typeof threadMessageQuerySchema>;
+
+export const threadMessageResponseSchema = z.object({
+  message: timelineConversationRowSchema,
+  before: z.array(timelineConversationRowSchema),
+  after: z.array(timelineConversationRowSchema),
+});
+export type ThreadMessageResponse = z.infer<typeof threadMessageResponseSchema>;
+
 export const threadStorageFilesQuerySchema = z
   .object({
     query: z.string().min(1).max(FILE_LIST_QUERY_MAX_LENGTH),
@@ -914,13 +1161,6 @@ export type ThreadStoragePathsQuery = z.infer<
   typeof threadStoragePathsQuerySchema
 >;
 
-export const threadStorageContentQuerySchema = z.object({
-  path: z.string().min(1),
-});
-export type ThreadStorageContentQuery = z.infer<
-  typeof threadStorageContentQuerySchema
->;
-
 export const threadStorageLocationResponseSchema = z
   .object({
     hostId: z.string().min(1),
@@ -931,49 +1171,155 @@ export type ThreadStorageLocationResponse = z.infer<
   typeof threadStorageLocationResponseSchema
 >;
 
-export const threadHostFileContentQuerySchema = z.object({
-  path: z.string().min(1),
-});
-export type ThreadHostFileContentQuery = z.infer<
-  typeof threadHostFileContentQuerySchema
->;
-
-export const threadFilesRawQuerySchema = z.object({
-  path: z.string().min(1),
-});
-export type ThreadFilesRawQuery = z.infer<typeof threadFilesRawQuerySchema>;
-
-export const timelineTurnSummaryDetailsRequestSchema = z.object({
-  turnId: z.string().min(1),
-  sourceSeqStart: z.number().int().nonnegative(),
-  sourceSeqEnd: z.number().int().nonnegative(),
-});
-
 export const timelineTurnSummaryDetailsResponseSchema = z.object({
+  olderCursor: z.string().nullable().optional(),
+  historySnapshot: z.string().optional(),
   rows: z.array(timelineRowSchema),
 });
 export type TimelineTurnSummaryDetailsResponse = z.infer<
   typeof timelineTurnSummaryDetailsResponseSchema
 >;
 
-export const threadTimelineResponseSchema = z.object({
-  rows: z.array(timelineRowSchema),
+const threadTimelineSessionOptionBaseShape = {
+  id: z.string().min(1),
+  label: z.string().min(1),
+  description: z.string().nullable(),
+  category: z.string().nullable(),
+};
+
+export const threadTimelineSessionOptionSchema = z.discriminatedUnion("type", [
+  z.object({
+    ...threadTimelineSessionOptionBaseShape,
+    type: z.literal("select"),
+    value: z.string(),
+    pendingValue: z.string().nullable(),
+    values: z.array(
+      z.object({
+        id: z.string().min(1),
+        label: z.string().min(1),
+        description: z.string().nullable(),
+        group: z.string().nullable(),
+      }),
+    ),
+  }),
+  z.object({
+    ...threadTimelineSessionOptionBaseShape,
+    type: z.literal("boolean"),
+    value: z.boolean(),
+    pendingValue: z.boolean().nullable(),
+  }),
+]);
+export type ThreadTimelineSessionOption = z.infer<
+  typeof threadTimelineSessionOptionSchema
+>;
+
+const threadTimelineWindowFieldsShape = {
   contextBoundarySeq: z.number().int().nonnegative().nullable(),
+  completedTurnDisplay: completedTurnDisplaySchema,
   activePromptMode: threadTimelineActivePromptModeSchema.nullable(),
   activeThinking: activeThinkingSchema.nullable(),
   activeWorkflows: z.array(timelineWorkflowWorkRowSchema),
   activeBackgroundCommands: z.array(timelineWorkflowWorkRowSchema),
   pendingTodos: threadTimelinePendingTodosSchema.nullable(),
   goal: threadTimelineGoalSchema.nullable(),
+  providerCommands: z
+    .array(providerCommandSchema.omit({ pluginId: true }))
+    .nullable(),
+  sessionOptions: z.array(threadTimelineSessionOptionSchema).nullable(),
   modelFallback: threadTimelineModelFallbackSchema.nullable(),
-  contextWindowUsage: threadContextWindowUsageSchema.optional(),
   timelinePage: timelinePageMetadataSchema,
+};
+
+export const THREAD_TIMELINE_WINDOW_FIELD_KEYS = [
+  "contextBoundarySeq",
+  "completedTurnDisplay",
+  "activePromptMode",
+  "activeThinking",
+  "activeWorkflows",
+  "activeBackgroundCommands",
+  "pendingTodos",
+  "goal",
+  "providerCommands",
+  "sessionOptions",
+  "modelFallback",
+] as const satisfies readonly (keyof typeof threadTimelineWindowFieldsShape)[];
+
+const threadTimelineTagSchema = z.string().min(1);
+
+export const threadTimelineResponseSchema = z.object({
+  rows: z.array(timelineRowSchema),
+  ...threadTimelineWindowFieldsShape,
+  contextWindowUsage: threadContextWindowUsageSchema.optional(),
   maxSeq: z.number().int().nonnegative(),
-  delta: timelineDeltaSchema.optional(),
+  tag: threadTimelineTagSchema,
 });
 export type ThreadTimelineResponse = z.infer<
   typeof threadTimelineResponseSchema
 >;
+
+export const timelineRowOrderSchema = z.array(
+  z.union([
+    z.string().min(1),
+    z.tuple([z.number().int().nonnegative(), z.number().int().positive()]),
+  ]),
+);
+export type TimelineRowOrder = z.infer<typeof timelineRowOrderSchema>;
+
+export const TIMELINE_PAGE_FIELD_KEYS = [
+  "returnedSegmentCount",
+  "olderCursor",
+  "historySnapshot",
+  "olderRowsSourceSeqEnd",
+] as const satisfies readonly (keyof TimelinePageMetadata)[];
+
+export const timelinePagePatchSchema = timelinePageMetadataSchema
+  .extend({ olderRowUpdates: z.array(timelineRowSchema).nullable() })
+  .partial();
+export type TimelinePagePatch = z.infer<typeof timelinePagePatchSchema>;
+
+export const timelineDeltaFieldsSchema = z
+  .object({
+    ...threadTimelineWindowFieldsShape,
+    contextWindowUsage: threadContextWindowUsageSchema.nullable(),
+    timelinePage: timelinePagePatchSchema,
+  })
+  .partial();
+export type TimelineDeltaFields = z.infer<typeof timelineDeltaFieldsSchema>;
+
+export const timelineDeltaSchema = z.object({
+  afterTag: threadTimelineTagSchema,
+  upsertRows: z.array(timelineRowSchema),
+  rowOrder: timelineRowOrderSchema.optional(),
+  fields: timelineDeltaFieldsSchema,
+});
+export type TimelineDelta = z.infer<typeof timelineDeltaSchema>;
+
+export const threadTimelineDeltaResponseSchema = z.object({
+  maxSeq: z.number().int().nonnegative(),
+  tag: threadTimelineTagSchema,
+  delta: timelineDeltaSchema,
+});
+export type ThreadTimelineDeltaResponse = z.infer<
+  typeof threadTimelineDeltaResponseSchema
+>;
+
+export const threadTimelineReadResponseSchema = z.union([
+  threadTimelineDeltaResponseSchema,
+  threadTimelineResponseSchema,
+]);
+export type ThreadTimelineReadResponse = z.infer<
+  typeof threadTimelineReadResponseSchema
+>;
+
+export const threadTimelineSignalSchema = z
+  .object({
+    type: z.literal("thread-timeline"),
+    target: threadTimelineSubscriptionTargetSchema,
+    afterSequence: z.null(),
+    timeline: threadTimelineReadResponseSchema,
+  })
+  .strict();
+export type ThreadTimelineSignal = z.infer<typeof threadTimelineSignalSchema>;
 
 export const threadConversationOutlineAttachmentSummarySchema = z
   .object({
@@ -996,6 +1342,15 @@ export const threadConversationOutlineItemSchema = z
   .strict();
 export type ThreadConversationOutlineItem = z.infer<
   typeof threadConversationOutlineItemSchema
+>;
+
+export const threadConversationOutlineQuerySchema = z
+  .object({
+    role: z.enum(["user", "assistant"]),
+  })
+  .partial();
+export type ThreadConversationOutlineQuery = z.infer<
+  typeof threadConversationOutlineQuerySchema
 >;
 
 export const threadConversationOutlineResponseSchema = z

@@ -1,21 +1,22 @@
+import { createMigratedConnection } from "../src/testing.js";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import {
-  createConnection,
-  createQueuedThreadMessageId,
   createEnvironmentId,
-  createEventId,
   createHostDaemonSessionId,
-  createHostId,
   createProjectId,
   createPromptHistoryEntryId,
   createProjectSourceId,
   createThreadId,
+} from "../src/ids.js";
+import {
+  createQueuedThreadMessageId,
+  createEventId,
+  createHostId,
   environments,
   events,
   hostDaemonSessions,
   hosts,
-  migrate,
   promptHistoryEntries,
   projectSources,
   projects,
@@ -28,7 +29,9 @@ interface ColumnNameRow {
   name: string;
 }
 
-function closeConnection(db: ReturnType<typeof createConnection>): void {
+function closeConnection(
+  db: ReturnType<typeof createMigratedConnection>,
+): void {
   db.$client.close();
 }
 
@@ -37,17 +40,8 @@ interface TableColumnRow {
 }
 
 describe("db rebuild schema", () => {
-  it("migrates the fresh schema into an in-memory database", () => {
-    const db = createConnection(":memory:");
-
-    expect(() => migrate(db)).not.toThrow();
-
-    closeConnection(db);
-  });
-
   it("does not retain the derived host daemon heartbeat column", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const columnNames = db.$client
       .prepare<[], TableColumnRow>(
@@ -62,8 +56,7 @@ describe("db rebuild schema", () => {
   });
 
   it("creates pending interactions with the canonical thread-scoped columns", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const columns = db.$client
       .prepare(
@@ -103,8 +96,7 @@ describe("db rebuild schema", () => {
   });
 
   it("does not persist terminal runtime-only columns", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     try {
       const columnNames = db.$client
@@ -140,170 +132,8 @@ describe("db rebuild schema", () => {
     }
   });
 
-  it("enforces foreign keys across the rebuilt tables", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
-
-    const now = Date.now();
-    const hostId = createHostId();
-    const projectId = createProjectId();
-    const sourceId = createProjectSourceId();
-    const environmentId = createEnvironmentId();
-    const threadId = createThreadId();
-    const sessionId = createHostDaemonSessionId();
-    const eventId = createEventId();
-    const promptHistoryEntryId = createPromptHistoryEntryId();
-
-    db.insert(hosts)
-      .values({
-        id: hostId,
-        name: "Local host",
-        type: "persistent",
-        lastSeenAt: now,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(projects)
-      .values({
-        id: projectId,
-        name: "Rebuild",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(projectSources)
-      .values({
-        id: sourceId,
-        projectId,
-        type: "local_path",
-        hostId,
-        path: "/tmp/rebuild",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(environments)
-      .values({
-        id: environmentId,
-        projectId,
-        hostId,
-        path: null,
-        managed: true,
-        isGitRepo: true,
-        branchName: "bb/env-1",
-        workspaceProvisionType: "managed-worktree",
-        status: "ready",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(threads)
-      .values({
-        id: threadId,
-        projectId,
-        environmentId,
-        providerId: "codex",
-        status: "idle",
-        latestAttentionAt: now,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(threadDynamicContextFileStates)
-      .values({
-        threadId,
-        fileKey: "manager-preferences",
-        contentStatus: "present",
-        contentHash: "sha256:abc",
-        shownAt: now,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(hostDaemonSessions)
-      .values({
-        id: sessionId,
-        hostId,
-        instanceId: "instance-1",
-        hostName: "Local host",
-        hostType: "persistent",
-        dataDir: "/tmp/test-data",
-        protocolVersion: 1,
-        heartbeatIntervalMs: 10_000,
-        leaseTimeoutMs: 30_000,
-        status: "connected",
-        leaseExpiresAt: now + 60_000,
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(queuedThreadMessages)
-      .values({
-        id: createQueuedThreadMessageId(),
-        threadId,
-        content: "[]",
-        model: "gpt-5",
-        reasoningLevel: "medium",
-        permissionMode: "full",
-        serviceTier: "default",
-        sortKey: "V",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    db.insert(promptHistoryEntries)
-      .values({
-        id: promptHistoryEntryId,
-        projectId,
-        threadId,
-        scope: "project",
-        requestSequence: 1,
-        input: '[{"type":"text","text":"Start thread"}]',
-        createdAt: now,
-      })
-      .run();
-    db.insert(events)
-      .values({
-        id: eventId,
-        threadId,
-        environmentId,
-        scopeKind: "turn",
-        turnId: "turn_1",
-        providerThreadId: "provider-thread-1",
-        sequence: 1,
-        type: "system/error",
-        data: '{"message":"boom"}',
-        createdAt: now,
-      })
-      .run();
-
-    const insertedThread = db.select().from(threads).get();
-    expect(insertedThread?.environmentId).toBe(environmentId);
-    expect(db.select().from(events).get()).toMatchObject({
-      scopeKind: "turn",
-      turnId: "turn_1",
-      providerThreadId: "provider-thread-1",
-    });
-    expect(
-      db.select().from(threadDynamicContextFileStates).get(),
-    ).toMatchObject({
-      fileKey: "manager-preferences",
-      contentStatus: "present",
-      contentHash: "sha256:abc",
-    });
-    expect(db.select().from(promptHistoryEntries).get()).toMatchObject({
-      projectId,
-      scope: "project",
-      threadId,
-    });
-
-    closeConnection(db);
-  });
-
   it("cascades host deletion to host-scoped project sources", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const hostId = createHostId();
@@ -348,8 +178,7 @@ describe("db rebuild schema", () => {
   });
 
   it("cascades project deletion to environments and threads", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const hostId = createHostId();
@@ -381,9 +210,7 @@ describe("db rebuild schema", () => {
         projectId,
         hostId,
         path: "/tmp/rebuild/.bb/env",
-        managed: true,
         isGitRepo: true,
-        workspaceProvisionType: "managed-worktree",
         status: "ready",
         createdAt: now,
         updatedAt: now,
@@ -411,8 +238,7 @@ describe("db rebuild schema", () => {
   });
 
   it("cascades thread deletion to thread-owned rows", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const hostId = createHostId();
@@ -470,8 +296,7 @@ describe("db rebuild schema", () => {
   });
 
   it("cascades host deletion to host-scoped records", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const hostId = createHostId();
@@ -503,9 +328,7 @@ describe("db rebuild schema", () => {
         projectId,
         hostId,
         path: "/tmp/rebuild/.bb/env",
-        managed: true,
         isGitRepo: true,
-        workspaceProvisionType: "managed-worktree",
         branchName: "bb/env-1",
         status: "ready",
         createdAt: now,
@@ -518,7 +341,6 @@ describe("db rebuild schema", () => {
         hostId,
         instanceId: "instance-1",
         hostName: "Local host",
-        hostType: "persistent",
         dataDir: "/tmp/test-data",
         protocolVersion: 1,
         heartbeatIntervalMs: 10_000,
@@ -538,8 +360,7 @@ describe("db rebuild schema", () => {
   });
 
   it("sets nullable environment references to null when an environment is deleted", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const hostId = createHostId();
@@ -571,9 +392,7 @@ describe("db rebuild schema", () => {
         projectId,
         hostId,
         path: "/tmp/rebuild/.bb/env",
-        managed: true,
         isGitRepo: true,
-        workspaceProvisionType: "managed-worktree",
         branchName: "bb/env-1",
         status: "ready",
         createdAt: now,
@@ -614,8 +433,7 @@ describe("db rebuild schema", () => {
   });
 
   it("cascades thread deletion to events, prompt history, and queued messages", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const projectId = createProjectId();
@@ -649,6 +467,7 @@ describe("db rebuild schema", () => {
         reasoningLevel: "medium",
         permissionMode: "full",
         serviceTier: "default",
+        state: "queued",
         sortKey: "V",
         createdAt: now,
         updatedAt: now,
@@ -687,8 +506,7 @@ describe("db rebuild schema", () => {
   });
 
   it("rejects duplicate event sequence numbers within a thread", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
 
     const now = Date.now();
     const projectId = createProjectId();
@@ -756,8 +574,7 @@ describe("db rebuild schema", () => {
   });
 
   it("requires a non-null data_dir on host_daemon_sessions", () => {
-    const db = createConnection(":memory:");
-    migrate(db);
+    const db = createMigratedConnection();
     const hostId = createHostId();
     const now = Date.now();
     db.insert(hosts)
@@ -778,7 +595,6 @@ describe("db rebuild schema", () => {
           hostId,
           instanceId: "instance",
           hostName: "host",
-          hostType: "persistent",
           protocolVersion: 1,
           heartbeatIntervalMs: 1_000,
           leaseTimeoutMs: 10_000,

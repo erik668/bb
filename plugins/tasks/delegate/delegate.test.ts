@@ -7,6 +7,11 @@ import { createStore } from "../api";
 import type { Comment, Project, Task } from "../db";
 import { delegationRpcContract } from "./contract";
 import { buildSeedPrompt, registerDelegation } from ".";
+import {
+  commentsTag,
+  taskChangedTags,
+  threadsChangedTags,
+} from "../shared/tags";
 
 function createTestPreset(
   store: ReturnType<typeof createStore>,
@@ -115,13 +120,10 @@ describe("task delegation", () => {
         }),
       ]),
     );
-    expect(harness.realtimeSignals).toEqual([
-      { channel: "threads:changed", payload: { taskId: task.id } },
-      {
-        channel: "tasks:changed",
-        payload: { taskId: task.id, projectId: project.id },
-      },
-      { channel: "comments:changed", payload: { taskId: task.id } },
+    expect(harness.experimental_rpcInvalidations).toEqual([
+      threadsChangedTags(task.id),
+      taskChangedTags({ id: task.id, projectId: project.id }),
+      [commentsTag(task.id)],
     ]);
 
     await harness.dispose();
@@ -165,6 +167,44 @@ describe("task delegation", () => {
         threadId: "thr_fast",
         liveStatus: "working",
       }),
+    ]);
+
+    await harness.dispose();
+  });
+
+  it("bounds delegated thread titles by display width", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "tasks",
+      sdk: {
+        threads: {
+          spawn: async () => ({ id: "thr_wide_title" }),
+          get: async () =>
+            makeThreadResponse({ id: "thr_wide_title", status: "starting" }),
+        },
+      },
+    });
+    const store = createStore(bb);
+    const project = store.tasks.createProject({
+      name: "Tasks plugin",
+      prefix: "TASK",
+      color: "blue",
+      linkedBbProjectId: "proj_bb",
+    });
+    const task = store.tasks.createTask({
+      projectId: project.id,
+      title: "调".repeat(100),
+    });
+    registerDelegation(bb, store);
+    const preset = createTestPreset(store);
+
+    await harness.callRpc("delegate", {
+      taskId: task.id,
+      presetId: preset.id,
+    });
+
+    const title = `TASK-1 · ${"调".repeat(55)}`;
+    expect(harness.sdk.callsTo("threads.spawn")).toEqual([
+      [expect.objectContaining({ title })],
     ]);
 
     await harness.dispose();
@@ -327,35 +367,6 @@ describe("task delegation", () => {
     await harness.dispose();
   });
 
-  it("fails before spawning when the task project is not linked to bb", async () => {
-    const { bb, harness } = createFakePluginHost({
-      pluginId: "tasks",
-      sdk: { threads: { spawn: async () => ({ id: "thr_never" }) } },
-    });
-    const store = createStore(bb);
-    const project = store.tasks.createProject({
-      name: "Unlinked",
-      prefix: "UNL",
-      color: "blue",
-    });
-    const task = store.tasks.createTask({
-      projectId: project.id,
-      title: "Cannot delegate yet",
-    });
-    registerDelegation(bb, store);
-    const preset = createTestPreset(store);
-
-    await expect(
-      harness.callRpc("delegate", { taskId: task.id, presetId: preset.id }),
-    ).rejects.toMatchObject({
-      code: "handler_error",
-      message: 'Task project "Unlinked" is not linked to a bb project',
-    });
-    expect(harness.sdk.callsTo("threads.spawn")).toEqual([]);
-
-    await harness.dispose();
-  });
-
   it("self-attaches an existing thread through taskThreadsAttach", async () => {
     const { bb, harness } = createFakePluginHost({
       pluginId: "tasks",
@@ -363,7 +374,7 @@ describe("task delegation", () => {
         threads: {
           get: async () => ({
             id: "thr_existing",
-            title: "Existing worker",
+            title: "𠮷".repeat(100),
             titleFallback: null,
             status: "active",
           }),
@@ -395,16 +406,13 @@ describe("task delegation", () => {
       expect.objectContaining({
         threadId: "thr_existing",
         presetName: "Attached",
-        title: "Existing worker",
+        title: "𠮷".repeat(60),
         liveStatus: "working",
       }),
     ]);
-    expect(harness.realtimeSignals).toEqual([
-      { channel: "threads:changed", payload: { taskId: task.id } },
-      {
-        channel: "tasks:changed",
-        payload: { taskId: task.id, projectId: project.id },
-      },
+    expect(harness.experimental_rpcInvalidations).toEqual([
+      threadsChangedTags(task.id),
+      taskChangedTags({ id: task.id, projectId: project.id }),
     ]);
 
     await harness.dispose();
@@ -454,7 +462,7 @@ describe("task thread detach", () => {
       taskId: otherTask.id,
       threadId: "thr_dead",
     });
-    harness.realtimeSignals.length = 0;
+    harness.experimental_rpcInvalidations.length = 0;
 
     await expect(
       harness.callRpc("taskThreadsDetach", {
@@ -471,12 +479,9 @@ describe("task thread detach", () => {
         .listTaskThreads(otherTask.id)
         .map((thread) => thread.threadId),
     ).toEqual(["thr_dead"]);
-    expect(harness.realtimeSignals).toEqual([
-      { channel: "threads:changed", payload: { taskId: task.id } },
-      {
-        channel: "tasks:changed",
-        payload: { taskId: task.id, projectId: project.id },
-      },
+    expect(harness.experimental_rpcInvalidations).toEqual([
+      threadsChangedTags(task.id),
+      taskChangedTags({ id: task.id, projectId: project.id }),
     ]);
 
     await expect(

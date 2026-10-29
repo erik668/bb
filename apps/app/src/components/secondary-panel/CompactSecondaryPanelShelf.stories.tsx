@@ -1,3 +1,4 @@
+import { ThreadInfoFixedTabContent } from "@/components/secondary-panel/thread-info-registration";
 import { useState, type ReactNode } from "react";
 import { Icon } from "@bb/shared-ui/icon";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -29,15 +30,16 @@ export default {
 
 const noop = () => {};
 
-const STORY_FILE_PATH = "apps/app/src/views/RootComposeCompactHome.tsx";
-const STORY_FILE_SOURCE = `export function RootComposeCompactHome({
-  children,
+const STORY_FILE_PATH = "apps/app/src/views/RootComposeHome.tsx";
+const STORY_FILE_SOURCE = `export function RootComposeHome({
+  isCompact,
   composer,
-}: RootComposeCompactHomeProps) {
-  const { regionRef, composerRef } = useCompactHomeMetrics();
+  compactScrollContent,
+}: RootComposeHomeProps) {
+  const { regionRef, composerRef } = useCompactHomeMetrics(isCompact);
   return (
     <div ref={regionRef} className="relative min-h-0 flex-1">
-      {children}
+      {compactScrollContent}
       <div ref={composerRef}>{composer}</div>
     </div>
   );
@@ -69,7 +71,7 @@ const MANY_TAB_PATHS: string[] = [
   "README.md",
   "apps/server/src/services/providers/provider-registry.ts",
   "an-unusually-long-component-filename-that-must-truncate.tsx",
-]
+];
 
 function StoryFileContent({ path }: { path: string }) {
   return (
@@ -121,9 +123,6 @@ function ShelfPanel({
   return (
     <ThreadSecondaryPanel
       activeTab={activeTab}
-      canUseGitUi
-      requestedMergeBaseBranch="main"
-      environmentId={undefined}
       isOpen
       metadataContent={<ThreadMetadataContent {...baseMetadataProps} />}
       tabs={tabs}
@@ -131,6 +130,8 @@ function ShelfPanel({
         {
           ariaLabel: "Show thread info panel",
           label: "Info",
+          contentFillsRegion: true,
+          renderContent: () => <ThreadInfoFixedTabContent />,
           leadingVisual: <Icon name="Info" />,
           onSelect: () => onSelectTab(infoTab),
           tab: infoTab,
@@ -139,6 +140,8 @@ function ShelfPanel({
         {
           ariaLabel: "Show diff panel",
           label: "Diff",
+          contentFillsRegion: true,
+          renderContent: () => null,
           leadingVisual: <Icon name="FileDiff" />,
           onSelect: () => onSelectTab(diffTab),
           tab: diffTab,
@@ -192,23 +195,15 @@ function Stage({ children }: { children: ReactNode }) {
   );
 }
 
-function ShelfStory({
-  initialPresentation,
-}: {
-  initialPresentation: "shelf" | "full";
-}) {
-  const [activeTab, setActiveTab] = useState<SecondaryFixedPanelTab>(
-    initialPresentation === "shelf" ? createThreadInfoFixedPanelTab() : fileTab,
-  );
+export function FullPage() {
+  const [activeTab, setActiveTab] = useState<SecondaryFixedPanelTab>(fileTab);
   const [open, setOpen] = useState(true);
-  const presentation = activeTab.kind === "thread-info" ? "shelf" : "full";
 
   return (
     <Stage>
       <CompactSecondaryPanelShelf
         open={open}
         onClose={() => setOpen(false)}
-        presentation={presentation}
         srLabel="Right panel"
       >
         <ShelfPanel
@@ -221,25 +216,11 @@ function ShelfStory({
   );
 }
 
-export function Shelf() {
-  return <ShelfStory initialPresentation="shelf" />;
-}
-
-export function FullPage() {
-  return <ShelfStory initialPresentation="full" />;
-}
-
 export function ManyTabs() {
   const [activeTab, setActiveTab] = useState<SecondaryFixedPanelTab>(fileTab);
-  const presentation = activeTab.kind === "thread-info" ? "shelf" : "full";
   return (
     <Stage>
-      <CompactSecondaryPanelShelf
-        open
-        onClose={noop}
-        presentation={presentation}
-        srLabel="Right panel"
-      >
+      <CompactSecondaryPanelShelf open onClose={noop} srLabel="Right panel">
         <ShelfPanel
           activeTab={activeTab}
           filePaths={MANY_TAB_PATHS}
@@ -257,7 +238,6 @@ export function Closed() {
       <CompactSecondaryPanelShelf
         open={false}
         onClose={noop}
-        presentation="shelf"
         srLabel="Right panel"
       >
         <ShelfPanel

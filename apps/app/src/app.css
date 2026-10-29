@@ -1,5 +1,6 @@
 @import "@fontsource-variable/inter";
 @import "@/components/ui/theme.css";
+@import "@bb/plugin-build/host-tailwind.css";
 
 @layer base {
   /*
@@ -28,8 +29,39 @@
    */
   :root {
     --bb-app-chrome-row-height: 3rem;
+    --bb-chrome-control-gap: 0.25rem;
+    --bb-panel-chrome-padding: 1rem;
     --bb-shell-height: 100dvh;
+    --bb-window-frame-top: 0px;
+    --bb-window-frame-lip: 0px;
+    --bb-window-frame-leading-lip: 0px;
     --secondary-panel-width-mobile: min(76vw, 320px);
+    --bb-sidebar-rail-padding: var(--bb-frame-rail-padding);
+    --bb-sidebar-control-size: var(--bb-frame-rail-control-size);
+    --bb-sidebar-control-icon-size: 16px;
+  }
+
+  @media (width < 48rem) and (pointer: coarse) {
+    :root {
+      --bb-sidebar-rail-padding: 12px;
+      --bb-sidebar-control-size: 36px;
+      --bb-sidebar-control-icon-size: 20px;
+    }
+  }
+
+  [data-sidebar-header-slot]
+    :where(
+      button,
+      a,
+      input,
+      select,
+      textarea,
+      [role="button"],
+      [role="link"],
+      [tabindex]
+    ) {
+    -webkit-app-region: no-drag;
+    app-region: no-drag;
   }
 
   html.bb-app-shell-root {
@@ -140,16 +172,6 @@
 
 @layer components {
   /*
-   * Tint the prompt editor's text selection with the app's selected-surface
-   * color so it matches the background that mention pills paint on themselves
-   * when selected (mention icons are SVG and never take the native highlight,
-   * so pills can't rely on `::selection` — see PromptMentionPillNodeView).
-   */
-  .ProseMirror ::selection {
-    background-color: var(--surface-selected);
-  }
-
-  /*
    * Mention-pill surface. PROMPT_MENTION_PILL_CLASS owns layout, radius, and
    * border width; this paints the theme-specific face, border, and soft shadow.
    * The --selected modifier tints the same chip for the editor's drag-select
@@ -163,86 +185,10 @@
     box-shadow: var(--pill-shadow);
   }
 
-  /* Leading mention identity: a plain near-black outline glyph or section
-   * marker (near-white in dark), with no fill. */
-  .prompt-mention-pill svg,
-  .prompt-mention-pill [data-section-mention-marker] {
+  /* Leading mention identity: a plain near-black outline glyph (near-white in
+   * dark), with no fill. */
+  .prompt-mention-pill svg {
     color: var(--pill-icon);
-  }
-
-  .prompt-mention-pill--selected {
-    background: var(--pill-surface-selected);
-    border-color: var(--pill-surface-selected-border);
-  }
-
-  /*
-   * The compact mobile composer is a single-line preview of a rich editor,
-   * not a separate plain-text field. Flatten every Markdown block and hard
-   * break into one clipped line. The editor expands before it can be edited, so
-   * the compact state only needs to preserve the real document and present its
-   * leading text. Mention pills remain inline-flex so their own labels can
-   * truncate without breaking the line. `!important` beats ProseMirror's
-   * unlayered `white-space: break-spaces` rule.
-   */
-  [data-promptbox-compact-content] .ProseMirror[contenteditable] {
-    width: 100%;
-    min-height: 0 !important;
-    max-height: 1.7em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap !important;
-  }
-
-  [data-promptbox-compact-content] .ProseMirror[contenteditable] > *,
-  [data-promptbox-compact-content]
-    .ProseMirror[contenteditable]
-    :where(blockquote, h1, h2, h3, h4, h5, h6, li, ol, p, ul) {
-    display: inline;
-    margin: 0;
-    padding: 0;
-    border: 0;
-    color: inherit;
-    font-size: inherit;
-    font-weight: inherit;
-    line-height: inherit;
-    list-style: none;
-    white-space: inherit;
-  }
-
-  [data-promptbox-compact-content]
-    .ProseMirror[contenteditable]
-    > *
-    + *::before,
-  [data-promptbox-compact-content]
-    .ProseMirror[contenteditable]
-    :where(blockquote, li)
-    > *
-    + *::before,
-  [data-promptbox-compact-content]
-    .ProseMirror[contenteditable]
-    :where(ol, ul)
-    > li
-    + li::before {
-    content: " ";
-  }
-
-  [data-promptbox-compact-content] .ProseMirror[contenteditable] br {
-    display: inline;
-    content: " ";
-  }
-
-  [data-promptbox-compact-content] .ProseMirror[contenteditable] br::after {
-    content: " ";
-  }
-
-  [data-promptbox-compact-content] .prompt-mention-pill > span:last-child {
-    min-width: 0;
-  }
-
-  [data-promptbox-editor-content]
-    .ProseMirror
-    p.is-editor-empty:first-child::before {
-    content: attr(data-placeholder);
   }
 
   /*
@@ -310,7 +256,7 @@
     }
   }
 
-  [data-promptbox] {
+  [data-composer-box] {
     container: promptbox / inline-size;
   }
 
@@ -355,18 +301,22 @@
   }
 
   @container promptbox (max-width: 30rem) {
-    [data-promptbox] [data-promptbox-full-label],
-    [data-promptbox] [data-promptbox-hide-compact] {
+    [data-composer-box] [data-promptbox-full-label],
+    [data-composer-box] [data-promptbox-hide-compact] {
       display: none !important;
     }
 
-    [data-promptbox] [data-promptbox-compact-label] {
+    [data-composer-box] [data-promptbox-compact-label] {
       display: block;
       flex: 1 1 auto;
     }
 
-    [data-promptbox] [data-promptbox-icon-only-control] {
+    [data-composer-box] [data-promptbox-icon-only-control] {
       flex-shrink: 0;
+    }
+
+    [data-composer-box] [data-promptbox-shrinkable-control] {
+      flex-shrink: 1 !important;
     }
   }
 
@@ -385,6 +335,10 @@
       flex-shrink: 0;
     }
 
+    [data-promptbox-shell] [data-promptbox-shrinkable-control] {
+      flex-shrink: 1 !important;
+    }
+
     [data-promptbox-shell] [data-promptbox-project-control] {
       flex-shrink: 0;
       max-inline-size: 10rem;
@@ -395,6 +349,35 @@
     [data-promptbox-shell] [data-promptbox-hide-branch-compact],
     [data-promptbox-shell] [data-promptbox-hide-tiny] {
       display: none !important;
+    }
+  }
+
+  @media (width < 48rem) and (pointer: coarse) {
+    [data-new-thread-footer] button {
+      min-block-size: 2.75rem;
+    }
+  }
+
+  @media (width < 48rem) {
+    [data-new-thread-footer]
+      [data-promptbox-shrinkable-control]:has(~ :not(:empty)) {
+      flex-shrink: 0 !important;
+    }
+
+    [data-new-thread-footer]
+      [data-promptbox-shrinkable-control]:has(~ :not(:empty))
+      [data-promptbox-compact-label] {
+      display: none !important;
+    }
+
+    [data-new-thread-footer]
+      [data-promptbox-icon-only-control]
+      [data-promptbox-full-label] {
+      display: block !important;
+    }
+
+    [data-new-thread-footer] [data-promptbox-icon-only-control] {
+      flex-shrink: 1;
     }
   }
 }
@@ -440,169 +423,13 @@
 }
 
 @container follow-up-composer style(--follow-up-composer-container-compact: true) {
-  [data-follow-up-composer] [data-promptbox-layout] {
-    height: 100%;
-  }
-
-  [data-follow-up-composer] [data-promptbox-main] {
-    position: static;
-  }
-
-  [data-follow-up-composer] [data-promptbox-submit-group] {
-    position: static;
-    z-index: 1;
-  }
-
-  [data-follow-up-composer] [data-promptbox-submit-action] {
-    width: 2rem;
-    height: 2rem;
-    margin-left: 0;
-    padding: 0;
-  }
-
-  [data-follow-up-composer] [data-follow-up-composer-footer] {
+  [data-follow-up-composer]:not([data-follow-up-composer-footer-visible])
+    [data-follow-up-composer-footer] {
     min-height: 0;
     max-height: 0;
     margin-top: 0;
     opacity: 0;
     pointer-events: none;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active]) {
-    overflow: hidden;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-action-row] {
-    position: absolute;
-    inset-block: 0;
-    right: 0.5rem;
-    gap: 0;
-    padding: 0;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-main] {
-    height: 3rem;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-expanded-only] {
-    display: none !important;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-scroll] {
-    height: 3rem !important;
-    min-height: 3rem !important;
-    max-height: 3rem !important;
-    overflow: hidden;
-    padding-top: 0;
-    padding-bottom: 0;
-    padding-right: 3.5rem;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content] {
-    display: flex;
-    align-items: center;
-    height: 100%;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable] {
-    width: 100%;
-    min-height: 0 !important;
-    max-height: 1.7em;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap !important;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    > *,
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    :where(blockquote, h1, h2, h3, h4, h5, h6, li, ol, p, ul) {
-    display: inline;
-    margin: 0;
-    padding: 0;
-    border: 0;
-    color: inherit;
-    font-size: inherit;
-    font-weight: inherit;
-    line-height: inherit;
-    list-style: none;
-    white-space: inherit;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    > *
-    + *::before,
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    :where(blockquote, li)
-    > *
-    + *::before,
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    :where(ol, ul)
-    > li
-    + li::before {
-    content: " ";
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    br {
-    display: inline;
-    content: " ";
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror[contenteditable]
-    br::after {
-    content: " ";
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .prompt-mention-pill
-    > span:last-child {
-    min-width: 0;
-  }
-
-  [data-follow-up-composer]:not([data-follow-up-composer-expanded])
-    [data-promptbox]:not([data-promptbox-voice-active])
-    [data-promptbox-editor-content]
-    .ProseMirror
-    p.is-editor-empty:first-child::before {
-    content: var(--promptbox-container-compact-placeholder);
   }
 }
 
@@ -668,6 +495,18 @@
     background-color: color-mix(in oklab, var(--foreground) 40%, transparent);
   }
 
+  @media (hover: none) and (pointer: coarse) {
+    .thread-scrollbar,
+    [data-sidebar="content"] {
+      scrollbar-width: none;
+    }
+
+    .thread-scrollbar::-webkit-scrollbar,
+    [data-sidebar="content"]::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
   [data-vaul-drawer-direction] [data-sidebar="content"] {
     scrollbar-color: transparent transparent;
   }
@@ -679,19 +518,21 @@
     background-color: transparent;
   }
 
-  [data-vaul-drawer-direction] [data-sidebar="content"]:hover {
-    scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent)
-      transparent;
-  }
+  @media (hover: hover) and (pointer: fine) {
+    [data-vaul-drawer-direction] [data-sidebar="content"]:hover {
+      scrollbar-color: color-mix(in oklab, var(--foreground) 20%, transparent)
+        transparent;
+    }
 
-  [data-vaul-drawer-direction]
-    [data-sidebar="content"]:hover::-webkit-scrollbar-thumb {
-    background-color: color-mix(in oklab, var(--foreground) 20%, transparent);
-  }
+    [data-vaul-drawer-direction]
+      [data-sidebar="content"]:hover::-webkit-scrollbar-thumb {
+      background-color: color-mix(in oklab, var(--foreground) 20%, transparent);
+    }
 
-  [data-vaul-drawer-direction]
-    [data-sidebar="content"]:hover::-webkit-scrollbar-thumb:hover {
-    background-color: color-mix(in oklab, var(--foreground) 40%, transparent);
+    [data-vaul-drawer-direction]
+      [data-sidebar="content"]:hover::-webkit-scrollbar-thumb:hover {
+      background-color: color-mix(in oklab, var(--foreground) 40%, transparent);
+    }
   }
 
   /*
@@ -728,26 +569,6 @@
   .persistent-scrollbar::-webkit-scrollbar-thumb:hover {
     background-color: color-mix(in oklab, var(--foreground) 40%, transparent);
   }
-
-  /*
-   * Soft right-edge fade for single-line text that is clipped horizontally
-   * (e.g. a queued-message preview). Fades the text out instead of a hard
-   * `…` ellipsis. Self-gating: short text doesn't reach the fade zone, so the
-   * fade only shows when content is actually truncated. Pair with
-   * `overflow-hidden whitespace-nowrap` (no scroll).
-   */
-  .fade-clip-right {
-    -webkit-mask-image: linear-gradient(
-      to right,
-      #000 calc(100% - 1.5rem),
-      transparent
-    );
-    mask-image: linear-gradient(
-      to right,
-      #000 calc(100% - 1.5rem),
-      transparent
-    );
-  }
 }
 
 /* Sweep the purple gradient across the `ultracode` glyphs. */
@@ -773,20 +594,37 @@
   }
 }
 
-/* Briefly highlight a conversation message that a thread-search result
- * deep-links to, then fade back to transparent. */
 @keyframes bb-search-flash {
-  from {
-    background-color: color-mix(in oklch, var(--ring) 22%, transparent);
+  0%,
+  25% {
+    background-color: var(--state-hover);
   }
-  to {
+  100% {
     background-color: transparent;
   }
 }
 
 .bb-search-flash {
   border-radius: var(--radius-lg, 0.5rem);
-  animation: bb-search-flash 1.6s ease-out;
+  background-color: var(--state-hover);
+  animation: bb-search-flash 1.6s ease-out forwards;
+}
+
+@keyframes bb-settings-search-flash {
+  0%,
+  25% {
+    background-color: var(--state-hover);
+    box-shadow: 0 0 0 0.5rem var(--state-hover);
+  }
+  100% {
+    background-color: transparent;
+    box-shadow: 0 0 0 0.5rem transparent;
+  }
+}
+
+[data-settings-anchor].bb-search-flash {
+  box-shadow: 0 0 0 0.5rem var(--state-hover);
+  animation-name: bb-settings-search-flash;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -795,7 +633,51 @@
   }
 }
 
-/* Browse hero (Extensions → Browse): the archetype chips orbiting the mini bb
+@keyframes bb-count-flash {
+  0%,
+  35% {
+    background-color: var(--foreground);
+    color: var(--background);
+  }
+}
+
+@keyframes bb-count-roll-in {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+}
+
+@keyframes bb-count-roll-out {
+  to {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+}
+
+.bb-count-flash {
+  animation: bb-count-flash 1.2s ease-out;
+}
+
+.bb-count-roll-in {
+  animation: bb-count-roll-in 280ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.bb-count-roll-out {
+  animation: bb-count-roll-out 280ms cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bb-count-roll-in {
+    animation: none;
+  }
+
+  .bb-count-roll-out {
+    display: none;
+  }
+}
+
+/* Browse hero (Plugins → Browse plugins): the archetype chips orbiting the mini bb
  * window drift slowly so the hero reads as alive without competing with the
  * composer sitting in the middle of it. Duration and delay are per-chip custom
  * properties so each chip drifts out of phase with its neighbours from one

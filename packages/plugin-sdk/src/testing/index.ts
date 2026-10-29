@@ -17,6 +17,8 @@ export {
   type FakeLogEntry,
   type FakeLogLevel,
   type FakeMentionProviderRecord,
+  type ExperimentalFakeHostRpcCall,
+  type InternalDoNotUseFakeTunnelIngress,
   type FakePluginHarness,
   type FakePluginHost,
   type FakePluginBehaviorDrivers,
@@ -34,6 +36,7 @@ export {
   type FakeSdkOverrides,
 } from "./fake-sdk.js";
 export {
+  makeHostResponse,
   makeMessageDispatchHookContext,
   makePluginAgentConfigurationContext,
   makeQueueEntry,

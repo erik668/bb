@@ -1,0 +1,30 @@
+name: Setup workspace tools
+description: Install Node and reuse the checksum-verified pinned pnpm executable.
+inputs:
+  node-version:
+    required: true
+    description: Node version to install
+  pnpm-version:
+    required: true
+    description: Pinned pnpm version
+runs:
+  using: composite
+  steps:
+    - name: Restore pnpm executable
+      continue-on-error: true
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: "1"
+      with:
+        path: ${{ runner.temp }}/pnpm-${{ inputs.pnpm-version }}/bin/pnpm
+        key: pnpm-executable-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.pnpm-version }}-${{ hashFiles('.github/actions/setup-workspace/pnpm-*.sha256') }}
+    - name: Set up pnpm
+      shell: bash
+      env:
+        PNPM_VERSION: ${{ inputs.pnpm-version }}
+      run: bash .github/actions/setup-workspace/install-pnpm.sh
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      with:
+        node-version: ${{ inputs.node-version }}
+        package-manager-cache: false

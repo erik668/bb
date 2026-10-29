@@ -2,14 +2,14 @@ Find out where a plugin can add to bb before you write one. The Plugin Guide is 
 
 ## What you get
 
-- Seven maps. They cover the app window, the command palette, the composer, and the home page. They also cover plugin settings, the plugin page in Extensions, and the plugin backend.
+- Seven maps. They cover the app window, the command palette, the composer, and the home page. They also cover plugin settings, the Plugins page, and the plugin backend.
 - A numbered card for each surface with a summary and the SDK symbols to use.
 - A list of first-party plugins that use each surface. Each name links to the plugin page when that plugin is installed or in the catalog.
 - A URL for each map, so you can link to one and use the back and forward buttons.
 
 ## How it works
 
-Open Plugin Guide from the sidebar. Click a number on the wireframe to read its card. Each card names the exact types and methods from `@get-bb/plugin-sdk` so you can search for them in your editor.
+Open Plugin Guide from the sidebar, or read the public copy at [getbb.app/plugin-guide](https://getbb.app/plugin-guide) without installing bb. Click a number on the wireframe to read its card. Each card names the exact types and methods from `@get-bb/plugin-sdk` so you can search for them in your editor.
 
 ## For agents
 

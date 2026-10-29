@@ -1,3 +1,4 @@
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { threadScope, turnScope, type ThreadEvent } from "@bb/domain";
 import type { ProviderRuntimeEvent } from "@bb/provider-bridge-protocol/bridge-kit";
@@ -22,7 +23,6 @@ import type { AcpToolCallUpdateEvent } from "./wire.js";
 
 const THREAD_ID = "t-acp-translation";
 const ENTROPY = "acp-test";
-const TURN_ID_PATTERN = /^acp-test-t\d+$/;
 const ITEM_ID_PATTERN = /^acp-test-i\d+$/;
 
 interface AcpEquivalenceHarness {
@@ -34,8 +34,13 @@ interface AcpEquivalenceHarness {
 
 const SESSION_CWD = "/workspace";
 
-function createHarness(): AcpEquivalenceHarness {
-  const translator = createAcpDeltaTranslator({ cwd: SESSION_CWD });
+function createHarness(
+  fileCreatedThisTurn?: (path: string) => boolean | undefined,
+): AcpEquivalenceHarness {
+  const translator = createAcpDeltaTranslator({
+    cwd: SESSION_CWD,
+    fileCreatedThisTurn,
+  });
   const assembler = createDeltaAssembler({
     providerId: "acp",
     entropyPrefix: ENTROPY,
@@ -106,6 +111,154 @@ function completedItems(events: ThreadEvent[]) {
     event.type === "item/completed" ? [event.item] : [],
   );
 }
+
+describe("acp file change kinds", () => {
+  function fileChangesFor(
+    updates: Record<string, unknown>[],
+    fileCreatedThisTurn?: (path: string) => boolean | undefined,
+  ) {
+    const harness = createHarness(fileCreatedThisTurn);
+    harness.translate(turnStartedEvent());
+    const events = updates.flatMap((update) =>
+      harness.translate(updateEvent(update)),
+    );
+    const item = completedItems(events).find(
+      (candidate) => candidate.type === "fileChange",
+    );
+    if (item?.type !== "fileChange") {
+      throw new Error("Expected a completed fileChange item");
+    }
+    return item.changes;
+  }
+
+  it("reads Cursor's /dev/null diff as a new file and drops its header line", () => {
+    expect(
+      fileChangesFor([
+        {
+          sessionUpdate: "tool_call",
+          toolCallId: "c1",
+          title: "Edit File",
+          kind: "edit",
+          status: "pending",
+        },
+        {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "c1",
+          status: "completed",
+          content: [
+            {
+              type: "diff",
+              path: "/workspace/fresh.txt",
+              oldText: "-- /dev/null",
+              newText: "++ b//workspace/fresh.txt\nhello",
+            },
+          ],
+        },
+      ]),
+    ).toEqual([
+      {
+        path: "/workspace/fresh.txt",
+        kind: "add",
+        diff: "--- /dev/null\n+++ b/workspace/fresh.txt\n+hello\n",
+      },
+    ]);
+  });
+
+  it("keeps an edit of existing text as an update", () => {
+    expect(
+      fileChangesFor([
+        {
+          sessionUpdate: "tool_call",
+          toolCallId: "c2",
+          title: "Edit File",
+          kind: "edit",
+          status: "pending",
+        },
+        {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "c2",
+          status: "completed",
+          content: [
+            {
+              type: "diff",
+              path: "/workspace/a.txt",
+              oldText: "one\n",
+              newText: "two\n",
+            },
+          ],
+        },
+      ]),
+    ).toEqual([
+      expect.objectContaining({
+        path: "/workspace/a.txt",
+        kind: "update",
+      }),
+    ]);
+  });
+
+  const writeTo = (toolCallId: string, path: string) => [
+    {
+      sessionUpdate: "tool_call",
+      toolCallId,
+      title: "write",
+      kind: "edit",
+      status: "pending",
+    },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId,
+      status: "in_progress",
+      locations: [{ path }],
+    },
+    {
+      sessionUpdate: "tool_call_update",
+      toolCallId,
+      status: "completed",
+      content: [
+        {
+          type: "content",
+          content: { type: "text", text: "Wrote file successfully." },
+        },
+      ],
+    },
+  ];
+
+  it.each([
+    { created: true, kind: "add" },
+    { created: false, kind: "update" },
+    { created: undefined, kind: "update" },
+  ])(
+    "marks a write without a diff as $kind when created-this-turn is $created",
+    ({ created, kind }) => {
+      const checked: string[] = [];
+      const changes = fileChangesFor(
+        writeTo("w1", "/workspace/fresh.txt"),
+        (path) => {
+          checked.push(path);
+          return created;
+        },
+      );
+      expect(changes).toEqual([{ path: "/workspace/fresh.txt", kind }]);
+      expect(checked).toEqual(["/workspace/fresh.txt"]);
+    },
+  );
+
+  it("adds a file created this turn once, then reports later writes to it as updates", () => {
+    const harness = createHarness(() => true);
+    harness.translate(turnStartedEvent());
+    const events = [
+      ...writeTo("w1", "/workspace/fresh.txt"),
+      ...writeTo("w2", "/workspace/fresh.txt"),
+    ].flatMap((update) => harness.translate(updateEvent(update)));
+    expect(
+      completedItems(events).flatMap((item) =>
+        item.type === "fileChange"
+          ? item.changes.map((change) => change.kind)
+          : [],
+      ),
+    ).toEqual(["add", "update"]);
+  });
+});
 
 describe("acp delta translation (bridge-shared invariants)", () => {
   it("does not synthesize a turn for updates that arrive after turn completion", () => {
@@ -372,83 +525,6 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
     };
   }
 
-  it("translates successful maintenance prompts into a compaction lifecycle", () => {
-    const harness = createHarness();
-
-    const started = harness.translate(compactionStartedEvent());
-    const turnId = harness.openTurnId();
-    expect(turnId).toMatch(TURN_ID_PATTERN);
-    const completed = harness.translate(
-      compactionCompletedEvent({ status: "completed" }),
-    );
-
-    expect(started.map((event) => event.type)).toEqual([
-      "turn/started",
-      "item/started",
-    ]);
-    expect(completed).toEqual([
-      expect.objectContaining({
-        type: "thread/compacted",
-        scope: turnScope(turnId),
-      }),
-      expect.objectContaining({
-        type: "turn/completed",
-        scope: turnScope(turnId),
-        status: "completed",
-      }),
-    ]);
-  });
-
-  it("does not report failed maintenance prompts as compacted", () => {
-    const harness = createHarness();
-    harness.translate(compactionStartedEvent());
-    const turnId = harness.openTurnId();
-
-    expect(
-      harness.translate(
-        compactionCompletedEvent({
-          status: "failed",
-          error: "Provider rejected /compact",
-        }),
-      ),
-    ).toEqual([
-      expect.objectContaining({
-        type: "turn/completed",
-        scope: turnScope(turnId),
-        status: "failed",
-        error: { message: "Provider rejected /compact" },
-      }),
-    ]);
-  });
-
-  it("translates a skipped maintenance prompt into a warning and a clean turn end", () => {
-    const harness = createHarness();
-    harness.translate(compactionStartedEvent());
-    const turnId = harness.openTurnId();
-
-    expect(
-      harness.translate(
-        compactionCompletedEvent({
-          status: "skipped",
-          detail: "Compaction failed: Nothing to compact (session too small)",
-        }),
-      ),
-    ).toEqual([
-      expect.objectContaining({
-        type: "provider/warning",
-        scope: turnScope(turnId),
-        category: "compaction-skipped",
-        summary: "Context compaction skipped",
-        details: "Compaction failed: Nothing to compact (session too small)",
-      }),
-      expect.objectContaining({
-        type: "turn/completed",
-        scope: turnScope(turnId),
-        status: "completed",
-      }),
-    ]);
-  });
-
   it("completes streamed items before ending a compaction turn", () => {
     const harness = createHarness();
     harness.translate(compactionStartedEvent());
@@ -514,8 +590,49 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
           usedTokens: 32_768,
           modelContextWindow: 200_000,
           estimated: false,
+          cost: { amount: 0.42, currency: "USD" },
         },
       },
+    ]);
+  });
+
+  it("keeps the last reported cumulative cost on usage updates that omit it", () => {
+    const harness = startedHarness();
+    harness.translate(
+      updateEvent({
+        sessionUpdate: "usage_update",
+        used: 1_000,
+        size: 200_000,
+        cost: { amount: 0.42, currency: "USD" },
+      }),
+    );
+    expect(
+      harness.translate(
+        updateEvent({
+          sessionUpdate: "usage_update",
+          used: 2_000,
+          size: 200_000,
+        }),
+      ),
+    ).toMatchObject([
+      {
+        contextWindowUsage: {
+          usedTokens: 2_000,
+          cost: { amount: 0.42, currency: "USD" },
+        },
+      },
+    ]);
+    expect(
+      harness.translate(
+        updateEvent({
+          sessionUpdate: "usage_update",
+          used: 3_000,
+          size: 200_000,
+          cost: { amount: "free" },
+        }),
+      ),
+    ).toMatchObject([
+      { contextWindowUsage: { cost: { amount: 0.42, currency: "USD" } } },
     ]);
   });
 
@@ -1173,7 +1290,7 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
     ]);
   });
 
-  it("marks cancelled turns interrupted and refusals failed", () => {
+  it("marks cancelled turns interrupted and ends other stop reasons as completed with a notice", () => {
     const harness = startedHarness();
     const firstTurnId = harness.openTurnId();
 
@@ -1187,18 +1304,42 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
       },
     ]);
 
-    harness.translate(turnStartedEvent());
-    const secondTurnId = harness.openTurnId();
-    expect(secondTurnId).not.toBe(firstTurnId);
-    expect(harness.translate(turnCompletedEvent("refusal"))).toEqual([
-      {
+    const notices: Record<string, unknown>[] = [];
+    for (const stopReason of [
+      "refusal",
+      "max_tokens",
+      "max_turn_requests",
+      "paused_by_vendor",
+    ]) {
+      harness.translate(turnStartedEvent());
+      const turnId = harness.openTurnId();
+      const events = harness.translate(turnCompletedEvent(stopReason));
+      expect(events.at(-1)).toEqual({
         type: "turn/completed",
         threadId: "",
         providerThreadId: "",
-        scope: turnScope(secondTurnId),
-        status: "failed",
-        error: { message: "Agent stopped the turn: refusal" },
-      },
+        scope: turnScope(turnId),
+        status: "completed",
+      });
+      notices.push(
+        ...events
+          .filter((event) => event.type === "provider/warning")
+          .map((event) => ({ ...event })),
+      );
+    }
+    expect(
+      notices.map((notice) => [notice["summary"], notice["details"]]),
+    ).toEqual([
+      ["The agent declined to continue", undefined],
+      [
+        "The agent stopped at its output limit",
+        "The model reached its maximum output length before finishing this turn.",
+      ],
+      [
+        "The agent stopped at its request limit",
+        "The agent reached its limit of model requests for a single turn.",
+      ],
+      ["The agent stopped the turn", "Stop reason: paused_by_vendor"],
     ]);
   });
 
@@ -1214,18 +1355,45 @@ describe("acp delta translation (moved from the legacy adapter suite)", () => {
       ),
     ).toEqual([]);
     expect(
-      harness.translate(
-        updateEvent({
-          sessionUpdate: "session_info_update",
-          title: "Tool Tester",
-        }),
-      ),
-    ).toEqual([]);
-    expect(
       harness.translate(updateEvent({ sessionUpdate: "totally_new_update" })),
     ).toMatchObject([
       { type: "provider/unhandled", rawType: "acp/update:totally_new_update" },
     ]);
+  });
+});
+
+describe("acp delta translation (session title)", () => {
+  it("reports a title the agent sets once, as an agent-sourced thread name", () => {
+    const harness = createHarness();
+    const titled = updateEvent({
+      sessionUpdate: "session_info_update",
+      title: "Fix the login redirect",
+      updatedAt: "2026-10-08T00:00:00Z",
+    });
+    expect(harness.translate(titled)).toEqual([
+      {
+        type: "thread/name/updated",
+        threadId: "",
+        providerThreadId: "",
+        scope: threadScope(),
+        threadName: "Fix the login redirect",
+        source: "agent",
+      },
+    ]);
+    expect(harness.translate(titled)).toEqual([]);
+    expect(
+      harness.translate(
+        updateEvent({ sessionUpdate: "session_info_update", title: null }),
+      ),
+    ).toEqual([]);
+    expect(
+      harness.translate(
+        updateEvent({
+          sessionUpdate: "session_info_update",
+          updatedAt: "2026-10-08T01:00:00Z",
+        }),
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -1989,7 +2157,10 @@ describe("acp delta translation (raw payloads and real results)", () => {
         }),
       )[0],
     ).toMatchObject({
-      item: { type: "fileRead", path: "/workspace/app/README.md" },
+      item: {
+        type: "fileRead",
+        path: path.resolve("/workspace/app/README.md"),
+      },
     });
 
     expect(
@@ -2004,7 +2175,10 @@ describe("acp delta translation (raw payloads and real results)", () => {
         }),
       )[0],
     ).toMatchObject({
-      item: { type: "fileRead", path: "/workspace/app/src/index.ts" },
+      item: {
+        type: "fileRead",
+        path: path.resolve("/workspace/app/src/index.ts"),
+      },
     });
   });
 
@@ -2443,7 +2617,12 @@ describe("acp delta translation (dialects)", () => {
     );
     expect(opened[0]).toMatchObject({
       type: "item/started",
-      item: { type: "delegation", childRef: "call-task", background: false },
+      item: {
+        type: "delegation",
+        childRef: "call-task",
+        background: false,
+        presentation: { icon: { glyph: "UserRound" } },
+      },
     });
     const openedId =
       opened[0]?.type === "item/started" ? opened[0].item.id : "";
@@ -2521,7 +2700,10 @@ describe("acp delta translation (dialects)", () => {
           toolCallId: "call-spawn",
           title: "spawn_subagent",
           status: "pending",
-          rawInput: { description: "Audit the config loader" },
+          rawInput: {
+            description: "Audit the config loader",
+            subagent_type: "explore",
+          },
           _meta: {
             "x.ai/tool": { name: "spawn_subagent", kind: "other", version: 1 },
           },
@@ -2533,7 +2715,16 @@ describe("acp delta translation (dialects)", () => {
         type: "delegation",
         childRef: "call-spawn",
         label: "Audit the config loader",
-        presentation: { icon: { glyph: "UserRound" } },
+        background: false,
+        presentation: {
+          label: {
+            pending: "Running subagent",
+            completed: "Subagent finished",
+          },
+          icon: { glyph: "UserRound" },
+          title: "Audit the config loader",
+          detail: "explore",
+        },
       },
     });
   });

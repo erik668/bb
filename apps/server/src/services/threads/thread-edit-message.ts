@@ -2,14 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   deleteThreadEventSuffixInTransaction,
+  deleteQueuedRetriesForThreadEventSuffixInTransaction,
   events,
   getActivePendingInteractionForThread,
-  getExperiments,
   getHighWaterMarks,
   getThread,
-  hasQueuedThreadMessages,
+  hasClaimedQueuedThreadMessages,
   hasRootStoredTurnStarted,
-  listActiveBackgroundTaskCountsByThreadIds,
+  classifyStoredProviderThreadClaim,
+  wouldRemoveSharedProviderSessionClaim,
+  listOpenBackgroundTaskItemRowsForThread,
+  listThreadEventSuffixBackgroundSettlementRows,
+  type AppendStoredThreadEventArgs,
   type DbQueryConnection,
 } from "@bb/db";
 import {
@@ -30,6 +34,7 @@ import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
 import {
   appendThreadEventInTransaction,
+  appendThreadEventsInTransaction,
   createClientTurnRequestId,
   parseStoredTurnRequestEvent,
 } from "./thread-events.js";
@@ -38,6 +43,7 @@ import {
   buildExecutionOptions,
   buildThreadStartCommand,
 } from "./thread-commands.js";
+import { resolveDispatchAuthor } from "./dispatch-author.js";
 import { resolvePermissionEscalation } from "./thread-runtime-config.js";
 import { requireReadyThreadEnvironment } from "./thread-turn-dispatch.js";
 import { ensureHostSessionReadyForWork } from "../hosts/host-lifecycle.js";
@@ -49,8 +55,15 @@ import {
   resolveMessageSenderThreadId,
   sendThreadMessage,
 } from "./thread-send.js";
-import { requestThreadStopForCurrentState } from "./thread-lifecycle.js";
+import {
+  requestThreadStopForCurrentState,
+  stopThreadForCurrentState,
+} from "./thread-lifecycle.js";
 import { getLeadingAgentOnlyInput } from "./deferred-first-turn-context.js";
+import {
+  resolveThreadMessageEditRefusal,
+  type ThreadMessageEditPolicyDeps,
+} from "./thread-message-edit-policy.js";
 
 type ThreadRewindPrepareCommand = Extract<
   HostDaemonCommand,
@@ -65,6 +78,13 @@ interface EditableTurn {
   requestSequence: number;
   sourceProviderThreadId: string | null;
 }
+
+const TURN_REQUEST_ROW_COLUMNS = {
+  data: events.data,
+  sequence: events.sequence,
+  threadId: events.threadId,
+  type: events.type,
+};
 
 function conflict(message: string): never {
   throw new ApiError(409, "invalid_request", message);
@@ -268,6 +288,23 @@ function resolveEditableTurnCandidate(
   ) {
     conflict("This earlier turn has no provider history");
   }
+  const precedingSessionClaim =
+    precedingCompletion?.providerThreadId == null
+      ? null
+      : classifyStoredProviderThreadClaim(db, {
+          providerThreadId: precedingCompletion.providerThreadId,
+          threadId: thread.id,
+        });
+  if (precedingSessionClaim === "foreign") {
+    conflict(
+      "This earlier turn is recorded under another thread's provider session",
+    );
+  }
+  if (precedingSessionClaim === "ambiguous") {
+    conflict(
+      "This earlier turn is recorded under a provider session another thread announced at the same moment",
+    );
+  }
   const precedingProviderCheckpoint =
     precedingTurnId === null
       ? null
@@ -279,10 +316,22 @@ function resolveEditableTurnCandidate(
   if (precedingTurnId !== null && precedingProviderCheckpoint === null) {
     conflict("This earlier provider turn has no editable history checkpoint");
   }
+  const oldMaxSequence = getHighWaterMarks(db, [thread.id])[thread.id] ?? 0;
+  if (
+    wouldRemoveSharedProviderSessionClaim(db, {
+      cutoffSequence: requestRow.sequence,
+      oldMaxSequence,
+      threadId: thread.id,
+    })
+  ) {
+    conflict(
+      "Editing this message would erase provider session ownership shared with another thread. Clear context (/clear or bb thread clear) for a new session; history is kept.",
+    );
+  }
   return {
     leadingAgentOnlyInput: getLeadingAgentOnlyInput(request.input),
     currentTurnId: accepted.turnId,
-    oldMaxSequence: getHighWaterMarks(db, [thread.id])[thread.id] ?? 0,
+    oldMaxSequence,
     precedingProviderCheckpoint,
     requestSequence: requestRow.sequence,
     sourceProviderThreadId:
@@ -294,32 +343,18 @@ function resolveEditableTurnCandidate(
 
 function resolveEditableTurn(
   db: DbQueryConnection,
+  policyDeps: ThreadMessageEditPolicyDeps,
   thread: Thread,
   requestSequence?: number,
 ): EditableTurn {
-  if (thread.archivedAt !== null || thread.deletedAt !== null) {
-    conflict("The thread is not writable");
-  }
-  const backgroundActivity = listActiveBackgroundTaskCountsByThreadIds(db, {
-    threadIds: [thread.id],
-  })[0];
-  if (
-    backgroundActivity &&
-    (backgroundActivity.activeBackgroundAgentCount > 0 ||
-      backgroundActivity.activeBackgroundCommandCount > 0 ||
-      backgroundActivity.activeWorkflowCount > 0)
-  ) {
-    conflict("Wait for background work to finish before editing the message");
+  const refusal = resolveThreadMessageEditRefusal(policyDeps, thread);
+  if (refusal !== null) {
+    conflict(refusal);
   }
 
   if (requestSequence !== undefined) {
     const requestRow = db
-      .select({
-        data: events.data,
-        sequence: events.sequence,
-        threadId: events.threadId,
-        type: events.type,
-      })
+      .select(TURN_REQUEST_ROW_COLUMNS)
       .from(events)
       .where(
         and(
@@ -337,12 +372,7 @@ function resolveEditableTurn(
   }
 
   const requestRows = db
-    .select({
-      data: events.data,
-      sequence: events.sequence,
-      threadId: events.threadId,
-      type: events.type,
-    })
+    .select(TURN_REQUEST_ROW_COLUMNS)
     .from(events)
     .where(
       and(
@@ -369,6 +399,56 @@ function resolveEditableTurn(
     }
   }
   conflict("The thread has no editable user message");
+}
+
+function listCarriedBackgroundSettlements(
+  db: DbQueryConnection,
+  args: {
+    cutoffSequence: number;
+    environmentId: string | null;
+    oldMaxSequence: number;
+    threadId: string;
+  },
+): AppendStoredThreadEventArgs[] {
+  return listThreadEventSuffixBackgroundSettlementRows(
+    db,
+    args,
+  ).flatMap<AppendStoredThreadEventArgs>((row) => {
+    const event = parseStoredEvent(row);
+    const carried = {
+      environmentId: args.environmentId,
+      scope: threadScope(),
+      threadId: args.threadId,
+    };
+    switch (event.type) {
+      case "item/backgroundTask/completed":
+        return [
+          {
+            ...carried,
+            providerThreadId: event.providerThreadId,
+            type: event.type,
+            data: {
+              providerThreadId: event.providerThreadId,
+              item: event.item,
+            },
+          },
+        ];
+      case "item/delegation/completed":
+        return [
+          {
+            ...carried,
+            providerThreadId: event.providerThreadId,
+            type: event.type,
+            data: {
+              providerThreadId: event.providerThreadId,
+              item: event.item,
+            },
+          },
+        ];
+      default:
+        return [];
+    }
+  });
 }
 
 function rewindPrepareCommandFromStart(
@@ -399,12 +479,6 @@ export async function editThreadMessage(
     thread: Thread;
   },
 ): Promise<EditMessageResponse> {
-  if (!getExperiments(deps.db).editMessages) {
-    conflict("Enable the Edit messages experiment before editing a message");
-  }
-  if (!deps.providerRegistry.supportsSessionRewind(args.thread.providerId)) {
-    conflict(`Editing messages is not supported for ${args.thread.providerId}`);
-  }
   const fingerprint = requestFingerprint(args.payload);
   const committed = findCommittedOperation(deps.db, {
     operationId: args.payload.operationId,
@@ -420,11 +494,15 @@ export async function editThreadMessage(
       requestSequence: committed.requestSequence,
     };
   }
-  if (deps.pendingInteractions.hasPendingThreadInteraction(args.thread.id)) {
+  if (
+    deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(
+      args.thread.id,
+    )
+  ) {
     conflict("Resolve the pending interaction before editing the message");
   }
-  if (hasQueuedThreadMessages(deps.db, args.thread.id)) {
-    conflict("Send or remove queued messages before editing a message");
+  if (hasClaimedQueuedThreadMessages(deps.db, args.thread.id)) {
+    conflict("Wait for queued messages being sent before editing a message");
   }
   const initialThread = getThread(deps.db, args.thread.id);
   if (!initialThread) conflict("Thread not found");
@@ -432,19 +510,40 @@ export async function editThreadMessage(
     senderThreadId: args.payload.senderThreadId,
     targetThread: initialThread,
   });
-  const initiator = senderThreadId === null ? "user" : "agent";
+  const { initiator } = resolveDispatchAuthor({
+    retrying: false,
+    senderThreadId,
+    startedOnBehalfOf: null,
+  });
 
   const initialTarget = resolveEditableTurn(
     deps.db,
+    deps,
     initialThread,
     args.payload.expectedRequestSequence,
   );
-  const editableThread = await stopThreadBeforeMessageEdit(deps, {
+  let editableThread = await stopThreadBeforeMessageEdit(deps, {
     environment: args.environment,
     threadId: initialThread.id,
   });
+  if (
+    listOpenBackgroundTaskItemRowsForThread(deps.db, {
+      threadId: initialThread.id,
+    }).length > 0
+  ) {
+    await ensureHostSessionReadyForWork(deps, {
+      hostId: args.environment.hostId,
+    });
+    await stopThreadForCurrentState(deps, editableThread, args.environment, {
+      requireStopped: true,
+    });
+    const stoppedThread = getThread(deps.db, initialThread.id);
+    if (!stoppedThread) conflict("Thread not found");
+    editableThread = stoppedThread;
+  }
   const target = resolveEditableTurn(
     deps.db,
+    deps,
     editableThread,
     initialTarget.requestSequence,
   );
@@ -490,7 +589,7 @@ export async function editThreadMessage(
     stagedProviderThreadId = prepared.providerThreadId;
   }
 
-  const requestSequence = target.oldMaxSequence + 2;
+  let requestSequence = target.oldMaxSequence + 2;
   const discardStagedRewind =
     stagedProviderThreadId === null || rewindLeaseId === null
       ? undefined
@@ -518,6 +617,7 @@ export async function editThreadMessage(
     expectedRequestSequence: _expectedRequestSequence,
     ...sendPayload
   } = args.payload;
+  let cancelledRetryCount = 0;
   try {
     await sendThreadMessage(deps, {
       beforeAppendInTransaction: ({ tx }) => {
@@ -526,8 +626,10 @@ export async function editThreadMessage(
             "Resolve the pending interaction before editing the message",
           );
         }
-        if (hasQueuedThreadMessages(tx, editableThread.id)) {
-          conflict("Send or remove queued messages before editing a message");
+        if (hasClaimedQueuedThreadMessages(tx, editableThread.id)) {
+          conflict(
+            "Wait for queued messages being sent before editing a message",
+          );
         }
         const currentThread = getThread(tx, editableThread.id);
         if (!currentThread) conflict("Thread not found");
@@ -536,6 +638,7 @@ export async function editThreadMessage(
         }
         const currentTarget = resolveEditableTurn(
           tx,
+          deps,
           currentThread,
           target.requestSequence,
         );
@@ -545,6 +648,13 @@ export async function editThreadMessage(
         ) {
           conflict("The thread changed while the edit was being prepared");
         }
+        const carriedSettlements = listCarriedBackgroundSettlements(tx, {
+          cutoffSequence: target.requestSequence,
+          environmentId: editableThread.environmentId,
+          oldMaxSequence: target.oldMaxSequence,
+          threadId: editableThread.id,
+        });
+        requestSequence = target.oldMaxSequence + 2 + carriedSettlements.length;
         appendThreadEventInTransaction(tx, {
           threadId: editableThread.id,
           environmentId: editableThread.environmentId,
@@ -565,11 +675,18 @@ export async function editThreadMessage(
             },
           },
         });
+        cancelledRetryCount =
+          deleteQueuedRetriesForThreadEventSuffixInTransaction(tx, {
+            cutoffSequence: target.requestSequence,
+            oldMaxSequence: target.oldMaxSequence,
+            threadId: editableThread.id,
+          });
         deleteThreadEventSuffixInTransaction(tx, {
           cutoffSequence: target.requestSequence,
           oldMaxSequence: target.oldMaxSequence,
           threadId: editableThread.id,
         });
+        appendThreadEventsInTransaction(tx, carriedSettlements);
       },
       environment: args.environment,
       historyReplacement: {
@@ -586,9 +703,16 @@ export async function editThreadMessage(
       thread: editableThread,
       trigger: "user",
     });
-    deps.hub.notifyThread(editableThread.id, ["history-rewritten"], {
-      projectId: editableThread.projectId,
-    });
+    deps.hub.notifyThread(
+      editableThread.id,
+      [
+        "history-rewritten",
+        ...(cancelledRetryCount > 0 ? ["queue-changed" as const] : []),
+      ],
+      {
+        projectId: editableThread.projectId,
+      },
+    );
   } catch (error) {
     await discardStagedRewind?.();
     const concurrentCommit = findCommittedOperation(deps.db, {

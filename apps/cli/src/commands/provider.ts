@@ -1,10 +1,12 @@
 import { Command } from "commander";
-import type { AvailableModel } from "@bb/domain";
-import { providerProbeRequestSchema } from "@bb/server-contract";
-import type { SystemProviderInfo } from "@bb/server-contract";
+import { collectDeclaredSessionOptions, type AvailableModel } from "@bb/domain";
+import type {
+  SystemExecutionOptionsModelLoadError,
+  SystemProviderInfo,
+} from "@bb/server-contract";
 import { action } from "../action.js";
 import { createCliBbSdk } from "../client.js";
-import { renderBorderlessTable } from "../table.js";
+import { columnWidths, printBorderlessTable } from "../table.js";
 import { outputJson } from "./helpers.js";
 import { resolveMachineEnvironmentRouting } from "./machine.js";
 
@@ -12,6 +14,7 @@ interface ProviderListCommandOptions {
   environment?: string;
   host?: string;
   json?: boolean;
+  all?: boolean;
   machine?: string;
 }
 
@@ -20,6 +23,7 @@ interface ProviderModelsCommandOptions {
   host?: string;
   json?: boolean;
   machine?: string;
+  project?: string;
   selectedModel?: string;
 }
 
@@ -45,47 +49,46 @@ export function registerProviderCommands(
 ): void {
   const provider = program
     .command("provider")
-    .description("Inspect available providers and models");
-
-  addProviderRoutingOptions(provider.command("probe <providerId>"))
-    .description(
-      "Probe one provider using cached bridge artifacts and one host RPC; no model turn",
-    )
-    .requiredOption("--model <model>", "Exact launch model identifier")
-    .requiredOption("--reasoning-level <level>", "Exact reasoning level")
-    .option("--json", "Print the full capability receipt")
-    .action(
-      action(
-        async (
-          providerId: string,
-          opts: ProviderListCommandOptions & {
-            model: string;
-            reasoningLevel: string;
-          },
-        ) => {
-          const serverUrl = getUrl();
-          const request = providerProbeRequestSchema.parse({
-            providerId,
-            model: opts.model,
-            reasoningLevel: opts.reasoningLevel,
-            ...(await resolveMachineEnvironmentRouting(opts, serverUrl)),
-          });
-          const result =
-            await createCliBbSdk(serverUrl).providers.experimental_probe(
-              request,
-            );
-          if (!outputJson(opts, result)) console.log(result);
-        },
-      ),
-    );
+    .description("Manage providers and inspect their models");
 
   addProviderRoutingOptions(provider.command("list"))
     .description("List available providers")
+    .option(
+      "--all",
+      "Include disabled providers and providers whose plugins are disabled",
+    )
     .option("--json", "Print machine-readable JSON output")
     .action(
       action(async (opts: ProviderListCommandOptions) => {
         const serverUrl = getUrl();
         const sdk = createCliBbSdk(serverUrl);
+        if (opts.all) {
+          if (opts.machine || opts.host || opts.environment)
+            throw new Error(
+              "--all shows the global provider catalog; omit --machine, --host and --environment.",
+            );
+          const catalog = await sdk.providers.catalog();
+          if (outputJson(opts, catalog)) return;
+          const rows = catalog.map((entry) => [
+            entry.id,
+            entry.displayName,
+            !entry.pluginEnabled
+              ? "Plugin disabled"
+              : !entry.enabled
+                ? "Disabled"
+                : entry.available
+                  ? "Enabled"
+                  : "Unavailable",
+          ]);
+          printBorderlessTable(
+            {
+              head: ["ID", "Name", "Status"],
+              colWidths: columnWidths(rows, [4, 4, 6]),
+            },
+            rows,
+          );
+          return;
+        }
         const providers = await sdk.providers.list(
           await resolveMachineEnvironmentRouting(opts, serverUrl),
         );
@@ -98,12 +101,37 @@ export function registerProviderCommands(
       }),
     );
 
+  for (const enabled of [true, false]) {
+    provider
+      .command(`${enabled ? "enable" : "disable"} <providerId>`)
+      .description(
+        enabled
+          ? "Enable a provider and its supplying plugin if needed"
+          : "Disable a provider without uninstalling its CLI or disabling its plugin",
+      )
+      .option("--json", "Print machine-readable JSON output")
+      .action(
+        action(async (providerId: string, opts: { json?: boolean }) => {
+          const catalog = await createCliBbSdk(getUrl()).providers.setEnabled({
+            providerId,
+            enabled,
+          });
+          if (outputJson(opts, catalog)) return;
+          console.log(`${providerId} ${enabled ? "enabled" : "disabled"}`);
+        }),
+      );
+  }
+
   addProviderRoutingOptions(provider.command("models [providerId]"))
     .description("List available models for a provider")
+    .option(
+      "--project <id>",
+      "Project whose checkout on the machine the provider reads its models and options from",
+    )
     .option("--json", "Print machine-readable JSON output")
     .option(
       "--selected-model <model>",
-      "Include a selected-only model if it matches",
+      "Discover reasoning for this model and include it if selected-only",
     )
     .action(
       action(
@@ -111,17 +139,33 @@ export function registerProviderCommands(
           providerId: string | undefined,
           opts: ProviderModelsCommandOptions,
         ) => {
+          if (opts.project !== undefined && opts.environment !== undefined) {
+            throw new Error(
+              "Cannot combine --project with --environment; the environment already selects its workspace.",
+            );
+          }
           const serverUrl = getUrl();
           const sdk = createCliBbSdk(serverUrl);
+          const routing = await resolveMachineEnvironmentRouting(
+            opts,
+            serverUrl,
+          );
           const executionOptions = await sdk.providers.models({
-            ...(await resolveMachineEnvironmentRouting(opts, serverUrl)),
+            ...(routing.environmentId !== undefined ||
+            opts.project === undefined
+              ? routing
+              : { ...routing, projectId: opts.project }),
             ...(providerId ? { providerId } : {}),
+            ...(opts.selectedModel
+              ? { selectedModel: opts.selectedModel }
+              : {}),
           });
           const models = includeSelectedOnlyModel({
             models: executionOptions.models,
             selectedOnlyModels: executionOptions.selectedOnlyModels,
             selectedModel: opts.selectedModel,
           });
+          printModelLoadError(executionOptions.modelLoadError);
           if (outputJson(opts, models)) return;
           if (models.length === 0) {
             console.log("No models available");
@@ -150,19 +194,27 @@ function includeSelectedOnlyModel(
 
 function printProviderTable(providers: SystemProviderInfo[]): void {
   const rows = providers.map((provider) => [provider.id, provider.displayName]);
-  const idWidth = Math.max(4, ...rows.map((row) => row[0].length));
-  const nameWidth = Math.max(4, ...rows.map((row) => row[1].length));
-  const table = renderBorderlessTable(
+  printBorderlessTable(
     {
       head: ["ID", "Name"],
-      colWidths: [idWidth, nameWidth],
+      colWidths: columnWidths(rows, [4, 4]),
     },
     rows,
   );
+}
 
-  console.log("");
-  console.log(table);
-  console.log("");
+function printModelLoadError(
+  modelLoadError: SystemExecutionOptionsModelLoadError | null,
+): void {
+  if (modelLoadError === null) {
+    return;
+  }
+  console.error(
+    `Could not load models for ${modelLoadError.providerId} (${modelLoadError.code})`,
+  );
+  if (modelLoadError.detail !== null) {
+    console.error(`  ${modelLoadError.detail}`);
+  }
 }
 
 function printModelTable(models: AvailableModel[], providerId?: string): void {
@@ -170,24 +222,60 @@ function printModelTable(models: AvailableModel[], providerId?: string): void {
     console.log(`Models for ${providerId}:`);
   }
 
+  const listsServiceTiers = models.some(
+    (model) => model.supportedServiceTiers !== undefined,
+  );
   const rows = models.map((model) => [
     model.model,
     model.displayName ?? model.model,
     model.isDefault ? "*" : "",
+    ...(listsServiceTiers
+      ? [
+          model.supportedServiceTiers === undefined
+            ? ""
+            : model.supportedServiceTiers.length === 0
+              ? "-"
+              : model.supportedServiceTiers.map((tier) => tier.id).join(", "),
+        ]
+      : []),
   ]);
-  const modelWidth = Math.max(5, ...rows.map((row) => row[0].length));
-  const nameWidth = Math.max(4, ...rows.map((row) => row[1].length));
-  const defaultWidth = Math.max(7, ...rows.map((row) => row[2].length));
-  const table = renderBorderlessTable(
+  printBorderlessTable(
     {
-      head: ["Model", "Name", "Default"],
-      colWidths: [modelWidth, nameWidth, defaultWidth],
+      head: [
+        "Model",
+        "Name",
+        "Default",
+        ...(listsServiceTiers ? ["Service tiers"] : []),
+      ],
+      colWidths: columnWidths(
+        rows,
+        listsServiceTiers ? [5, 4, 7, 13] : [5, 4, 7],
+      ),
       trimTrailingWhitespace: true,
     },
     rows,
   );
+  for (const line of formatDeclaredSessionOptions(models)) {
+    console.log(line);
+  }
+}
 
-  console.log("");
-  console.log(table);
-  console.log("");
+export function formatDeclaredSessionOptions(
+  models: readonly AvailableModel[],
+): string[] {
+  const options = collectDeclaredSessionOptions(models);
+  if (options.length === 0) {
+    return [];
+  }
+  return [
+    "",
+    "Options (set with bb thread spawn --option <id>=<value>):",
+    ...options.map((option) =>
+      option.type === "boolean"
+        ? `  ${option.id} (${option.label}): true | false, default ${String(option.value)}`
+        : `  ${option.id} (${option.label}): ${option.values
+            .map((value) => value.id)
+            .join(" | ")}, default ${option.value}`,
+    ),
+  ];
 }

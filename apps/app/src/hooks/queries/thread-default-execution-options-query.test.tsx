@@ -1,7 +1,12 @@
 // @vitest-environment jsdom
-import { cleanup, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { ResolvedThreadExecutionOptions } from "@bb/domain";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { threadDefaultExecutionOptionsQueryKey } from "./query-keys";
+import {
+  readCachedThreadExecutionOptions,
+  threadExecutionOptionsCacheKey,
+} from "@/lib/thread-execution-options-cache";
 import { sdk } from "@/lib/sdk";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { useThreadDefaultExecutionOptions } from "./thread-default-execution-options-query";
@@ -16,6 +21,7 @@ vi.mock("@/lib/sdk", () => ({
 
 vi.mock("@/hooks/useRealtimeSubscription", () => ({
   useThreadDetailRealtimeSubscription: vi.fn(),
+  useThreadTimelineRealtimeSubscription: vi.fn(),
 }));
 
 const RESOLVED: ResolvedThreadExecutionOptions = {
@@ -92,30 +98,41 @@ describe("useThreadDefaultExecutionOptions", () => {
     await waitFor(() => expect(warm.result.current.data).toBeNull());
     warm.unmount();
 
-    vi.mocked(sdk.threads.defaultExecutionOptions).mockImplementation(
-      pendingForever,
-    );
-    const reload = createQueryClientTestHarness();
-    const { result } = renderHook(
-      () => useThreadDefaultExecutionOptions("thr_1"),
-      { wrapper: reload.wrapper },
-    );
-    expect(result.current.data).toBeUndefined();
+    expect(
+      window.localStorage.getItem(threadExecutionOptionsCacheKey("thr_1")),
+    ).toBeNull();
   });
 
-  it("ignores a stored value that no longer matches the schema", async () => {
-    window.localStorage.setItem(
-      "bb.thread-execution-options.1.thr_1",
-      JSON.stringify({ model: "gpt-5.6-sol", reasoningLevel: "cosmic" }),
-    );
-    vi.mocked(sdk.threads.defaultExecutionOptions).mockImplementation(
-      pendingForever,
-    );
-    const { wrapper } = createQueryClientTestHarness();
+  it("does not persist a canceled response over newer execution defaults", async () => {
+    let resolveOld!: (value: ResolvedThreadExecutionOptions) => void;
+    vi.mocked(sdk.threads.defaultExecutionOptions)
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveOld = resolve;
+          }),
+      )
+      .mockResolvedValue(RESOLVED);
+    const { queryClient, wrapper } = createQueryClientTestHarness();
     const { result } = renderHook(
       () => useThreadDefaultExecutionOptions("thr_1"),
       { wrapper },
     );
-    expect(result.current.data).toBeUndefined();
+    await waitFor(() =>
+      expect(sdk.threads.defaultExecutionOptions).toHaveBeenCalledTimes(1),
+    );
+    const queryKey = threadDefaultExecutionOptionsQueryKey("thr_1");
+    await act(async () => {
+      await queryClient.cancelQueries({ queryKey });
+      await queryClient.invalidateQueries({ queryKey });
+    });
+    await waitFor(() => expect(result.current.data).toEqual(RESOLVED));
+    await act(async () => {
+      resolveOld({ ...RESOLVED, serviceTier: "fast" });
+    });
+    expect(result.current.data).toEqual(RESOLVED);
+    expect(
+      readCachedThreadExecutionOptions(threadExecutionOptionsCacheKey("thr_1")),
+    ).toEqual(RESOLVED);
   });
 });

@@ -8,13 +8,13 @@ import type {
   ProviderResolvedNativeRoot,
 } from "@bb/domain";
 import type { HostDaemonOnlineRpcResult } from "@bb/host-daemon-contract";
+import { isPathWithinDirectory } from "@bb/process-utils";
 import {
   CommandDispatchError,
   type CommandOf,
 } from "../command-dispatch-support.js";
 import {
   discoverProviderCommands,
-  isPathWithinDirectory,
   type CommandScanRoot,
 } from "../command-discovery.js";
 
@@ -316,7 +316,14 @@ async function resolvedScanRoots(args: {
   for (const root of args.roots) {
     const single = resolvedSingleScanRoot(root, args.providerId);
     if (single !== null) {
-      roots.push(single);
+      roots.push(
+        root.origin === "project" && args.workspace !== null
+          ? {
+              ...single,
+              boundaryPath: (await args.workspace.ancestors()).projectRootPath,
+            }
+          : single,
+      );
       continue;
     }
     const workspace = root.origin === "project" ? args.workspace : null;
@@ -331,7 +338,7 @@ async function resolvedScanRoots(args: {
           providerId: args.providerId,
           recursive: root.recursive,
           skipIfManifest: root.skipIfManifest,
-          relativePath: path.relative(workspace.cwd, root.path),
+          relativePath: toPosixRelativePath(workspace.cwd, root.path),
           side: args.side,
           workspace,
         })),

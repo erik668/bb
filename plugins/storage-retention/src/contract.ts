@@ -1,0 +1,147 @@
+import {
+  hostStorageResponseSchema,
+  hostStorageListResponseSchema,
+  hostStorageRemoveOrphansResponseSchema,
+  hostStorageRetryWorktreeCleanupResponseSchema,
+  hostStorageRemoveExternalWorktreesResponseSchema,
+  externalWorktreeSkipReasonSchema,
+  maintenanceKindSchema,
+  entryCleanupInputSchema,
+  entryCleanupStatusSchema,
+} from "./storage-types.js";
+import { defineRpcContract } from "@get-bb/plugin-sdk";
+import { z } from "zod";
+
+const daysSchema = z.number().int().min(1).max(3650).nullable();
+export const policySchema = z
+  .object({
+    archiveAfterDays: daysSchema,
+    deleteAfterDays: daysSchema,
+    deleteStorageOnArchive: z.boolean().default(false),
+    deleteDevDataOnCheckoutRemoval: z.boolean().default(false),
+  })
+  .strict();
+export type Policy = z.infer<typeof policySchema>;
+export const runSchema = z.object({
+  ranAt: z.number(),
+  archivedCount: z.number().int().nonnegative(),
+  deletedCount: z.number().int().nonnegative(),
+  failedCount: z.number().int().nonnegative(),
+});
+export type Run = z.infer<typeof runSchema>;
+export const stateSchema = z.object({
+  policy: policySchema,
+  lastRun: runSchema.nullable(),
+});
+export type State = z.infer<typeof stateSchema>;
+export const previewSchema = z.object({
+  archiveCount: z.number().int().nonnegative(),
+  deleteCount: z.number().int().nonnegative(),
+});
+export type Preview = z.infer<typeof previewSchema>;
+const machineInput = z.object({ hostId: z.string().min(1) }).strict();
+export const storageRpc = defineRpcContract({
+  startEntryCleanup: {
+    input: entryCleanupInputSchema,
+    output: z.object({ id: z.string() }),
+  },
+  entryCleanup: {
+    input: z.object({ id: z.string() }).strict(),
+    output: entryCleanupStatusSchema,
+  },
+  startCleanup: {
+    input: z
+      .object({
+        hostId: z.string().min(1),
+        kind: maintenanceKindSchema,
+      })
+      .strict(),
+    output: z.null(),
+  },
+  hosts: { input: z.null(), output: hostStorageListResponseSchema },
+  host: { input: machineInput, output: hostStorageResponseSchema },
+  scanHost: { input: machineInput, output: hostStorageResponseSchema },
+  scanAll: { input: z.null(), output: hostStorageListResponseSchema },
+  removeOrphans: {
+    input: machineInput,
+    output: hostStorageRemoveOrphansResponseSchema,
+  },
+  retryWorktreeCleanup: {
+    input: machineInput,
+    output: hostStorageRetryWorktreeCleanupResponseSchema,
+  },
+  removeExternalWorktrees: {
+    input: z.union([
+      z.object({ hostId: z.string().min(1), paths: z.null() }).strict(),
+      z
+        .object({
+          hostId: z.string().min(1),
+          paths: z.array(z.string().min(1)).min(1).max(500),
+          force: z.boolean(),
+        })
+        .strict(),
+    ]),
+    output: hostStorageRemoveExternalWorktreesResponseSchema,
+  },
+  startRemoveExternalWorktree: {
+    input: z
+      .object({
+        hostId: z.string().min(1),
+        path: z.string().min(1),
+        force: z.boolean(),
+      })
+      .strict(),
+    output: z.discriminatedUnion("state", [
+      z.object({ state: z.literal("started") }),
+      z.object({
+        state: z.literal("skipped"),
+        reasons: z.array(externalWorktreeSkipReasonSchema).min(1),
+      }),
+    ]),
+  },
+  startClearLargeFiles: {
+    input: z.object({ hostId: z.string().min(1).nullable() }).strict(),
+    output: z.null(),
+  },
+  clearLargeFiles: {
+    input: z.object({ hostId: z.string().min(1).nullable() }).strict(),
+    output: z.object({
+      clearedFiles: z.number().int().nonnegative(),
+      clearedBytes: z.number().int().nonnegative(),
+    }),
+  },
+  clearThread: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({ ok: z.literal(true) }),
+  },
+  startClearArchivedFiles: { input: machineInput, output: z.null() },
+  clearArchivedFiles: {
+    input: machineInput,
+    output: z.object({
+      clearedThreads: z.number().int().nonnegative(),
+      clearedBytes: z.number().int().nonnegative(),
+    }),
+  },
+  removeDevInstances: {
+    input: z.union([
+      z.object({ hostId: z.string().min(1), names: z.null() }).strict(),
+      z
+        .object({
+          hostId: z.string().min(1),
+          names: z.array(z.string().min(1)).min(1).max(500),
+          stopRunning: z.boolean(),
+        })
+        .strict(),
+    ]),
+    output: z.object({
+      running: z.array(z.string()),
+      removedCount: z.number().int().nonnegative(),
+      removedBytes: z.number().int().nonnegative(),
+      skippedCount: z.number().int().nonnegative(),
+      stoppedProcessCount: z.number().int().nonnegative(),
+    }),
+  },
+  state: { input: z.null(), output: stateSchema },
+  preview: { input: policySchema, output: previewSchema },
+  configure: { input: policySchema, output: stateSchema },
+});

@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 import {
   CONNECT_SESSION_EXPIRES_IN_SECONDS,
   CONNECT_SESSION_UPDATE_AGE_SECONDS,
@@ -9,61 +9,186 @@ import {
   profile,
   server,
   session,
+  sha256Hex,
 } from "@bb/connect-db";
 
-const LABEL_TTL_MS = 15_000;
-const SESSION_TTL_MS = 20_000;
+const LABEL_TTL_MS = 60_000;
+const LABEL_MISS_TTL_MS = 15_000;
+const SESSION_TTL_MS = 60_000;
+const SESSION_MISS_TTL_MS = 20_000;
+const MACHINE_CREDENTIAL_TTL_MS = 60_000;
+const MACHINE_CREDENTIAL_MISS_TTL_MS = 20_000;
 const SESSION_REFRESH_BEFORE_EXPIRY_MS =
   (CONNECT_SESSION_EXPIRES_IN_SECONDS - CONNECT_SESSION_UPDATE_AGE_SECONDS) *
   1000;
 
-interface CacheEntry<T> {
-  value: Promise<T>;
-  expires: number;
+export const LOOKUP_JOIN_TIMEOUT_MS = 2_000;
+export const LOOKUP_RETRY_DELAY_MS = 250;
+export const LOOKUP_FALLBACK_AFTER_MS = 1_000;
+export const LOOKUP_FALLBACK_WINDOW_MS = 10 * 60_000;
+const LOOKUP_POLL_MS = 10;
+
+type LookupOutcome<T> = { ok: true; value: T } | { ok: false; error: unknown };
+
+interface InFlightLookup<T> {
+  startedAt: number;
+  outcome: LookupOutcome<T> | null;
 }
-const labelCache = new Map<string, CacheEntry<ResolvedLabel | null>>();
+
+interface CachedLookup<T> {
+  value: T;
+  expires: number;
+  fallbackUntil: number;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function awaitOutcome<T>(
+  lookup: InFlightLookup<T>,
+  deadline: number,
+): Promise<LookupOutcome<T> | null> {
+  while (lookup.outcome === null && Date.now() < deadline) {
+    await sleep(LOOKUP_POLL_MS);
+  }
+  return lookup.outcome;
+}
+
+async function loadWithRetry<T>(
+  load: () => Promise<T>,
+  retry: boolean,
+): Promise<T> {
+  try {
+    return await load();
+  } catch (error) {
+    if (!retry) throw error;
+    await sleep(LOOKUP_RETRY_DELAY_MS);
+    return load();
+  }
+}
+
+export class SettledLookupCache<T> {
+  private readonly entries = new Map<string, CachedLookup<T>>();
+  private readonly lookups = new Map<string, InFlightLookup<T>>();
+  private generation = 0;
+
+  constructor(private readonly fallbackWindowMs: number = 0) {}
+
+  async read(
+    key: string,
+    options: {
+      now: number;
+      fresh?: boolean;
+      expires: (value: T) => number;
+      load: () => Promise<T>;
+    },
+  ): Promise<T> {
+    const entry = this.entries.get(key);
+    if (!options.fresh && entry && entry.expires > options.now) {
+      return entry.value;
+    }
+    if (entry && entry.fallbackUntil <= options.now) this.entries.delete(key);
+    const fallback =
+      !options.fresh && entry && entry.fallbackUntil > options.now
+        ? entry
+        : undefined;
+    const outcome = await this.settle(key, options, fallback !== undefined);
+    if (outcome?.ok === true) return outcome.value;
+    if (fallback) return fallback.value;
+    if (outcome?.ok === false) throw outcome.error;
+    throw new Error("bb connect: lookup did not settle");
+  }
+
+  private async settle(
+    key: string,
+    options: {
+      fresh?: boolean;
+      expires: (value: T) => number;
+      load: () => Promise<T>;
+    },
+    hasFallback: boolean,
+  ): Promise<LookupOutcome<T> | null> {
+    if (!options.fresh) {
+      for (;;) {
+        const inFlight = this.lookups.get(key);
+        if (
+          inFlight === undefined ||
+          Date.now() - inFlight.startedAt >= LOOKUP_JOIN_TIMEOUT_MS
+        ) {
+          break;
+        }
+        const joinDeadline = inFlight.startedAt + LOOKUP_JOIN_TIMEOUT_MS;
+        const outcome = await awaitOutcome(
+          inFlight,
+          hasFallback
+            ? Math.min(joinDeadline, Date.now() + LOOKUP_FALLBACK_AFTER_MS)
+            : joinDeadline,
+        );
+        if (outcome !== null || hasFallback) return outcome;
+        const hit = this.entries.get(key);
+        if (hit && hit.expires > Date.now()) {
+          return { ok: true, value: hit.value };
+        }
+      }
+    }
+    const generation = this.generation;
+    const lookup: InFlightLookup<T> = { startedAt: Date.now(), outcome: null };
+    this.lookups.set(key, lookup);
+    const settled = (async () => {
+      try {
+        const value = await loadWithRetry(options.load, !hasFallback);
+        lookup.outcome = { ok: true, value };
+        if (generation === this.generation) {
+          this.entry(key, value, options.expires(value));
+        }
+      } catch (error) {
+        lookup.outcome = { ok: false, error };
+      } finally {
+        if (this.lookups.get(key) === lookup) this.lookups.delete(key);
+      }
+    })();
+    if (!hasFallback) {
+      await settled;
+      return lookup.outcome;
+    }
+    await Promise.race([settled, sleep(LOOKUP_FALLBACK_AFTER_MS)]);
+    return lookup.outcome;
+  }
+
+  delete(key: string): void {
+    this.entries.delete(key);
+    this.lookups.delete(key);
+    this.generation += 1;
+  }
+
+  prime(key: string, value: T, expires: number): void {
+    this.entry(key, value, expires);
+  }
+
+  private entry(key: string, value: T, expires: number): void {
+    this.entries.set(key, {
+      value,
+      expires,
+      fallbackUntil: expires + this.fallbackWindowMs,
+    });
+  }
+}
+
+const labelCache = new SettledLookupCache<ResolvedLabel | null>(
+  LOOKUP_FALLBACK_WINDOW_MS,
+);
 
 interface CachedSession {
+  sessionId: string;
   userId: string;
   expiresAt: number;
 }
 
-const sessionCache = new Map<string, CacheEntry<CachedSession | null>>();
+const sessionCache = new SettledLookupCache<CachedSession | null>();
 
 export function invalidateSessionCookie(cookieValue: string): void {
   sessionCache.delete(safeDecode(cookieValue));
-}
-
-function cacheGet<T>(
-  map: Map<string, CacheEntry<T>>,
-  key: string,
-  now: number,
-): Promise<T> | undefined {
-  const hit = map.get(key);
-  if (hit && hit.expires > now) return hit.value;
-  if (hit) map.delete(key);
-  return undefined;
-}
-
-function cacheStore<T>(
-  map: Map<string, CacheEntry<T>>,
-  key: string,
-  value: Promise<T>,
-  expires: number,
-  settledExpires?: (value: T) => number,
-): Promise<T> {
-  const entry: CacheEntry<T> = { value, expires };
-  map.set(key, entry);
-  value.then(
-    (settled) => {
-      if (settledExpires === undefined || map.get(key) !== entry) return;
-      entry.expires = settledExpires(settled);
-    },
-    () => {
-      if (map.get(key) === entry) map.delete(key);
-    },
-  );
-  return value;
 }
 
 interface ResolvedServer {
@@ -98,16 +223,96 @@ export async function resolveLabel(
   options?: { fresh?: boolean },
 ): Promise<ResolvedLabel | null> {
   const now = Date.now();
-  if (!options?.fresh) {
-    const cached = cacheGet(labelCache, label, now);
-    if (cached !== undefined) return cached;
+  return labelCache.read(label, {
+    now,
+    fresh: options?.fresh,
+    expires: (value) =>
+      now + (value === null ? LABEL_MISS_TTL_MS : LABEL_TTL_MS),
+    load: () => lookupLabel(label, db),
+  });
+}
+
+export async function resolveLabels(
+  labels: readonly string[],
+  db: ConnectDb,
+): Promise<Map<string, ResolvedLabel | null>> {
+  const wanted = [...new Set(labels)];
+  const resolved = new Map<string, ResolvedLabel | null>();
+  if (wanted.length === 0) return resolved;
+  const now = Date.now();
+  const [serverRows, machineRows] = await Promise.all([
+    db
+      .select({
+        label: server.subdomain,
+        userId: server.userId,
+        serverId: server.id,
+        credentialHash: server.credentialHash,
+        revokedAt: server.revokedAt,
+        lastSeenAt: server.lastSeenAt,
+      })
+      .from(server)
+      .where(inArray(server.subdomain, wanted))
+      .all(),
+    db
+      .select({
+        label: machine.subdomain,
+        userId: machine.userId,
+        accountHandle: profile.handle,
+        machineId: machine.id,
+        credentialHash: machine.credentialHash,
+        revokedAt: machine.revokedAt,
+        lastSeenAt: machine.lastSeenAt,
+        generation: labelClaim.generation,
+      })
+      .from(machine)
+      .innerJoin(profile, eq(profile.userId, machine.userId))
+      .innerJoin(
+        labelClaim,
+        and(
+          eq(labelClaim.label, machine.subdomain),
+          eq(labelClaim.kind, "machine"),
+          eq(labelClaim.ownerId, machine.id),
+        ),
+      )
+      .where(inArray(machine.subdomain, wanted))
+      .all(),
+  ]);
+  for (const label of wanted) resolved.set(label, null);
+  for (const row of machineRows) {
+    if (row.label === null) continue;
+    resolved.set(row.label, {
+      kind: "machine",
+      routingKey: machineRoutingKey(row.label, row.generation),
+      userId: row.userId,
+      accountHandle: row.accountHandle,
+      machine: {
+        id: row.machineId,
+        credentialHash: row.credentialHash,
+        revokedAt: row.revokedAt,
+        lastSeenAt: row.lastSeenAt,
+      },
+    });
   }
-  return cacheStore(
-    labelCache,
-    label,
-    lookupLabel(label, db),
-    now + LABEL_TTL_MS,
-  );
+  for (const row of serverRows) {
+    resolved.set(row.label, {
+      kind: "server",
+      userId: row.userId,
+      server: {
+        id: row.serverId,
+        credentialHash: row.credentialHash,
+        revokedAt: row.revokedAt,
+        lastSeenAt: row.lastSeenAt,
+      },
+    });
+  }
+  for (const [label, value] of resolved) {
+    labelCache.prime(
+      label,
+      value,
+      now + (value === null ? LABEL_MISS_TTL_MS : LABEL_TTL_MS),
+    );
+  }
+  return resolved;
 }
 
 async function lookupLabel(
@@ -176,6 +381,7 @@ async function lookupLabel(
 }
 
 export interface VerifiedSessionCookie {
+  sessionId: string;
   userId: string;
   needsRefresh: boolean;
 }
@@ -185,6 +391,7 @@ function verifiedSession(
   now: number,
 ): VerifiedSessionCookie {
   return {
+    sessionId: session.sessionId,
     userId: session.userId,
     needsRefresh: session.expiresAt <= now + SESSION_REFRESH_BEFORE_EXPIRY_MS,
   };
@@ -200,26 +407,34 @@ export async function verifySessionCookieDetails(
   if (dot <= 0) return null;
 
   const now = Date.now();
-  const cached = cacheGet(sessionCache, decoded, now);
-  const cachedSession =
-    cached !== undefined
-      ? await cached
-      : await cacheStore(
-          sessionCache,
-          decoded,
-          lookupCachedSession(
-            decoded.slice(0, dot),
-            decoded.slice(dot + 1),
-            secret,
-            db,
-            now,
-          ),
-          now + SESSION_TTL_MS,
-          (looked) =>
-            looked === null
-              ? now + SESSION_TTL_MS
-              : Math.min(now + SESSION_TTL_MS, looked.expiresAt),
+  let loaded = false;
+  const read = (fresh: boolean) =>
+    sessionCache.read(decoded, {
+      now,
+      fresh,
+      expires: (looked) =>
+        looked === null
+          ? now + SESSION_MISS_TTL_MS
+          : Math.min(now + SESSION_TTL_MS, looked.expiresAt),
+      load: () => {
+        loaded = true;
+        return lookupCachedSession(
+          decoded.slice(0, dot),
+          decoded.slice(dot + 1),
+          secret,
+          db,
+          now,
         );
+      },
+    });
+  let cachedSession = await read(false);
+  if (
+    !loaded &&
+    cachedSession !== null &&
+    verifiedSession(cachedSession, now).needsRefresh
+  ) {
+    cachedSession = await read(true);
+  }
   return cachedSession === null ? null : verifiedSession(cachedSession, now);
 }
 
@@ -246,37 +461,25 @@ async function lookupCachedSession(
   if (!constantTimeEqual(providedSig, expectedSig)) return null;
 
   const row = await db
-    .select({ expiresAt: session.expiresAt, userId: session.userId })
+    .select({
+      expiresAt: session.expiresAt,
+      sessionId: session.id,
+      userId: session.userId,
+    })
     .from(session)
     .where(and(eq(session.token, token), gt(session.expiresAt, new Date(now))))
     .get();
   return row
-    ? { userId: row.userId, expiresAt: row.expiresAt.getTime() }
+    ? {
+        sessionId: row.sessionId,
+        userId: row.userId,
+        expiresAt: row.expiresAt.getTime(),
+      }
     : null;
-}
-
-export async function verifySessionCookie(
-  cookieValue: string,
-  secret: string,
-  db: ConnectDb,
-): Promise<string | null> {
-  return (
-    (await verifySessionCookieDetails(cookieValue, secret, db))?.userId ?? null
-  );
 }
 
 const machineLastSeenWrites = new Map<string, number>();
 export const MACHINE_LAST_SEEN_WRITE_INTERVAL_MS = 60_000;
-
-export async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(value),
-  );
-  return [...new Uint8Array(digest)]
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
 
 export async function verifyMachineCredential(
   credential: string,
@@ -285,14 +488,42 @@ export async function verifyMachineCredential(
   return (await verifyMachineCredentialDetails(credential, db))?.userId ?? null;
 }
 
+interface VerifiedMachine {
+  machineId: string;
+  userId: string;
+  lastSeenAt: Date | null;
+}
+
+const machineCredentialCache = new SettledLookupCache<VerifiedMachine | null>();
+
 export async function verifyMachineCredentialDetails(
   credential: string,
   db: ConnectDb,
-): Promise<{ machineId: string; userId: string } | null> {
+): Promise<VerifiedMachine | null> {
   if (!credential) return null;
   const hash = await sha256Hex(credential);
+  const now = Date.now();
+  return machineCredentialCache.read(hash, {
+    now,
+    expires: (value) =>
+      now +
+      (value === null
+        ? MACHINE_CREDENTIAL_MISS_TTL_MS
+        : MACHINE_CREDENTIAL_TTL_MS),
+    load: () => lookupMachineCredential(hash, db),
+  });
+}
+
+async function lookupMachineCredential(
+  hash: string,
+  db: ConnectDb,
+): Promise<VerifiedMachine | null> {
   const row = await db
-    .select({ machineId: machine.id, userId: machine.userId })
+    .select({
+      machineId: machine.id,
+      userId: machine.userId,
+      lastSeenAt: machine.lastSeenAt,
+    })
     .from(machine)
     .where(and(eq(machine.credentialHash, hash), isNull(machine.revokedAt)))
     .get();
@@ -300,15 +531,16 @@ export async function verifyMachineCredentialDetails(
 }
 
 export async function markMachineSeen(
-  machineId: string,
+  verified: Pick<VerifiedMachine, "machineId" | "lastSeenAt">,
   db: ConnectDb,
   now: number = Date.now(),
 ): Promise<boolean> {
-  const previous = machineLastSeenWrites.get(machineId);
-  if (
-    previous !== undefined &&
-    now - previous < MACHINE_LAST_SEEN_WRITE_INTERVAL_MS
-  ) {
+  const { machineId } = verified;
+  const previous = Math.max(
+    machineLastSeenWrites.get(machineId) ?? Number.NEGATIVE_INFINITY,
+    verified.lastSeenAt?.getTime() ?? Number.NEGATIVE_INFINITY,
+  );
+  if (now - previous < MACHINE_LAST_SEEN_WRITE_INTERVAL_MS) {
     return false;
   }
   machineLastSeenWrites.set(machineId, now);

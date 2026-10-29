@@ -9,15 +9,16 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { PromptInput, RuntimePermissionPolicy } from "@bb/domain";
+import type {
+  PromptInput,
+  RuntimePermissionPolicy,
+} from "@get-bb/plugin-sdk/provider-bridge";
 import {
   buildCodexConfig,
-  combineWorkspaceWriteRoots,
   gitWritableRootsForWorkspace,
   resolveCodexInstructionOverrides,
   toCodexDynamicTools,
   toCodexPermissionSettings,
-  toCodexReasoningEffort,
   toCodexServiceTier,
   toCodexThreadPermissionSettings,
   toCodexUserInput,
@@ -168,17 +169,12 @@ function createLinkedWorktreeFixture(): LinkedWorktreeFixture {
   };
 }
 
-function dedupeRoots(roots: readonly string[]): string[] {
-  return [...new Set(roots)];
-}
-
 function workspaceConfigForCwd(args: {
   cwd: string;
-  additionalWorkspaceWriteRoots?: string[];
 }): ReturnType<typeof buildCodexConfig> {
   return buildCodexConfig({
     threadId: "bb-thread-1",
-    additionalWorkspaceWriteRoots: args.additionalWorkspaceWriteRoots ?? [],
+    additionalWorkspaceWriteRoots: [],
     gitWritableRoots: gitWritableRootsForWorkspace(args.cwd),
     options: WORKSPACE_ASK_OPTIONS,
   });
@@ -439,56 +435,6 @@ describe("gitWritableRootsForWorkspace", () => {
       }
     },
   );
-
-  it("carries the captured git writable roots into the workspace-write config", () => {
-    const fixture = createLinkedWorktreeFixture();
-    try {
-      expect(gitWritableRootsForWorkspace(fixture.workspacePath)).toEqual(
-        fixture.expectedWritableRoots,
-      );
-      expect(
-        workspaceConfigForCwd({ cwd: fixture.workspacePath }),
-      ).toMatchObject({
-        "sandbox_workspace_write.writable_roots": fixture.expectedWritableRoots,
-      });
-    } finally {
-      fixture.cleanup();
-    }
-  });
-
-  it("combines additional workspace roots with the git roots, deduped, additional first", () => {
-    const fixture = createLinkedWorktreeFixture();
-    const additionalWorkspaceWriteRoots = [
-      path.join(fixture.rootPath, "host-extra-root"),
-      fixture.gitDir,
-    ];
-    const expectedWritableRoots = dedupeRoots([
-      ...additionalWorkspaceWriteRoots,
-      ...fixture.expectedWritableRoots,
-    ]);
-    try {
-      const gitWritableRoots = gitWritableRootsForWorkspace(
-        fixture.workspacePath,
-      );
-
-      expect(
-        combineWorkspaceWriteRoots(
-          gitWritableRoots,
-          additionalWorkspaceWriteRoots,
-        ),
-      ).toEqual(expectedWritableRoots);
-      expect(
-        workspaceConfigForCwd({
-          cwd: fixture.workspacePath,
-          additionalWorkspaceWriteRoots,
-        }),
-      ).toMatchObject({
-        "sandbox_workspace_write.writable_roots": expectedWritableRoots,
-      });
-    } finally {
-      fixture.cleanup();
-    }
-  });
 });
 
 function permissionSettings(
@@ -504,11 +450,6 @@ function permissionSettings(
 
 describe("codex permission settings", () => {
   it("defaults full permission scope to unreviewed danger-full-access", () => {
-    expect(toCodexThreadPermissionSettings(FULL_OPTIONS)).toEqual({
-      approvalPolicy: "never",
-      approvalsReviewer: "user",
-      sandbox: "danger-full-access",
-    });
     expect(permissionSettings(FULL_OPTIONS)).toEqual({
       approvalPolicy: "never",
       approvalsReviewer: "user",
@@ -605,9 +546,7 @@ describe("buildCodexConfig", () => {
   it("disables provider user-input requests without overriding web search", () => {
     const config = configFor(FULL_OPTIONS);
 
-    expect(config).toMatchObject({
-      "features.default_mode_request_user_input": false,
-    });
+    expect(config).toMatchObject({});
     expect(JSON.stringify(config)).not.toContain("tools.web_search");
   });
 
@@ -660,6 +599,12 @@ describe("buildCodexConfig", () => {
     expect(
       configFor({ ...FULL_OPTIONS, reasoningLevel: "ultra" }),
     ).toMatchObject({ model_reasoning_effort: "ultra" });
+    expect(() =>
+      configFor({ ...FULL_OPTIONS, reasoningLevel: "ultracode" }),
+    ).toThrow("Codex does not support the ultracode reasoning level.");
+    expect(
+      configFor({ ...FULL_OPTIONS, reasoningLevel: "none" }),
+    ).toMatchObject({ model_reasoning_effort: "none" });
   });
 
   it("omits the writable-roots key for a full-access session", () => {
@@ -700,23 +645,11 @@ describe("resolveCodexInstructionOverrides", () => {
   });
 });
 
-describe("toCodexReasoningEffort", () => {
-  it("maps the top of the bb reasoning ladder", () => {
-    expect(toCodexReasoningEffort("max")).toBe("max");
-    expect(toCodexReasoningEffort("ultra")).toBe("ultra");
-  });
-
-  it("rejects ultracode because Codex does not support it", () => {
-    expect(() => toCodexReasoningEffort("ultracode")).toThrow(
-      "Codex does not support the ultracode reasoning level.",
-    );
-  });
-});
-
 describe("toCodexServiceTier", () => {
-  it("forwards only the fast tier", () => {
+  it("forwards every tier except default as given", () => {
     expect(toCodexServiceTier("fast")).toBe("fast");
-    expect(toCodexServiceTier("default")).toBeUndefined();
+    expect(toCodexServiceTier("ultrafast")).toBe("ultrafast");
+    expect(toCodexServiceTier("default")).toBeNull();
     expect(toCodexServiceTier(undefined)).toBeUndefined();
   });
 });
@@ -756,12 +689,72 @@ describe("toCodexDynamicTools", () => {
 });
 
 describe("toCodexUserInput", () => {
+  it.each(["/", "$"] as const)(
+    "delivers selected %s skills by path without interpreting unselected commands",
+    (trigger) => {
+      const input: PromptInput[] = [
+        {
+          type: "text",
+          text: `${trigger}teach /plan`,
+          mentions: [
+            {
+              start: 0,
+              end: 6,
+              resource: {
+                kind: "command",
+                trigger,
+                name: "teach",
+                source: "skill",
+                origin: "project",
+                label: "teach",
+                argumentHint: null,
+              },
+            },
+          ],
+        },
+      ];
+      expect(
+        toCodexUserInput(input, [
+          { name: "teach", path: "/workspace/.agents/skills/teach/SKILL.md" },
+        ]),
+      ).toEqual([
+        { type: "text", text: `${trigger}teach /plan`, text_elements: [] },
+        {
+          type: "skill",
+          name: "teach",
+          path: "/workspace/.agents/skills/teach/SKILL.md",
+        },
+      ]);
+      expect(
+        toCodexUserInput(input, [
+          {
+            name: "lesson-planner",
+            path: "/workspace/.agents/skills/teach/SKILL.md",
+          },
+        ]),
+      ).toContainEqual({
+        type: "skill",
+        name: "lesson-planner",
+        path: "/workspace/.agents/skills/teach/SKILL.md",
+      });
+      expect(toCodexUserInput(input, [])).toEqual([
+        { type: "text", text: `${trigger}teach /plan`, text_elements: [] },
+      ]);
+      expect(
+        toCodexUserInput([
+          { type: "text", text: "/teach /plan", mentions: [] },
+        ]),
+      ).toEqual([{ type: "text", text: "/teach /plan", text_elements: [] }]);
+    },
+  );
+
   it("maps every prompt input variant, rendering local files as text", () => {
     const input: PromptInput[] = [
       { type: "text", text: "hello", mentions: [] },
       { type: "image", url: "https://example.com/a.png" },
       { type: "localImage", path: "/tmp/shot.png" },
       { type: "localFile", path: "/tmp/notes.md" },
+      { type: "localFile", path: "/tmp/paste.txt", name: "Pasted text 2.txt" },
     ];
 
     expect(toCodexUserInput(input)).toEqual([
@@ -771,6 +764,11 @@ describe("toCodexUserInput", () => {
       {
         type: "text",
         text: "[Attached file: /tmp/notes.md]",
+        text_elements: [],
+      },
+      {
+        type: "text",
+        text: '[Attached file "Pasted text 2.txt": /tmp/paste.txt]',
         text_elements: [],
       },
     ]);

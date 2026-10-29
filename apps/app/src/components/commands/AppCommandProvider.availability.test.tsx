@@ -48,6 +48,7 @@ function defaultBinding(
 
 const testState = vi.hoisted(() => ({
   isDesktop: false,
+  setSplitNavigationEnabled: vi.fn(),
 }));
 
 vi.mock("@/hooks/queries/system-queries", () => ({
@@ -63,7 +64,7 @@ vi.mock("@/hooks/queries/system-queries", () => ({
         defaultBinding("thread.rename", { unassigned: true }),
         defaultBinding("pane.close", { all: ["mainSurface", "splitActive"] }),
         defaultBinding("window.new", { desktopOnly: true }),
-        defaultBinding("diff.toggle", {
+        defaultBinding("terminal.open", {
           none: ["modalOpen", "editableFocus", "terminalFocus"],
         }),
       ],
@@ -72,7 +73,9 @@ vi.mock("@/hooks/queries/system-queries", () => ({
 }));
 
 vi.mock("@/lib/bb-desktop", () => ({
-  getBbDesktopInfo: () => (testState.isDesktop ? {} : null),
+  getBbDesktopInfo: () => (testState.isDesktop ? {
+    setSplitNavigationEnabled: testState.setSplitNavigationEnabled,
+  } : null),
 }));
 
 function Handler({ command }: { command: AppCommandId }) {
@@ -124,6 +127,7 @@ function availabilityOf(command: AppCommandId): string | null {
 afterEach(() => {
   cleanup();
   testState.isDesktop = false;
+  testState.setSplitNavigationEnabled.mockClear();
 });
 
 describe("isCommandAvailable", () => {
@@ -168,14 +172,14 @@ describe("isCommandAvailable", () => {
       <>
         <div aria-modal="true" />
         <input aria-label="query" />
-        <Handler command="diff.toggle" />
+        <Handler command="terminal.open" />
         <Availability
-          command="diff.toggle"
+          command="terminal.open"
           target={document.createElement("input")}
         />
       </>,
     );
-    expect(availabilityOf("diff.toggle")).toBe("yes");
+    expect(availabilityOf("terminal.open")).toBe("yes");
   });
 
   it("is true for a command the user left unbound", () => {
@@ -208,4 +212,20 @@ describe("isCommandAvailable", () => {
     );
     expect(availabilityOf("window.new")).toBe("yes");
   });
+});
+
+it("keeps native split availability until the last registered split unmounts", () => {
+  testState.isDesktop = true;
+  const { rerender, unmount } = renderProvider(
+    <><SplitContext key="first" /><SplitContext key="second" /></>,
+  );
+  expect(testState.setSplitNavigationEnabled).toHaveBeenLastCalledWith(true);
+  rerender(
+    <MemoryRouter>
+      <AppCommandProvider><SplitContext key="first" /></AppCommandProvider>
+    </MemoryRouter>,
+  );
+  expect(testState.setSplitNavigationEnabled).toHaveBeenLastCalledWith(true);
+  unmount();
+  expect(testState.setSplitNavigationEnabled).toHaveBeenLastCalledWith(false);
 });

@@ -11,7 +11,6 @@ export const HAPTIC_KINDS = [
 ] as const;
 
 export const hapticKindSchema = z.enum(HAPTIC_KINDS);
-export type BridgeHapticKind = z.infer<typeof hapticKindSchema>;
 
 const httpUrlSchema = z.string().refine((value) => {
   try {
@@ -37,11 +36,30 @@ const sharePayloadSchema = z
 export type BridgeSharePayload = z.infer<typeof sharePayloadSchema>;
 
 const bridgeRequestSchema = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("open-application"),
+      payload: z.object({ url: z.string().max(8192) }).strict(),
+    })
+    .strict(),
   z.object({ kind: z.literal("share"), payload: sharePayloadSchema }).strict(),
+  z
+    .object({
+      kind: z.literal("clipboard-html"),
+      payload: z
+        .object({ text: z.string().max(100000), html: z.string().max(1000000) })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("clipboard"),
+      payload: z
+        .object({ text: z.string().max(100000), imageUrl: httpUrlSchema })
+        .strict(),
+    })
+    .strict(),
 ]);
-
-export type BridgeRequest = z.infer<typeof bridgeRequestSchema>;
-export type BridgeRequestKind = BridgeRequest["kind"];
 
 export const NATIVE_SCREENS = ["device-settings"] as const;
 export const nativeScreenSchema = z.enum(NATIVE_SCREENS);
@@ -66,6 +84,12 @@ export const pageToShellMessageSchema = z.discriminatedUnion("type", [
     .strict(),
   z
     .object({
+      type: z.literal("switch-server"),
+      id: z.string().min(1).max(256),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal("request"),
       id: z.string().min(1).max(64),
       request: bridgeRequestSchema,
@@ -74,7 +98,6 @@ export const pageToShellMessageSchema = z.discriminatedUnion("type", [
 ]);
 
 export type PageToShellMessage = z.infer<typeof pageToShellMessageSchema>;
-export type PageToShellMessageType = PageToShellMessage["type"];
 
 export type ParsedPageMessage =
   | { ok: true; message: PageToShellMessage }

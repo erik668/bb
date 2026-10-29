@@ -1,5 +1,14 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,6 +16,7 @@ import { promisify } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createBbAppArtifactService,
+  defaultCommandRunner,
   resolveBbAppPackage,
   type BbAppArtifactCommandRunner,
 } from "../../src/services/install/bb-app-artifact.js";
@@ -23,6 +33,7 @@ const packageJson = {
   engines: { node: ">=22.19.0" },
   dependencies: {
     "@parcel/watcher": "2.5.6",
+    "fs-native-extensions": "1.5.0",
     "node-pty": "1.2.0-beta.15",
     pino: "9.6.0",
     "pino-pretty": "13.0.0",
@@ -55,6 +66,7 @@ async function writeHostPackage(root: string, readme: string): Promise<void> {
   await writeFile(join(root, "README.md"), readme);
   for (const fileName of [
     "bb",
+    "bb.cmd",
     "bb-parcel-watcher-child.mjs",
     "bb-plugin-host-worker.mjs",
     "bb-provider-bridge-worker.mjs",
@@ -94,10 +106,180 @@ async function fixture(mode: Mode) {
   return { packageRoot, refreshHostPackage, root, serverEntry };
 }
 
+async function setTreeReadOnly(directory: string): Promise<void> {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) {
+      await setTreeReadOnly(path);
+    } else {
+      await chmod(path, 0o444);
+    }
+  }
+  await chmod(directory, 0o555);
+}
+
+async function restoreTreeWritable(directory: string): Promise<void> {
+  await chmod(directory, 0o755);
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      await restoreTreeWritable(join(directory, entry.name));
+    }
+  }
+}
+
 afterEach(async () => {
   await Promise.all(
-    roots.splice(0).map((root) => rm(root, { force: true, recursive: true })),
+    roots.splice(0).map(async (root) => {
+      await restoreTreeWritable(root).catch(() => undefined);
+      await rm(root, { force: true, recursive: true });
+    }),
   );
+});
+
+describe("bb-app artifact service (desktop packaging)", () => {
+  it(
+    "packs the runtime when Electron Builder omits the README",
+    async () => {
+      const test = await fixture("packaged");
+      await rm(join(test.packageRoot, "README.md"));
+      const service = createBbAppArtifactService({
+        dataDir: join(test.root, "data"),
+        serverEntryUrl: pathToFileURL(test.serverEntry).href,
+      });
+
+      await expect(service.getVersion()).resolves.toBe("1.2.3-test");
+      const artifact = await service.getArtifact();
+      const listing = (
+        await execFileAsync("tar", ["-tzf", artifact.path])
+      ).stdout.split(/\r?\n/u);
+      expect(listing).toEqual(
+        expect.arrayContaining([
+          "package/package.json",
+          "package/dist/bb-app.js",
+          "package/dist/bb-host-daemon.js",
+          "package/dist/bb.js",
+          "package/host-daemon/dist/bb",
+          "package/host-daemon/dist/bb.cmd",
+          "package/host-daemon/dist/bb-chunks/chunk-TEST.js",
+          "package/host-daemon/dist/bb-parcel-watcher-child.mjs",
+          "package/host-daemon/dist/bb-plugin-host-worker.mjs",
+          "package/host-daemon/dist/bb-provider-bridge-worker.mjs",
+          "package/host-daemon/dist/daemon-bundle.mjs",
+        ]),
+      );
+      expect(listing).not.toContain("package/README.md");
+      expect(listing).not.toContain("package/private.txt");
+      expect(artifact.size).toBeGreaterThan(0);
+      await expect(service.getArtifact()).resolves.toEqual(artifact);
+    },
+    ARTIFACT_LIFECYCLE_TIMEOUT_MS,
+  );
+
+  it(
+    "packs with the bundled npm when the server has no npm on PATH",
+    async () => {
+      const test = await fixture("packaged");
+      const service = createBbAppArtifactService({
+        dataDir: join(test.root, "data"),
+        serverEntryUrl: pathToFileURL(test.serverEntry).href,
+      });
+
+      const originalPath = process.env.PATH;
+      process.env.PATH = "";
+      let artifact;
+      try {
+        artifact = await service.getArtifact();
+      } finally {
+        process.env.PATH = originalPath;
+      }
+
+      expect(artifact.size).toBeGreaterThan(0);
+      expect(
+        (await execFileAsync("tar", ["-tzf", artifact.path])).stdout.split(
+          /\r?\n/u,
+        ),
+      ).toContain("package/host-daemon/dist/daemon-bundle.mjs");
+    },
+    ARTIFACT_LIFECYCLE_TIMEOUT_MS,
+  );
+
+  it.skipIf(
+    process.platform === "win32" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )(
+    "serves the tarball and removes its temporary copy from a read-only install",
+    async () => {
+      const test = await fixture("packaged");
+      const dataDir = join(test.root, "data");
+      const nested = join(
+        test.packageRoot,
+        "host-daemon/dist/bb-chunks/nested",
+      );
+      await mkdir(nested, { recursive: true });
+      await writeFile(join(nested, "deep.js"), "export {};\n");
+      await setTreeReadOnly(join(test.packageRoot, "host-daemon"));
+      const service = createBbAppArtifactService({
+        dataDir,
+        serverEntryUrl: pathToFileURL(test.serverEntry).href,
+      });
+
+      const artifact = await service.getArtifact();
+
+      expect(artifact.size).toBeGreaterThan(0);
+      expect(
+        (await execFileAsync("tar", ["-tzf", artifact.path])).stdout.split(
+          /\r?\n/u,
+        ),
+      ).toContain("package/host-daemon/dist/bb-chunks/nested/deep.js");
+      expect(
+        (await readdir(join(dataDir, "install-cache"))).filter((name) =>
+          name.startsWith("host-package-"),
+        ),
+      ).toEqual([]);
+      expect(
+        (await stat(join(test.packageRoot, "host-daemon/dist/bb-chunks")))
+          .mode & 0o222,
+      ).toBe(0);
+    },
+    ARTIFACT_LIFECYCLE_TIMEOUT_MS,
+  );
+
+  it("rejects missing runtime files even when the README is absent", async () => {
+    const test = await fixture("packaged");
+    const runtimePath = join(
+      test.packageRoot,
+      "host-daemon/dist/daemon-bundle.mjs",
+    );
+    await rm(join(test.packageRoot, "README.md"));
+    await rm(runtimePath);
+    const service = createBbAppArtifactService({
+      dataDir: join(test.root, "data"),
+      serverEntryUrl: pathToFileURL(test.serverEntry).href,
+    });
+
+    await expect(service.getArtifact()).rejects.toMatchObject({
+      code: "ENOENT",
+      path: runtimePath,
+    });
+  });
+
+  it("propagates README copy failures other than a missing file", async () => {
+    const test = await fixture("packaged");
+    const readmePath = join(test.packageRoot, "README.md");
+    await rm(readmePath);
+    await mkdir(readmePath);
+    const service = createBbAppArtifactService({
+      dataDir: join(test.root, "data"),
+      serverEntryUrl: pathToFileURL(test.serverEntry).href,
+    });
+
+    await expect(service.getArtifact()).rejects.toMatchObject({
+      code: expect.stringMatching(
+        process.platform === "win32" ? /^EPERM$/u : /^(EISDIR|ENOTSUP)$/u,
+      ),
+      path: readmePath,
+    });
+  });
 });
 
 describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
@@ -116,7 +298,7 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
           await test.refreshHostPackage();
           return "built";
         }
-        return (await execFileAsync(command, [...args], { cwd })).stdout;
+        return defaultCommandRunner(command, args, cwd);
       };
       const resolved = await resolveBbAppPackage(
         pathToFileURL(test.serverEntry).href,
@@ -133,7 +315,7 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
       await expect(service.getVersion()).resolves.toBe("1.2.3-test");
       const listing = (
         await execFileAsync("tar", ["-tzf", artifact.path])
-      ).stdout.split("\n");
+      ).stdout.split(/\r?\n/u);
       expect(listing).toContain("package/package.json");
       expect(listing).toContain("package/dist/bb-app.js");
       expect(listing).toContain("package/dist/bb.js");
@@ -158,6 +340,9 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
       expect(packedPackageJson).toMatchObject({
         name: "bb-app",
         version: "1.2.3-test",
+        os: isRepoMode(mode)
+          ? ["darwin", "linux"]
+          : ["darwin", "linux", "win32"],
         bin: {
           bb: "dist/bb.js",
           "bb-app": "dist/bb-app.js",
@@ -166,6 +351,7 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
       });
       expect(Object.keys(packedPackageJson.dependencies).sort()).toEqual([
         "@parcel/watcher",
+        "fs-native-extensions",
         "node-pty",
         "pino",
         "pino-pretty",
@@ -194,7 +380,7 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
           await test.refreshHostPackage();
           return "built";
         }
-        return (await execFileAsync(command, [...args], { cwd })).stdout;
+        return defaultCommandRunner(command, args, cwd);
       };
       const options = {
         dataDir: join(test.root, "data"),
@@ -232,7 +418,7 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
           await test.refreshHostPackage();
           return "built";
         }
-        return (await execFileAsync(command, [...args], { cwd })).stdout;
+        return defaultCommandRunner(command, args, cwd);
       };
       const baseOptions = {
         dataDir: join(test.root, "data"),
@@ -266,7 +452,7 @@ describe.each(MODES)("bb-app artifact service (%s)", (mode) => {
           return "built";
         }
         if (failNextPack) throw new Error("npm pack exploded");
-        return (await execFileAsync(command, [...args], { cwd })).stdout;
+        return defaultCommandRunner(command, args, cwd);
       };
       const options = {
         dataDir: join(test.root, "data"),

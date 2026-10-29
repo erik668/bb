@@ -2,7 +2,8 @@
 import { cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { makeTask } from "../../test-fixtures.js";
+import { makeTask, rpcInput } from "../../test-fixtures.js";
+import { threadsChangedTags } from "../../shared/tags";
 
 if (!window.matchMedia) {
   window.matchMedia = (query: string) => ({
@@ -68,8 +69,10 @@ function detailRpc(overrides: Record<string, unknown> = {}) {
     listPresets: () => ({ presets: [] }),
     sidebarSummary: () => ({ projects: [] }),
     getTaskByKey: () => ({ task }),
-    listTasks: (input: { parentTaskId?: string } | null) =>
-      input?.parentTaskId ? { tasks: [] } : { tasks: [task] },
+    listTasks: (input: unknown) =>
+      input !== null && rpcInput(input).parentTaskId
+        ? { tasks: [] }
+        : { tasks: [task] },
     listLabels: () => ({ labels: [] }),
     listAttachments: () => ({ attachments: [] }),
     listTaskThreads: () => ({
@@ -146,7 +149,7 @@ describe("task detail pull request pills", () => {
     expect(slot.queryByRole("link")).toBeNull();
   });
 
-  it("detaches a thread from its card after confirmation and refetches the list", async () => {
+  it("detaches a thread from its card after confirmation and refreshes when the server invalidates", async () => {
     let detached = false;
     const slot = renderSlot(
       app.navPanels[0]!,
@@ -158,9 +161,9 @@ describe("task detail pull request pills", () => {
               ? []
               : [taskThreadRow(THREAD_ROW_ID, "thr_worker000", "Worker")],
           }),
-          taskThreadsDetach: (input: { threadId: string }) => {
+          taskThreadsDetach: (input: unknown) => {
             detached = true;
-            return { threadId: input.threadId };
+            return { threadId: rpcInput(input).threadId };
           },
         }),
       },
@@ -175,6 +178,7 @@ describe("task detail pull request pills", () => {
         input: { taskId: TASK_ID, threadId: "thr_worker000" },
       });
     });
+    await slot.behavior.experimental_invalidateRpc(threadsChangedTags(TASK_ID));
     await waitFor(() => expect(slot.queryByText("Worker")).toBeNull());
   });
 

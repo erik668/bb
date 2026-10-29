@@ -5,7 +5,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { toast as sonnerToast, type Action, type ExternalToast } from "sonner";
+import type { Action, ExternalToast } from "sonner";
 import { Button } from "@bb/shared-ui/button";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
@@ -13,6 +13,7 @@ import {
   openNotificationCenter,
   recordNotification,
 } from "@/lib/notifications/notification-store";
+import { dismissSonnerToast, withSonnerToast } from "./app-toast-runtime";
 
 export type AppToastTone =
   | "message"
@@ -54,12 +55,6 @@ interface AppToastContentProps {
   onDismiss?: () => void;
   title: ReactNode;
   tone: AppToastTone;
-}
-
-interface AppToastDescriptionProps {
-  description: ReactNode;
-  notificationId: string | null;
-  onShowMore: () => void;
 }
 
 interface AppToastOverflowTextProps {
@@ -108,7 +103,7 @@ function dismissToast(id: number | string | undefined): void {
   if (id === undefined) {
     return;
   }
-  sonnerToast.dismiss(id);
+  dismissSonnerToast(id);
 }
 
 function AppToastActionButton({
@@ -152,15 +147,27 @@ function AppToastOverflowText({
     if (body === null) {
       return;
     }
-    setTruncated(body.scrollWidth - body.clientWidth > 1);
+    const measure = () => {
+      setTruncated(
+        body.scrollHeight - body.clientHeight > 1 ||
+          body.scrollWidth - body.clientWidth > 1,
+      );
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(body);
+    return () => observer.disconnect();
   }, [content]);
 
   return (
-    <>
+    <div className="min-w-0 w-full">
       <div
         ref={bodyRef}
         data-testid={testId}
-        className={cn("min-w-0 flex-1 truncate", className)}
+        className={cn(
+          "line-clamp-4 whitespace-pre-wrap break-words [overflow-wrap:anywhere]",
+          className,
+        )}
       >
         {content}
       </div>
@@ -175,22 +182,7 @@ function AppToastOverflowText({
           Show more
         </Button>
       ) : null}
-    </>
-  );
-}
-
-export function AppToastDescription({
-  description,
-  notificationId,
-  onShowMore,
-}: AppToastDescriptionProps) {
-  return (
-    <AppToastOverflowText
-      content={description}
-      notificationId={notificationId}
-      onShowMore={onShowMore}
-      testId="app-toast-description"
-    />
+    </div>
   );
 }
 
@@ -234,30 +226,27 @@ export function AppToastContent({
         </div>
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
-            {description ? (
-              <div className="min-w-0 flex-1 truncate text-sm font-medium leading-5">
-                {title}
-              </div>
-            ) : (
-              <AppToastOverflowText
-                className="text-sm font-medium leading-5"
-                content={title}
-                notificationId={notificationId}
-                onShowMore={showNotification}
-                testId="app-toast-title"
-              />
-            )}
+            <AppToastOverflowText
+              className="text-sm font-medium leading-5"
+              content={title}
+              notificationId={notificationId}
+              onShowMore={showNotification}
+              testId="app-toast-title"
+            />
           </div>
           {description || hasActions ? (
-            <div className="mt-0.5 flex min-w-0 flex-nowrap items-center gap-2 text-xs leading-5 text-muted-foreground">
+            <div className="mt-0.5 flex min-w-0 flex-col items-start gap-2 text-xs leading-5 text-muted-foreground">
               {description ? (
-                <AppToastDescription
-                  description={description}
+                <AppToastOverflowText
+                  content={description}
                   notificationId={notificationId}
                   onShowMore={showNotification}
+                  testId="app-toast-description"
                 />
               ) : null}
-              {actions}
+              {hasActions ? (
+                <div className="flex flex-wrap gap-2">{actions}</div>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -282,6 +271,8 @@ export function AppToastContent({
     </div>
   );
 }
+
+let nextToastId = 0;
 
 function showAppToast({
   options,
@@ -310,26 +301,33 @@ function showAppToast({
           createdAt: Date.now(),
         });
 
-  return sonnerToast.custom(
-    (id) => (
-      <AppToastContent
-        action={action}
-        cancel={cancel}
-        description={description}
-        dismissible={dismissible}
-        id={id}
-        notificationId={notificationId}
-        title={title}
-        tone={tone}
-      />
-    ),
-    {
-      ...sonnerOptions,
-      className: cn("bb-app-toast", className),
-      dismissible,
-      duration: nextDuration,
-    },
+  const toastId = sonnerOptions.id ?? `app-toast-${(nextToastId += 1)}`;
+  withSonnerToast(
+    (sonnerToast) =>
+      sonnerToast.custom(
+        (id) => (
+          <AppToastContent
+            action={action}
+            cancel={cancel}
+            description={description}
+            dismissible={dismissible}
+            id={id}
+            notificationId={notificationId}
+            title={title}
+            tone={tone}
+          />
+        ),
+        {
+          ...sonnerOptions,
+          id: toastId,
+          className: cn("bb-app-toast", className),
+          dismissible,
+          duration: nextDuration,
+        },
+      ),
+    toastId,
   );
+  return toastId;
 }
 
 const showMessageToast: AppToastMethod = (title, options) =>
@@ -347,8 +345,12 @@ const showErrorToast: AppToastMethod = (title, options) =>
 const showLoadingToast: AppToastMethod = (title, options) =>
   showAppToast({ options, title, tone: "loading" });
 
+function dismissAppToast(id?: number | string): void {
+  dismissSonnerToast(id);
+}
+
 export const appToast = {
-  dismiss: sonnerToast.dismiss,
+  dismiss: dismissAppToast,
   error: showErrorToast,
   loading: showLoadingToast,
   message: showMessageToast,

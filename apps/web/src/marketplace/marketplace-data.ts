@@ -2,10 +2,8 @@ import {
   parseMarketplaceV2Manifest,
   type MarketplaceV2Manifest,
 } from "./marketplace-v2.js";
-import {
-  parseMarketplaceStats,
-  type MarketplaceStats,
-} from "./marketplace-stats.js";
+import type { MarketplaceStats } from "./marketplace-model.js";
+import { parseMarketplaceStats } from "./marketplace-stats.js";
 
 export const MARKETPLACE_V2_MANIFEST_PATH = "/marketplace/v2/marketplace.json";
 export const MARKETPLACE_STATS_PATH = "/marketplace/v1/stats.json";
@@ -24,30 +22,12 @@ export type PublicMarketplaceData =
     }
   | { status: "unavailable" };
 
-export async function loadPublicMarketplace(
-  readJson: (path: string) => Promise<unknown>,
-): Promise<PublicMarketplaceData> {
-  try {
-    const manifest = parseMarketplaceV2Manifest(
-      await readJson(MARKETPLACE_V2_MANIFEST_PATH),
-    );
-    let stats: MarketplaceStats | null = null;
-    try {
-      stats = parseMarketplaceStats(await readJson(MARKETPLACE_STATS_PATH));
-    } catch {
-      stats = null;
-    }
-    return { status: "available", manifest, stats };
-  } catch {
-    return { status: "unavailable" };
-  }
-}
-
 export function createPublicMarketplaceCache(
   readResource: (path: string) => Promise<MarketplaceResource>,
   options: {
     now?: () => number;
     durationMs?: number;
+    withBundled?: (manifest: MarketplaceV2Manifest) => MarketplaceV2Manifest;
   } = {},
 ): () => Promise<PublicMarketplaceData> {
   const now = options.now ?? Date.now;
@@ -75,7 +55,8 @@ export function createPublicMarketplaceCache(
       manifest = cached.data.manifest;
     } else {
       try {
-        manifest = parseMarketplaceV2Manifest(manifestResource.value);
+        const community = parseMarketplaceV2Manifest(manifestResource.value);
+        manifest = options.withBundled?.(community) ?? community;
       } catch {
         return { status: "unavailable" };
       }

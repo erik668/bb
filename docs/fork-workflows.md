@@ -4,10 +4,10 @@ This fork omits the bundled Workflows plugin, including its agent tools,
 instructions, skill, CLI commands, worker, and UI. Work uses ordinary agent
 threads and task-relevant skills.
 
-On upgrade, saved `builtin:workflows` registrations are disabled before their
-code loads, even if an old plugin directory still exists. Enabling one again
-leaves it disabled. Installing `builtin:workflows` is rejected because it is
-no longer bundled. Existing workflow run data and artifacts are retained.
+On upgrade, bb removes the saved `builtin:workflows` registration with its
+settings, schedules, and secrets, as it does for any builtin it no longer
+bundles. Its code never loads. Installing `builtin:workflows` is rejected.
+Workflow run data (`plugins/workflows/data.db`) and artifacts are retained.
 
 For an already installed app, `bb plugin disable workflows` persistently
 disables the bundled plugin without replacing the app. Separately remove any

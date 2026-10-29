@@ -1,7 +1,7 @@
-import { spawn } from "node:child_process";
+import { spawnHostProcess as spawn } from "@bb/process-utils";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
-import { basename, delimiter, resolve } from "node:path";
+import { delimiter, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AgentRuntimeOptions } from "@bb/agent-runtime";
 import { assignIfDefined } from "@bb/config/objects";
@@ -17,6 +17,7 @@ interface PrepareRuntimeShellEnvOptions {
   hostDaemonPort?: number;
   serverUrl: string;
   inheritedPath?: string;
+  powershellExecutionPolicy?: string | null;
 }
 
 interface ResolveUserShellPathOptions {
@@ -24,6 +25,10 @@ interface ResolveUserShellPathOptions {
   platform?: NodeJS.Platform;
   spawnUserShellEnv?: SpawnUserShellEnv;
   timeoutMs?: number;
+}
+
+interface ResolvePowerShellExecutionPolicyOptions extends ResolveUserShellPathOptions {
+  readTextFile?: (filePath: string) => Promise<string | null>;
 }
 
 export interface SpawnUserShellEnvArgs {
@@ -45,14 +50,15 @@ export type SpawnUserShellEnv = (
   args: SpawnUserShellEnvArgs,
 ) => Promise<UserShellEnvSpawnResult>;
 
-const SHELL_ENV_START_MARKER = "__BB_SHELL_ENV_START__";
-const SHELL_ENV_END_MARKER = "__BB_SHELL_ENV_END__";
-const SHELL_ENV_COMMAND = [
-  `printf '%s\\n' ${SHELL_ENV_START_MARKER}`,
-  "env",
-  `printf '%s\\n' ${SHELL_ENV_END_MARKER}`,
-].join("; ");
 const USER_SHELL_ENV_TIMEOUT_MS = 3_000;
+const POWERSHELL_EXECUTION_POLICY_VARIABLE = "PSExecutionPolicyPreference";
+const WINDOWS_POWERSHELL_POLICY_KEYS = [
+  "HKCU\\Software\\Microsoft\\PowerShell\\1\\ShellIds\\Microsoft.PowerShell",
+  "HKLM\\SOFTWARE\\Microsoft\\PowerShell\\1\\ShellIds\\Microsoft.PowerShell",
+];
+const POWERSHELL_CONFIG_FILE_NAME = "powershell.config.json";
+const POWERSHELL_CONFIG_POLICY_PATTERN = /ExecutionPolicy"\s*:/u;
+const DEFAULT_POWERSHELL_EXECUTION_POLICY = "RemoteSigned";
 const USER_SHELL_ENV_FORCE_KILL_AFTER_MS = 1_000;
 
 function getDefaultCliExecutablePath(): string {
@@ -269,116 +275,92 @@ function defaultSpawnUserShellEnv(
   });
 }
 
-function resolveUserShellCommand(
+function windowsEnvironmentValue(
   env: NodeJS.ProcessEnv,
-  platform: NodeJS.Platform,
-): string | null {
-  if (platform === "win32") {
-    return null;
-  }
-  const configuredShell = env.SHELL?.trim();
-  if (configuredShell && configuredShell.length > 0) {
-    return configuredShell;
-  }
-  return platform === "darwin" ? "/bin/zsh" : "/bin/sh";
+  name: string,
+): string | undefined {
+  const key = Object.keys(env).find(
+    (candidate) => candidate.toUpperCase() === name.toUpperCase(),
+  );
+  return key === undefined ? undefined : env[key];
 }
 
-function userShellEnvArgSets(shell: string): string[][] {
-  const shellName = basename(shell);
-  if (shellName === "sh" || shellName === "dash") {
-    return [["-lc", SHELL_ENV_COMMAND]];
-  }
-  return [
-    ["-ilc", SHELL_ENV_COMMAND],
-    ["-lc", SHELL_ENV_COMMAND],
-  ];
+function windowsRegistryCommand(env: NodeJS.ProcessEnv): string {
+  return win32.join(
+    windowsEnvironmentValue(env, "SystemRoot") ?? "C:\\Windows",
+    "System32",
+    "reg.exe",
+  );
 }
 
-function parsePathFromUserShellEnv(stdout: string): string | null {
-  const lines = stdout.split(/\r?\n/u);
-  const startIndex = lines.findIndex(
-    (line) => line.trim() === SHELL_ENV_START_MARKER,
-  );
-  if (startIndex === -1) {
+async function readOptionalTextFile(filePath: string): Promise<string | null> {
+  try {
+    return await fs.readFile(filePath, "utf8");
+  } catch {
     return null;
   }
-  const endIndex = lines.findIndex(
-    (line, index) => index > startIndex && line.trim() === SHELL_ENV_END_MARKER,
-  );
-  if (endIndex === -1) {
-    return null;
-  }
+}
 
-  for (const line of lines.slice(startIndex + 1, endIndex)) {
-    if (!line.startsWith("PATH=")) {
-      continue;
+function powershellConfigPaths(env: NodeJS.ProcessEnv): string[] {
+  const paths: string[] = [];
+  const userProfile = windowsEnvironmentValue(env, "USERPROFILE");
+  if (userProfile !== undefined && userProfile.length > 0) {
+    paths.push(
+      win32.join(
+        userProfile,
+        "Documents",
+        "PowerShell",
+        POWERSHELL_CONFIG_FILE_NAME,
+      ),
+    );
+  }
+  for (const directory of (windowsEnvironmentValue(env, "PATH") ?? "").split(
+    ";",
+  )) {
+    if (/[\\/]PowerShell[\\/]\d+[^\\/]*[\\/]?$/iu.test(directory.trim())) {
+      paths.push(win32.join(directory.trim(), POWERSHELL_CONFIG_FILE_NAME));
     }
-    const pathValue = line.slice("PATH=".length).trim();
-    return pathValue.length > 0 ? pathValue : null;
   }
-  return null;
+  return paths;
 }
 
-export async function resolveUserShellPath(
-  options: ResolveUserShellPathOptions = {},
-): Promise<string | null> {
-  return resolveUserShellPathWithPrevious(options, null);
-}
-
-async function resolveUserShellPathWithPrevious(
-  options: ResolveUserShellPathOptions,
-  previousPath: string | null,
+export async function resolvePowerShellExecutionPolicyDefault(
+  options: ResolvePowerShellExecutionPolicyOptions = {},
 ): Promise<string | null> {
   const env = options.env ?? process.env;
-  const shell = resolveUserShellCommand(
-    env,
-    options.platform ?? process.platform,
-  );
-  if (!shell) {
+  if ((options.platform ?? process.platform) !== "win32") {
     return null;
   }
-
+  if (
+    windowsEnvironmentValue(env, POWERSHELL_EXECUTION_POLICY_VARIABLE) !==
+    undefined
+  ) {
+    return null;
+  }
   const spawnUserShellEnv =
     options.spawnUserShellEnv ?? defaultSpawnUserShellEnv;
-  const shellArgSets = userShellEnvArgSets(shell);
-  for (const [index, shellArgs] of shellArgSets.entries()) {
+  for (const key of WINDOWS_POWERSHELL_POLICY_KEYS) {
     const result = await spawnUserShellEnv({
-      command: shell,
-      args: shellArgs,
+      command: windowsRegistryCommand(env),
+      args: ["query", key, "/v", "ExecutionPolicy"],
       env,
       timeoutMs: options.timeoutMs ?? USER_SHELL_ENV_TIMEOUT_MS,
     });
-    if (
-      result.error !== undefined ||
-      result.signal !== null ||
-      result.status !== 0
-    ) {
-      if (index === 0 && previousPath !== null) {
-        return previousPath;
-      }
-      continue;
+    if (result.error !== undefined || result.signal !== null) {
+      return null;
     }
-    const path = parsePathFromUserShellEnv(result.stdout);
-    if (path !== null) {
-      return path;
-    }
-    if (index === 0 && previousPath !== null) {
-      return previousPath;
+    if (result.status === 0) {
+      return null;
     }
   }
-
-  return null;
-}
-
-export function createUserShellPathResolver(
-  options: ResolveUserShellPathOptions = {},
-): () => Promise<string | null> {
-  let previousPath: string | null = null;
-  return async () => {
-    const path = await resolveUserShellPathWithPrevious(options, previousPath);
-    if (path !== null) previousPath = path;
-    return path;
-  };
+  const readTextFile = options.readTextFile ?? readOptionalTextFile;
+  for (const configPath of powershellConfigPaths(env)) {
+    const config = await readTextFile(configPath);
+    if (config !== null && POWERSHELL_CONFIG_POLICY_PATTERN.test(config)) {
+      return null;
+    }
+  }
+  return DEFAULT_POWERSHELL_EXECUTION_POLICY;
 }
 
 export async function resolveLocalBbExecutablePath(
@@ -398,14 +380,10 @@ export async function resolveLocalBbExecutablePath(
   return cliEntryPath;
 }
 
-function bbExecutableFileName(): string {
-  return "bb";
-}
-
 export function resolveBbExecutablePathInDirectory(
   bbExecutableDirectory: string,
 ): string {
-  return resolve(bbExecutableDirectory, bbExecutableFileName());
+  return resolve(bbExecutableDirectory, "bb");
 }
 
 export function prepareRuntimeShellEnv(
@@ -430,5 +408,12 @@ export function prepareRuntimeShellEnv(
         ? undefined
         : String(options.hostDaemonPort),
   });
+  if (
+    options.powershellExecutionPolicy !== undefined &&
+    options.powershellExecutionPolicy !== null
+  ) {
+    shellEnv[POWERSHELL_EXECUTION_POLICY_VARIABLE] =
+      options.powershellExecutionPolicy;
+  }
   return shellEnv;
 }

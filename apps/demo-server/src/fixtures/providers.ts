@@ -4,7 +4,11 @@ import type { SystemExecutionOptionsResponse } from "@bb/server-contract";
 function provider(
   info: Pick<
     ProviderInfo,
-    "id" | "displayName" | "capabilities" | "composerActions"
+    | "id"
+    | "displayName"
+    | "capabilities"
+    | "composerActions"
+    | "completedTurnDisplay"
   >,
 ): ProviderInfo {
   return {
@@ -13,6 +17,14 @@ function provider(
     available: true,
     logoUrl: `/api/v1/system/providers/${info.id}/logo`,
     maintenance: { health: false, usage: false, installation: false },
+    ...(info.capabilities.supportsServiceTier
+      ? {
+          serviceTiers: [
+            { id: "default", label: "Default" },
+            { id: "fast", label: "Fast" },
+          ],
+        }
+      : {}),
   };
 }
 
@@ -44,6 +56,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
         command: { trigger: "/", name: "goal", trailingText: " " },
       },
     ],
+    completedTurnDisplay: "collapse",
   }),
   provider({
     id: "claude-code",
@@ -59,6 +72,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
       modelCatalogScope: "workspace",
     },
     composerActions: [SKILLS_ACTION, PLAN_ACTION],
+    completedTurnDisplay: "flat",
   }),
   provider({
     id: "pi",
@@ -74,6 +88,7 @@ export const PROVIDERS: readonly ProviderInfo[] = [
       modelCatalogScope: "workspace",
     },
     composerActions: [SKILLS_ACTION],
+    completedTurnDisplay: "collapse",
   }),
 ];
 
@@ -104,6 +119,7 @@ const MODELS: readonly AvailableModel[] = [
     model: DEFAULT_MODEL,
     displayName: "GPT-5.6-Sol",
     description: "Latest frontier agentic coding model.",
+    reasoningDiscovery: "known",
     supportedReasoningEfforts: [...REASONING_EFFORTS],
     defaultReasoningEffort: "high",
     isDefault: true,
@@ -113,6 +129,7 @@ const MODELS: readonly AvailableModel[] = [
     model: "gpt-5.6-luna",
     displayName: "GPT-5.6-Luna",
     description: "Fast and affordable agentic coding model.",
+    reasoningDiscovery: "known",
     supportedReasoningEfforts: [...REASONING_EFFORTS],
     defaultReasoningEffort: "medium",
     isDefault: false,

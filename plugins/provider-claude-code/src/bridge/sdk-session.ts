@@ -1,12 +1,14 @@
-import { spawn } from "node:child_process";
+import { experimental_spawnHostProcess as spawn } from "@get-bb/plugin-sdk/process";
 import {
   query,
   type CanUseTool,
   type McpSdkServerConfigWithInstance,
   type Options,
   type Query,
+  type Settings,
   type SDKMessage,
   type SDKUserMessage,
+  type SlashCommand,
   type SpawnedProcess,
   type SpawnOptions,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -29,6 +31,7 @@ export interface SdkSessionOptions {
   effort?: Options["effort"];
   sessionId?: string;
   permissionMode?: ClaudePermissionMode;
+  allowBypassPermissions: boolean;
   sandbox?: Options["sandbox"];
   hooks?: Options["hooks"];
   mcpServers?: Record<string, McpSdkServerConfigWithInstance>;
@@ -56,6 +59,7 @@ export type ClaudeMutableFlagSettings = {
   enableWorkflows: boolean;
   effortLevel?: ClaudeSdkReasoningEffort;
   ultracode: boolean;
+  fastMode: boolean;
 };
 
 type SdkSessionMessageHandler = (message: SDKMessage) => void;
@@ -73,6 +77,7 @@ interface SdkPermissionOptions {
 }
 
 interface BuildSdkPermissionOptionsArgs {
+  allowBypassPermissions: boolean;
   permissionMode: ClaudePermissionMode | undefined;
 }
 
@@ -88,8 +93,8 @@ interface BuildSdkDoneErrorMessageArgs {
 
 const SDK_STDERR_TAIL_MAX_CHARS = 4_000;
 
-function isCurrentProcessRoot(): boolean {
-  return process.getuid?.() === 0;
+export function isBypassPermissionsAvailable(): boolean {
+  return process.getuid?.() !== 0;
 }
 
 function appendBoundedText(args: AppendBoundedTextArgs): string {
@@ -139,12 +144,15 @@ function buildSdkPermissionOptions(
   args: BuildSdkPermissionOptionsArgs,
 ): SdkPermissionOptions {
   const permissionMode = args.permissionMode ?? "default";
-  if (permissionMode !== "bypassPermissions") {
+  if (!args.allowBypassPermissions) {
     return { permissionMode };
   }
 
-  if (isCurrentProcessRoot()) {
-    return { permissionMode: "default" };
+  if (!isBypassPermissionsAvailable()) {
+    return {
+      permissionMode:
+        permissionMode === "bypassPermissions" ? "default" : permissionMode,
+    };
   }
 
   return {
@@ -185,8 +193,18 @@ export class SdkSession {
   }
 
   async setPermissionMode(mode: ClaudePermissionMode): Promise<void> {
-    this.options.permissionMode = mode;
     await this.query?.setPermissionMode(mode);
+    this.options.permissionMode = mode;
+  }
+
+  async applyPermissionSettings(
+    settings: Pick<Settings, "sandbox" | "permissions">,
+  ): Promise<void> {
+    await this.query?.applyFlagSettings(settings);
+  }
+
+  async supportedCommands(): Promise<SlashCommand[]> {
+    return this.query ? this.query.supportedCommands() : [];
   }
 
   async setModel(model: string | undefined): Promise<void> {
@@ -218,6 +236,7 @@ export class SdkSession {
 
     this.stderrTail = "";
     const permissionOptions = buildSdkPermissionOptions({
+      allowBypassPermissions: this.options.allowBypassPermissions,
       permissionMode: this.options.permissionMode,
     });
     const onStderr = (data: string): void => {
@@ -278,7 +297,10 @@ export class SdkSession {
       ...(this.options.plugins ? { plugins: this.options.plugins } : {}),
       ...(this.options.thinking ? { thinking: this.options.thinking } : {}),
       ...(this.options.settings ? { settings: this.options.settings } : {}),
-      ...(this.options.extraArgs ? { extraArgs: this.options.extraArgs } : {}),
+      extraArgs: {
+        ...this.options.extraArgs,
+        "replay-user-messages": null,
+      },
     };
 
     try {
@@ -344,16 +366,17 @@ export class SdkSession {
   async closeGracefully(timeoutMs: number): Promise<void> {
     this.inputDone = true;
     this.rejectQueuedInputs("Claude SDK session closed before input consumed");
-    this.resolveInputDone();
 
-    if (!this.query) {
+    const query = this.query;
+    if (!query) {
+      this.resolveInputDone();
       return;
     }
 
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        this.completion,
+        this.interruptAndDrain(query),
         new Promise<void>((_, reject) => {
           timeout = setTimeout(() => {
             reject(
@@ -371,6 +394,12 @@ export class SdkSession {
         clearTimeout(timeout);
       }
     }
+  }
+
+  private async interruptAndDrain(query: Query): Promise<void> {
+    await query.interrupt();
+    this.resolveInputDone();
+    await this.completion;
   }
 
   private createInputIterable(): AsyncIterable<SDKUserMessage> {

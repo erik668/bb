@@ -8,6 +8,7 @@ import type {
   ReasoningLevel,
   RuntimePermissionPolicy,
   ServiceTier,
+  SessionOptionSelections,
 } from "@bb/domain";
 import type {
   AgentRuntimeBridgeLaunch,
@@ -27,10 +28,10 @@ export type ProviderExecutionContext = {
   serviceTier?: ServiceTier;
   reasoningLevel?: ReasoningLevel;
   promptMode?: PromptMode;
+  sessionOptions?: SessionOptionSelections;
   providerOptions: JsonObject;
   instructions?: string;
   envVars?: Record<string, string>;
-  skillRoots?: readonly AgentRuntimeSkillRoot[];
 } & RuntimePermissionPolicy;
 
 export type AdapterCommand =
@@ -38,13 +39,20 @@ export type AdapterCommand =
       type: "skills/configure";
       skillRoots: readonly AgentRuntimeSkillRoot[];
     }
-  | { type: "model/list"; cwd?: string }
+  | {
+      type: "model/list";
+      cwd?: string;
+      selectedModel?: string;
+      envVars: Record<string, string>;
+    }
+  | { type: "commands/list"; cwd: string }
   | { type: "provider/health"; cwd?: string }
   | { type: "provider/usage"; cwd?: string }
   | {
       type: "provider/installation/status";
       cwd?: string;
       requirement?: "thread_rewind";
+      checkUpdates: boolean;
     }
   | {
       type: "provider/installation/run";
@@ -57,7 +65,6 @@ export type AdapterCommand =
       cwd: string;
       options: ProviderExecutionContext;
       dynamicTools?: DynamicTool[];
-      disallowedTools?: readonly string[];
       instructionMode: InstructionMode;
     }
   | {
@@ -67,7 +74,6 @@ export type AdapterCommand =
       providerThreadId: string;
       options: ProviderExecutionContext;
       dynamicTools?: DynamicTool[];
-      disallowedTools?: readonly string[];
       instructionMode: InstructionMode;
     }
   | {
@@ -78,7 +84,6 @@ export type AdapterCommand =
       sourceProviderCheckpointId?: string;
       options: ProviderExecutionContext;
       dynamicTools?: DynamicTool[];
-      disallowedTools?: readonly string[];
       instructionMode: InstructionMode;
     }
   | {
@@ -86,7 +91,6 @@ export type AdapterCommand =
       threadId: string;
       providerThreadId: string;
       input: PromptInput[];
-      inputGroups?: PromptInput[][];
       clientRequestId: ClientTurnRequestId;
       options: ProviderExecutionContext;
     }
@@ -96,15 +100,8 @@ export type AdapterCommand =
       providerThreadId: string;
       expectedTurnId: string;
       input: PromptInput[];
-      inputGroups?: PromptInput[][];
       clientRequestId: ClientTurnRequestId;
       options: ProviderExecutionContext;
-    }
-  | {
-      type: "thread/stop-if-current-turn";
-      threadId: string;
-      providerThreadId: string;
-      expectedTurnId: string;
     }
   | {
       type: "thread/stop";
@@ -138,17 +135,3 @@ export type AdapterCommand =
       threadId: string;
       providerThreadId: string;
     };
-
-export function flattenPromptInputGroups(
-  input: PromptInput[],
-  inputGroups: PromptInput[][] | undefined,
-): PromptInput[] {
-  if (inputGroups === undefined) {
-    return input;
-  }
-  return inputGroups.flatMap((group, index) =>
-    index === 0
-      ? group
-      : [{ type: "text" as const, text: "\n\n", mentions: [] }, ...group],
-  );
-}

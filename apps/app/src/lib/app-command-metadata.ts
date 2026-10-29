@@ -54,6 +54,16 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Archive the focused thread.",
       ),
       command(
+        "thread.markRead",
+        "Mark thread read or unread",
+        "Mark the focused thread read or unread.",
+      ),
+      command(
+        "thread.pin",
+        "Pin or unpin thread",
+        "Pin or unpin the focused thread.",
+      ),
+      command(
         "thread.previous",
         "Previous thread",
         "Open the previous visible sidebar thread.",
@@ -82,9 +92,25 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
       ),
       command("window.new", "New window", "Open another bb desktop window."),
       command(
+        "window.find",
+        "Find in window",
+        "Search the text shown in the current bb desktop window.",
+      ),
+      command(
+        "window.reload",
+        "Reload window",
+        "Reload the current bb desktop window.",
+      ),
+      command("history.back", "Go back", "Go back in this window's history."),
+      command(
+        "history.forward",
+        "Go forward",
+        "Go forward in this window's history.",
+      ),
+      command(
         "app.back",
         "Back to app",
-        "Return from Settings or Extensions to the app.",
+        "Return from Settings, Plugins, Skills, or a plugin page with its own sidebar to the app.",
       ),
       command("settings.open", "Open settings", "Open bb settings."),
       command(
@@ -96,6 +122,26 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "sidebar.toggle",
         "Toggle sidebar",
         "Show or hide the app sidebar.",
+      ),
+      command(
+        "panel.previousTab",
+        "Previous panel tab",
+        "Select the previous visible right-panel tab, wrapping across panel splits.",
+      ),
+      command(
+        "panel.nextTab",
+        "Next panel tab",
+        "Select the next visible right-panel tab, wrapping across panel splits.",
+      ),
+      command(
+        "panel.previousNewTabItem",
+        "Previous New tab item",
+        "Focus the previous search, action, or recent item on the selected New tab page.",
+      ),
+      command(
+        "panel.nextNewTabItem",
+        "Next New tab item",
+        "Focus the next search, action, or recent item on the selected New tab page.",
       ),
       command(
         "panel.newTab",
@@ -116,6 +162,31 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "panel.toggle",
         "Toggle panel",
         "Show or hide the secondary panel.",
+      ),
+      command(
+        "panel.fullScreen.toggle",
+        "Toggle panel full screen",
+        "Expand the right panel over the conversation, or restore the conversation.",
+      ),
+      command(
+        "pane.focus.left",
+        "Focus chat pane left",
+        "Focus the chat pane to the left of the current pane.",
+      ),
+      command(
+        "pane.focus.right",
+        "Focus chat pane right",
+        "Focus the chat pane to the right of the current pane.",
+      ),
+      command(
+        "pane.focus.up",
+        "Focus chat pane up",
+        "Focus the chat pane above the current pane.",
+      ),
+      command(
+        "pane.focus.down",
+        "Focus chat pane down",
+        "Focus the chat pane below the current pane.",
       ),
       command(
         "pane.focus.previous",
@@ -146,13 +217,33 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
       ),
       command(
         "logs.openServerDaemon",
-        "Open server and daemon logs",
-        "Open the desktop log viewer for the bb server and host daemon.",
+        "Open local logs",
+        "Open local desktop, server, and host daemon logs.",
+      ),
+      command(
+        "dataDirectory.open",
+        "Open data directory",
+        "Reveal the bb data directory in the system file manager.",
       ),
       command(
         "notifications.open",
         "Show all notifications",
         "Open the notification center to read and clear past notifications.",
+      ),
+      command(
+        "plugins.enterSafeMode",
+        "Turn on plugin safe mode",
+        "Stop every plugin you installed, keeping each plugin's enabled setting. Plugins included with bb keep running.",
+      ),
+      command(
+        "plugins.exitSafeMode",
+        "Turn off plugin safe mode",
+        "Restart the plugins that were enabled before safe mode.",
+      ),
+      command(
+        "plugins.pruneCache",
+        "Clean up plugin cache",
+        "Delete cached plugin versions that no installed plugin uses, such as versions left by earlier bb releases.",
       ),
     ],
   },
@@ -165,14 +256,14 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
         "Search workspace files in a new panel tab.",
       ),
       command(
-        "diff.toggle",
-        "Toggle diff",
-        "Open or close the environment diff.",
-      ),
-      command(
         "terminal.open",
         "Open terminal",
         "Open a terminal in the secondary panel.",
+      ),
+      command(
+        "terminal.find",
+        "Find in terminal",
+        "Search the focused terminal scrollback.",
       ),
       command(
         "workspace.openPreferred",
@@ -257,19 +348,3 @@ export const APP_COMMAND_GROUPS: readonly AppCommandGroup[] = [
     ),
   },
 ];
-
-const APP_COMMAND_METADATA = new Map(
-  APP_COMMAND_GROUPS.flatMap((group) =>
-    group.commands.map((metadata) => [metadata.command, metadata]),
-  ),
-);
-
-export function getAppCommandMetadata(
-  commandId: AppCommandId,
-): AppCommandMetadata {
-  const metadata = APP_COMMAND_METADATA.get(commandId);
-  if (metadata === undefined) {
-    throw new Error(`Missing metadata for app command ${commandId}`);
-  }
-  return metadata;
-}

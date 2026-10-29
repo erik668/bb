@@ -1,13 +1,18 @@
 import type {
+  BbPluginApi,
   MessageDispatchHookContext,
   PluginAgentConfigurationContext,
   PluginThreadEventPayloads,
 } from "@get-bb/plugin-sdk";
 
+type HostResponse = Awaited<
+  ReturnType<BbPluginApi["sdk"]["hosts"]["list"]>
+>[number];
 type ThreadResponse = PluginThreadEventPayloads["thread.created"]["thread"];
 type QueueEntry = PluginThreadEventPayloads["message.queued"]["entry"];
 type TurnFailedEvent = PluginThreadEventPayloads["turn.failed"];
 type PluginAgentConfigurationContextOverrides = {
+  pluginMetadata?: PluginAgentConfigurationContext["pluginMetadata"];
   thread?: Partial<PluginAgentConfigurationContext["thread"]>;
   project?: Partial<PluginAgentConfigurationContext["project"]>;
   environment?: Partial<PluginAgentConfigurationContext["environment"]>;
@@ -31,7 +36,7 @@ type MessageDispatchHookContextOverrides = Omit<
   | "input"
   | "requestedExecution"
   | "executionSources"
-  | "queuedMessage"
+  | "queuedMessages"
 > & {
   thread?: Partial<MessageDispatchHookContext["thread"]>;
   project?: Partial<MessageDispatchHookContext["project"]>;
@@ -44,10 +49,41 @@ type MessageDispatchHookContextOverrides = Omit<
     MessageDispatchHookContext["requestedExecution"]
   >;
   executionSources?: Partial<MessageDispatchHookContext["executionSources"]>;
-  queuedMessage?: Partial<
-    NonNullable<MessageDispatchHookContext["queuedMessage"]>
-  > | null;
+  queuedMessages?: Partial<
+    MessageDispatchHookContext["queuedMessages"][number]
+  >[];
 };
+
+/**
+ * A complete, deterministic host response for faking `bb.sdk.hosts.list()`
+ * and environment-provider contexts. Override only the fields the test cares
+ * about. If the contract grows a required field, this builder fails
+ * typecheck — update the default here.
+ */
+export function makeHostResponse(
+  overrides: Partial<HostResponse> = {},
+): HostResponse {
+  return {
+    id: "host-1",
+    name: "Test host",
+    type: "persistent",
+    status: "connected",
+    machineProviderId: null,
+    lifecycle: {
+      phase: "active",
+      suspendedAt: null,
+      message: null,
+      pendingLog: "",
+      teardown: null,
+    },
+    maxPermissionMode: "full",
+    lastSeenAt: null,
+    lastRejectedProtocolVersion: null,
+    createdAt: 0,
+    updatedAt: 0,
+    ...overrides,
+  };
+}
 
 /**
  * A complete, deterministic `ThreadResponse` for thread lifecycle event
@@ -68,10 +104,12 @@ export function makeThreadResponse(
     sectionId: null,
     status: "idle",
     parentThreadId: null,
+    lifecycleOwnerThreadId: null,
     sourceThreadId: null,
     originKind: null,
     originPluginId: null,
     visibility: "visible",
+    parentNotifications: "auto",
     archivedAt: null,
     pinnedAt: null,
     deletedAt: null,
@@ -79,8 +117,10 @@ export function makeThreadResponse(
     latestAttentionAt: 0,
     createdAt: 0,
     updatedAt: 0,
-    runtime: { displayStatus: "idle", hostReconnectGraceExpiresAt: null },
+    runtime: { displayStatus: "idle" },
     activeBackgroundAgentCount: 0,
+    canRestoreEnvironment: false,
+    canEditMessages: true,
     canSpawnChild: true,
     queuedMessageCount: 0,
     ...overrides,
@@ -97,6 +137,7 @@ export function makePluginAgentConfigurationContext(
   overrides: PluginAgentConfigurationContextOverrides = {},
 ): PluginAgentConfigurationContext {
   const context: PluginAgentConfigurationContext = {
+    pluginMetadata: {},
     thread: {
       id: "thread-test",
       title: null,
@@ -113,8 +154,8 @@ export function makePluginAgentConfigurationContext(
       id: "environment-test",
       name: null,
       path: "/tmp/test",
-      workspaceProvisionType: "unmanaged",
       branchName: null,
+      workspaceProvisionType: null,
     },
     host: { id: "host-test", name: "Test host" },
     provider: {
@@ -125,6 +166,7 @@ export function makePluginAgentConfigurationContext(
     origin: { kind: null, pluginId: null },
   };
   return {
+    pluginMetadata: overrides.pluginMetadata ?? context.pluginMetadata,
     thread: { ...context.thread, ...overrides.thread },
     project: { ...context.project, ...overrides.project },
     environment: { ...context.environment, ...overrides.environment },
@@ -178,11 +220,14 @@ export function makeMessageDispatchHookContext(
       permissionMode: null,
     },
     attempt: "start-turn",
-    queuedMessage: null,
+    initiator: "user",
+    senderThreadId: null,
+    queuedMessages: [],
+    experimental_submission: null,
     origin: null,
     originPluginId: null,
-    startedOnBehalfOf: null,
     parentThreadId: null,
+    environmentIntent: null,
   };
   const environmentDefaults: NonNullable<
     MessageDispatchHookContext["environment"]
@@ -192,29 +237,24 @@ export function makeMessageDispatchHookContext(
     projectId: "project-1",
     hostId: "host-1",
     path: "/tmp/test",
-    managed: true,
     isGitRepo: true,
     isWorktree: false,
-    workspaceProvisionType: "unmanaged",
     branchName: "main",
     baseBranch: null,
     defaultBranch: "main",
     mergeBaseBranch: null,
+    environmentProviderId: null,
+    environmentProviderSelection: null,
+    environmentProviderInstanceKey: null,
+    lifecycle: { phase: "active", retireAt: null, teardown: null },
+    hostLifecycle: "active",
+    managed: false,
+    workspaceProvisionType: null,
     status: "ready",
     createdAt: 0,
     updatedAt: 0,
   };
-  const hostDefaults: NonNullable<MessageDispatchHookContext["host"]> = {
-    id: "host-1",
-    name: "Test host",
-    type: "persistent",
-    status: "connected",
-    maxPermissionMode: "full",
-    lastSeenAt: null,
-    lastRejectedProtocolVersion: null,
-    createdAt: 0,
-    updatedAt: 0,
-  };
+  const hostDefaults = makeHostResponse();
   const project = { ...context.project, ...overrides.project };
   const host =
     overrides.host === undefined
@@ -255,15 +295,9 @@ export function makeMessageDispatchHookContext(
       ...context.executionSources,
       ...overrides.executionSources,
     },
-    queuedMessage:
-      overrides.queuedMessage === undefined
-        ? context.queuedMessage
-        : overrides.queuedMessage === null
-          ? null
-          : makeQueueEntry({
-              threadId: thread.id,
-              ...overrides.queuedMessage,
-            }),
+    queuedMessages: (overrides.queuedMessages ?? context.queuedMessages).map(
+      (message) => makeQueueEntry({ threadId: thread.id, ...message }),
+    ),
   };
 }
 
@@ -279,6 +313,10 @@ export function makeQueueEntry(
 ): QueueEntry {
   return {
     id: "queued_1",
+    origin: null,
+    originPluginId: null,
+    initiator: "user",
+    senderThreadId: null,
     threadId: "thread-1",
     content: [{ type: "text", text: "Queued turn", mentions: [] }],
     model: "test-model",
@@ -287,6 +325,7 @@ export function makeQueueEntry(
     serviceTier: "default",
     groupWithNext: false,
     sendAt: null,
+    state: "waiting",
     waitingOn: {
       kind: "plugin",
       pluginId: "test-plugin",

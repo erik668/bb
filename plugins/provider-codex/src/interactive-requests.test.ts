@@ -2,10 +2,181 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildCodexInteractiveResponse,
+  buildCodexInteractiveResult,
   decodeCodexInteractiveRequest,
   extractCodexMacOsPermissionRequest,
 } from "./interactive-requests.js";
-import { ProviderRequestDecodeError } from "@bb/provider-bridge-protocol/bridge-kit";
+import {
+  ProviderRequestDecodeError,
+  interactionRequestPayloadSchema,
+} from "@get-bb/plugin-sdk/provider-bridge";
+import computerUseElicitation from "./fixtures/computer-use-elicitation.json";
+
+it("surfaces a standard elicitation from another MCP server", () => {
+  expect(
+    decodeCodexInteractiveRequest({
+      id: 41,
+      method: "mcpServer/elicitation/request",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        serverName: "travel",
+        mode: "form",
+        _meta: null,
+        message: "Choose your destination",
+        requestedSchema: {
+          type: "object",
+          properties: { destination: { type: "string", minLength: 1 } },
+          required: ["destination"],
+        },
+      },
+    }),
+  ).toMatchObject({
+    requestId: 41,
+    turnId: "turn-1",
+    payload: {
+      kind: "provider-codex/mcp-elicitation",
+      data: { kind: "form", serverName: "travel" },
+    },
+  });
+});
+
+it("bounds a long elicitation title and keeps the full message", () => {
+  const message = `${"Confirm the deployment target. ".repeat(7)}Continue?`;
+  const decoded = decodeCodexInteractiveRequest({
+    id: 42,
+    method: "mcpServer/elicitation/request",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      serverName: "deploy",
+      mode: "form",
+      _meta: null,
+      message,
+      requestedSchema: {
+        type: "object",
+        properties: { region: { type: "string" } },
+      },
+    },
+  });
+  if (!decoded) throw new Error("Expected a decoded elicitation");
+  const payload = interactionRequestPayloadSchema.parse(decoded.payload);
+
+  expect(message.length).toBe(226);
+  expect(payload).toMatchObject({
+    title: `${message.slice(0, 159).trimEnd()}…`,
+    data: { kind: "form", message },
+  });
+});
+
+it("bounds a long title without splitting a surrogate pair at the limit", () => {
+  const message = `${"a".repeat(158)}😀 and more text after the emoji`;
+  const decoded = decodeCodexInteractiveRequest({
+    id: 43,
+    method: "mcpServer/elicitation/request",
+    params: {
+      threadId: "thread-1",
+      turnId: "turn-1",
+      serverName: "emoji",
+      mode: "url",
+      _meta: null,
+      message,
+      url: "https://example.com/emoji",
+      elicitationId: "emoji-1",
+    },
+  });
+  if (!decoded) throw new Error("Expected a decoded elicitation");
+  expect(interactionRequestPayloadSchema.parse(decoded.payload)).toMatchObject({
+    title: `${"a".repeat(158)}…`,
+  });
+});
+
+describe("buildCodexInteractiveResult", () => {
+  const decoded = decodeCodexInteractiveRequest(computerUseElicitation);
+  if (!decoded) throw new Error("Expected a decoded elicitation");
+  const cancel = { action: "cancel", content: null, _meta: null };
+
+  it("cancels the elicitation when the turn stops or the runtime disconnects", () => {
+    expect(
+      buildCodexInteractiveResult(decoded.payload, {
+        status: "rejected",
+        reason: new Error("Thread interrupted"),
+      }),
+    ).toEqual(cancel);
+  });
+
+  it.each([
+    { decision: "deny" },
+    { kind: "plugin_submitted" },
+    { kind: "user_answer", answers: {} },
+    null,
+  ])("cancels the elicitation for a non-answer resolution %j", (value) => {
+    expect(
+      buildCodexInteractiveResult(decoded.payload, {
+        status: "fulfilled",
+        value,
+      }),
+    ).toEqual(cancel);
+  });
+
+  it("encodes a request answer", () => {
+    expect(
+      buildCodexInteractiveResult(decoded.payload, {
+        status: "fulfilled",
+        value: {
+          kind: "request_answer",
+          value: { action: "accept", persist: "session" },
+        },
+      }),
+    ).toEqual({ action: "accept", content: {}, _meta: { persist: "session" } });
+  });
+
+  it("still surfaces runtime failures for approvals", () => {
+    const error = new Error("Thread interrupted");
+    expect(() =>
+      buildCodexInteractiveResult(
+        {
+          kind: "approval",
+          subject: {
+            kind: "file_change",
+            itemId: "item-1",
+            writeScope: null,
+            sessionGrant: null,
+          },
+          reason: null,
+          availableDecisions: ["allow_once", "deny"],
+        },
+        { status: "rejected", reason: error },
+      ),
+    ).toThrow(error);
+  });
+});
+
+it("surfaces a native Computer Use app permission request", () => {
+  expect(decodeCodexInteractiveRequest(computerUseElicitation)).toEqual({
+    requestId: computerUseElicitation.id,
+    method: computerUseElicitation.method,
+    providerThreadId: computerUseElicitation.params.threadId,
+    turnId: null,
+    payload: {
+      kind: "provider-codex/mcp-elicitation",
+      title: "Allow Codex to use Calculator?",
+      data: {
+        kind: "computer_use",
+        serverName: "cua_repl",
+        app: {
+          id: "com.apple.calculator",
+          name: "Calculator",
+          iconDataUrl: null,
+        },
+        message: computerUseElicitation.params.message,
+        scopes: ["session", "always"],
+        warning: null,
+        riskLevel: "low",
+      },
+    },
+  });
+});
 
 describe("decodeCodexInteractiveRequest", () => {
   it("maps command approval requests into pending interaction payloads", () => {
@@ -461,6 +632,99 @@ describe("decodeCodexInteractiveRequest", () => {
       },
     });
   });
+
+  it("maps blocking Codex user input into a durable user-question interaction", () => {
+    expect(
+      decodeCodexInteractiveRequest({
+        id: 12,
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "t1",
+          turnId: "turn-user-input",
+          itemId: "item-user-input",
+          questions: [
+            {
+              id: "deployment",
+              header: "Deployment",
+              question:
+                "Which deployment path should we use? Include the context before deciding.",
+              isOther: true,
+              isSecret: false,
+              options: [
+                {
+                  label: "Staging",
+                  description: "Validate before production.",
+                },
+                {
+                  label: "Production",
+                  description: "Run the approved release.",
+                },
+              ],
+            },
+          ],
+          isBlocking: true,
+          autoResolutionMs: null,
+        },
+      }),
+    ).toEqual({
+      requestId: 12,
+      method: "item/tool/requestUserInput",
+      providerThreadId: "t1",
+      turnId: "turn-user-input",
+      payload: {
+        kind: "user_question",
+        questions: [
+          {
+            id: "deployment",
+            prompt:
+              "Which deployment path should we use? Include the context before deciding.",
+            shortLabel: "Deployment",
+            multiSelect: false,
+            options: [
+              {
+                value: "deployment:option-1",
+                label: "Staging",
+                description: "Validate before production.",
+              },
+              {
+                value: "deployment:option-2",
+                label: "Production",
+                description: "Run the approved release.",
+              },
+            ],
+            allowFreeText: true,
+            required: true,
+          },
+        ],
+      },
+    });
+  });
+
+  it("rejects secret Codex user input instead of rendering it in the BB form", () => {
+    expect(() =>
+      decodeCodexInteractiveRequest({
+        id: 13,
+        method: "item/tool/requestUserInput",
+        params: {
+          threadId: "t1",
+          turnId: "turn-secret-input",
+          itemId: "item-secret-input",
+          questions: [
+            {
+              id: "token",
+              header: "Token",
+              question: "Enter the token",
+              isOther: true,
+              isSecret: true,
+              options: null,
+            },
+          ],
+          isBlocking: true,
+          autoResolutionMs: 300_000,
+        },
+      }),
+    ).toThrowError(ProviderRequestDecodeError);
+  });
 });
 
 describe("buildCodexInteractiveResponse", () => {
@@ -579,6 +843,53 @@ describe("buildCodexInteractiveResponse", () => {
         },
       },
       scope: "session",
+    });
+  });
+
+  it("maps a user-question answer back to Codex option labels and free text", () => {
+    expect(
+      buildCodexInteractiveResponse({
+        payload: {
+          kind: "user_question",
+          questions: [
+            {
+              id: "deployment",
+              prompt: "Which deployment path should we use?",
+              shortLabel: "Deployment",
+              multiSelect: true,
+              options: [
+                {
+                  value: "deployment:option-1",
+                  label: "Staging",
+                  description: "Validate before production.",
+                },
+                {
+                  value: "deployment:option-2",
+                  label: "Production",
+                  description: "Run the approved release.",
+                },
+              ],
+              allowFreeText: true,
+              required: true,
+            },
+          ],
+        },
+        resolution: {
+          kind: "user_answer",
+          answers: {
+            deployment: {
+              selected: ["deployment:option-2"],
+              freeText: "Use the audited release window.",
+            },
+          },
+        },
+      }),
+    ).toEqual({
+      answers: {
+        deployment: {
+          answers: ["Production", "Use the audited release window."],
+        },
+      },
     });
   });
 });

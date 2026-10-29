@@ -1,4 +1,5 @@
-import { lstat, readdir, readFile, realpath, stat } from "node:fs/promises";
+import { findSkillFiles } from "@bb/skill-index";
+import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import semver from "semver";
 import {
@@ -10,6 +11,9 @@ import {
 } from "@bb/domain";
 import { resolvePluginCodeThemePath } from "../system/code-themes.js";
 import {
+  readPluginPackageJsonFile,
+  resolveManifestAssetFile,
+  resolveManifestEntryFile,
   resolveManifestPath,
   assertValidPluginCompactIconSvg,
   assertValidPluginIconSvg,
@@ -32,6 +36,7 @@ export interface PluginManifest {
   };
   bbEngineRange: string | undefined;
   bbPluginSdkRange: string | undefined;
+  providerCatalog: Array<{ id: string; displayName: string }>;
   serverEntry: string;
   appEntry: string | undefined;
   hostEntry: string | undefined;
@@ -51,21 +56,12 @@ export interface PluginManifest {
 async function readSkillNames(rootPaths: string[]): Promise<string[]> {
   const names = new Set<string>();
   for (const rootPath of rootPaths) {
-    let entries;
-    try {
-      entries = await readdir(rootPath, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      try {
-        const skillFile = await lstat(join(rootPath, entry.name, "SKILL.md"));
-        if (!skillFile.isFile()) continue;
-      } catch {
-        continue;
-      }
-      names.add(entry.name);
+    for (const skill of await findSkillFiles({
+      path: rootPath,
+      shape: "skill",
+      boundaryPath: null,
+    })) {
+      names.add(skill.name);
     }
   }
   return [...names].sort();
@@ -75,18 +71,7 @@ export async function readPluginManifest(
   rootDir: string,
 ): Promise<PluginManifest> {
   const packageJsonPath = join(rootDir, "package.json");
-  let raw: string;
-  try {
-    raw = await readFile(packageJsonPath, "utf8");
-  } catch {
-    throw new Error(`no readable package.json at ${packageJsonPath}`);
-  }
-  let json: unknown;
-  try {
-    json = JSON.parse(raw);
-  } catch {
-    throw new Error(`package.json is not valid JSON at ${packageJsonPath}`);
-  }
+  const json = await readPluginPackageJsonFile(packageJsonPath);
   const parsed = pluginPackageJsonSchema.safeParse(json);
   if (!parsed.success) {
     const issue = parsed.error.issues[0];
@@ -104,24 +89,14 @@ export async function readPluginManifest(
       "invalid plugin package.json (engines.bbPluginSdk): must be a valid semver range",
     );
   }
-  const serverEntry = resolveManifestPath(rootDir, bb.server, "bb.server");
-  try {
-    await stat(serverEntry);
-  } catch {
-    throw new Error(
-      `manifest bb.server points at a missing file: ${bb.server}`,
-    );
-  }
+  const serverEntry = await resolveManifestEntryFile(
+    rootDir,
+    bb.server,
+    "bb.server",
+  );
   const hostEntry = bb.host
-    ? resolveManifestPath(rootDir, bb.host, "bb.host")
+    ? await resolveManifestEntryFile(rootDir, bb.host, "bb.host")
     : undefined;
-  if (hostEntry !== undefined) {
-    try {
-      await stat(hostEntry);
-    } catch {
-      throw new Error(`manifest bb.host points at a missing file: ${bb.host}`);
-    }
-  }
   const skillsRootPaths = (bb.skills ?? ["skills"]).map((entry) =>
     resolveManifestPath(rootDir, entry.replace(/\/\*$/, ""), "bb.skills"),
   );
@@ -160,24 +135,7 @@ export async function readPluginManifest(
     ["bb.branding.logo.dark", brandingLogo?.darkPath],
   ] as const) {
     if (assetPath === undefined) continue;
-    let assetStat;
-    try {
-      assetStat = await stat(assetPath);
-    } catch {
-      throw new Error(`manifest ${label} points at a missing file`);
-    }
-    if (!assetStat.isFile()) {
-      throw new Error(`manifest ${label} must point at a file`);
-    }
-    const [realRoot, realAsset] = await Promise.all([
-      realpath(rootDir),
-      realpath(assetPath),
-    ]);
-    if (realAsset !== realRoot && !realAsset.startsWith(realRoot + "/")) {
-      throw new Error(
-        `manifest ${label} escapes the plugin directory through a symlink`,
-      );
-    }
+    const realAsset = await resolveManifestAssetFile(rootDir, assetPath, label);
     if (label === "bb.branding.icon") {
       assertValidPluginCompactIconSvg(await readFile(realAsset), label);
     }
@@ -187,25 +145,11 @@ export async function readPluginManifest(
     bb.branding.experimental_icons ?? {},
   )) {
     const label = `bb.branding.experimental_icons["${name}"]`;
-    const assetPath = resolveManifestPath(rootDir, entry, label);
-    let assetStat;
-    try {
-      assetStat = await stat(assetPath);
-    } catch {
-      throw new Error(`manifest ${label} points at a missing file`);
-    }
-    if (!assetStat.isFile()) {
-      throw new Error(`manifest ${label} must point at a file`);
-    }
-    const [realRoot, realAsset] = await Promise.all([
-      realpath(rootDir),
-      realpath(assetPath),
-    ]);
-    if (realAsset !== realRoot && !realAsset.startsWith(realRoot + "/")) {
-      throw new Error(
-        `manifest ${label} escapes the plugin directory through a symlink`,
-      );
-    }
+    const realAsset = await resolveManifestAssetFile(
+      rootDir,
+      resolveManifestPath(rootDir, entry, label),
+      label,
+    );
     assertValidPluginIconSvg(await readFile(realAsset), label);
     brandingIcons.set(name, realAsset);
   }
@@ -245,7 +189,11 @@ export async function readPluginManifest(
       id: theme.id,
       name: theme.name,
       description: theme.description ?? null,
-      cssPath: resolveManifestPath(rootDir, theme.css, `bb.themes.${theme.id}.css`),
+      cssPath: resolveManifestPath(
+        rootDir,
+        theme.css,
+        `bb.themes.${theme.id}.css`,
+      ),
       codeTheme,
       codeThemePaths,
     };
@@ -284,8 +232,13 @@ export async function readPluginManifest(
     },
     bbEngineRange: engines?.bb,
     bbPluginSdkRange: engines?.bbPluginSdk,
+    providerCatalog: (bb.experimental_providers ?? []).map(
+      ({ id, displayName }) => ({ id, displayName }),
+    ),
     serverEntry,
-    appEntry: bb.app ? resolveManifestPath(rootDir, bb.app, "bb.app") : undefined,
+    appEntry: bb.app
+      ? resolveManifestPath(rootDir, bb.app, "bb.app")
+      : undefined,
     hostEntry,
     themes,
     skillsRootPaths,

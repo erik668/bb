@@ -1,30 +1,16 @@
-import { useMemo, type CSSProperties } from "react";
+import { useMemo } from "react";
 import Convert from "ansi-to-html";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { getDetailScrollMaxHeightClass } from "../../ui/detail-scroll-size.js";
-import { ExpandableLine } from "../../ui/expandable-line.js";
 import { TimelineDetailScroll } from "./TimelineDetailScroll.js";
 
-interface TerminalOutputBlockProps {
+export interface TerminalOutputBlockProps {
   output: string;
-  commandLine?: string;
-  exitCode?: number | null;
-  metadataLines?: readonly string[];
-  streaming?: boolean;
-}
-
-interface TerminalScrollContentKeyArgs {
-  commandLine: string | undefined;
+  commandLine: string;
   exitCode: number | null;
   metadataLines: readonly string[];
-  output: string;
+  streaming: boolean;
 }
-
-const COMMAND_LINE_CLAMP_STYLE: CSSProperties = {
-  display: "-webkit-box",
-  WebkitBoxOrient: "vertical",
-  WebkitLineClamp: 2,
-};
 
 const ANSI_THEME_COLORS: Record<number, string> = {
   0: "var(--ansi-0)",
@@ -72,34 +58,12 @@ const ANSI_TO_HTML = new Convert({
   colors: ANSI_THEME_COLORS,
 });
 
-function stringLengthSum(values: readonly string[]): number {
-  let length = 0;
-  for (const value of values) {
-    length += value.length;
-  }
-  return length;
-}
-
-function terminalScrollContentKey({
+export function TerminalOutputBlock({
   commandLine,
   exitCode,
   metadataLines,
   output,
-}: TerminalScrollContentKeyArgs): string {
-  return [
-    commandLine?.length ?? 0,
-    stringLengthSum(metadataLines),
-    output.length,
-    exitCode ?? "",
-  ].join(":");
-}
-
-export function TerminalOutputBlock({
-  commandLine,
-  exitCode = null,
-  metadataLines = [],
-  output,
-  streaming = false,
+  streaming,
 }: TerminalOutputBlockProps) {
   const renderedOutputHtml = useMemo(
     () =>
@@ -110,28 +74,19 @@ export function TerminalOutputBlock({
   );
 
   const showExitCode = exitCode !== null;
-  const outputContentKey = terminalScrollContentKey({
-    commandLine,
-    exitCode,
-    metadataLines,
-    output,
-  });
 
   return (
     <div className="overflow-hidden rounded-lg border border-border bg-card">
       <div className="px-4 py-3 font-mono text-xs leading-tight text-foreground opacity-70">
         {commandLine ? (
-          <ExpandableLine
-            fullText={commandLine}
-            collapsedClassName="max-h-[2lh] overflow-hidden whitespace-pre-wrap break-words"
-            collapsedStyle={COMMAND_LINE_CLAMP_STYLE}
-            expandedClassName={cn(
+          <div
+            className={cn(
               "overflow-auto whitespace-pre-wrap break-words",
               getDetailScrollMaxHeightClass("base"),
             )}
           >
             {commandLine}
-          </ExpandableLine>
+          </div>
         ) : null}
         {metadataLines.map((line, index) => (
           <div key={`${index}:${line}`} className="mt-1 text-muted-foreground">
@@ -142,22 +97,14 @@ export function TerminalOutputBlock({
           <TimelineDetailScroll
             size="base"
             streaming={streaming}
-            contentKey={outputContentKey}
-            className={cn(
-              commandLine || metadataLines.length > 0 ? "mt-1.5" : null,
-            )}
+            className="mt-1.5"
             scrollClassName="whitespace-pre leading-tight text-muted-foreground"
           >
             <div dangerouslySetInnerHTML={{ __html: renderedOutputHtml }} />
           </TimelineDetailScroll>
         ) : null}
         {showExitCode ? (
-          <div
-            className={cn(
-              renderedOutputHtml ? "mt-1.5" : commandLine ? "mt-1.5" : null,
-              "font-mono text-xs leading-tight text-muted-foreground",
-            )}
-          >
+          <div className="mt-1.5 font-mono text-xs leading-tight text-muted-foreground">
             exit code {exitCode}
           </div>
         ) : null}

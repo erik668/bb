@@ -1,3 +1,4 @@
+import { resolveHostEnvironment } from "../hosts/host-environment.js";
 import { randomUUID } from "node:crypto";
 import { listPublicHosts } from "@bb/db";
 import type {
@@ -8,11 +9,14 @@ import type {
 import type { JsonValue } from "@bb/domain";
 import { COMMAND_TIMEOUT_MS } from "../../constants.js";
 import type { WorkSessionDeps } from "../../types.js";
-import { callHostOnlineRpc } from "../hosts/online-rpc.js";
+import {
+  callHostOnlineRpc,
+  callHostRetryablePluginHostCall,
+} from "../hosts/online-rpc.js";
 import type { PluginHostArtifactSnapshot } from "./plugin-service-internal.js";
 
 const HOST_RPC_TRANSPORT_GRACE_MS = 6_000;
-const HOST_RPC_PAYLOAD_MAX_BYTES = 8 * 1024 * 1024;
+const HOST_RPC_PAYLOAD_MAX_BYTES = 32 * 1024 * 1024;
 
 async function validateValue(
   schema: StandardSchemaV1,
@@ -79,31 +83,69 @@ export async function callPluginHostRpc(
     await validateValue(method.input, args.input, "input"),
     `host rpc input for ${args.method}`,
   );
-  const callId = randomUUID();
+  const firstCallId = randomUUID();
+  const callIds = [firstCallId];
   const timeoutMs = args.timeoutMs ?? COMMAND_TIMEOUT_MS;
-  const rpc = callHostOnlineRpc(deps, {
+  const startedAt = Date.now();
+  const cancel = (callId: string): void => {
+    void callHostOnlineRpc(deps, {
+      hostId: args.hostId,
+      timeoutMs: HOST_RPC_TRANSPORT_GRACE_MS,
+      command: {
+        type: "plugin.host.cancel",
+        pluginId: args.pluginId,
+        generation: args.artifact.generation,
+        callId,
+      },
+    }).catch(() => undefined);
+  };
+  const call = {
     hostId: args.hostId,
     timeoutMs: timeoutMs + HOST_RPC_TRANSPORT_GRACE_MS,
     command: {
-      type: "plugin.host.call",
+      type: "plugin.host.call" as const,
+      contributedEnv: await resolveHostEnvironment(deps, {
+        hostId: args.hostId,
+        projectId: null,
+      }),
       pluginId: args.pluginId,
       generation: args.artifact.generation,
       artifact: {
         digest: args.artifact.digest,
         byteLength: args.artifact.byteLength,
       },
-      callId,
+      callId: firstCallId,
       method: args.method,
       input,
       timeoutMs,
     },
-  });
+  };
+  const rpc =
+    method.experimental_retryable === true
+      ? callHostRetryablePluginHostCall(deps, {
+          ...call,
+          retryCommand: (command) => {
+            cancel(command.callId);
+            const callId = randomUUID();
+            callIds.push(callId);
+            return {
+              ...command,
+              callId,
+              timeoutMs: Math.max(1, timeoutMs - (Date.now() - startedAt)),
+            };
+          },
+        }).catch((error: unknown) => {
+          for (const callId of callIds) cancel(callId);
+          throw error;
+        })
+      : callHostOnlineRpc(deps, call);
   const signal = args.signal;
   const result =
     signal === undefined
       ? await rpc
       : await new Promise<Awaited<typeof rpc>>((resolve, reject) => {
           let settled = false;
+          let aborted = false;
           const finish = (fn: () => void): void => {
             if (settled) return;
             settled = true;
@@ -111,23 +153,15 @@ export async function callPluginHostRpc(
             fn();
           };
           const onAbort = (): void => {
-            void callHostOnlineRpc(deps, {
-              hostId: args.hostId,
-              timeoutMs: HOST_RPC_TRANSPORT_GRACE_MS,
-              command: {
-                type: "plugin.host.cancel",
-                pluginId: args.pluginId,
-                generation: args.artifact.generation,
-                callId,
-              },
-            }).catch(() => undefined);
-            finish(() => reject(abortError()));
+            aborted = true;
+            for (const callId of callIds) cancel(callId);
           };
           signal.addEventListener("abort", onAbort, { once: true });
           if (signal.aborted) onAbort();
           rpc.then(
-            (value) => finish(() => resolve(value)),
-            (error) => finish(() => reject(error)),
+            (value) =>
+              finish(() => (aborted ? reject(abortError()) : resolve(value))),
+            (error) => finish(() => reject(aborted ? abortError() : error)),
           );
         });
   const output = await validateValue(method.output, result.output, "output");

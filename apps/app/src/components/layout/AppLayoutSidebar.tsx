@@ -1,100 +1,68 @@
 import { useState, type MouseEvent as ReactMouseEvent } from "react";
 import { AppSidebar } from "@/components/sidebar/AppSidebar";
-import { SettingsSidebar } from "@/components/settings/SettingsSidebar";
-import { ToolsSidebar } from "@/components/tools/ToolsSidebar";
-import { Sidebar, useSidebar } from "@/components/ui/sidebar.js";
-
-export type AppLayoutSidebarMode = "app" | "settings" | "tools";
+import {
+  sidebarNavigationPlacement,
+  useResolvedSidebarNavigation,
+} from "@/components/sidebar/sidebarNavigationProvider";
+import { useSidebar } from "@/components/ui/sidebar.js";
+import { useMobileRecentsThreadReveal } from "@/views/useMobileRecentsThreadReveal";
+import type { RouteSidebar } from "./routeSidebar";
 
 interface AppLayoutSidebarProps {
-  mode: AppLayoutSidebarMode;
+  routeSidebar: RouteSidebar | null;
+  isSettingsActive: boolean;
   onResizeMouseDown: (event: ReactMouseEvent<HTMLDivElement>) => void;
   isResizing: boolean;
-  appRoutePath: string;
   settingsRoutePath: string;
-  toolsBackRoutePath: string;
-  toolsRoutePath?: string;
+  backToAppRoutePath: string | null;
 }
 
 export function AppLayoutSidebar({
-  mode,
+  routeSidebar,
+  isSettingsActive,
   onResizeMouseDown,
   isResizing,
-  appRoutePath,
   settingsRoutePath,
-  toolsBackRoutePath,
-  toolsRoutePath,
+  backToAppRoutePath,
 }: AppLayoutSidebarProps) {
+  useMobileRecentsThreadReveal();
+  const navigation = useResolvedSidebarNavigation();
   const { isCompactViewport, isMobileSidebarClosing } = useSidebar();
-  const holdCurrentMode = isCompactViewport && isMobileSidebarClosing;
-  const [lastVisibleMode, setLastVisibleMode] = useState(mode);
-  if (!holdCurrentMode && lastVisibleMode !== mode) {
-    setLastVisibleMode(mode);
+  const holdCurrentSidebar = isCompactViewport && isMobileSidebarClosing;
+  const [lastVisible, setLastVisible] = useState({
+    routeSidebar,
+    backToAppRoutePath,
+  });
+  if (
+    !holdCurrentSidebar &&
+    (lastVisible.routeSidebar?.id !== routeSidebar?.id ||
+      lastVisible.backToAppRoutePath !== backToAppRoutePath)
+  ) {
+    setLastVisible({ routeSidebar, backToAppRoutePath });
   }
-  const renderedMode = holdCurrentMode ? lastVisibleMode : mode;
-
-  if (isCompactViewport) {
-    return (
-      <Sidebar>
-        <AppSidebar
-          onResizeMouseDown={onResizeMouseDown}
-          isResizing={isResizing}
-          showTopReserve={true}
-          settingsRoutePath={settingsRoutePath}
-          toolsRoutePath={toolsRoutePath}
-          mobileHosted={{ hidden: renderedMode !== "app" }}
-        />
-        {renderedMode === "settings" ? (
-          <SettingsSidebar
-            onResizeMouseDown={onResizeMouseDown}
-            isResizing={isResizing}
-            showTopReserve={true}
-            appRoutePath={appRoutePath}
-            mobileHosted
-          />
-        ) : null}
-        {renderedMode === "tools" ? (
-          <ToolsSidebar
-            onResizeMouseDown={onResizeMouseDown}
-            isResizing={isResizing}
-            showTopReserve={true}
-            appRoutePath={toolsBackRoutePath}
-            mobileHosted
-          />
-        ) : null}
-      </Sidebar>
-    );
-  }
-
-  if (renderedMode === "settings") {
-    return (
-      <SettingsSidebar
-        onResizeMouseDown={onResizeMouseDown}
-        isResizing={isResizing}
-        showTopReserve={true}
-        appRoutePath={appRoutePath}
-      />
-    );
-  }
-
-  if (renderedMode === "tools") {
-    return (
-      <ToolsSidebar
-        onResizeMouseDown={onResizeMouseDown}
-        isResizing={isResizing}
-        showTopReserve={true}
-        appRoutePath={toolsBackRoutePath}
-      />
-    );
-  }
+  const rendered = holdCurrentSidebar
+    ? lastVisible
+    : { routeSidebar, backToAppRoutePath };
+  const backTo =
+    sidebarNavigationPlacement(navigation) === "list"
+      ? rendered.backToAppRoutePath
+      : null;
 
   return (
     <AppSidebar
       onResizeMouseDown={onResizeMouseDown}
       isResizing={isResizing}
-      showTopReserve={true}
+      isBodyHidden={rendered.routeSidebar !== null}
+      navigation={navigation}
       settingsRoutePath={settingsRoutePath}
-      toolsRoutePath={toolsRoutePath}
+      isSettingsActive={isSettingsActive}
+      alternateBody={
+        rendered.routeSidebar?.render({
+          backTo,
+          isResizing,
+          onResizeMouseDown,
+        }) ?? null
+      }
     />
   );
 }

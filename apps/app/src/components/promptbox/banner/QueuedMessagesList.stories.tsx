@@ -1,14 +1,17 @@
 import { useCallback, useState, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { threadsQueryKey } from "@/hooks/queries/query-keys";
 import type { ThreadQueuedMessage } from "@bb/domain";
-import { makeThreadQueuedMessage } from "@bb/test-helpers/domain-fixtures";
+import {
+  makeThreadListEntry,
+  makeThreadQueuedMessage,
+} from "@bb/test-helpers/domain-fixtures";
 import {
   applyQueuedMessageReorder,
   type QueuedMessageReorderRequest,
 } from "@/lib/queued-message-reorder";
-import {
-  QueuedMessagesList,
-  type QueuedMessageGroupBoundaryRequest,
-} from "@/components/promptbox/banner/QueuedMessagesList";
+import type { QueuedMessageGroupBoundaryRequest } from "@/components/promptbox/banner/LazyQueuedMessagesList";
+import { QueuedMessagesList } from "@/components/promptbox/banner/QueuedMessagesList";
 import { StoryCard, StoryRow } from "../../../../.ladle/story-card";
 
 export default {
@@ -222,6 +225,14 @@ const waitingForWorkspace: readonly ThreadQueuedMessage[] = [
   }),
 ];
 
+const sendingAfterStop: readonly ThreadQueuedMessage[] = [
+  makeQueuedMessage({
+    id: "q_stopping",
+    text: "Summarise what you changed before you stopped.",
+    waitingOn: { kind: "stopping" },
+  }),
+];
+
 const waitingForReply: readonly ThreadQueuedMessage[] = [
   makeQueuedMessage({
     id: "q_interaction",
@@ -339,6 +350,7 @@ function StaticQueuedMessagesList({
   processingMessageId,
   processingAction,
 }: StaticQueuedMessagesListProps) {
+  const [expanded, setExpanded] = useState(true);
   return (
     <QueuedMessagesList
       attachedToComposer={true}
@@ -353,6 +365,8 @@ function StaticQueuedMessagesList({
       onSetGroupBoundary={noop}
       onEdit={noop}
       onDelete={noop}
+      expanded={expanded}
+      onExpandedChange={setExpanded}
     />
   );
 }
@@ -360,6 +374,7 @@ function StaticQueuedMessagesList({
 function ReorderableQueuedMessagesList() {
   const [queuedMessages, setQueuedMessages] =
     useState<readonly ThreadQueuedMessage[]>(multipleMessages);
+  const [expanded, setExpanded] = useState(true);
   const handleReorder = useCallback((request: QueuedMessageReorderRequest) => {
     setQueuedMessages((currentQueuedMessages) =>
       applyStoryReorder(currentQueuedMessages, request),
@@ -391,6 +406,8 @@ function ReorderableQueuedMessagesList() {
       onSetGroupBoundary={handleSetGroupBoundary}
       onEdit={noop}
       onDelete={noop}
+      expanded={expanded}
+      onExpandedChange={setExpanded}
     />
   );
 }
@@ -478,7 +495,7 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="multiple messages"
-        hint="a few messages fit the drawer; the caret collapses it. Drag a row's grip to reorder, and the divider to move the send-together boundary"
+        hint="a few messages fit the drawer; toggle from the header or collapse with the row below. Drag a row's grip to reorder, and the divider to move the send-together boundary"
       >
         <ResponsivePromptStage>
           <ReorderableQueuedMessagesList />
@@ -486,7 +503,7 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="overflowing queue"
-        hint="the caret expands an overflowing drawer into the pull-up workspace"
+        hint="long queues scroll within the drawer; toggle from the header or collapse below the messages"
       >
         <ResponsivePromptStage>
           <StaticQueuedMessagesList queuedMessages={manyMessages} />
@@ -517,7 +534,7 @@ export function Blockquotes() {
     <StoryCard>
       <StoryRow
         label="mixed: quoted + plain"
-        hint="rows stay one line in both drawer and workspace modes"
+        hint="rows stay one line in the drawer and while editing another message"
       >
         <ResponsivePromptStage>
           <StaticQueuedMessagesList queuedMessages={mixedMessages} />
@@ -620,6 +637,14 @@ export function SteerWaitStates() {
       >
         <ResponsivePromptStage>
           <StaticQueuedMessagesList queuedMessages={waitingForWorkspace} />
+        </ResponsivePromptStage>
+      </StoryRow>
+      <StoryRow
+        label="sending after a stop"
+        hint="the user pressed Send now while the thread was stopping; the row explains itself and drops Send now because pressing it again would change nothing"
+      >
+        <ResponsivePromptStage>
+          <StaticQueuedMessagesList queuedMessages={sendingAfterStop} />
         </ResponsivePromptStage>
       </StoryRow>
       <StoryRow
@@ -766,7 +791,6 @@ export function InFlightStates() {
           />
         </ResponsivePromptStage>
       </StoryRow>
-      {}
     </StoryCard>
   );
 }
@@ -804,5 +828,47 @@ export function NarrowSurface() {
         </PromptStage>
       </StoryRow>
     </StoryCard>
+  );
+}
+
+export function SenderMetadata() {
+  const [queryClient] = useState(() => {
+    const client = new QueryClient();
+    client.setQueryData(threadsQueryKey(), [
+      makeThreadListEntry({ id: "thr_review", title: "Code review" }),
+    ]);
+    return client;
+  });
+  const messages = [
+    makeQueuedMessage({
+      id: "q_user",
+      text: "Please review the final changes.",
+    }),
+    makeQueuedMessage({
+      id: "q_agent",
+      text: "The review is complete. All checks passed.",
+      initiator: "agent",
+      senderThreadId: "thr_review",
+    }),
+    makeQueuedMessage({
+      id: "q_system",
+      text: "The background task has completed.",
+      initiator: "system",
+      waitingOn: { kind: "provisioning" },
+    }),
+  ];
+  return (
+    <QueryClientProvider client={queryClient}>
+      <StoryCard>
+        <StoryRow
+          label="sender metadata"
+          hint="Non-user senders share the second line with wait metadata."
+        >
+          <ResponsivePromptStage>
+            <StaticQueuedMessagesList queuedMessages={messages} />
+          </ResponsivePromptStage>
+        </StoryRow>
+      </StoryCard>
+    </QueryClientProvider>
   );
 }

@@ -1,3 +1,4 @@
+import { RuntimeToolCalls } from "./runtime-provider-requests.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -104,6 +105,7 @@ async function answerDirectRequest(args: {
   }
   try {
     handleRuntimeProviderRequest({
+      toolCalls: new RuntimeToolCalls(),
       getActiveTurnId: args.getActiveTurnId ?? (() => "bb-turn-1"),
       getThreadExecutionOptions:
         args.getThreadExecutionOptions ?? (() => undefined),
@@ -181,6 +183,7 @@ describe("createAgentRuntime interactive requests", () => {
     });
 
     expect(requests).toHaveLength(1);
+    expect(turnId).not.toBe("turn-1");
     expect(requests[0]).toMatchObject({
       threadId: "t1",
       turnId,
@@ -188,9 +191,71 @@ describe("createAgentRuntime interactive requests", () => {
       providerThreadId,
       payload: {
         kind: "approval",
-        subject: { kind: "command", command: "echo hi" },
+        subject: { kind: "command", command: "echo hi", sessionGrant: null },
+        reason: null,
+        availableDecisions: ["allow_once", "allow_for_session", "deny"],
       },
     });
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({ type: "agentMessage", text: "Denied" }),
+      }),
+    );
+    await runtime.shutdown();
+  });
+
+  it("completes the turn with Denied when the user denies the approval", async () => {
+    const requests: PendingInteractionCreate[] = [];
+    const events: ThreadEvent[] = [];
+    const runtime = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath: tmpDir,
+        onEvent: (event) => events.push(event),
+        onInteractiveRequest: async (request) => {
+          requests.push(request);
+          return { decision: "deny" };
+        },
+      },
+    });
+
+    await runtime.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: "fake",
+      options: fullRuntimeOptions,
+    });
+    await runtime.runTurn({
+      clientRequestId: "creq_222222224i",
+      threadId: "t1",
+      input: [promptTextInput({ text: "approve:command hello" })],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadTurnCompleted({
+      events,
+      providerId: "fake",
+      runtime,
+      threadId: "t1",
+    });
+    await waitForThreadAgentMessageText({
+      events,
+      providerId: "fake",
+      runtime,
+      text: "Denied",
+      threadId: "t1",
+    });
+
+    expect(requests).toHaveLength(1);
+    expect(events).not.toContainEqual(
+      expect.objectContaining({
+        type: "item/completed",
+        item: expect.objectContaining({
+          type: "agentMessage",
+          text: "Response to: approve:command hello",
+        }),
+      }),
+    );
     await runtime.shutdown();
   });
 
@@ -275,6 +340,23 @@ describe("createAgentRuntime interactive requests", () => {
       result: { decision: "allow_once" },
     });
     expect(onInteractiveRequest).toHaveBeenCalledTimes(1);
+    expect(onInteractiveRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: {
+          kind: "approval",
+          subject: {
+            kind: "command",
+            itemId: "item-1",
+            command: "git push",
+            cwd: "/tmp/project",
+            actions: [],
+            sessionGrant: null,
+          },
+          reason: "Needs approval",
+          availableDecisions: ["allow_once", "allow_for_session", "deny"],
+        },
+      }),
+    );
   });
 
   it("reaches the user through a provider-enforcing bridge end to end", async () => {
@@ -456,44 +538,52 @@ describe("createAgentRuntime interactive requests", () => {
     await runtime.shutdown();
   });
 
-  it("forwards a plugin-defined request even under a deny escalation and returns its answer", async () => {
-    const onInteractiveRequest = vi.fn(
-      async (): Promise<PendingInteractionResolution> => ({
-        kind: "request_answer",
-        value: { TOKEN: "x" },
-      }),
-    );
-    const answer = await answerDirectRequest({
-      rawRequest: {
-        jsonrpc: "2.0",
-        id: 90,
-        method: "interaction/request",
-        params: {
-          providerThreadId: "prov-1",
-          threadId: "t1",
-          turnId: "turn-1",
-          payload: {
-            kind: "secrets/secret-request",
-            title: "Add a token",
-            data: { fields: ["TOKEN"] },
+  it.each([
+    ["explicit turn", "turn-1", "turn-1"],
+    ["active turn", null, "bb-active-turn"],
+  ])(
+    "forwards a plugin-defined request for an %s even under a deny escalation",
+    async (_name, providerTurnId, expectedTurnId) => {
+      const onInteractiveRequest = vi.fn(
+        async (): Promise<PendingInteractionResolution> => ({
+          kind: "request_answer",
+          value: { TOKEN: "x" },
+        }),
+      );
+      const answer = await answerDirectRequest({
+        rawRequest: {
+          jsonrpc: "2.0",
+          id: 90,
+          method: "interaction/request",
+          params: {
+            providerThreadId: "prov-1",
+            threadId: "t1",
+            turnId: providerTurnId,
+            payload: {
+              kind: "secrets/secret-request",
+              title: "Add a token",
+              data: { fields: ["TOKEN"] },
+            },
           },
         },
-      },
-      handshake: { approvalEnforcedBy: "runtime" },
-      getThreadExecutionOptions: () => deniedEscalationOptions,
-      onInteractiveRequest,
-    });
-    expect(onInteractiveRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({ kind: "secrets/secret-request" }),
-      }),
-    );
-    expect(answer).toMatchObject({
-      jsonrpc: "2.0",
-      id: 90,
-      result: { kind: "request_answer", value: { TOKEN: "x" } },
-    });
-  });
+        handshake: { approvalEnforcedBy: "runtime" },
+        getActiveTurnId: () => "bb-active-turn",
+        getThreadExecutionOptions: () => deniedEscalationOptions,
+        onInteractiveRequest,
+      });
+      expect(onInteractiveRequest).toHaveBeenCalledWith(
+        expect.objectContaining({
+          turnId: expectedTurnId,
+          payload: expect.objectContaining({ kind: "secrets/secret-request" }),
+        }),
+      );
+      expect(answer).toMatchObject({
+        jsonrpc: "2.0",
+        id: 90,
+        result: { kind: "request_answer", value: { TOKEN: "x" } },
+      });
+    },
+  );
 
   it("refuses a plugin-defined request whose data exceeds 64 KiB at the wire", async () => {
     const onInteractiveRequest = vi.fn(

@@ -1,321 +1,342 @@
 import {
-  ActionMenuItem,
-  ActionMenuSeparator,
-} from "@/components/ui/action-menu-items";
-import type { Thread } from "@bb/domain";
-import type { ReactNode } from "react";
+  forwardRef,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type ComponentPropsWithoutRef,
+  type ReactNode,
+} from "react";
+import type {
+  PluginThreadActionsContextMenuProps,
+  PluginThreadActionsInlineItem,
+  PluginThreadActionsMenuProps,
+  PluginThreadActionsTriggerProps,
+  PluginThreadActionTarget,
+} from "@get-bb/plugin-sdk";
 import {
   ContextMenu,
   ContextMenuContent,
+  ContextMenuLabel,
   ContextMenuTrigger,
 } from "@bb/shared-ui/context-menu";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuLabel,
   DropdownMenuTrigger,
 } from "@bb/shared-ui/dropdown-menu";
-import { Icon, type IconName } from "@bb/shared-ui/icon";
-import { Button } from "@bb/shared-ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
-import { COARSE_POINTER_ICON_SIZE_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
+import { ActionMenuSeparator } from "@bb/shared-ui/action-menu-items";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { cn } from "@bb/shared-ui/lib/utils";
-import { CompactLongPressMenu } from "@/components/ui/compact-long-press-menu";
-import { isThreadRead } from "@bb/client-core";
-import { copyToClipboardWithToast } from "@/lib/clipboard";
-import { getThreadRoutePath } from "@/lib/route-paths";
-import { useThreadActions } from "./ThreadActionsProvider";
+import { CompactLongPressMenu } from "@bb/shared-ui/compact-long-press-menu";
+import {
+  ThreadActionMenuRows,
+  useThreadActionMenuGroups,
+  useThreadBulkActionMenuGroups,
+  type ThreadActionMenuSurface,
+} from "./ThreadActionMenuItems";
 
-interface ThreadActionsMenuBaseProps {
-  thread: Thread;
-  onOpenInSplit?: () => void;
-}
-
-export interface ThreadActionsMenuResponsiveAction {
-  icon: IconName;
-  label: string;
-  onSelect: () => void | Promise<void>;
-}
-
-interface ThreadActionsMenuProps extends ThreadActionsMenuBaseProps {
-  onOpenChange?: (open: boolean) => void;
-  triggerClassName?: string;
-  responsiveActions?: readonly ThreadActionsMenuResponsiveAction[];
-}
-
-interface ThreadActionsContextMenuProps extends ThreadActionsMenuBaseProps {
-  children: ReactNode;
-  onOpenChange?: (open: boolean) => void;
-}
-
-type ThreadActionsMenuSurface = "context" | "dropdown";
-
-interface ThreadActionsMenuItemsProps extends ThreadActionsMenuBaseProps {
-  responsiveActions?: readonly ThreadActionsMenuResponsiveAction[];
-  surface: ThreadActionsMenuSurface;
-}
+const MENU_LABEL = "Thread actions";
 
 function ThreadActionsMenuItems({
   thread,
-  onOpenInSplit,
-  responsiveActions = [],
+  inline,
+  requestRename,
   surface,
-}: ThreadActionsMenuItemsProps) {
-  const {
-    archiveThreadAndChildren,
-    requestRename,
-    requestDelete,
-    togglePin,
-    toggleRead,
-    unarchiveThread,
-  } = useThreadActions();
-  const isCompactViewport = useIsCompactViewport();
-  const isDrawer = surface === "dropdown" && isCompactViewport;
-  const showSeparators = !isDrawer;
-  const isRead = isThreadRead(thread);
-  const isArchived = thread.archivedAt != null;
-  const isPinned = thread.pinnedAt !== null;
-  const threadUrl = new URL(
-    getThreadRoutePath({ projectId: thread.projectId, threadId: thread.id }),
-    window.location.origin,
-  ).toString();
-
+  isDrawer,
+  drawerStep,
+  onDrawerStepChange,
+}: {
+  thread: PluginThreadActionTarget;
+  inline?: readonly PluginThreadActionsInlineItem[];
+  requestRename?: (threadId: string) => void;
+  surface: ThreadActionMenuSurface;
+  isDrawer: boolean;
+  drawerStep: string | null;
+  onDrawerStepChange: (key: string | null) => void;
+}) {
+  const groups = useThreadActionMenuGroups({ thread, inline, requestRename });
   return (
-    <>
-      {responsiveActions.length > 0 ? (
-        <>
-          {responsiveActions.map((action) => (
-            <ActionMenuItem
-              key={action.label}
-              surface={surface}
-              icon={action.icon}
-              onSelect={() => {
-                void action.onSelect();
-              }}
-            >
-              {action.label}
-            </ActionMenuItem>
-          ))}
-          {showSeparators ? (
-            <ActionMenuSeparator surface={surface} />
-          ) : null}
-        </>
-      ) : null}
-      {onOpenInSplit ? (
-        <>
-          <ActionMenuItem
-            surface={surface}
-            icon="Columns2"
-            onSelect={() => {
-              onOpenInSplit();
-            }}
-          >
-            Open in split
-          </ActionMenuItem>
-          {showSeparators ? (
-            <ActionMenuSeparator surface={surface} />
-          ) : null}
-        </>
-      ) : null}
-      <ActionMenuItem
-        surface={surface}
-        icon="Copy"
-        onSelect={() => {
-          void copyToClipboardWithToast(threadUrl, {
-            successMessage: "Thread link copied",
-            errorMessage: "Failed to copy thread link",
-          });
-        }}
-      >
-        Copy thread link
-      </ActionMenuItem>
-      <ActionMenuItem
-        surface={surface}
-        icon={isRead ? "Mail" : "MailOpen"}
-        onSelect={() => {
-          toggleRead(thread);
-        }}
-      >
-        {isRead ? "Mark unread" : "Mark read"}
-      </ActionMenuItem>
-      <ActionMenuItem
-        surface={surface}
-        icon={isPinned ? "PinOff" : "Pin"}
-        onSelect={() => {
-          togglePin(thread);
-        }}
-      >
-        {isPinned ? "Unpin" : "Pin"}
-      </ActionMenuItem>
-      <ActionMenuItem
-        surface={surface}
-        icon="Edit"
-        onSelect={() => {
-          window.setTimeout(() => {
-            requestRename(thread);
-          }, 0);
-        }}
-      >
-        Rename
-      </ActionMenuItem>
-      {showSeparators ? <ActionMenuSeparator surface={surface} /> : null}
-      <ActionMenuItem
-        surface={surface}
-        icon={isArchived ? "ArchiveRestore" : "Archive"}
-        onSelect={() => {
-          if (isArchived) {
-            unarchiveThread(thread);
-            return;
-          }
-          archiveThreadAndChildren(thread);
-        }}
-      >
-        {isArchived ? "Unarchive" : "Archive"}
-      </ActionMenuItem>
-      <ActionMenuItem
-        surface={surface}
-        icon="Trash2"
-        variant="destructive"
-        onSelect={() => {
-          window.setTimeout(() => {
-            requestDelete(thread);
-          }, 0);
-        }}
-      >
-        Delete
-      </ActionMenuItem>
-    </>
+    <ThreadActionMenuRows
+      groups={groups}
+      surface={surface}
+      isDrawer={isDrawer}
+      drawerStep={drawerStep}
+      onDrawerStepChange={onDrawerStepChange}
+    />
   );
 }
 
-export function ThreadArchiveQuickAction({
-  thread,
-  className,
-}: {
-  thread: Thread;
-  className?: string;
-}) {
-  const { archiveThreadAndChildren, unarchiveThread } = useThreadActions();
-  const isArchived = thread.archivedAt != null;
-  const label = isArchived ? "Unarchive" : "Archive";
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={cn("rounded-md p-0", className)}
-          aria-label={`${label} thread`}
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            if (isArchived) {
-              unarchiveThread(thread);
-              return;
-            }
-            archiveThreadAndChildren(thread);
-          }}
-        >
-          <Icon
-            name={isArchived ? "ArchiveRestore" : "Archive"}
-            className={COARSE_POINTER_ICON_SIZE_CLASS}
-          />
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent side="bottom">{label}</TooltipContent>
-    </Tooltip>
+function describeTriggerContractViolation(
+  element: HTMLElement | null,
+  hostClassName: string | undefined,
+): string | null {
+  if (element === null) {
+    return "did not attach the ref it received, so the menu cannot open; spread its props and ref onto the button";
+  }
+  const missing = (hostClassName ?? "")
+    .split(/\s+/)
+    .filter((name) => name.length > 0 && !element.classList.contains(name));
+  return missing.length === 0
+    ? null
+    : `dropped the host's classes (${missing.join(" ")}); merge props.className into your own className`;
+}
+
+const ThreadActionsTriggerSlot = forwardRef<
+  HTMLButtonElement,
+  ComponentPropsWithoutRef<"button"> & {
+    render: (props: PluginThreadActionsTriggerProps) => ReactNode;
+  }
+>(function ThreadActionsTriggerSlot({ render, ...props }, ref) {
+  const element = useRef<HTMLButtonElement | null>(null);
+  const hostClassName = props.className;
+  useLayoutEffect(() => {
+    const problem = describeTriggerContractViolation(
+      element.current,
+      hostClassName,
+    );
+    if (problem !== null) {
+      console.error(`experimental_ThreadActionsMenu: \`trigger\` ${problem}`);
+    }
+  }, [hostClassName]);
+  return render({
+    ...props,
+    ref: (node: HTMLButtonElement | null) => {
+      element.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref !== null) ref.current = node;
+    },
+  });
+});
+
+function useDrawerStep(onOpenChange?: (open: boolean) => void) {
+  const [drawerStep, setDrawerStep] = useState<string | null>(null);
+  const handleOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open) setDrawerStep(null);
+      onOpenChange?.(open);
+    },
+    [onOpenChange],
   );
+  return { drawerStep, setDrawerStep, handleOpenChange };
 }
 
 export function ThreadActionsMenu({
   thread,
-  onOpenInSplit,
-  responsiveActions,
+  trigger,
+  inline,
+  requestRename,
   onOpenChange,
-  triggerClassName,
-}: ThreadActionsMenuProps) {
+  onCloseAutoFocus,
+  side,
+  align = "end",
+  sideOffset,
+}: PluginThreadActionsMenuProps) {
+  const isCompactViewport = useIsCompactViewport();
+  const { drawerStep, setDrawerStep, handleOpenChange } =
+    useDrawerStep(onOpenChange);
   return (
-    <DropdownMenu onOpenChange={onOpenChange}>
+    <DropdownMenu modal={false} onOpenChange={handleOpenChange}>
       <DropdownMenuTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={cn(
-            "rounded-md p-0",
-            triggerClassName,
-            "data-[state=open]:bg-state-active data-[state=open]:text-foreground",
-          )}
-          aria-label="Thread actions"
-          onClick={(event) => {
-            event.stopPropagation();
-          }}
-        >
-          <Icon
-            name="MoreHorizontal"
-            className={COARSE_POINTER_ICON_SIZE_CLASS}
-          />
-        </Button>
+        <ThreadActionsTriggerSlot render={trigger} />
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end">
+      <DropdownMenuContent
+        side={side}
+        align={align}
+        sideOffset={sideOffset}
+        mobileTitle={MENU_LABEL}
+        onCloseAutoFocus={onCloseAutoFocus}
+      >
         <ThreadActionsMenuItems
           thread={thread}
-          onOpenInSplit={onOpenInSplit}
-          responsiveActions={responsiveActions}
+          inline={inline}
+          requestRename={requestRename}
           surface="dropdown"
+          isDrawer={isCompactViewport}
+          drawerStep={drawerStep}
+          onDrawerStepChange={setDrawerStep}
         />
       </DropdownMenuContent>
     </DropdownMenu>
   );
 }
 
-export function ThreadActionsContextMenu(props: ThreadActionsContextMenuProps) {
-  const isCompactViewport = useIsCompactViewport();
-  if (isCompactViewport) {
-    return <ThreadActionsCompactLongPressMenu {...props} />;
-  }
-  return <ThreadActionsDesktopContextMenu {...props} />;
+interface ContextMenuShellProps {
+  label: string;
+  children: ReactNode;
+  disabled: boolean;
+  dragging: boolean;
+  onOpenChange?: (open: boolean) => void;
+  onCloseAutoFocus?: (event: Event) => void;
+  onEscapeKeyDown?: (event: KeyboardEvent) => void;
+  renderItems: (props: MenuItemsRenderProps) => ReactNode;
 }
 
-function ThreadActionsCompactLongPressMenu({
-  children,
+interface MenuItemsRenderProps {
+  surface: ThreadActionMenuSurface;
+  isDrawer: boolean;
+  drawerStep: string | null;
+  onDrawerStepChange: (key: string | null) => void;
+}
+
+export function ThreadActionsContextMenu({
   thread,
-  onOpenInSplit,
+  inline,
+  requestRename,
+  experimental_bulkThreads,
+  disabled = false,
+  dragging = false,
+  ...props
+}: PluginThreadActionsContextMenuProps) {
+  const selection =
+    experimental_bulkThreads !== undefined &&
+    experimental_bulkThreads.length > 1
+      ? experimental_bulkThreads
+      : null;
+  return (
+    <ResponsiveContextMenu
+      {...props}
+      label={
+        selection === null
+          ? MENU_LABEL
+          : `Actions for ${describeThreadCount(selection.length)}`
+      }
+      disabled={disabled}
+      dragging={dragging}
+      renderItems={(itemProps) =>
+        selection === null ? (
+          <ThreadActionsMenuItems
+            thread={thread}
+            inline={inline}
+            requestRename={requestRename}
+            {...itemProps}
+          />
+        ) : (
+          <ThreadBulkMenuItems
+            threads={selection}
+            inline={inline}
+            {...itemProps}
+          />
+        )
+      }
+    />
+  );
+}
+
+function describeThreadCount(count: number): string {
+  return count === 1 ? "1 thread" : `${count} threads`;
+}
+
+function ThreadBulkMenuItems({
+  threads,
+  inline,
+  surface,
+  isDrawer,
+  drawerStep,
+  onDrawerStepChange,
+}: {
+  threads: readonly PluginThreadActionTarget[];
+  inline?: readonly PluginThreadActionsInlineItem[];
+} & MenuItemsRenderProps) {
+  const groups = useThreadBulkActionMenuGroups({ threads, inline });
+  const Label = surface === "context" ? ContextMenuLabel : DropdownMenuLabel;
+  return (
+    <>
+      {drawerStep === null ? (
+        <>
+          <Label className="text-muted-foreground">
+            {describeThreadCount(threads.length)} selected
+          </Label>
+          {groups.length > 0 ? <ActionMenuSeparator surface={surface} /> : null}
+        </>
+      ) : null}
+      <ThreadActionMenuRows
+        groups={groups}
+        surface={surface}
+        isDrawer={isDrawer}
+        drawerStep={drawerStep}
+        onDrawerStepChange={onDrawerStepChange}
+      />
+    </>
+  );
+}
+
+function ResponsiveContextMenu(props: ContextMenuShellProps) {
+  const isCompactViewport = useIsCompactViewport();
+  return isCompactViewport ? (
+    <LongPressMenuShell {...props} />
+  ) : (
+    <DesktopContextMenuShell {...props} />
+  );
+}
+
+function LongPressMenuShell({
+  label,
+  children,
+  renderItems,
   onOpenChange,
-}: ThreadActionsContextMenuProps) {
+  disabled,
+  dragging,
+}: ContextMenuShellProps) {
+  const { drawerStep, setDrawerStep, handleOpenChange } =
+    useDrawerStep(onOpenChange);
   return (
     <CompactLongPressMenu
-      label="Thread actions"
-      onOpenChange={onOpenChange}
-      items={
-        <ThreadActionsMenuItems
-          thread={thread}
-          onOpenInSplit={onOpenInSplit}
-          surface="dropdown"
-        />
-      }
+      label={label}
+      disabled={disabled}
+      dragging={dragging}
+      onOpenChange={handleOpenChange}
+      items={renderItems({
+        surface: "dropdown",
+        isDrawer: true,
+        drawerStep,
+        onDrawerStepChange: setDrawerStep,
+      })}
     >
       {children}
     </CompactLongPressMenu>
   );
 }
 
-function ThreadActionsDesktopContextMenu({
+function DesktopContextMenuShell({
+  label,
   children,
-  thread,
-  onOpenInSplit,
+  renderItems,
   onOpenChange,
-}: ThreadActionsContextMenuProps) {
+  onCloseAutoFocus,
+  onEscapeKeyDown,
+  disabled,
+  dragging,
+}: ContextMenuShellProps) {
+  const [open, setOpen] = useState(false);
+  const handleOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen && dragging) return;
+      setOpen(nextOpen);
+      onOpenChange?.(nextOpen);
+    },
+    [dragging, onOpenChange],
+  );
+  useEffect(() => {
+    if (dragging && open) handleOpenChange(false);
+  }, [dragging, handleOpenChange, open]);
   return (
-    <ContextMenu onOpenChange={onOpenChange}>
-      <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-      <ContextMenuContent aria-label="Thread actions">
-        <ThreadActionsMenuItems
-          thread={thread}
-          onOpenInSplit={onOpenInSplit}
-          surface="context"
-        />
+    <ContextMenu modal={false} open={open} onOpenChange={handleOpenChange}>
+      <ContextMenuTrigger asChild disabled={disabled || dragging}>
+        {children}
+      </ContextMenuTrigger>
+      <ContextMenuContent
+        aria-label={label}
+        onCloseAutoFocus={onCloseAutoFocus}
+        onEscapeKeyDown={onEscapeKeyDown}
+      >
+        {renderItems({
+          surface: "context",
+          isDrawer: false,
+          drawerStep: null,
+          onDrawerStepChange: () => {},
+        })}
       </ContextMenuContent>
     </ContextMenu>
   );

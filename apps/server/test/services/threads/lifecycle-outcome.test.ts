@@ -2,17 +2,16 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   appendStoredThreadEvent,
-  createConnection,
   createEnvironment,
   createProject,
   createThread,
   getThread,
-  migrate,
   noopNotifier,
   openSession,
   upsertHost,
   type DbConnection,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import {
   changedMessageSchema,
   formatClientTurnRequestIdSuffix,
@@ -116,22 +115,20 @@ interface Setup {
 }
 
 function setup(status: ThreadStatus): Setup {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const hub = new NotificationHub();
   const host = upsertHost(db, noopNotifier, {
     id: "host-lifecycle-outcome",
     name: "Lifecycle Outcome Host",
-    type: "persistent",
   });
   const { project } = createProject(db, noopNotifier, {
     name: "Lifecycle Outcome Project",
     source: { type: "local_path", hostId: host.id, path: "/tmp/lifecycle" },
   });
   const environment = createEnvironment(db, noopNotifier, {
+    providerOwnsPath: false,
     hostId: host.id,
     projectId: project.id,
-    workspaceProvisionType: "unmanaged",
     path: "/tmp/lifecycle/env",
     status: "ready",
   });
@@ -155,7 +152,6 @@ function connectDaemon(db: DbConnection, hub: NotificationHub, hostId: string) {
     hostId,
     instanceId: `instance-${randomUUID()}`,
     hostName: "Lifecycle Outcome Host",
-    hostType: "persistent",
     dataDir: `/tmp/${hostId}`,
     protocolVersion: 1,
     heartbeatIntervalMs: 5_000,
@@ -204,7 +200,6 @@ describe("applyLoggedThreadLifecycleEvent", () => {
           status: "active",
           runtime: {
             displayStatus: "active",
-            hostReconnectGraceExpiresAt: null,
           },
           activity: NO_ACTIVITY,
           latestAttentionAt: row?.latestAttentionAt,

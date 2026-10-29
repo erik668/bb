@@ -1,4 +1,8 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { ApplicationLinkApprovalsSettings } from "@/components/settings/ApplicationLinkApprovalsSettings";
+import { MobileAppSection } from "@/components/settings/MobileAppSection";
+import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
+import { MachineAccessSettings } from "@/components/settings/MachineAccessSettings";
+import { useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Navigate,
   useNavigate,
@@ -11,8 +15,12 @@ import {
   defaultAppSettings,
   defaultAppTheme,
   defaultExperiments,
+  earlyAdopterExperiments,
+  experimentKeys,
   managedBranchPrefixSchema,
   type AppTheme,
+  type ExperimentKey,
+  type Experiments,
   type FaviconColorPreference,
   type PluginThemeMeta,
 } from "@bb/domain";
@@ -44,24 +52,30 @@ import {
   type ThemePreference,
 } from "@/hooks/useTheme";
 import { useHostDaemon, useLocalHostDaemonAccess } from "@/hooks/useHostDaemon";
-import { UsageLimitsSettingsSection } from "@/components/settings/UsageLimitsSettingsSection";
+import { useAppThemePreview } from "@/hooks/useAppThemePreview";
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
 import { CodeRendererSettings } from "@/components/settings/CodeRendererSettings";
 import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
-import { SidebarNavigationSetting } from "@/components/settings/SidebarNavigationSetting";
+import { SidebarNavigationProviderSetting } from "@/components/settings/SidebarNavigationProviderSetting";
+import { SidebarFooterSettings } from "@/components/settings/SidebarFooterSettings";
 import { SplitDimmingSetting } from "@/components/settings/SplitDimmingSetting";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
+import { useRevealSettingsSearchTarget } from "@/components/settings/useRevealSettingsSearchTarget";
 import { PluginsOverview } from "@/components/plugin/PluginsOverview";
 import { PluginDetailPaneView } from "@/views/ToolsView";
 import { SETTINGS_PLUGIN_ROUTE_PATH } from "@/lib/route-paths";
 import { PluginSettingsPage } from "@/components/plugin/PluginSettings";
 import { FileOpenersSettingsSection } from "@/components/settings/FileOpenersSettingsSection";
 import { VoiceInputSettingsSection } from "@/components/settings/VoiceInputSettingsSection";
+import { AiServicesSettingsSection } from "@/components/settings/AiServicesSettingsSection";
 import { CommunitySettingsSection } from "@/components/settings/CommunitySettingsSection";
 import { UpdatesSettingsSection } from "@/components/settings/UpdatesSettingsSection";
 import { KeyboardSettingsSection } from "@/components/settings/KeyboardSettingsSection";
+import { BrowserSettingsSection } from "@/components/settings/BrowserSettingsSection";
 import { MachinesSettingsSection } from "@/components/settings/MachinesSettingsSection";
+import { ProjectsSettingsSection } from "@/components/settings/ProjectsSettingsSection";
 import { ArchivedThreadsSettingsSection } from "@/components/settings/ArchivedThreadsSettingsSection";
+import { CliCommandSettingsSection } from "@/components/settings/CliCommandSettingsSection";
 import { CliSkillsSettingsSection } from "@/components/settings/CliSkillsSettingsSection";
 import { MarketplacesSettingsSection } from "@/components/settings/MarketplacesSettingsSection";
 import {
@@ -78,7 +92,7 @@ import {
 } from "@/lib/favicon-color-preference";
 import { useOpenLinksInAppBrowserPreference } from "@/lib/in-app-browser-link-preference";
 import { useRewriteLocalhostLinksPreference } from "@/lib/localhost-link-rewrite-preference";
-import { useRichTextEditingPreference } from "@/lib/rich-text-editing-preference";
+import { localhostLinkRewriteDescription } from "@/lib/localhost-link-rewrite-description";
 import {
   SETTINGS_ROUTE_PATH,
   getRootComposeRoutePath,
@@ -147,6 +161,8 @@ interface AppearanceSettingsSectionProps {
   pluginThemes: readonly PluginThemeMeta[];
   faviconColor: FaviconColorPreference;
   onAppearanceThemeChange: (themeId: string) => void;
+  onAppearanceThemePrefetch: (themeIds: readonly string[]) => void;
+  onAppearanceThemePreview: (themeId: string | null) => void;
   onCreatePalette: () => void;
   onFaviconColorChange: (faviconColor: FaviconColorPreference) => void;
   onThemePreferenceChange: (themePreference: ThemePreference) => void;
@@ -154,27 +170,34 @@ interface AppearanceSettingsSectionProps {
 }
 
 interface GeneralSettingsSectionProps {
+  confirmThreadArchive: boolean;
+  onConfirmThreadArchiveChange: (enabled: boolean) => void;
+  keepHistoryAfterContextClear: boolean;
+  onKeepHistoryAfterContextClearChange: (enabled: boolean) => void;
+  summarizeShellCommands: boolean;
+  onSummarizeShellCommandsChange: (enabled: boolean) => void;
   desktopBrowserAvailable: boolean;
+  generalSettingsDisabled: boolean;
   managedBranchPrefix: string;
-  managedBranchPrefixDisabled: boolean;
   navigateToThreadAfterCreate: boolean;
   onManagedBranchPrefixChange: (prefix: string) => Promise<void> | void;
   onNavigateToThreadAfterCreateChange: (enabled: boolean) => void;
   onOpenLinksInAppBrowserChange: (enabled: boolean) => void;
+  onReplaySetupGuide: () => void;
   onRewriteLocalhostLinksChange: (enabled: boolean) => void;
-  onRichTextEditingChange: (enabled: boolean) => void;
   onSteerActiveThreadOnEnterChange: (enabled: boolean) => void;
-  onStreamerModeChange: (enabled: boolean) => void;
+  onTerminalCopyOnSelectChange: (enabled: boolean) => void;
+  terminalCopyOnSelect: boolean;
   openLinksInAppBrowser: boolean;
   rewriteLocalhostLinks: boolean;
-  richTextEditing: boolean;
   steerActiveThreadOnEnter: boolean;
-  steerActiveThreadOnEnterDisabled: boolean;
-  streamerMode: boolean;
-  streamerModeDisabled: boolean;
 }
 
-interface DebugSettingsSectionProps {
+interface PrivacySettingsSectionProps {
+  onStreamerModeChange: (enabled: boolean) => void;
+  streamerMode: boolean;
+  telemetryEnabled: boolean;
+  onTelemetryEnabledChange: (enabled: boolean) => void;
   disabled: boolean;
   enabled: boolean;
   onEnabledChange: (enabled: boolean) => void;
@@ -193,17 +216,12 @@ function appPaletteLabel(
 }
 
 interface ExperimentsSettingsSectionProps {
+  performanceDiagnosticsAvailable: boolean;
   disabled: boolean;
-  changelogPreviewEnabled: boolean;
-  editMessagesEnabled: boolean;
-  mobileAppEnabled: boolean;
-  sidebarProgressiveDisclosureEnabled: boolean;
-  timelineWindowingEnabled: boolean;
-  onChangelogPreviewEnabledChange: (enabled: boolean) => void;
-  onEditMessagesEnabledChange: (enabled: boolean) => void;
-  onMobileAppEnabledChange: (enabled: boolean) => void;
-  onSidebarProgressiveDisclosureEnabledChange: (enabled: boolean) => void;
-  onTimelineWindowingEnabledChange: (enabled: boolean) => void;
+  earlyAdopter: boolean;
+  onEarlyAdopterChange: (enabled: boolean) => void;
+  experiments: Experiments;
+  onExperimentChange: (key: ExperimentKey, enabled: boolean) => void;
 }
 
 const THEME_PREFERENCE_OPTIONS: ReadonlyArray<ThemePreferenceOption> = [
@@ -243,7 +261,7 @@ const FAVICON_COLOR_LABELS: Record<FaviconColorPreference, string> = {
 };
 
 const SETTINGS_DROPDOWN_TRIGGER_CLASS =
-  "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs sm:w-36";
+  "h-7 w-full justify-between border-border/60 bg-card px-2 text-xs @min-[36rem]/settings:w-36";
 const SETTINGS_DROPDOWN_CONTENT_CLASS =
   "min-w-[var(--radix-dropdown-menu-trigger-width)]";
 
@@ -251,6 +269,40 @@ const CREATE_CUSTOM_PALETTE_PROMPT =
   "Create a custom bb palette. First run `bb theme dir` to find the custom theme directory. Ask me for the palette name and visual direction, then create `<theme-dir>/<name>/theme.css` with light and dark theme variables compatible with bb's theme tokens.";
 const PALETTE_SETTING_DESCRIPTION =
   "Palettes change bb's colors, including syntax colors in diffs and file previews. Choose a built-in palette or create one from a prompt.";
+
+interface PaletteMenuItemProps {
+  active: boolean;
+  children: ReactNode;
+  onPreview: (themeId: string | null) => void;
+  onSelect: (themeId: string) => void;
+  themeId: string;
+}
+
+function PaletteMenuItem({
+  active,
+  children,
+  onPreview,
+  onSelect,
+  themeId,
+}: PaletteMenuItemProps) {
+  return (
+    <DropdownMenuItem
+      onFocus={() => onPreview(themeId)}
+      onBlur={() => onPreview(null)}
+      onSelect={() => onSelect(themeId)}
+    >
+      {children}
+      <Icon
+        name="Check"
+        className={cn(
+          "ml-auto",
+          !active && "opacity-0",
+          COARSE_POINTER_ICON_SIZE_CLASS,
+        )}
+      />
+    </DropdownMenuItem>
+  );
+}
 
 function FaviconColorPreview({ value }: { value: FaviconColorPreference }) {
   return (
@@ -478,7 +530,7 @@ export function LocalOpenTargetSettingsSection({
           : "Enable";
 
     return (
-      <SettingsSection title="File Preferences">
+      <SettingsSection title="File preferences">
         <SettingsWithControl
           label="Local editor integration"
           description={
@@ -519,7 +571,7 @@ export function LocalOpenTargetSettingsSection({
   }
 
   return (
-    <SettingsSection title="File Preferences">
+    <SettingsSection title="File preferences">
       <div className="space-y-5">
         <LocalOpenTargetPreferenceControl
           definition={DIRECTORY_TARGET_PREFERENCE}
@@ -542,26 +594,24 @@ const IN_APP_BROWSER_LINK_SETTING_LABEL = "Open links in the in-app browser";
 const REWRITE_LOCALHOST_LINKS_SETTING_LABEL = "Rewrite localhost links";
 const NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL =
   "Navigate to threads on creation";
-const RICH_TEXT_EDITING_SETTING_LABEL = "Markdown formatting in prompt box";
-const UNHANDLED_PROVIDER_EVENTS_SETTING_LABEL =
-  "Show unhandled provider events";
+const DIAGNOSTIC_EVENTS_SETTING_LABEL = "Show diagnostic events";
 const FOLLOW_UP_BEHAVIOR_SETTING_LABEL = "Default thread followup behavior";
 const FOLLOW_UP_BEHAVIOR_OPTIONS = [
   {
     steerOnEnter: false,
     label: "Queue",
     description:
-      "Enter adds a follow-up. It runs when the agent stops. Command+Enter steers the run.",
+      "Enter adds a follow-up. It runs when the agent stops. Command+Enter (Ctrl+Enter on Windows and Linux) steers the run.",
   },
   {
     steerOnEnter: true,
     label: "Steer",
     description:
-      "Enter steers the run now. Command+Enter adds a follow-up for later.",
+      "Enter steers the run now. Command+Enter (Ctrl+Enter on Windows and Linux) adds a follow-up for later.",
   },
 ] as const;
 const STREAMER_MODE_SETTING_LABEL = "Streamer mode";
-const MANAGED_BRANCH_PREFIX_SETTING_LABEL = "Worktree branch prefix";
+const MANAGED_BRANCH_PREFIX_SETTING_LABEL = "New branch prefix";
 const MANAGED_BRANCH_PREFIX_EXAMPLE_SLUG = "fix-login-flow-thr_ab12cd34ef";
 
 interface ManagedBranchPrefixSettingProps {
@@ -641,402 +691,572 @@ export function AppearanceSettingsSection({
   pluginThemes,
   faviconColor,
   onAppearanceThemeChange,
+  onAppearanceThemePrefetch,
+  onAppearanceThemePreview,
   onFaviconColorChange,
   onCreatePalette,
   onThemePreferenceChange,
   themePreference,
 }: AppearanceSettingsSectionProps) {
+  const paletteSelectedRef = useRef(false);
+  const previewPalette = (themeId: string | null) => {
+    if (themeId === null && paletteSelectedRef.current) return;
+    onAppearanceThemePreview(themeId);
+  };
+  const selectPalette = (themeId: string) => {
+    paletteSelectedRef.current = true;
+    onAppearanceThemeChange(themeId);
+  };
   return (
-    <SettingsSection title="Appearance">
-      <div className="space-y-5">
-        <SidebarThreadListSetting />
-        <SidebarNavigationSetting />
-        <CodeRendererSettings />
-        <SettingsWithControl label="Theme">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
-                aria-label="Theme"
-              >
-                {THEME_PREFERENCE_LABELS[themePreference]}
-                <Icon
-                  name="ChevronDown"
-                  className="size-3.5 text-muted-foreground"
-                />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className={SETTINGS_DROPDOWN_CONTENT_CLASS}
-            >
-              {THEME_PREFERENCE_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.value}
-                  onSelect={() => onThemePreferenceChange(option.value)}
+    <div className="space-y-6">
+      <SettingsSection title="Appearance">
+        <div className="space-y-5">
+          <SettingsWithControl label="Theme">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
+                  aria-label="Theme"
                 >
-                  {option.label}
+                  {THEME_PREFERENCE_LABELS[themePreference]}
                   <Icon
-                    name="Check"
-                    className={cn(
-                      "ml-auto",
-                      themePreference !== option.value && "opacity-0",
-                      COARSE_POINTER_ICON_SIZE_CLASS,
-                    )}
+                    name="ChevronDown"
+                    className="size-3.5 text-muted-foreground"
                   />
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SettingsWithControl>
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+              >
+                {THEME_PREFERENCE_OPTIONS.map((option) => (
+                  <DropdownMenuItem
+                    key={option.value}
+                    onSelect={() => onThemePreferenceChange(option.value)}
+                  >
+                    {option.label}
+                    <Icon
+                      name="Check"
+                      className={cn(
+                        "ml-auto",
+                        themePreference !== option.value && "opacity-0",
+                        COARSE_POINTER_ICON_SIZE_CLASS,
+                      )}
+                    />
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SettingsWithControl>
 
-        <SettingsWithControl
-          label="Palette"
-          description={PALETTE_SETTING_DESCRIPTION}
-        >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
-                aria-label="Palette"
-                disabled={appearanceDisabled}
-              >
-                <span className="min-w-0 truncate">
-                  {appPaletteLabel(appearance, pluginThemes)}
-                </span>
-                <Icon
-                  name="ChevronDown"
-                  className="size-3.5 text-muted-foreground"
-                />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+          <SettingsWithControl
+            label="Palette"
+            description={PALETTE_SETTING_DESCRIPTION}
+          >
+            <DropdownMenu
+              onOpenChange={(open) => {
+                if (open) {
+                  paletteSelectedRef.current = false;
+                  onAppearanceThemePrefetch([
+                    ...builtInThemes.map((entry) => entry.id),
+                    ...customThemes,
+                    ...pluginThemes.map((theme) => theme.id),
+                  ]);
+                  return;
+                }
+                previewPalette(null);
+              }}
             >
-              {builtInThemes.map((entry) => (
-                <DropdownMenuItem
-                  key={entry.id}
-                  onSelect={() => onAppearanceThemeChange(entry.id)}
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
+                  aria-label="Palette"
+                  disabled={appearanceDisabled}
                 >
-                  {entry.name}
-                  <Icon
-                    name="Check"
-                    className={cn(
-                      "ml-auto",
-                      appearance.themeId !== entry.id && "opacity-0",
-                      COARSE_POINTER_ICON_SIZE_CLASS,
-                    )}
-                  />
-                </DropdownMenuItem>
-              ))}
-              {customThemes.map((name) => (
-                <DropdownMenuItem
-                  key={`custom:${name}`}
-                  onSelect={() => onAppearanceThemeChange(name)}
-                >
-                  {name}
-                  <Icon
-                    name="Check"
-                    className={cn(
-                      "ml-auto",
-                      appearance.themeId !== name && "opacity-0",
-                      COARSE_POINTER_ICON_SIZE_CLASS,
-                    )}
-                  />
-                </DropdownMenuItem>
-              ))}
-              {pluginThemes.map((theme) => (
-                <DropdownMenuItem
-                  key={theme.id}
-                  onSelect={() => onAppearanceThemeChange(theme.id)}
-                >
-                  {theme.name}
-                  <span className="text-muted-foreground">
-                    ({theme.pluginId})
+                  <span className="min-w-0 truncate">
+                    {appPaletteLabel(appearance, pluginThemes)}
                   </span>
                   <Icon
-                    name="Check"
-                    className={cn(
-                      "ml-auto",
-                      appearance.themeId !== theme.id && "opacity-0",
-                      COARSE_POINTER_ICON_SIZE_CLASS,
-                    )}
+                    name="ChevronDown"
+                    className="size-3.5 text-muted-foreground"
                   />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className={SETTINGS_DROPDOWN_CONTENT_CLASS}
+              >
+                {builtInThemes.map((entry) => (
+                  <PaletteMenuItem
+                    key={entry.id}
+                    themeId={entry.id}
+                    active={appearance.themeId === entry.id}
+                    onPreview={previewPalette}
+                    onSelect={selectPalette}
+                  >
+                    {entry.name}
+                  </PaletteMenuItem>
+                ))}
+                {customThemes.map((name) => (
+                  <PaletteMenuItem
+                    key={`custom:${name}`}
+                    themeId={name}
+                    active={appearance.themeId === name}
+                    onPreview={previewPalette}
+                    onSelect={selectPalette}
+                  >
+                    {name}
+                  </PaletteMenuItem>
+                ))}
+                {pluginThemes.map((theme) => (
+                  <PaletteMenuItem
+                    key={theme.id}
+                    themeId={theme.id}
+                    active={appearance.themeId === theme.id}
+                    onPreview={previewPalette}
+                    onSelect={selectPalette}
+                  >
+                    {theme.name}
+                    <span className="text-muted-foreground">
+                      ({theme.pluginId})
+                    </span>
+                  </PaletteMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={onCreatePalette}>
+                  <Icon
+                    name="Plus"
+                    className={COARSE_POINTER_ICON_SIZE_CLASS}
+                  />
+                  Create
                 </DropdownMenuItem>
-              ))}
-              <DropdownMenuSeparator />
-              <DropdownMenuItem onSelect={onCreatePalette}>
-                <Icon name="Plus" className={COARSE_POINTER_ICON_SIZE_CLASS} />
-                Create
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SettingsWithControl>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SettingsWithControl>
 
-        <FaviconColorSettingsControl
-          disabled={appearanceDisabled}
-          faviconColor={faviconColor}
-          onFaviconColorChange={onFaviconColorChange}
-        />
-        <SplitDimmingSetting />
-      </div>
-    </SettingsSection>
+          <FaviconColorSettingsControl
+            disabled={appearanceDisabled}
+            faviconColor={faviconColor}
+            onFaviconColorChange={onFaviconColorChange}
+          />
+          <SplitDimmingSetting />
+        </div>
+      </SettingsSection>
+      <SettingsSection title="Interface">
+        <div className="space-y-5">
+          <SidebarNavigationProviderSetting />
+          <SidebarThreadListSetting />
+          <CodeRendererSettings />
+          <SidebarFooterSettings />
+        </div>
+      </SettingsSection>
+    </div>
   );
 }
 
 export function GeneralSettingsSection({
+  confirmThreadArchive,
+  onConfirmThreadArchiveChange,
+  keepHistoryAfterContextClear,
+  onKeepHistoryAfterContextClearChange,
+  summarizeShellCommands,
+  onSummarizeShellCommandsChange,
   desktopBrowserAvailable,
+  generalSettingsDisabled,
   managedBranchPrefix,
-  managedBranchPrefixDisabled,
   navigateToThreadAfterCreate,
   onManagedBranchPrefixChange,
   onNavigateToThreadAfterCreateChange,
   onOpenLinksInAppBrowserChange,
+  onReplaySetupGuide,
   onRewriteLocalhostLinksChange,
-  onRichTextEditingChange,
   onSteerActiveThreadOnEnterChange,
-  onStreamerModeChange,
+  onTerminalCopyOnSelectChange,
+  terminalCopyOnSelect,
   openLinksInAppBrowser,
   rewriteLocalhostLinks,
-  richTextEditing,
   steerActiveThreadOnEnter,
-  steerActiveThreadOnEnterDisabled,
-  streamerMode,
-  streamerModeDisabled,
 }: GeneralSettingsSectionProps) {
+  const localhostRewriteDescription = localhostLinkRewriteDescription(
+    typeof window === "undefined" ? undefined : window.location.hostname,
+  );
   return (
-    <SettingsSection title="General">
-      <div className="space-y-5">
-        <SettingsWithControl
-          label={NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL}
-        >
-          <Switch
-            checked={navigateToThreadAfterCreate}
-            onCheckedChange={onNavigateToThreadAfterCreateChange}
-            aria-label={NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl label={RICH_TEXT_EDITING_SETTING_LABEL}>
-          <Switch
-            checked={richTextEditing}
-            onCheckedChange={onRichTextEditingChange}
-            aria-label={RICH_TEXT_EDITING_SETTING_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl
-          label={FOLLOW_UP_BEHAVIOR_SETTING_LABEL}
-          description="What Enter does in the prompt box while the thread runs."
-        >
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="outline"
-                size="sm"
-                className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
-                disabled={steerActiveThreadOnEnterDisabled}
-                aria-label={FOLLOW_UP_BEHAVIOR_SETTING_LABEL}
-              >
-                {steerActiveThreadOnEnter ? "Steer" : "Queue"}
-                <Icon
-                  name="ChevronDown"
-                  className="size-3.5 text-muted-foreground"
-                />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className={cn(SETTINGS_DROPDOWN_CONTENT_CLASS, "max-w-72")}
-            >
-              {FOLLOW_UP_BEHAVIOR_OPTIONS.map((option) => (
-                <DropdownMenuItem
-                  key={option.label}
-                  className="items-start"
-                  onSelect={() =>
-                    onSteerActiveThreadOnEnterChange(option.steerOnEnter)
-                  }
-                >
-                  <span className="min-w-0">
-                    <span className="block">{option.label}</span>
-                    <span className="block text-2xs leading-snug text-subtle-foreground">
-                      {option.description}
-                    </span>
-                  </span>
-                  <Icon
-                    name="Check"
-                    className={cn(
-                      "ml-auto",
-                      steerActiveThreadOnEnter !== option.steerOnEnter &&
-                        "opacity-0",
-                      COARSE_POINTER_ICON_SIZE_CLASS,
-                    )}
-                  />
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        </SettingsWithControl>
-
-        {desktopBrowserAvailable ? (
+    <>
+      <SettingsSection title="Threads & editing">
+        <div className="space-y-5">
           <SettingsWithControl
-            label={IN_APP_BROWSER_LINK_SETTING_LABEL}
-            description="Open web links inside bb."
+            label={NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL}
           >
             <Switch
-              checked={openLinksInAppBrowser}
-              onCheckedChange={onOpenLinksInAppBrowserChange}
-              aria-label={IN_APP_BROWSER_LINK_SETTING_LABEL}
+              checked={navigateToThreadAfterCreate}
+              onCheckedChange={onNavigateToThreadAfterCreateChange}
+              aria-label={NAVIGATE_TO_THREAD_AFTER_CREATE_SETTING_LABEL}
             />
           </SettingsWithControl>
-        ) : null}
 
+          <SettingsWithControl
+            label={FOLLOW_UP_BEHAVIOR_SETTING_LABEL}
+            description="What Enter does in the prompt box while the thread runs."
+          >
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className={SETTINGS_DROPDOWN_TRIGGER_CLASS}
+                  disabled={generalSettingsDisabled}
+                  aria-label={FOLLOW_UP_BEHAVIOR_SETTING_LABEL}
+                >
+                  {steerActiveThreadOnEnter ? "Steer" : "Queue"}
+                  <Icon
+                    name="ChevronDown"
+                    className="size-3.5 text-muted-foreground"
+                  />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="end"
+                className={cn(SETTINGS_DROPDOWN_CONTENT_CLASS, "max-w-72")}
+              >
+                {FOLLOW_UP_BEHAVIOR_OPTIONS.map((option) => (
+                  <DropdownMenuItem
+                    key={option.label}
+                    className="items-start"
+                    onSelect={() =>
+                      onSteerActiveThreadOnEnterChange(option.steerOnEnter)
+                    }
+                  >
+                    <span className="min-w-0">
+                      <span className="block">{option.label}</span>
+                      <span className="block text-2xs leading-snug text-subtle-foreground">
+                        {option.description}
+                      </span>
+                    </span>
+                    <Icon
+                      name="Check"
+                      className={cn(
+                        "ml-auto",
+                        steerActiveThreadOnEnter !== option.steerOnEnter &&
+                          "opacity-0",
+                        COARSE_POINTER_ICON_SIZE_CLASS,
+                      )}
+                    />
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Thread archive confirmation"
+            description="Ask before archiving a thread with unarchived child threads."
+          >
+            <Switch
+              checked={confirmThreadArchive}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onConfirmThreadArchiveChange}
+              aria-label="Thread archive confirmation"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Show messages from before a context clear"
+            description="Earlier messages stay in the thread for you to read. The agent doesn't see them."
+          >
+            <Switch
+              checked={keepHistoryAfterContextClear}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onKeepHistoryAfterContextClearChange}
+              aria-label="Show messages from before a context clear"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Summarize shell commands"
+            description="Show short summaries for commands that read, list, or search files. Turn off to show command text and let you expand each command to view its output."
+          >
+            <Switch
+              checked={summarizeShellCommands}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onSummarizeShellCommandsChange}
+              aria-label="Summarize shell commands"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Setup guide"
+            description="Walk through connecting an agent, adding projects, plugins, and devices again."
+          >
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={generalSettingsDisabled}
+              onClick={onReplaySetupGuide}
+            >
+              Show setup guide
+            </Button>
+          </SettingsWithControl>
+        </div>
+      </SettingsSection>
+      <SettingsSection title="Links">
+        <div className="space-y-5">
+          {desktopBrowserAvailable ? (
+            <SettingsWithControl
+              label={IN_APP_BROWSER_LINK_SETTING_LABEL}
+              description="Open web links inside bb."
+            >
+              <Switch
+                checked={openLinksInAppBrowser}
+                onCheckedChange={onOpenLinksInAppBrowserChange}
+                aria-label={IN_APP_BROWSER_LINK_SETTING_LABEL}
+              />
+            </SettingsWithControl>
+          ) : null}
+
+          {localhostRewriteDescription !== null ? (
+            <SettingsWithControl
+              label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
+              description={
+                <span className="break-words [overflow-wrap:anywhere]">
+                  {localhostRewriteDescription}
+                </span>
+              }
+            >
+              <Switch
+                checked={rewriteLocalhostLinks}
+                onCheckedChange={onRewriteLocalhostLinksChange}
+                aria-label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
+              />
+            </SettingsWithControl>
+          ) : null}
+          <ApplicationLinkApprovalsSettings />
+        </div>
+      </SettingsSection>
+      <SettingsSection title="Terminals">
         <SettingsWithControl
-          label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
-          description="Point localhost links at this host."
+          label="Copy on select"
+          description="Automatically copy selected terminal text and show a notification. Does not affect text elsewhere in the app. Linux middle-click paste uses the primary selection independently."
         >
           <Switch
-            checked={rewriteLocalhostLinks}
-            onCheckedChange={onRewriteLocalhostLinksChange}
-            aria-label={REWRITE_LOCALHOST_LINKS_SETTING_LABEL}
+            checked={terminalCopyOnSelect}
+            disabled={generalSettingsDisabled}
+            onCheckedChange={onTerminalCopyOnSelectChange}
+            aria-label="Copy on select"
           />
         </SettingsWithControl>
+      </SettingsSection>
+      <SettingsSection title="Git">
+        <div className="space-y-5">
+          <ManagedBranchPrefixSetting
+            value={managedBranchPrefix}
+            disabled={generalSettingsDisabled}
+            onChange={onManagedBranchPrefixChange}
+          />
+        </div>
+      </SettingsSection>
+    </>
+  );
+}
 
-        <ManagedBranchPrefixSetting
-          value={managedBranchPrefix}
-          disabled={managedBranchPrefixDisabled}
-          onChange={onManagedBranchPrefixChange}
-        />
-
+export function PrivacySettingsSection({
+  disabled,
+  enabled,
+  onEnabledChange,
+  streamerMode,
+  onStreamerModeChange,
+  telemetryEnabled,
+  onTelemetryEnabledChange,
+}: PrivacySettingsSectionProps) {
+  return (
+    <SettingsSection title="Privacy & diagnostics">
+      <div className="space-y-5">
         <SettingsWithControl
           label={STREAMER_MODE_SETTING_LABEL}
           description="Hide the custom models from config.json in every model picker, so a screen share does not show them."
         >
           <Switch
             checked={streamerMode}
-            disabled={streamerModeDisabled}
+            disabled={disabled}
             onCheckedChange={onStreamerModeChange}
             aria-label={STREAMER_MODE_SETTING_LABEL}
           />
         </SettingsWithControl>
+
+        <SettingsWithControl
+          label="Share anonymous usage data"
+          description="Send anonymous usage data, such as app starts, setup progress and feature use, to help improve bb. Turning this off takes effect immediately for this server."
+        >
+          <Switch
+            checked={telemetryEnabled}
+            disabled={disabled}
+            onCheckedChange={onTelemetryEnabledChange}
+            aria-label="Share anonymous usage data"
+          />
+        </SettingsWithControl>
+
+        <SettingsWithControl
+          label={DIAGNOSTIC_EVENTS_SETTING_LABEL}
+          description="Show provider environment resolution and unhandled provider events for troubleshooting."
+        >
+          <Switch
+            checked={enabled}
+            disabled={disabled}
+            onCheckedChange={onEnabledChange}
+            aria-label={DIAGNOSTIC_EVENTS_SETTING_LABEL}
+          />
+        </SettingsWithControl>
       </div>
     </SettingsSection>
   );
 }
 
-export function DebugSettingsSection({
-  disabled,
-  enabled,
-  onEnabledChange,
-}: DebugSettingsSectionProps) {
-  return (
-    <SettingsSection title="Debug">
-      <SettingsWithControl
-        label={UNHANDLED_PROVIDER_EVENTS_SETTING_LABEL}
-        description="Show raw provider events bb does not recognize. Development builds always show these events."
-      >
-        <Switch
-          checked={enabled}
-          disabled={disabled}
-          onCheckedChange={onEnabledChange}
-          aria-label={UNHANDLED_PROVIDER_EVENTS_SETTING_LABEL}
-        />
-      </SettingsWithControl>
-    </SettingsSection>
+const EXPERIMENT_DEFINITIONS: Record<
+  ExperimentKey,
+  { label: string; description: string }
+> = {
+  applicationLinks: {
+    label: "App links",
+    description:
+      "Open links like linear:// or slack:// in their apps on this device. BB asks first unless you choose Always allow. Manage approvals in General → Links → App links.",
+  },
+  changelogPreview: {
+    label: "Changelog preview",
+    description:
+      "Show the latest release notes as a compact preview on the Updates page.",
+  },
+  compactExpiredCache: {
+    label: "Compact before resuming expired sessions",
+    description:
+      "When an idle thread holds at least 100k tokens and its prompt cache has expired, the composer offers to compact before your next send. Works with supported providers (e.g. Claude Code, Pi).",
+  },
+  performanceDiagnostics: {
+    label: "Server performance diagnostics",
+    description:
+      "Collect CPU profiles and detailed performance logs while the server was launched with --perf-diagnostics. Turning this off stops collection; saved profiles remain.",
+  },
+  serverMove: {
+    label: "Server move",
+    description:
+      "Move the bb server to another machine from Settings → Machines, and export or import server data with bb server.",
+  },
+  sidebarMultiSelect: {
+    label: "Select multiple sidebar threads",
+    description:
+      "In the built-in thread list sidebar, Cmd/Ctrl+Shift-click and Shift-click threads to select several, right-click for bulk actions, and drag them together into a section, under a thread, into Pinned, or into a composer as mentions.",
+  },
+  threadRowMetadata: {
+    label: "Thread row metadata",
+    description:
+      "Add Metadata to the built-in thread list's Organize → Rows menu. When it is checked, plugins can show details such as a thread's pull request on a second line under its title.",
+  },
+  timelinePush: {
+    label: "Pushed timeline updates",
+    description:
+      "Send an open thread's timeline changes over the live connection instead of reloading the latest window after each update.",
+  },
+  unreadDividerAtAnswer: {
+    label: "NEW divider before final assistant message",
+    description:
+      "When you open a thread whose turn finished while you were away, place the NEW divider before the turn's final assistant message, or the error that ended it, instead of before its first tool call. The turn's work stays above the divider.",
+  },
+  websocketCompression: {
+    label: "Compressed live updates",
+    description:
+      "Compress large messages on the live connection, such as timeline updates, which cuts their size about 4x for remote access. Applies when the app reconnects.",
+  },
+};
+export function visibleExperimentKeys(
+  performanceDiagnosticsAvailable: boolean,
+): ExperimentKey[] {
+  return experimentKeys.filter(
+    (experimentKey) =>
+      experimentKey !== "performanceDiagnostics" ||
+      performanceDiagnosticsAvailable,
   );
 }
 
-const CHANGELOG_PREVIEW_EXPERIMENT_LABEL = "Changelog preview";
-const EDIT_MESSAGES_EXPERIMENT_LABEL = "Edit messages";
-const MOBILE_APP_EXPERIMENT_LABEL = "Mobile app";
-const SIDEBAR_PROGRESSIVE_DISCLOSURE_EXPERIMENT_LABEL =
-  "Sidebar progressive disclosure";
-const TIMELINE_WINDOWING_EXPERIMENT_LABEL = "Timeline windowing";
+const EARLY_ADOPTER_LABEL = "Early adopter";
+
 export function ExperimentsSettingsSection({
-  changelogPreviewEnabled,
+  performanceDiagnosticsAvailable,
   disabled,
-  editMessagesEnabled,
-  mobileAppEnabled,
-  sidebarProgressiveDisclosureEnabled,
-  timelineWindowingEnabled,
-  onChangelogPreviewEnabledChange,
-  onEditMessagesEnabledChange,
-  onMobileAppEnabledChange,
-  onSidebarProgressiveDisclosureEnabledChange,
-  onTimelineWindowingEnabledChange,
+  earlyAdopter,
+  onEarlyAdopterChange,
+  experiments,
+  onExperimentChange,
 }: ExperimentsSettingsSectionProps) {
   return (
-    <SettingsSection
-      title="Experiments"
-      description="Early features that are off by default. Opt in to try them."
-    >
-      <div className="space-y-5">
-        <SettingsWithControl
-          label={CHANGELOG_PREVIEW_EXPERIMENT_LABEL}
-          description="Show the latest release notes as a compact preview on the Updates page."
-        >
-          <Switch
-            checked={changelogPreviewEnabled}
-            disabled={disabled}
-            onCheckedChange={onChangelogPreviewEnabledChange}
-            aria-label={CHANGELOG_PREVIEW_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl
-          label={EDIT_MESSAGES_EXPERIMENT_LABEL}
-          description="Edit a sent message and replace the conversation from that point. Workspace changes are kept."
-        >
-          <Switch
-            checked={editMessagesEnabled}
-            disabled={disabled}
-            onCheckedChange={onEditMessagesEnabledChange}
-            aria-label={EDIT_MESSAGES_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl
-          label={MOBILE_APP_EXPERIMENT_LABEL}
-          description="Pair the bb mobile app over bb connect: shows Add mobile device under Remote access and enables bb connect machine-code."
-        >
-          <Switch
-            checked={mobileAppEnabled}
-            disabled={disabled}
-            onCheckedChange={onMobileAppEnabledChange}
-            aria-label={MOBILE_APP_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl
-          label={SIDEBAR_PROGRESSIVE_DISCLOSURE_EXPERIMENT_LABEL}
-          description="In By project and By machine, show the first five groups in the current sort order, keep attention groups visible, and reveal ten more per click. Manually is unchanged."
-        >
-          <Switch
-            checked={sidebarProgressiveDisclosureEnabled}
-            disabled={disabled}
-            onCheckedChange={onSidebarProgressiveDisclosureEnabledChange}
-            aria-label={SIDEBAR_PROGRESSIVE_DISCLOSURE_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
-
-        <SettingsWithControl
-          label={TIMELINE_WINDOWING_EXPERIMENT_LABEL}
-          description="Mount only nearby rows in long timelines and expanded timeline details."
-        >
-          <Switch
-            checked={timelineWindowingEnabled}
-            disabled={disabled}
-            onCheckedChange={onTimelineWindowingEnabledChange}
-            aria-label={TIMELINE_WINDOWING_EXPERIMENT_LABEL}
-          />
-        </SettingsWithControl>
-      </div>
-    </SettingsSection>
+    <>
+      <SettingsSection
+        title="Experiments"
+        description="Early features that are off by default. Opt in to try them."
+        banner={
+          <section
+            data-settings-anchor={EARLY_ADOPTER_LABEL}
+            aria-label={EARLY_ADOPTER_LABEL}
+            className="flex scroll-mt-4 items-start gap-3 rounded-lg border border-border bg-accent px-4 py-3.5"
+          >
+            <div className="flex size-8 shrink-0 items-center justify-center rounded-md bg-background">
+              <Icon
+                name="Beaker"
+                className="size-4 text-foreground"
+                aria-hidden
+              />
+            </div>
+            <div className="min-w-0 flex-1">
+              <h3 className="text-sm font-semibold text-foreground">
+                Become an early adopter
+              </h3>
+              <p className="mt-0.5 text-xs leading-snug text-subtle-foreground">
+                Get new experiments turned on by default sooner and help us try
+                out features before they reach everyone. Turn this off anytime;
+                experiments you switch yourself keep your choice.
+              </p>
+            </div>
+            <Switch
+              checked={earlyAdopter}
+              disabled={disabled}
+              onCheckedChange={onEarlyAdopterChange}
+              aria-label={EARLY_ADOPTER_LABEL}
+            />
+          </section>
+        }
+      >
+        <div className="space-y-5">
+          {visibleExperimentKeys(performanceDiagnosticsAvailable).map(
+            (experimentKey) => {
+              const definition = EXPERIMENT_DEFINITIONS[experimentKey];
+              return (
+                <SettingsWithControl
+                  key={experimentKey}
+                  label={definition.label}
+                  labelBadge={
+                    earlyAdopterExperiments[experimentKey]
+                      ? EARLY_ADOPTER_LABEL
+                      : undefined
+                  }
+                  description={definition.description}
+                >
+                  <Switch
+                    checked={experiments[experimentKey]}
+                    disabled={disabled}
+                    onCheckedChange={(enabled) =>
+                      onExperimentChange(experimentKey, enabled)
+                    }
+                    aria-label={definition.label}
+                  />
+                </SettingsWithControl>
+              );
+            },
+          )}
+        </div>
+      </SettingsSection>
+    </>
   );
 }
 
@@ -1059,7 +1279,6 @@ export function SettingsView() {
     useRewriteLocalhostLinksPreference();
   const [navigateToThreadAfterCreate, setNavigateToThreadAfterCreate] =
     useNavigateToThreadAfterCreatePreference();
-  const [richTextEditing, setRichTextEditing] = useRichTextEditingPreference();
   const [desktopBrowserAvailable] = useState(isDesktopBrowserAvailable);
   const experiments = systemConfigQuery.data?.experiments ?? defaultExperiments;
   const updateExperimentsMutation = useUpdateExperiments();
@@ -1068,9 +1287,11 @@ export function SettingsView() {
   const updateGeneralSettingsMutation = useUpdateGeneralSettings();
   const appearance = systemConfigQuery.data?.appearance ?? defaultAppTheme;
   const updateAppearanceMutation = useUpdateAppearance();
+  const appThemePreview = useAppThemePreview();
   const location = useLocation();
   const { activePluginId, activeSection, hasUnknownSection } =
     useSettingsNavState();
+  useRevealSettingsSearchTarget();
   if (hasUnknownSection) {
     return <Navigate to={SETTINGS_ROUTE_PATH} replace />;
   }
@@ -1079,11 +1300,13 @@ export function SettingsView() {
     const pluginId = matchPath(SETTINGS_PLUGIN_ROUTE_PATH, location.pathname)
       ?.params.pluginId;
     return (
-      <div className="-mx-4 -mt-4 flex min-h-0 flex-1 flex-col overflow-hidden pt-4 md:-mx-5 md:-mt-5 md:pt-5">
+      <div className="-mx-4 -mt-4 flex min-h-0 flex-1 flex-col overflow-hidden md:-mx-5 md:-mt-5">
         {pluginId ? (
           <PluginDetailPaneView pluginId={pluginId} />
         ) : (
-          <PluginsOverview />
+          <div className="flex min-h-0 flex-1 flex-col pt-4 md:pt-5">
+            <PluginsOverview mode="installed" />
+          </div>
         )}
       </div>
     );
@@ -1095,16 +1318,15 @@ export function SettingsView() {
   } else if (activeSection === "providers") {
     content = (
       <ProvidersSettingsSection
-        disabled={
-          systemConfigQuery.data === undefined ||
-          updateGeneralSettingsMutation.isPending
-        }
+        disabled={systemConfigQuery.data === undefined}
         generalSettings={generalSettings}
         onGeneralSettingsChange={(next) =>
           updateGeneralSettingsMutation.mutateAsync(next)
         }
       />
     );
+  } else if (activeSection === "ai-services") {
+    content = <AiServicesSettingsSection />;
   } else if (activeSection === "appearance") {
     content = (
       <AppearanceSettingsSection
@@ -1118,11 +1340,16 @@ export function SettingsView() {
         faviconColor={appearance.faviconColor}
         themePreference={themePreference}
         onAppearanceThemeChange={(themeId) =>
-          updateAppearanceMutation.mutate({
-            themeId,
-            faviconColor: appearance.faviconColor,
-          })
+          updateAppearanceMutation.mutate(
+            {
+              themeId,
+              faviconColor: appearance.faviconColor,
+            },
+            { onError: () => appThemePreview.previewTheme(null) },
+          )
         }
+        onAppearanceThemePrefetch={appThemePreview.prefetchThemes}
+        onAppearanceThemePreview={appThemePreview.previewTheme}
         onCreatePalette={() =>
           navigate(getRootComposeRoutePath(), {
             state: {
@@ -1140,10 +1367,10 @@ export function SettingsView() {
         onThemePreferenceChange={setPreferredTheme}
       />
     );
-  } else if (activeSection === "usage") {
-    content = <UsageLimitsSettingsSection />;
   } else if (activeSection === "keyboard") {
     content = <KeyboardSettingsSection />;
+  } else if (activeSection === "browser") {
+    content = <BrowserSettingsSection />;
   } else if (activeSection === "files") {
     content = (
       <>
@@ -1160,57 +1387,39 @@ export function SettingsView() {
         <FileOpenersSettingsSection />
       </>
     );
+  } else if (activeSection === "projects") {
+    content = <ProjectsSettingsSection />;
   } else if (activeSection === "machines") {
-    content = <MachinesSettingsSection />;
+    content = (
+      <>
+        <MachinesSettingsSection />
+        <MachineAccessSettings />
+      </>
+    );
+  } else if (activeSection === "environment-variables") {
+    content = <MachineEnvironmentSettings />;
   } else if (activeSection === "updates") {
     content = (
       <UpdatesSettingsSection
         showChangelogPreview={experiments.changelogPreview}
       />
     );
+  } else if (activeSection === "mobile") {
+    content = <MobileAppSection />;
   } else if (activeSection === "experiments") {
     content = (
       <ExperimentsSettingsSection
-        changelogPreviewEnabled={experiments.changelogPreview}
-        disabled={
-          systemConfigQuery.data === undefined ||
-          updateExperimentsMutation.isPending
+        disabled={systemConfigQuery.data === undefined}
+        earlyAdopter={generalSettings.earlyAdopter}
+        onEarlyAdopterChange={(enabled) =>
+          updateGeneralSettingsMutation.mutate({ earlyAdopter: enabled })
         }
-        onChangelogPreviewEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            changelogPreview: enabled,
-          })
+        experiments={experiments}
+        performanceDiagnosticsAvailable={
+          systemConfigQuery.data?.performanceDiagnosticsAvailable ?? false
         }
-        editMessagesEnabled={experiments.editMessages}
-        onEditMessagesEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            editMessages: enabled,
-          })
-        }
-        mobileAppEnabled={experiments.mobileApp}
-        onMobileAppEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            mobileApp: enabled,
-          })
-        }
-        sidebarProgressiveDisclosureEnabled={
-          experiments.sidebarProgressiveDisclosure
-        }
-        onSidebarProgressiveDisclosureEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            sidebarProgressiveDisclosure: enabled,
-          })
-        }
-        timelineWindowingEnabled={experiments.timelineWindowing}
-        onTimelineWindowingEnabledChange={(enabled) =>
-          updateExperimentsMutation.mutate({
-            ...experiments,
-            timelineWindowing: enabled,
-          })
+        onExperimentChange={(key, enabled) =>
+          updateExperimentsMutation.mutate({ [key]: enabled })
         }
       />
     );
@@ -1224,61 +1433,82 @@ export function SettingsView() {
     content = (
       <>
         <GeneralSettingsSection
-          desktopBrowserAvailable={desktopBrowserAvailable}
-          managedBranchPrefix={generalSettings.managedBranchPrefix}
-          managedBranchPrefixDisabled={
-            systemConfigQuery.data === undefined ||
-            updateGeneralSettingsMutation.isPending
+          confirmThreadArchive={generalSettings.confirmThreadArchive}
+          onConfirmThreadArchiveChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              confirmThreadArchive: enabled,
+            })
           }
+          keepHistoryAfterContextClear={
+            generalSettings.keepHistoryAfterContextClear
+          }
+          onKeepHistoryAfterContextClearChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              keepHistoryAfterContextClear: enabled,
+            })
+          }
+          summarizeShellCommands={generalSettings.summarizeShellCommands}
+          onSummarizeShellCommandsChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              summarizeShellCommands: enabled,
+            })
+          }
+          onReplaySetupGuide={() =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              onboardingCompletedAt: null,
+            })
+          }
+          desktopBrowserAvailable={desktopBrowserAvailable}
+          generalSettingsDisabled={systemConfigQuery.data === undefined}
+          managedBranchPrefix={generalSettings.managedBranchPrefix}
           onManagedBranchPrefixChange={async (prefix) => {
             await updateGeneralSettingsMutation.mutateAsync({
-              ...generalSettings,
               managedBranchPrefix: prefix,
             });
           }}
           navigateToThreadAfterCreate={navigateToThreadAfterCreate}
           openLinksInAppBrowser={openLinksInAppBrowser}
           rewriteLocalhostLinks={rewriteLocalhostLinks}
-          richTextEditing={richTextEditing}
           steerActiveThreadOnEnter={generalSettings.steerActiveThreadOnEnter}
-          steerActiveThreadOnEnterDisabled={
-            systemConfigQuery.data === undefined ||
-            updateGeneralSettingsMutation.isPending
+          terminalCopyOnSelect={generalSettings.terminalCopyOnSelect}
+          onTerminalCopyOnSelectChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              ...generalSettings,
+              terminalCopyOnSelect: enabled,
+            })
           }
           onNavigateToThreadAfterCreateChange={setNavigateToThreadAfterCreate}
           onOpenLinksInAppBrowserChange={setOpenLinksInAppBrowser}
           onRewriteLocalhostLinksChange={setRewriteLocalhostLinks}
-          onRichTextEditingChange={setRichTextEditing}
           onSteerActiveThreadOnEnterChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               steerActiveThreadOnEnter: enabled,
             })
           }
-          streamerMode={generalSettings.streamerMode}
-          streamerModeDisabled={
-            systemConfigQuery.data === undefined ||
-            updateGeneralSettingsMutation.isPending
+        />
+        <CliCommandSettingsSection />
+        <CliSkillsSettingsSection />
+        <VoiceInputSettingsSection />
+        <PrivacySettingsSection
+          telemetryEnabled={generalSettings.telemetryEnabled}
+          onTelemetryEnabledChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              telemetryEnabled: enabled,
+            })
           }
+          streamerMode={generalSettings.streamerMode}
           onStreamerModeChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
               streamerMode: enabled,
             })
           }
-        />
-        <CliSkillsSettingsSection />
-        <VoiceInputSettingsSection />
-        <DebugSettingsSection
-          enabled={generalSettings.showUnhandledProviderEvents}
-          disabled={
-            systemConfigQuery.data === undefined ||
-            updateGeneralSettingsMutation.isPending
-          }
+          enabled={generalSettings.showDiagnosticEvents}
+          disabled={systemConfigQuery.data === undefined}
           onEnabledChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
-              ...generalSettings,
-              showUnhandledProviderEvents: enabled,
+              showDiagnosticEvents: enabled,
             })
           }
         />

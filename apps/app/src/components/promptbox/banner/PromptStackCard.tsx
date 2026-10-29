@@ -1,19 +1,27 @@
-import { type CSSProperties, type ReactNode, type Ref } from "react";
+import {
+  type CSSProperties,
+  type KeyboardEventHandler,
+  type ReactNode,
+  type Ref,
+} from "react";
 import { cn } from "@bb/shared-ui/lib/utils";
 
+import {
+  CONTEXT_CARD_CLASS,
+  CONTEXT_CARD_INSET_CLASS,
+  CONTEXT_CARD_SEGMENT_CLASS,
+} from "@bb/shared-ui/chrome-style-tokens";
+
 export const PROMPT_STACK_CARD_ROW_HEIGHT = 32;
-const PROMPT_STACK_CARD_RADIUS_CLASS = "rounded-lg";
-const PROMPT_STACK_INLAY_RADIUS_CLASS = "rounded";
-export const PROMPT_STACK_INLAY_INSET_CLASS = "p-1";
-export const PROMPT_STACK_INLAY_SEGMENT_CLASS = cn(
-  "min-h-6 px-2 py-1",
-  PROMPT_STACK_INLAY_RADIUS_CLASS,
-);
+export const PROMPT_CONTEXT_BANNER_COLLAPSED_HEIGHT = 35;
+export const PROMPT_STACK_CARD_HEADER_BUTTON_CLASS =
+  "flex min-h-8 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-none px-3 py-1.5 text-xs text-foreground transition-colors hover:bg-background/80";
+export const PROMPT_STACK_INLAY_INSET_CLASS = CONTEXT_CARD_INSET_CLASS;
+export const PROMPT_STACK_INLAY_SEGMENT_CLASS = CONTEXT_CARD_SEGMENT_CLASS;
 export const PROMPT_STACK_EDGE_CARET_BUTTON_WIDTH_CLASS = "w-6 px-0";
-const BASE_CHROME = cn(
-  PROMPT_STACK_CARD_RADIUS_CLASS,
-  "border border-border bg-surface-raised-solid",
-);
+const BASE_CHROME = CONTEXT_CARD_CLASS;
+
+export const PROMPT_STACK_TRACK_CLASS = "grid-cols-[minmax(0,1fr)]";
 
 export interface PromptStackCardProps {
   children: ReactNode;
@@ -21,6 +29,7 @@ export interface PromptStackCardProps {
   className?: string;
   rootRef?: Ref<HTMLElement>;
   style?: CSSProperties;
+  onKeyDown?: KeyboardEventHandler<HTMLElement>;
 }
 
 export function PromptStackCard({
@@ -29,6 +38,7 @@ export function PromptStackCard({
   className,
   rootRef,
   style,
+  onKeyDown,
 }: PromptStackCardProps) {
   if (ariaLabel) {
     return (
@@ -37,6 +47,7 @@ export function PromptStackCard({
         aria-label={ariaLabel}
         className={cn(BASE_CHROME, className)}
         style={style}
+        onKeyDown={onKeyDown}
       >
         {children}
       </section>
@@ -47,6 +58,7 @@ export function PromptStackCard({
       ref={rootRef as Ref<HTMLDivElement>}
       className={cn(BASE_CHROME, className)}
       style={style}
+      onKeyDown={onKeyDown}
     >
       {children}
     </div>

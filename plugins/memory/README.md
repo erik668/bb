@@ -98,7 +98,7 @@ memory through the CLI.
 - Retrieval is FTS5 keyword search in this version; embeddings and automatic
   background PR ingestion remain deferred. The bundled `memory-dreaming` skill
   provides the evidence-first synthesis/challenge phase when explicitly loaded.
-- Native observation reads on-disk *layouts*, not providers: the host scanner
+- Native observation reads on-disk _layouts_, not providers: the host scanner
   ships one adapter today (`claude-memory-dir`, Claude Code's documented
   Markdown auto-memory tree) and reports which one it matched. Another agent's
   memory tree is a new adapter plus an entry in `NATIVE_MEMORY_LAYOUTS` — no

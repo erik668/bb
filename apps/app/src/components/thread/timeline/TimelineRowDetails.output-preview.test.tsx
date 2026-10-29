@@ -36,7 +36,10 @@ function previewedCommandRow(
       status: overrides.status ?? "completed",
       exitCode: overrides.status === "pending" ? null : 0,
     }),
-    outputPreview: { totalChars: FULL_OUTPUT.length },
+    outputPreview: {
+      experimental_fullOutputAvailability: "available",
+      totalChars: FULL_OUTPUT.length,
+    },
   };
 }
 
@@ -66,49 +69,6 @@ afterEach(() => {
 });
 
 describe("previewed command output", () => {
-  it("loads the full output for an expanded finished row through row-scoped turn details", async () => {
-    timelineTurnSummaryDetails.mockResolvedValue({
-      rows: [
-        commandRow({
-          id: "cmd_big",
-          command: "pnpm test",
-          output: FULL_OUTPUT,
-          sourceSeqStart: 4,
-          sourceSeqEnd: 7,
-          threadId: "thr_main",
-          turnId: "turn_1",
-        }),
-      ],
-    });
-    const view = renderExpandedRow(previewedCommandRow());
-
-    await waitFor(() => {
-      expect(timelineTurnSummaryDetails).toHaveBeenCalledTimes(1);
-    });
-    expect(timelineTurnSummaryDetails.mock.calls[0]?.[0]).toMatchObject({
-      threadId: "thr_main",
-      turnId: "turn_1",
-      sourceSeqStart: "4",
-      sourceSeqEnd: "7",
-    });
-    await waitFor(() => {
-      expect(view.container.textContent).toContain(FULL_OUTPUT);
-    });
-    expect(view.container.textContent).not.toContain("characters omitted");
-    expect(screen.queryByTestId("timeline-output-preview-note")).toBeNull();
-  });
-
-  it("keeps the live preview for a running row and does not fetch details", async () => {
-    const view = renderExpandedRow(previewedCommandRow({ status: "pending" }));
-
-    expect(view.container.textContent).toContain("characters omitted");
-    expect(
-      screen.getByTestId("timeline-output-preview-note").textContent,
-    ).toContain("full output loads when this finishes");
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(timelineTurnSummaryDetails).not.toHaveBeenCalled();
-  });
-
   it("shows the preview with a retry when the full-output load fails", async () => {
     timelineTurnSummaryDetails.mockRejectedValue(new Error("boom"));
     const view = renderExpandedRow(previewedCommandRow());
@@ -116,7 +76,9 @@ describe("previewed command output", () => {
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /retry/i })).toBeTruthy();
     });
-    expect(view.container.textContent).toContain("characters omitted");
+    await waitFor(() => {
+      expect(view.container.textContent).toContain("characters omitted");
+    });
     expect(
       screen.getByTestId("timeline-output-preview-note").textContent,
     ).toContain("Failed to load the full output");

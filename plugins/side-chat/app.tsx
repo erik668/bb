@@ -1,19 +1,19 @@
 import { useCallback, useState } from "react";
 import { toast } from "sonner";
-import { Button } from "@bb/shared-ui/button";
-import { Icon } from "@bb/shared-ui/icon";
+import { Button } from "@/components/ui/button";
+import { Icon } from "@/components/ui/icon";
 import {
   definePluginApp,
   Markdown,
   ThreadChat,
-  useRpc,
+  useSdk,
   useBbNavigate,
   type PluginMessageActionContext,
-  type PluginThreadPanelActionContext,
-  type PluginThreadPanelProps,
+  type ExperimentalThreadTabActionContext,
+  type ExperimentalPanelController,
+  type ExperimentalThreadActionTabProps,
   type ThreadChatMessageAction,
 } from "@get-bb/plugin-sdk/app";
-import type { sideChatRpcContract } from "./server.js";
 
 const PLUGIN_ID = "side-chat";
 const PANEL_ACTION_ID = "side-chat";
@@ -83,7 +83,7 @@ async function callBackendRpc(
   return body.result;
 }
 
-function createdThreadId(result: unknown): string {
+function threadIdResult(method: string, result: unknown): string {
   if (
     typeof result === "object" &&
     result !== null &&
@@ -91,14 +91,14 @@ function createdThreadId(result: unknown): string {
   ) {
     return (result as { threadId: string }).threadId;
   }
-  throw new Error("Plugin returned an unexpected createSideChat response.");
+  throw new Error(`Plugin returned an unexpected ${method} response.`);
 }
 
 interface OpenSideChatArgs {
   sourceThreadId: string;
   anchorText: string;
   sourceSeqEnd: number | null;
-  openPanel(options: { title: string; params: SideChatPanelParams }): boolean;
+  panel: ExperimentalPanelController;
 }
 
 const inFlightOpens = new Map<string, Promise<void>>();
@@ -133,11 +133,12 @@ async function createAndOpenSideChat({
   sourceThreadId,
   anchorText,
   sourceSeqEnd,
-  openPanel,
+  panel,
 }: OpenSideChatArgs): Promise<void> {
   let threadId: string;
   try {
-    threadId = createdThreadId(
+    threadId = threadIdResult(
+      "createSideChat",
       await callBackendRpc("createSideChat", {
         sourceThreadId,
         ...(sourceSeqEnd !== null ? { sourceSeqEnd } : {}),
@@ -152,7 +153,12 @@ async function createAndOpenSideChat({
     );
     throw error;
   }
-  openPanel({
+  panel.openTab({
+    tab: {
+      id: PANEL_ACTION_ID,
+      context: { kind: "thread" },
+      availability: "action",
+    },
     title: PANEL_TAB_TITLE,
     params: {
       threadId,
@@ -216,8 +222,8 @@ function ReplyingTo({ anchorText }: { anchorText: string }) {
   );
 }
 
-function SideChatPanel({ params }: PluginThreadPanelProps) {
-  const rpc = useRpc<typeof sideChatRpcContract>();
+function SideChatPanel({ params }: ExperimentalThreadActionTabProps) {
+  const sdk = useSdk();
   const navigate = useBbNavigate();
   const [isPromoting, setIsPromoting] = useState(false);
   const [promotionError, setPromotionError] = useState<string | null>(null);
@@ -230,11 +236,14 @@ function SideChatPanel({ params }: PluginThreadPanelProps) {
     setIsPromoting(true);
     setPromotionError(null);
     try {
-      const promoted = await rpc.call("promoteSideChat", {
-        threadId: sideChatThreadId,
-      });
+      const promotedThreadId = threadIdResult(
+        "promoteSideChat",
+        await callBackendRpc("promoteSideChat", {
+          threadId: sideChatThreadId,
+        }),
+      );
       toast.success("Side chat added to the sidebar");
-      navigate.toThread(promoted.threadId);
+      navigate.toThread(promotedThreadId);
     } catch (error) {
       setPromotionError(
         error instanceof Error
@@ -249,11 +258,14 @@ function SideChatPanel({ params }: PluginThreadPanelProps) {
   const sendToMain = useCallback(
     async (message: { text: string; threadId: string }) => {
       if (sourceThreadId === null || sideChatThreadId === null) return;
+      const text = message.text.trim();
+      if (text.length === 0) return;
       try {
-        await rpc.call("sendToMain", {
-          sourceThreadId,
+        await sdk.threads.send({
+          threadId: sourceThreadId,
+          mode: "queue-if-active",
+          input: [{ type: "text", text, mentions: [] }],
           senderThreadId: sideChatThreadId,
-          text: message.text,
         });
         toast.success("Sent to main thread");
       } catch (error) {
@@ -264,7 +276,7 @@ function SideChatPanel({ params }: PluginThreadPanelProps) {
         );
       }
     },
-    [rpc, sideChatThreadId, sourceThreadId],
+    [sdk, sideChatThreadId, sourceThreadId],
   );
 
   if (parsed === null) {
@@ -333,23 +345,24 @@ export default definePluginApp((app) => {
         sourceThreadId: context.threadId,
         anchorText,
         sourceSeqEnd: context.message.sourceSeqEnd,
-        openPanel: (options) =>
-          context.openPanel({ actionId: PANEL_ACTION_ID, ...options }),
+        panel: context.experimental_panel,
       });
     },
   });
-  app.slots.threadPanelAction({
+  app.slots.experimental_tab({
+    context: { kind: "thread" },
+    availability: "action",
     id: PANEL_ACTION_ID,
     title: "Start side chat",
     icon: "SideChat",
     component: SideChatPanel,
     layout: "flush",
-    async run(context: PluginThreadPanelActionContext) {
+    async run(context: ExperimentalThreadTabActionContext) {
       await openSideChat({
         sourceThreadId: context.threadId,
         anchorText: "",
         sourceSeqEnd: null,
-        openPanel: (options) => context.openPanel(options),
+        panel: context.experimental_panel,
       });
     },
   });

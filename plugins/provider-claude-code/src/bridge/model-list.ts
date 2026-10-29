@@ -1,45 +1,36 @@
 import { type AvailableModel } from "@get-bb/plugin-sdk/provider-bridge";
-import { query, type Options } from "@anthropic-ai/claude-agent-sdk";
 import { buildClaudeCodeModels } from "../model-list.js";
-import { translateMissingClaudeCliError } from "./missing-cli-error.js";
-import { resolveClaudeCodeExecutable } from "./session-options.js";
+import { probeClaudeInitialization } from "./initialization-probe.js";
 
-function buildModelProbeOptions(env: NodeJS.ProcessEnv): Options {
-  const pathToClaudeCodeExecutable = resolveClaudeCodeExecutable({ env });
-  return {
+async function probeClaudeCodeModels(env: NodeJS.ProcessEnv): Promise<{
+  models: AvailableModel[];
+  selectedOnlyModels: AvailableModel[];
+}> {
+  const initialization = await probeClaudeInitialization({
+    env,
     cwd: process.cwd(),
-    maxTurns: 0,
-    persistSession: false,
-    allowDangerouslySkipPermissions: true,
-    permissionMode: "bypassPermissions",
-    settingSources: [],
-    ...(pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable } : {}),
-  };
+  });
+  if (initialization.models.length === 0) {
+    throw new Error("Claude Code reported no models.");
+  }
+  return buildClaudeCodeModels(initialization.models);
 }
 
 export async function listClaudeCodeBridgeModels(
   env: NodeJS.ProcessEnv = process.env,
-): Promise<{
-  models: AvailableModel[];
-  selectedOnlyModels: AvailableModel[];
-}> {
-  let session: ReturnType<typeof query>;
+): ReturnType<typeof probeClaudeCodeModels> {
   try {
-    session = query({
-      prompt: ".",
-      options: buildModelProbeOptions(env),
-    });
+    return await probeClaudeCodeModels(env);
   } catch (error) {
-    throw translateMissingClaudeCliError(error);
-  }
-
-  try {
-    const initialization = await session.initializationResult();
-    return buildClaudeCodeModels(initialization.models);
-  } catch (error) {
-    throw translateMissingClaudeCliError(error);
-  } finally {
-    session.close();
+    if (
+      env.ANTHROPIC_MODEL &&
+      error instanceof Error &&
+      error.message.includes("--client-data-url:") &&
+      error.message.includes("pass the matching --model")
+    ) {
+      return probeClaudeCodeModels({ ...env, ANTHROPIC_MODEL: undefined });
+    }
+    throw error;
   }
 }
 

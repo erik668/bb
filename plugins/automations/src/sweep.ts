@@ -11,8 +11,19 @@ import {
   type Db,
 } from "./data.js";
 import { publishAutomationChange } from "./realtime.js";
+import type { ScriptRunScope } from "./script-runner.js";
 import { computeNextScheduledTime } from "./schedule-helpers.js";
-import { executeAgentRun, executeScriptRun } from "./run.js";
+import {
+  errorMessage,
+  executeAgentRun,
+  executeScriptRun,
+  type AgentRunApi,
+  type ScriptRunApi,
+} from "./run.js";
+import {
+  createScriptWorkingDirectoryResolver,
+  type ScriptWorkingDirectoryResolver,
+} from "./working-directory.js";
 
 const DUE_AUTOMATION_BATCH_SIZE = 100;
 export const SWEEP_INTERVAL_MS = 10_000;
@@ -20,22 +31,10 @@ export const SWEEP_INTERVAL_MS = 10_000;
 const hostListSchema = z.array(
   z.object({ status: z.enum(["connected", "disconnected"]) }).passthrough(),
 );
-type SweepApi = Pick<BbPluginApi, "realtime" | "log"> & {
-  sdk: {
-    hosts: { list(): Promise<unknown> };
-    threads: {
-      get(
-        args: Parameters<BbPluginApi["sdk"]["threads"]["get"]>[0],
-      ): Promise<unknown>;
-      send(
-        args: Parameters<BbPluginApi["sdk"]["threads"]["send"]>[0],
-      ): Promise<unknown>;
-      spawn(
-        args: Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0],
-      ): Promise<unknown>;
-    };
+type SweepApi = AgentRunApi &
+  ScriptRunApi & {
+    sdk: { hosts: { list(): Promise<unknown> } };
   };
-};
 
 function buildScheduleFailureHandler(
   db: Db,
@@ -47,7 +46,7 @@ function buildScheduleFailureHandler(
     closeAutomationRun(db, {
       runId: args.run.id,
       status: "failed",
-      error: error instanceof Error ? error.message : String(error),
+      error: errorMessage(error),
       now: Date.now(),
     });
   };
@@ -62,6 +61,8 @@ async function processDueAutomation(
     now: number;
     agentHostsAvailable: boolean;
     serverUrl: string;
+    resolveWorkingDirectory: ScriptWorkingDirectoryResolver;
+    scriptRuns: ScriptRunScope;
   },
 ): Promise<void> {
   if (args.automation.nextRunAt === null) return;
@@ -81,9 +82,7 @@ async function processDueAutomation(
           });
   } catch (error) {
     bb.log.error(
-      `Skipping due automation ${args.automation.id} with invalid stored configuration: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Skipping due automation ${args.automation.id} with invalid stored configuration: ${errorMessage(error)}`,
     );
     return;
   }
@@ -121,11 +120,11 @@ async function processDueAutomation(
       execution,
       onFailure,
       serverUrl: args.serverUrl,
+      resolveWorkingDirectory: args.resolveWorkingDirectory,
+      scriptRuns: args.scriptRuns,
     }).catch((error: unknown) => {
       bb.log.error(
-        `Detached script automation ${args.automation.id} failed unexpectedly: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Detached script automation ${args.automation.id} failed unexpectedly: ${errorMessage(error)}`,
       );
     });
   }
@@ -142,9 +141,7 @@ async function hasConnectedHost(
       .some((host) => host.status === "connected");
   } catch (error) {
     bb.log.warn(
-      `Failed to list hosts for automation sweep: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
+      `Failed to list hosts for automation sweep: ${errorMessage(error)}`,
     );
     return false;
   }
@@ -156,12 +153,20 @@ export async function sweepDueAutomations(
   args: {
     pluginDataDir: string;
     serverUrl: string;
+    serverHostId: string | null;
+    scriptRuns: ScriptRunScope;
     now?: number;
   },
 ): Promise<void> {
   const now = args.now ?? Date.now();
   const due = listDueAutomations(db, { now, limit: DUE_AUTOMATION_BATCH_SIZE });
+  if (due.length === 0) return;
   const agentHostsAvailable = await hasConnectedHost(bb);
+  const resolveWorkingDirectory = createScriptWorkingDirectoryResolver({
+    sdk: bb.sdk,
+    pluginDataDir: args.pluginDataDir,
+    serverHostId: args.serverHostId,
+  });
   for (const automation of due) {
     try {
       await processDueAutomation(bb, db, {
@@ -170,12 +175,12 @@ export async function sweepDueAutomations(
         now,
         agentHostsAvailable,
         serverUrl: args.serverUrl,
+        resolveWorkingDirectory,
+        scriptRuns: args.scriptRuns,
       });
     } catch (error) {
       bb.log.error(
-        `Failed to process due automation ${automation.id}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `Failed to process due automation ${automation.id}: ${errorMessage(error)}`,
       );
     }
   }

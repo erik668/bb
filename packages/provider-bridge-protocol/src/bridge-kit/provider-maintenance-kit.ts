@@ -1,8 +1,7 @@
-import { execFile } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
-import { access } from "node:fs/promises";
+import { hostToolchain, execPortableFile } from "@bb/process-utils";
 import path from "node:path";
-import { promisify } from "node:util";
+import semverCompare from "semver/functions/compare.js";
+import semverValid from "semver/functions/valid.js";
 import { z } from "zod";
 import type {
   ProviderInstallationCommand,
@@ -11,36 +10,13 @@ import type {
   ProviderInstallationVerification,
 } from "../provider-maintenance.js";
 
-const execFileAsync = promisify(execFile);
-
 const CLI_PROBE_TIMEOUT_MS = 5_000;
 const INSTALLATION_CHECK_TIMEOUT_MS = 15_000;
 
 export async function resolveExecutablePath(
   command: string,
 ): Promise<string | null> {
-  if (path.isAbsolute(command)) {
-    try {
-      await access(command, fsConstants.X_OK);
-      return command;
-    } catch {
-      return null;
-    }
-  }
-  try {
-    const lookup = process.platform === "win32" ? "where" : "which";
-    const { stdout } = await execFileAsync(lookup, [command], {
-      timeout: CLI_PROBE_TIMEOUT_MS,
-    });
-    return (
-      stdout
-        .split(/\r?\n/u)
-        .find((line) => line.trim())
-        ?.trim() ?? null
-    );
-  } catch {
-    return null;
-  }
+  return hostToolchain.resolve(command);
 }
 
 export async function commandOutput(
@@ -48,7 +24,10 @@ export async function commandOutput(
   args: readonly string[],
 ): Promise<string | null> {
   try {
-    const { stdout, stderr } = await execFileAsync(command, [...args], {
+    const { stdout, stderr } = await execPortableFile(command, [...args], {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 1024 * 1024,
       timeout: INSTALLATION_CHECK_TIMEOUT_MS,
     });
     return `${stdout}\n${stderr}`.trim();
@@ -58,47 +37,28 @@ export async function commandOutput(
 }
 
 export function versionFrom(value: string | null): string | null {
-  return (
-    value?.match(/\bv?(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/u)?.[1] ?? null
-  );
+  const candidate = value?.match(/\bv?(\d+\.\d+\.\d+[0-9A-Za-z.+-]*)/u)?.[1];
+  return candidate !== undefined && semverValid(candidate) !== null
+    ? candidate
+    : null;
 }
 
 export async function readCliVersion(command: string): Promise<string | null> {
   try {
-    const { stdout, stderr } = await execFileAsync(command, ["--version"], {
+    const { stdout, stderr } = await execPortableFile(command, ["--version"], {
+      cwd: process.cwd(),
+      env: process.env,
+      maxBuffer: 1024 * 1024,
       timeout: CLI_PROBE_TIMEOUT_MS,
     });
-    return (
-      `${stdout}\n${stderr}`.match(/\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?/u)?.[0] ??
-      null
-    );
+    return versionFrom(`${stdout}\n${stderr}`);
   } catch {
     return null;
   }
 }
 
 export function compareVersions(left: string, right: string): number {
-  const parse = (value: string) => {
-    const match = value.match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/u);
-    return match === null
-      ? { core: [0, 0, 0], prerelease: null }
-      : {
-          core: [Number(match[1]), Number(match[2]), Number(match[3])],
-          prerelease: match[4] ?? null,
-        };
-  };
-  const a = parse(left);
-  const b = parse(right);
-  for (let index = 0; index < 3; index += 1) {
-    const delta = (a.core[index] ?? 0) - (b.core[index] ?? 0);
-    if (delta !== 0) return delta;
-  }
-  if (a.prerelease === null && b.prerelease !== null) return 1;
-  if (a.prerelease !== null && b.prerelease === null) return -1;
-  if (a.prerelease !== null && b.prerelease !== null) {
-    return a.prerelease.localeCompare(b.prerelease);
-  }
-  return 0;
+  return semverCompare(left, right);
 }
 
 export function npmCommand(): string {
@@ -227,7 +187,25 @@ export function installationVerification(
 
 export function downloadedInstallerCommand(
   url: string,
+  options: { platform?: NodeJS.Platform; powershellUrl?: string } = {},
 ): ProviderInstallationCommand {
+  if (
+    (options.platform ?? process.platform) === "win32" &&
+    options.powershellUrl !== undefined
+  ) {
+    const powershellScript = `irm ${options.powershellUrl} | iex`;
+    return {
+      command: "powershell.exe",
+      args: [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        powershellScript,
+      ],
+      displayCommand: powershellScript,
+    };
+  }
   const script = [
     'tmp=$(mktemp "${TMPDIR:-/tmp}/provider-installation.XXXXXX")',
     "trap 'rm -f \"$tmp\"' EXIT",

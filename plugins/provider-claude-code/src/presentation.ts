@@ -9,8 +9,8 @@ import {
 
 const SANDBOX_ESCAPED_BADGE = {
   glyph: "SquareUnlock02",
-  label: "sandbox off",
-  hint: "Ran outside of sandbox",
+  label: "Outside of sandbox",
+  hint: "Outside of sandbox",
   tone: "destructive",
 } as const;
 
@@ -239,6 +239,15 @@ export function builtinToolPresentation(
     },
     titleFromArgs(args, spec.titleField),
   );
+}
+
+export function forkedSkillPresentation(
+  presentation: DeltaPresentation,
+): DeltaPresentation {
+  return {
+    ...presentation,
+    label: { pending: "Running skill", completed: "Ran skill" },
+  };
 }
 
 export function mcpToolPresentation(args: {

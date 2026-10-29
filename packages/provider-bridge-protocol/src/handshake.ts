@@ -27,7 +27,6 @@ export const bridgeCapabilitiesSchema = z
     threadArchive: z.boolean().default(false),
     threadRename: z.boolean().default(false),
     threadGoalClear: z.boolean().default(false),
-    experimental_conditionalThreadStop: z.boolean().default(false),
     fork: providerForkSchema.default("none"),
     approvalEnforcedBy: z.enum(["runtime", "provider"]).default("runtime"),
     grammarVersions: bridgeGrammarVersionsSchema.default([
@@ -38,6 +37,9 @@ export const bridgeCapabilitiesSchema = z
     skills: z
       .object({ configure: z.boolean().default(false) })
       .default({ configure: false }),
+    commands: z
+      .object({ list: z.boolean().default(false) })
+      .default({ list: false }),
   })
   .passthrough();
 

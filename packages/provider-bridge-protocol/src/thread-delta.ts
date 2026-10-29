@@ -1,9 +1,11 @@
 import {
+  contextSnapshotSchema,
   backgroundTaskStatusSchema,
   backgroundTaskUsageSchema,
   clientTurnRequestIdSchema,
   extensionKindSchema,
   jsonValueSchema,
+  promptCacheTtlMsSchema,
   providerErrorCategorySchema,
   providerErrorInfoSchema,
   providerRateLimitStateSchema,
@@ -15,6 +17,7 @@ import {
   threadEventTokenUsageBreakdownSchema,
   threadEventTurnStatusSchema,
   threadEventWarningCategorySchema,
+  threadUsageCostSchema,
   workflowProgressSnapshotSchema,
 } from "@bb/domain";
 import { z } from "zod";
@@ -61,6 +64,7 @@ export const deltaBackgroundTaskShapeSchema = z.object({
   status: threadEventItemStatusSchema,
   taskStatus: backgroundTaskStatusSchema,
   skipTranscript: z.boolean(),
+  foreground: z.boolean().optional(),
   workflowName: z.string().optional(),
   workflow: workflowProgressSnapshotSchema.optional(),
   usage: backgroundTaskUsageSchema.optional(),
@@ -152,6 +156,14 @@ export const deltaItemShapeSchema = z.discriminatedUnion("type", [
     pattern: z.string().nullable(),
   }),
   z.object({ type: z.literal("imageView"), path: z.string() }),
+  z.object({
+    type: z.literal("imageGeneration"),
+    prompt: z.string().nullable(),
+    path: z.string().nullable(),
+    result: z.string().optional(),
+    error: z.string().nullable(),
+    transparentBackground: z.boolean(),
+  }),
   deltaBackgroundTaskShapeSchema,
   deltaFileReadShapeSchema,
   deltaSearchShapeSchema,
@@ -219,6 +231,11 @@ export const threadDeltaSchema = z.discriminatedUnion("kind", [
     kind: z.literal("turn.open"),
     providerTurnId: providerTurnIdSchema.optional(),
     parentRef: deltaKeyPartSchema.optional(),
+  }),
+
+  z.object({
+    kind: z.literal("turn.mainRun"),
+    state: z.enum(["idle", "running"]),
   }),
 
   z.object({
@@ -307,14 +324,17 @@ export const threadDeltaSchema = z.discriminatedUnion("kind", [
     total: threadEventTokenUsageBreakdownSchema,
     last: threadEventTokenUsageBreakdownSchema,
     modelContextWindow: z.number().nullable(),
+    promptCacheTtlMs: promptCacheTtlMsSchema.optional(),
     providerTurnId: providerTurnIdSchema.optional(),
   }),
 
   z.object({
     kind: z.literal("contextWindow"),
+    snapshot: contextSnapshotSchema.optional(),
     used: z.number().nullable(),
     size: z.number().nullable().optional(),
     estimated: z.boolean(),
+    cost: threadUsageCostSchema.optional(),
     attach: deltaAttachSchema,
     providerTurnId: providerTurnIdSchema.optional(),
   }),
@@ -337,7 +357,11 @@ export const threadDeltaSchema = z.discriminatedUnion("kind", [
     kind: z.literal("thread.identity"),
     providerThreadId: z.string().min(1),
   }),
-  z.object({ kind: z.literal("thread.name"), name: z.string().min(1) }),
+  z.object({
+    kind: z.literal("thread.name"),
+    name: z.string().min(1),
+    source: z.literal("agent").optional(),
+  }),
 
   z.object({
     kind: z.literal("extension.state"),

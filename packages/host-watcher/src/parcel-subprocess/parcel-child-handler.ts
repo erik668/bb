@@ -4,13 +4,18 @@ import type {
   ParcelWatcherBackend,
   ParcelWatcherEventBatch,
 } from "../parcel-watcher-backend.js";
-import { isRescanRequiredMessage } from "../watch-recovery.js";
+import {
+  isRescanRequiredMessage,
+  leavesNativeWatchesBehind,
+} from "../watch-recovery.js";
 import { toWatchErrorMessage } from "../watch-error.js";
 import type {
   ChildToParentMessage,
   ParentToChildMessage,
   SerializedParcelEvent,
 } from "./messages.js";
+
+const MAX_EVENTS_PER_MESSAGE = 10_000;
 
 function serializeEvents(
   events: ParcelWatcherEventBatch,
@@ -70,6 +75,14 @@ export function createParcelChildHandler(args: {
             });
             return;
           }
+          if (events.length > MAX_EVENTS_PER_MESSAGE) {
+            args.send({
+              kind: "events-dropped",
+              id: message.id,
+              count: events.length,
+            });
+            return;
+          }
           args.send({
             kind: "events",
             id: message.id,
@@ -91,10 +104,14 @@ export function createParcelChildHandler(args: {
       })
       .catch((error: unknown) => {
         cancelledBeforeReady.delete(message.id);
+        const errorMessage = toWatchErrorMessage(error);
         args.send({
           kind: "subscribe-failed",
           id: message.id,
-          message: toWatchErrorMessage(error),
+          message: errorMessage,
+          recovery: leavesNativeWatchesBehind(errorMessage)
+            ? "recycle-child"
+            : "retry-subscription",
         });
       });
   }
@@ -137,4 +154,13 @@ export function createParcelChildHandler(args: {
       );
     },
   };
+}
+
+export function disposeThenExit(args: {
+  deadlineMs: number;
+  dispose: () => Promise<void>;
+  exit: () => void;
+}): void {
+  setTimeout(args.exit, args.deadlineMs);
+  void args.dispose().finally(args.exit);
 }

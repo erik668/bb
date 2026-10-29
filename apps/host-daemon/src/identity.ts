@@ -1,13 +1,14 @@
+import {
+  execHostFile,
+  sanitizeInheritedChildProcessEnv,
+} from "@bb/process-utils";
 import { randomUUID } from "node:crypto";
-import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
 import { HOST_ID_FILE_NAME } from "@bb/host-daemon-contract";
-import { sanitizeInheritedChildProcessEnv } from "@bb/process-utils";
 
-const execFileAsync = promisify(execFileCallback);
+const execFileAsync = execHostFile;
 
 type ExecFileResult = {
   stdout?: string | Buffer;
@@ -116,7 +117,6 @@ export async function loadHostIdentity(options: {
   fallbackHostName?: () => string;
   platform?: NodeJS.Platform;
   providedHostId?: string;
-  providedHostName?: string;
 }): Promise<HostIdentity> {
   await fs.mkdir(options.dataDir, { recursive: true });
   const [hostId, hostName] = await Promise.all([
@@ -125,13 +125,11 @@ export async function loadHostIdentity(options: {
       createId: options.createId,
       providedHostId: options.providedHostId,
     }),
-    options.providedHostName
-      ? Promise.resolve(options.providedHostName)
-      : detectHostName({
-          platform: options.platform,
-          execFile: options.execFile,
-          fallbackHostName: options.fallbackHostName,
-        }),
+    detectHostName({
+      platform: options.platform,
+      execFile: options.execFile,
+      fallbackHostName: options.fallbackHostName,
+    }),
   ]);
 
   return { hostId, hostName };

@@ -5,6 +5,9 @@ import {
   GROK_ACP_DIALECT,
   OMP_ACP_DIALECT,
   OPENCODE_ACP_DIALECT,
+  grokContextUsageFromPromptResult,
+  grokContextWindowSizeFromSessionModels,
+  registerAcpDialect,
   resolveAcpDialect,
 } from "./dialect.js";
 import type { AcpToolCallUpdateEvent } from "./wire.js";
@@ -42,16 +45,39 @@ describe("resolveAcpDialect", () => {
     expect(
       resolveAcpDialect({ dialectId: "amp", command: "cursor-agent" }),
     ).toBe(GENERIC_ACP_DIALECT);
+    expect(resolveAcpDialect({ command: "amp" })).toBe(GENERIC_ACP_DIALECT);
+  });
+});
+
+describe("registerAcpDialect", () => {
+  it("makes a plugin's dialect the one its id resolves to, and lets a later registration replace it", () => {
+    const first = { id: "amp-test", toolIdentity: () => ({ name: "first" }) };
+    const second = { id: "amp-test", toolIdentity: () => ({ name: "second" }) };
+
+    registerAcpDialect(first);
+    expect(resolveAcpDialect({ dialectId: "amp-test", command: "node" })).toBe(
+      first,
+    );
+    expect(resolveAcpDialect({ command: "amp-test" })).toBe(
+      GENERIC_ACP_DIALECT,
+    );
+
+    registerAcpDialect(second);
+    expect(resolveAcpDialect({ dialectId: "amp-test", command: "node" })).toBe(
+      second,
+    );
   });
 
-  it("gives an unknown agent the generic dialect, which answers nothing", () => {
-    const dialect = resolveAcpDialect({ command: "amp" });
-    expect(dialect).toBe(GENERIC_ACP_DIALECT);
-    expect(dialect.toolIdentity).toBeUndefined();
-    expect(dialect.classifyToolCall).toBeUndefined();
-    expect(dialect.commandResult).toBeUndefined();
-    expect(dialect.normalizeCommandEvent).toBeUndefined();
-    expect(dialect.handleClientRequest).toBeUndefined();
+  it("refuses an empty id and every id the bridge ships", () => {
+    expect(() => registerAcpDialect({ id: " " })).toThrow("non-empty id");
+    for (const id of ["acp", "cursor", "grok", "omp", "opencode"]) {
+      expect(() => registerAcpDialect({ id })).toThrow(
+        `ACP dialect id "${id}" is reserved by a built-in dialect.`,
+      );
+    }
+    expect(resolveAcpDialect({ dialectId: "grok", command: "node" })).toBe(
+      GROK_ACP_DIALECT,
+    );
   });
 });
 
@@ -218,34 +244,6 @@ describe("OpenCode command results", () => {
 });
 
 describe("grok sub-agents", () => {
-  it("maps a spawn_subagent call to a delegation", () => {
-    expect(
-      GROK_ACP_DIALECT.classifyToolCall?.(
-        toolCall({
-          title: "spawn_subagent",
-          rawInput: {
-            description: "Audit the config loader",
-            subagent_type: "explore",
-          },
-          _meta: { "x.ai/tool": { name: "spawn_subagent", kind: "other" } },
-        }),
-      ),
-    ).toEqual({
-      item: {
-        type: "delegation",
-        childRef: "call-1",
-        label: "Audit the config loader",
-        background: false,
-      },
-      presentation: {
-        label: { pending: "Running subagent", completed: "Subagent finished" },
-        icon: { glyph: "UserRound" },
-        title: "Audit the config loader",
-        detail: "explore",
-      },
-    });
-  });
-
   it("leaves every other grok tool to the shared classifier", () => {
     expect(
       GROK_ACP_DIALECT.classifyToolCall?.(
@@ -259,21 +257,6 @@ describe("grok sub-agents", () => {
 });
 
 describe("cursor sub-agents", () => {
-  it("maps a task tool call to a delegation from its rawInput tool name", () => {
-    expect(
-      CURSOR_ACP_DIALECT.classifyToolCall?.(
-        toolCall({
-          title: "Task: Subagent task",
-          kind: "other",
-          rawInput: { _toolName: "task" },
-        }),
-      ),
-    ).toMatchObject({
-      item: { type: "delegation", childRef: "call-1", background: false },
-      presentation: { icon: { glyph: "UserRound" } },
-    });
-  });
-
   it("acknowledges cursor/task and reports the sub-agent it names", () => {
     expect(
       CURSOR_ACP_DIALECT.handleClientRequest?.("cursor/task", {
@@ -333,5 +316,69 @@ describe("grok dialect", () => {
     ).toEqual({ name: "deploy_thing" });
     expect(identity(undefined)).toBeUndefined();
     expect(identity({ "other.vendor/tool": { name: "x" } })).toBeUndefined();
+  });
+});
+
+describe("grok session context _meta", () => {
+  it("reads the current model's advertised window size", () => {
+    expect(
+      grokContextWindowSizeFromSessionModels({
+        currentModelId: "grok-4.6",
+        availableModels: [
+          {
+            modelId: "grok-4.6",
+            name: "Grok 4.6",
+            _meta: { totalContextTokens: 500_000 },
+          },
+          {
+            modelId: "grok-4.5",
+            name: "Grok 4.5",
+            _meta: { totalContextTokens: 256_000 },
+          },
+        ],
+      }),
+    ).toBe(500_000);
+  });
+
+  it("skips a model without a window and ignores empty catalogs", () => {
+    expect(
+      grokContextWindowSizeFromSessionModels({
+        currentModelId: "grok-4.6",
+        availableModels: [
+          { modelId: "grok-4.6", name: "Grok 4.6" },
+          {
+            modelId: "grok-4.5",
+            name: "Grok 4.5",
+            _meta: { totalContextTokens: 256_000 },
+          },
+        ],
+      }),
+    ).toBe(256_000);
+    expect(grokContextWindowSizeFromSessionModels(undefined)).toBeUndefined();
+    expect(
+      grokContextWindowSizeFromSessionModels({ availableModels: [] }),
+    ).toBeUndefined();
+  });
+
+  it("prefers prompt usage inputTokens for the occupied window", () => {
+    expect(
+      grokContextUsageFromPromptResult({
+        stopReason: "end_turn",
+        _meta: {
+          totalTokens: 17_538,
+          inputTokens: 17_504,
+          usage: { inputTokens: 17_504, totalTokens: 17_531 },
+        },
+      }),
+    ).toEqual({ used: 17_504 });
+    expect(
+      grokContextUsageFromPromptResult({
+        stopReason: "end_turn",
+        _meta: { totalTokens: 12 },
+      }),
+    ).toEqual({ used: 12 });
+    expect(
+      grokContextUsageFromPromptResult({ stopReason: "end_turn" }),
+    ).toBeUndefined();
   });
 });

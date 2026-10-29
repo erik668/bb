@@ -1,29 +1,32 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, expectTypeOf, it } from "vitest";
 import type {
-  BbNavigate,
   JsonValue,
-  PluginThreadPanelActionContext,
-  PluginThreadPanelProps,
+  ExperimentalOpenTabOptions,
+  ExperimentalThreadActionTabProps,
 } from "../index.js";
 import type { JsonValue as AppJsonValue } from "../app.js";
 
-type OpenPanelOptions = NonNullable<
-  Parameters<PluginThreadPanelActionContext["openPanel"]>[0]
+type ActionTabOptions = Extract<
+  ExperimentalOpenTabOptions,
+  { tab: { availability: "action" } }
 >;
-type NavigatePanelOptions = Parameters<BbNavigate["openThreadPanel"]>[0];
+type FixedTabOptions = Extract<
+  ExperimentalOpenTabOptions,
+  { tab: { availability: "fixed" } }
+>;
 
 describe("plugin SDK JsonValue contract", () => {
   it("types parameter writes as JsonValue and persisted reads as JsonValue or null", () => {
     expectTypeOf<AppJsonValue>().toEqualTypeOf<JsonValue>();
-    expectTypeOf<OpenPanelOptions["params"]>().toEqualTypeOf<
+    expectTypeOf<ActionTabOptions["params"]>().toEqualTypeOf<
       JsonValue | undefined
     >();
-    expectTypeOf<NavigatePanelOptions["params"]>().toEqualTypeOf<
+    expectTypeOf<FixedTabOptions["target"]>().toEqualTypeOf<
       JsonValue | undefined
     >();
     expectTypeOf<
-      PluginThreadPanelProps["params"]
+      ExperimentalThreadActionTabProps["params"]
     >().toEqualTypeOf<JsonValue | null>();
 
     const recursive: JsonValue = {
@@ -31,11 +34,7 @@ describe("plugin SDK JsonValue contract", () => {
       flags: [true, null],
       nested: { count: 2 },
     };
-    expect(recursive).toEqual({
-      title: "Issue",
-      flags: [true, null],
-      nested: { count: 2 },
-    });
+    expectTypeOf(recursive).toMatchTypeOf<JsonValue>();
   });
 
   it("exports JsonValue from both bundled frontend declaration surfaces", async () => {

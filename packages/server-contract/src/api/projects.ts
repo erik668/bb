@@ -2,14 +2,14 @@ import { z } from "zod";
 import {
   FILE_LIST_QUERY_MAX_LENGTH,
   getProjectPathValidationMessage,
-  gitBranchNameSchema,
   normalizeProjectPathInput,
   projectExecutionDefaultsSchema,
   projectSchema,
-  projectSourceCheckoutSchema,
   projectSourceSchema,
   promptHistoryEntrySchema,
   threadListEntrySchema,
+  gitBranchNameSchema,
+  projectSourceCheckoutSchema,
 } from "@bb/domain";
 import {
   rejectMultipleWorkspaceSelectors,
@@ -185,17 +185,6 @@ export const projectPathsQuerySchema = z
   })
   .superRefine(rejectMultipleWorkspaceSelectors);
 export type ProjectPathsQuery = z.infer<typeof projectPathsQuerySchema>;
-
-export const projectFileContentQuerySchema = z
-  .object({
-    ...projectWorkspaceRoutingFields,
-    path: z.string().min(1),
-  })
-  .partial({ hostId: true, environmentId: true })
-  .superRefine(rejectMultipleWorkspaceSelectors);
-export type ProjectFileContentQuery = z.infer<
-  typeof projectFileContentQuerySchema
->;
 
 export const projectBranchesQuerySchema = branchListQuerySchema
   .extend({
@@ -380,9 +369,6 @@ export const editableSkillScopeSchema = z.enum([
 ]);
 export type EditableSkillScope = z.infer<typeof editableSkillScopeSchema>;
 
-export const deletableSkillScopeSchema = editableSkillScopeSchema;
-export type DeletableSkillScope = z.infer<typeof deletableSkillScopeSchema>;
-
 export const deleteSkillRequestSchema = z
   .object({
     skillId: installedSkillIdSchema,
@@ -455,6 +441,7 @@ export type SidebarBootstrapResponse = z.infer<
 >;
 
 export const uploadedPromptAttachmentSchema = z.object({
+  sourceProjectId: z.string().min(1).optional(),
   type: z.enum(["localImage", "localFile"]),
   path: z.string(),
   name: z.string(),

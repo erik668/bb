@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 export interface DesktopPathContext {
   appPath: string;
@@ -12,6 +12,7 @@ interface ResolveDesktopBridgePathArgs {
 }
 
 interface ResolveDesktopIconPathArgs {
+  devIcon: boolean;
   packagedIconFileName: string;
   paths: DesktopPathContext;
 }
@@ -39,13 +40,25 @@ export function resolveDesktopBridgePath(
   return join(args.paths.appPath, "dist", "bb-app-bridge.mjs");
 }
 
+export function resolveDesktopMachineInstallerPath(bridgePath: string): string {
+  return join(
+    dirname(dirname(bridgePath)),
+    "node_modules",
+    "bb-app",
+    "server",
+    "dist",
+    "assets",
+    "install-machine.sh",
+  );
+}
+
 export function resolveDesktopIconPath(
   args: ResolveDesktopIconPathArgs,
 ): string {
   return join(
     args.paths.appPath,
     "assets",
-    args.paths.isPackaged ? args.packagedIconFileName : "icon-dev.png",
+    args.devIcon ? "icon-dev.png" : args.packagedIconFileName,
   );
 }
 

@@ -1,17 +1,78 @@
 // @vitest-environment jsdom
 
 import { cleanup, render, screen } from "@testing-library/react";
-import { renderToStaticMarkup } from "react-dom/server";
+import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
-import type { ThreadPullRequest } from "@bb/domain";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   isThreadDisplayStatusBannerActive,
+  ThreadChildThreadsBanner,
   ThreadPromptContextBanner,
-  type ThreadPromptGitSection,
+  type ChildThreadQuestion,
+  type ThreadPromptArchivedSection,
+  type ThreadPromptChildThreadsSection,
+  type ThreadPromptEnvironmentGoneSection,
+  type ThreadPromptParentThreadSection,
 } from "./ThreadPromptContextBanner";
+import { removePluginSlotRegistrations } from "@/lib/plugin-slots";
+import {
+  GIT_SEGMENT_FIXTURE_PLUGIN_ID,
+  GitSegmentFixtureProvider,
+  type GitSegmentFixture,
+} from "@/test/fixtures/git-segment-plugin";
+import type { WorkspaceChangedFilesSection } from "@bb/shared-ui/workspace-change-summary";
 
 const noop = () => {};
+const CHILD_THREADS = "child-threads";
+
+function Banner({
+  gitSection,
+  gitSectionPending,
+  archivedSection,
+  environmentGoneSection,
+  parentThreadSection,
+  childThreadsSection,
+  expandedSection,
+  onToggleSection,
+}: {
+  gitSection: GitSegmentFixture | null;
+  gitSectionPending: boolean;
+  archivedSection: ThreadPromptArchivedSection | null;
+  environmentGoneSection: ThreadPromptEnvironmentGoneSection | null;
+  parentThreadSection: ThreadPromptParentThreadSection | null;
+  childThreadsSection: ThreadPromptChildThreadsSection | null;
+  expandedSection: string | null;
+  onToggleSection: (key: string) => void;
+}) {
+  const isReadOnly =
+    archivedSection !== null || environmentGoneSection !== null;
+  return (
+    <GitSegmentFixtureProvider
+      value={gitSectionPending ? null : gitSection}
+    >
+      <ThreadChildThreadsBanner
+        childThreads={isReadOnly ? null : childThreadsSection}
+        isExpanded={expandedSection === CHILD_THREADS}
+        onExpandedChange={() => onToggleSection(CHILD_THREADS)}
+      />
+      <ThreadPromptContextBanner
+        input={{ threadId: "thr_1", projectId: "proj_1", environment: null }}
+        core={{ parentThread: parentThreadSection }}
+        archivedSection={archivedSection}
+        environmentGoneSection={environmentGoneSection}
+        expandedSegment={expandedSection}
+        onToggleSegment={onToggleSection}
+      />
+    </GitSegmentFixtureProvider>
+  );
+}
+
+function renderToMarkup(element: ReactElement): string {
+  const { container, unmount } = render(element);
+  const markup = container.innerHTML;
+  unmount();
+  return markup;
+}
 
 const changedFile = {
   path: "apps/app/src/components/promptbox/banner/ThreadPromptContextBanner.tsx",
@@ -20,39 +81,11 @@ const changedFile = {
   deletions: 0,
 };
 
-const pullRequestFixture: ThreadPullRequest = {
-  number: 128,
-  title: "Show pull request status in the prompt context banner",
-  state: "open",
-  url: "https://github.com/acme/bb/pull/128",
-  baseRefName: "main",
-  headRefName: "bb/pr-context-banner",
-  updatedAt: "2026-06-16T12:30:00Z",
-  checks: {
-    state: "passing",
-    totalCount: 1,
-    passedCount: 1,
-    failedCount: 0,
-    pendingCount: 0,
-  },
-  review: {
-    state: "none",
-    reviewRequestCount: 0,
-  },
-  mergeability: {
-    state: "mergeable",
-    mergeStateStatus: "CLEAN",
-    mergeable: "MERGEABLE",
-  },
-  attention: "ready_to_merge",
-};
-
 function makeGitSection(
-  kind: ThreadPromptGitSection["changedFiles"]["kind"] = "uncommitted",
-  mergeBase: ThreadPromptGitSection["mergeBase"] = null,
-): ThreadPromptGitSection {
+  kind: WorkspaceChangedFilesSection["kind"] = "uncommitted",
+): GitSegmentFixture {
   return {
-    changedFiles: {
+    section: {
       kind,
       label: kind === "committed" ? "Committed" : "Uncommitted",
       files: [changedFile],
@@ -61,27 +94,75 @@ function makeGitSection(
         insertions: 2,
         deletions: 0,
         lineStatsComplete: true,
+        fileCount: 1,
         files: [changedFile],
       },
     },
-    mergeBase,
-    onPromptBannerFileClick: noop,
+    mergeBase: null,
   };
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  removePluginSlotRegistrations(GIT_SEGMENT_FIXTURE_PLUGIN_ID);
+});
+
+function childThreadItem(
+  id: string,
+  title: string,
+  { pending = false }: { pending?: boolean } = {},
+) {
+  return { id, title, href: `/threads/${id}`, hasPendingInteraction: pending };
+}
+
+function childQuestion(
+  childThreadId: string,
+  childTitle: string,
+  prompt: string,
+): ChildThreadQuestion {
+  return {
+    childThreadId,
+    childTitle,
+    href: `/threads/${childThreadId}`,
+    interaction: {
+      id: `pint_${childThreadId}`,
+      threadId: childThreadId,
+      turnId: "turn_1",
+      providerId: "claude-code",
+      providerThreadId: "pt_1",
+      providerRequestId: `req_${childThreadId}`,
+      status: "pending",
+      statusReason: null,
+      createdAt: 1,
+      resolvedAt: null,
+      resolution: null,
+      payload: {
+        kind: "user_question",
+        questions: [
+          {
+            id: "choice",
+            prompt,
+            multiSelect: false,
+            allowFreeText: false,
+            required: true,
+            options: [],
+          },
+        ],
+      },
+    },
+  };
+}
 
 describe("ThreadPromptContextBanner", () => {
   it("renders the archived read-only status without an action", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
+    const markup = renderToMarkup(
+      <Banner
         gitSection={null}
         gitSectionPending={false}
         archivedSection={{ archivedAt: 1_731_456_000_000 }}
         environmentGoneSection={null}
         parentThreadSection={null}
         childThreadsSection={null}
-        pullRequestSection={null}
         expandedSection={null}
         onToggleSection={noop}
       />,
@@ -92,27 +173,59 @@ describe("ThreadPromptContextBanner", () => {
     expect(markup).not.toContain("<button");
   });
 
-  it("renders the environment-gone read-only status without a provision action", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
+  it.each([
+    ["removed", "Machine removed"],
+    ["removing", "Machine removal in progress"],
+    ["cleanup-failed", "Machine cleanup failed"],
+    ["destroyed", "Environment unavailable"],
+  ] as const)(
+    "collapses the %s explanation behind its status toggle by default",
+    (status, label) => {
+      const toggled: string[] = [];
+      render(
+        <Banner
+          gitSection={null}
+          gitSectionPending={false}
+          archivedSection={null}
+          environmentGoneSection={{ status }}
+          parentThreadSection={null}
+          childThreadsSection={null}
+          expandedSection={null}
+          onToggleSection={(section) => toggled.push(section)}
+        />,
+      );
+      const toggle = screen.getByRole("button", { name: label });
+      expect(toggle.getAttribute("aria-expanded")).toBe("false");
+      expect(screen.queryByText(/history|machine settings/)).toBeNull();
+      expect(screen.queryByText("Provision")).toBeNull();
+      toggle.click();
+      expect(toggled).toEqual(["bb--core/status"]);
+    },
+  );
+
+  it("shows the machine removal explanation once the status is expanded", () => {
+    render(
+      <Banner
         gitSection={null}
         gitSectionPending={false}
         archivedSection={null}
-        environmentGoneSection={{ status: "destroyed" }}
+        environmentGoneSection={{ status: "cleanup-failed" }}
         parentThreadSection={null}
         childThreadsSection={null}
-        pullRequestSection={null}
-        expandedSection={null}
+        expandedSection="bb--core/status"
         onToggleSection={noop}
       />,
     );
-
-    expect(markup).toContain("Environment archived");
-    expect(markup).toContain("This environment has been archived.");
-    expect(markup).not.toContain("to keep working");
-    expect(markup).toContain('role="status"');
-    expect(markup).not.toContain("<button");
-    expect(markup).not.toContain("Provision");
+    expect(
+      screen
+        .getByRole("button", { name: "Machine cleanup failed" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(
+      screen.getByText(
+        "This thread is unavailable while machine cleanup is pending. Retry cleanup in machine settings, or remove the machine without cleanup if it is gone.",
+      ),
+    ).toBeDefined();
   });
 
   it.each([
@@ -126,14 +239,14 @@ describe("ThreadPromptContextBanner", () => {
       label: "environment archived",
       archivedSection: null,
       environmentGoneSection: { status: "destroyed" as const },
-      expectedLabel: "Environment archived",
+      expectedLabel: "Environment unavailable",
     },
   ])(
     "keeps the $label read-only status visible in compact mode",
     ({ archivedSection, environmentGoneSection, expectedLabel }) => {
-      const markup = renderToStaticMarkup(
+      const markup = renderToMarkup(
         <MemoryRouter>
-          <ThreadPromptContextBanner
+          <Banner
             gitSection={null}
             gitSectionPending={false}
             archivedSection={archivedSection}
@@ -144,7 +257,6 @@ describe("ThreadPromptContextBanner", () => {
               relationship: "parent",
             }}
             childThreadsSection={null}
-            pullRequestSection={null}
             expandedSection={null}
             onToggleSection={noop}
           />
@@ -158,157 +270,83 @@ describe("ThreadPromptContextBanner", () => {
     },
   );
 
-  it("prioritizes the archived-environment status over unarchiving", () => {
-    const markup = renderToStaticMarkup(
-      <MemoryRouter>
-        <ThreadPromptContextBanner
-          gitSection={null}
-          gitSectionPending={false}
-          archivedSection={{
-            archivedAt: 1_731_456_000_000,
-            onUnarchive: noop,
-          }}
-          environmentGoneSection={{ status: "destroyed" }}
-          parentThreadSection={{
-            parentThreadTitle: "Parent thread",
-            href: "/threads/thr_parent",
-            relationship: "parent",
-          }}
-          childThreadsSection={null}
-          pullRequestSection={null}
-          expandedSection={null}
-          onToggleSection={noop}
-        />
-      </MemoryRouter>,
+  it("offers unarchiving first when an archived thread also lost its environment", () => {
+    const markup = renderToMarkup(
+      <Banner
+        gitSection={null}
+        gitSectionPending={false}
+        archivedSection={{
+          archivedAt: 1_731_456_000_000,
+          onUnarchive: noop,
+        }}
+        environmentGoneSection={{ status: "destroyed", onRestore: noop }}
+        parentThreadSection={null}
+        childThreadsSection={null}
+        expandedSection={null}
+        onToggleSection={noop}
+      />,
     );
 
-    expect(markup).toContain("Environment archived");
+    expect(markup).toContain("Environment unavailable");
     expect(markup).not.toContain("Thread is archived");
-    expect(markup).not.toContain(">Unarchive<");
+    expect(markup).toContain(">Unarchive<");
+    expect(markup).not.toContain("Restore workspace");
   });
 
-  it("labels a standalone pull request without non-actionable attention text", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
+  it("offers restoring the workspace once the thread is live again", () => {
+    const markup = renderToMarkup(
+      <Banner
         gitSection={null}
         gitSectionPending={false}
         archivedSection={null}
-        environmentGoneSection={null}
+        environmentGoneSection={{ status: "destroyed", onRestore: noop }}
         parentThreadSection={null}
         childThreadsSection={null}
-        pullRequestSection={{ pullRequest: pullRequestFixture }}
         expandedSection={null}
         onToggleSection={noop}
       />,
     );
 
-    expect(markup).toContain("PR #128");
-    expect(markup).not.toContain("PR #128 · Open");
-    expect(markup).not.toContain("· Ready to merge");
-    expect(markup).not.toContain('alt="Checks success"');
+    expect(markup).toContain("Environment unavailable");
+    expect(markup).toContain(">Restore workspace<");
   });
 
-  it("uses the selected pull request merge method as the action label", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
+  it("shows the restore action as pending while it runs", () => {
+    const markup = renderToMarkup(
+      <Banner
         gitSection={null}
         gitSectionPending={false}
         archivedSection={null}
-        environmentGoneSection={null}
-        parentThreadSection={null}
-        childThreadsSection={null}
-        pullRequestSection={{
-          pullRequest: pullRequestFixture,
-          actions: {
-            onMerge: noop,
-            selectedMergeMethod: "squash",
-          },
+        environmentGoneSection={{
+          status: "destroyed",
+          onRestore: noop,
+          restorePending: true,
         }}
-        expandedSection={null}
-        onToggleSection={noop}
-      />,
-    );
-
-    expect(markup).toContain("Squash merge");
-  });
-
-  it("does not label standalone pending checks", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
-        gitSection={null}
-        gitSectionPending={false}
-        archivedSection={null}
-        environmentGoneSection={null}
         parentThreadSection={null}
         childThreadsSection={null}
-        pullRequestSection={{
-          pullRequest: {
-            ...pullRequestFixture,
-            checks: {
-              state: "pending",
-              totalCount: 1,
-              passedCount: 0,
-              failedCount: 0,
-              pendingCount: 1,
-            },
-            attention: "checks_pending",
-          },
-        }}
         expandedSection={null}
         onToggleSection={noop}
       />,
     );
 
-    expect(markup).toContain("PR #128");
-    expect(markup).not.toContain("PR #128 · Open");
-    expect(markup).not.toContain("· Checks pending");
-    expect(markup).not.toContain('alt="Checks pending"');
+    expect(
+      markup.match(/<button([^>]*)>Restoring\.\.\.<\/button>/)?.[1],
+    ).toContain('disabled=""');
   });
 
-  it("keeps useful standalone terminal pull request state labels", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
-        gitSection={null}
-        gitSectionPending={false}
-        archivedSection={null}
-        environmentGoneSection={null}
-        parentThreadSection={null}
-        childThreadsSection={null}
-        pullRequestSection={{
-          pullRequest: {
-            ...pullRequestFixture,
-            state: "closed",
-            attention: "closed",
-          },
-        }}
-        expandedSection={null}
-        onToggleSection={noop}
-      />,
-    );
-
-    expect(markup).toContain("PR #128 · Closed");
-  });
-
-  it("summarizes child work without flashing the banner", () => {
-    const markup = renderToStaticMarkup(
+  it("summarizes child threads with a header and total count", () => {
+    const markup = renderToMarkup(
       <MemoryRouter>
-        <ThreadPromptContextBanner
+        <Banner
           gitSection={null}
           gitSectionPending={false}
           archivedSection={null}
           environmentGoneSection={null}
           parentThreadSection={null}
           childThreadsSection={{
-            items: [
-              {
-                id: "thr_child",
-                title: "Investigate failing checks",
-                href: "/threads/thr_child",
-                hasPendingInteraction: false,
-              },
-            ],
+            items: [childThreadItem("thr_child", "Investigate failing checks")],
+            pendingInteractions: [],
           }}
-          pullRequestSection={null}
           expandedSection={null}
           onToggleSection={noop}
         />
@@ -316,20 +354,18 @@ describe("ThreadPromptContextBanner", () => {
     );
 
     expect(markup).toContain('aria-label="Child threads"');
-    expect(markup).toContain(
-      "1 active child thread: Investigate failing checks",
-    );
-    expect(markup).toContain("Active child thread:");
-    expect(markup).toContain("Investigate failing checks");
-    expect(markup).toContain('data-icon="UserRound"');
+    expect(markup).toContain('aria-label="1 active child thread"');
+    expect(markup).toContain("Active child threads");
+    expect(markup).toContain(">1<");
+    expect(markup).toContain('data-icon="ChildThread"');
     expect(markup).toContain("animate-shine-icon");
-    expect(markup).not.toContain("animate-shine font-medium");
+    expect(markup).toMatch(/animate-shine[^"]*font-normal/);
   });
 
-  it("summarizes additional active child threads", () => {
-    const markup = renderToStaticMarkup(
+  it("lists child threads with needs-input and working glyphs when expanded", () => {
+    const markup = renderToMarkup(
       <MemoryRouter>
-        <ThreadPromptContextBanner
+        <Banner
           gitSection={null}
           gitSectionPending={false}
           archivedSection={null}
@@ -337,304 +373,234 @@ describe("ThreadPromptContextBanner", () => {
           parentThreadSection={null}
           childThreadsSection={{
             items: [
-              {
-                id: "thr_primary",
-                title: "Investigate failing checks",
-                href: "/threads/thr_primary",
-                hasPendingInteraction: false,
-              },
-              {
-                id: "thr_other",
-                title: "Review the release notes",
-                href: "/threads/thr_other",
-                hasPendingInteraction: false,
-              },
+              childThreadItem("thr_a", "Review the release notes", {
+                pending: true,
+              }),
+              childThreadItem("thr_b", "Investigate failing checks"),
             ],
+            pendingInteractions: [],
           }}
-          pullRequestSection={null}
-          expandedSection={null}
+          expandedSection={CHILD_THREADS}
           onToggleSection={noop}
         />
       </MemoryRouter>,
     );
 
-    expect(markup).toContain(
-      "2 active child threads: Investigate failing checks",
-    );
-    expect(markup).toContain("+1 more");
+    expect(markup).toContain(">2<");
+    expect(markup).not.toContain(">+");
+    expect(markup).toContain('aria-label="Needs input"');
+    expect(markup).toContain('aria-label="Working"');
+    expect(markup).toContain('data-icon="Loading"');
   });
 
-  it("lets combined child and context cards shrink inside the composer stack", () => {
-    render(
+  it("counts a child waiting for a host as active banner work", () => {
+    expect(isThreadDisplayStatusBannerActive("waiting-for-host")).toBe(true);
+  });
+
+  it("shows the waiting question in the header only while collapsed", () => {
+    const renderBanner = (expandedSection: string | null) => (
       <MemoryRouter>
-        <ThreadPromptContextBanner
+        <Banner
+          gitSection={null}
+          gitSectionPending={false}
+          archivedSection={null}
+          environmentGoneSection={null}
+          parentThreadSection={null}
+          childThreadsSection={{
+            items: [
+              childThreadItem("thr_blocked", "Install workspace tools", {
+                pending: true,
+              }),
+              childThreadItem("thr_working", "Investigate failing checks"),
+            ],
+            pendingInteractions: [
+              childQuestion(
+                "thr_blocked",
+                "Install workspace tools",
+                "Which color should the badge use?",
+              ),
+            ],
+          }}
+          expandedSection={expandedSection}
+          onToggleSection={noop}
+        />
+      </MemoryRouter>
+    );
+
+    const collapsed = renderToMarkup(renderBanner(null));
+    expect(collapsed).toContain(">Which color should the badge use?<");
+    expect(collapsed).toContain(
+      'aria-label="2 active child threads, needs input: Install workspace tools: Which color should the badge use?"',
+    );
+    expect(collapsed).not.toContain("Active child threads");
+
+    const expanded = renderToMarkup(renderBanner(CHILD_THREADS));
+    expect(expanded).toContain("Active child threads");
+    expect(expanded).toContain('aria-label="2 active child threads"');
+  });
+
+  it("expands once when a child thread newly needs input, even across remounts", () => {
+    const onToggleSection = vi.fn();
+    const renderBanner = (
+      items: ReturnType<typeof childThreadItem>[],
+      {
+        gitSection = null,
+        gitSectionPending = false,
+      }: {
+        gitSection?: ReturnType<typeof makeGitSection> | null;
+        gitSectionPending?: boolean;
+      } = {},
+    ) => (
+      <MemoryRouter>
+        <Banner
+          gitSection={gitSection}
+          gitSectionPending={gitSectionPending}
+          archivedSection={null}
+          environmentGoneSection={null}
+          parentThreadSection={null}
+          childThreadsSection={{ items, pendingInteractions: [] }}
+          expandedSection={null}
+          onToggleSection={onToggleSection}
+        />
+      </MemoryRouter>
+    );
+    const blocked = childThreadItem("thr_blocked", "Install workspace tools", {
+      pending: true,
+    });
+    const working = childThreadItem(
+      "thr_working",
+      "Investigate failing checks",
+    );
+    const { rerender } = render(renderBanner([working]));
+    expect(onToggleSection).not.toHaveBeenCalled();
+
+    rerender(renderBanner([blocked, working]));
+    expect(onToggleSection).toHaveBeenCalledTimes(1);
+    expect(onToggleSection).toHaveBeenCalledWith(CHILD_THREADS);
+
+    rerender(renderBanner([blocked, working]));
+    expect(onToggleSection).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Active child threads")).toBeTruthy();
+
+    rerender(
+      renderBanner([blocked, working], {
+        gitSection: makeGitSection("uncommitted"),
+      }),
+    );
+    rerender(renderBanner([blocked, working], { gitSectionPending: true }));
+    rerender(renderBanner([blocked, working]));
+    expect(onToggleSection).toHaveBeenCalledTimes(1);
+    expect(
+      screen
+        .getByRole("button", { name: "2 active child threads" })
+        .querySelector('[data-icon="CircleQuestion"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps child threads visible while git status loads, but not once the environment is gone or the parent is archived", () => {
+    const renderBanner = ({
+      archived = false,
+      environmentGone = false,
+      gitSectionPending = false,
+    }: {
+      archived?: boolean;
+      environmentGone?: boolean;
+      gitSectionPending?: boolean;
+    } = {}) => (
+      <MemoryRouter>
+        <Banner
+          gitSection={makeGitSection("uncommitted")}
+          gitSectionPending={gitSectionPending}
+          archivedSection={archived ? { archivedAt: 1_731_456_000_000 } : null}
+          environmentGoneSection={
+            environmentGone ? { status: "destroyed" } : null
+          }
+          parentThreadSection={null}
+          childThreadsSection={{
+            items: [
+              childThreadItem("thr_blocked", "Install workspace tools", {
+                pending: true,
+              }),
+            ],
+            pendingInteractions: [],
+          }}
+          expandedSection={null}
+          onToggleSection={noop}
+        />
+      </MemoryRouter>
+    );
+    const { rerender } = render(renderBanner());
+    const childCard = screen.getByRole("region", { name: "Child threads" });
+
+    rerender(renderBanner({ gitSectionPending: true }));
+    expect(screen.getByRole("region", { name: "Child threads" })).toBe(
+      childCard,
+    );
+    expect(
+      screen.queryByRole("region", { name: "Thread context before sending" }),
+    ).toBeNull();
+
+    rerender(renderBanner({ environmentGone: true }));
+    expect(screen.queryByRole("region", { name: "Child threads" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Environment unavailable" }),
+    ).toBeTruthy();
+
+    rerender(renderBanner({ archived: true }));
+    expect(screen.queryByRole("region", { name: "Child threads" })).toBeNull();
+    expect(screen.getByText("Thread is archived")).toBeTruthy();
+  });
+
+  it("opens the child card for a newly waiting child while changed files are open", () => {
+    const onToggleSection = vi.fn();
+    const renderBanner = (
+      items: ReturnType<typeof childThreadItem>[],
+      expandedSection: "bb--git/changed-files" | null,
+    ) => (
+      <MemoryRouter>
+        <Banner
           gitSection={makeGitSection("uncommitted")}
           gitSectionPending={false}
           archivedSection={null}
           environmentGoneSection={null}
           parentThreadSection={null}
           childThreadsSection={{
-            items: [
-              {
-                id: "thr_child",
-                title: "Host-owned SourceCode and Diff renderers",
-                href: "/threads/thr_child",
-                hasPendingInteraction: false,
-              },
-            ],
+            items,
+            pendingInteractions: [],
           }}
-          pullRequestSection={null}
-          expandedSection={null}
-          onToggleSection={noop}
+          expandedSection={expandedSection}
+          onToggleSection={onToggleSection}
         />
-      </MemoryRouter>,
+      </MemoryRouter>
     );
-
-    const childCard = screen.getByRole("region", { name: "Child threads" });
-    const contextCard = screen.getByRole("region", {
-      name: "Thread context before sending",
+    const working = childThreadItem(
+      "thr_working",
+      "Investigate failing checks",
+    );
+    const blocked = childThreadItem("thr_blocked", "Install workspace tools", {
+      pending: true,
     });
-
-    expect(childCard.parentElement).toBe(contextCard.parentElement);
-    expect(childCard.parentElement?.classList.contains("min-w-0")).toBe(true);
-  });
-
-  it("uses neutral active copy for a child waiting for a host", () => {
-    expect(isThreadDisplayStatusBannerActive("waiting-for-host")).toBe(true);
-
-    const markup = renderToStaticMarkup(
-      <MemoryRouter>
-        <ThreadPromptContextBanner
-          gitSection={null}
-          gitSectionPending={false}
-          archivedSection={null}
-          environmentGoneSection={null}
-          parentThreadSection={null}
-          childThreadsSection={{
-            items: [
-              {
-                id: "thr_waiting",
-                title: "Waiting for build host",
-                href: "/threads/thr_waiting",
-                hasPendingInteraction: false,
-              },
-            ],
-          }}
-          pullRequestSection={null}
-          expandedSection={null}
-          onToggleSection={noop}
-        />
-      </MemoryRouter>,
+    const { rerender } = render(
+      renderBanner([working], "bb--git/changed-files"),
     );
-
-    expect(markup).toContain("1 active child thread: Waiting for build host");
-    expect(markup).toContain("Active child thread:");
-    expect(markup).not.toContain("Running child thread:");
+    expect(onToggleSection).not.toHaveBeenCalled();
+    rerender(renderBanner([blocked, working], "bb--git/changed-files"));
+    expect(onToggleSection).toHaveBeenCalledTimes(1);
+    expect(onToggleSection).toHaveBeenCalledWith(CHILD_THREADS);
   });
-
-  it("labels a child blocked on approval instead of active work", () => {
-    const markup = renderToStaticMarkup(
-      <MemoryRouter>
-        <ThreadPromptContextBanner
-          gitSection={null}
-          gitSectionPending={false}
-          archivedSection={null}
-          environmentGoneSection={null}
-          parentThreadSection={null}
-          childThreadsSection={{
-            items: [
-              {
-                id: "thr_blocked",
-                title: "Install workspace tools",
-                href: "/threads/thr_blocked",
-                hasPendingInteraction: true,
-              },
-            ],
-          }}
-          pullRequestSection={null}
-          expandedSection={null}
-          onToggleSection={noop}
-        />
-      </MemoryRouter>,
-    );
-
-    expect(markup).toContain(
-      "1 child thread needs input: Install workspace tools",
-    );
-    expect(markup).toContain("Needs your input:");
-    expect(markup).toContain("Install workspace tools");
-    expect(markup).toContain('data-icon="CircleQuestion"');
-    expect(markup).not.toContain("Active child thread:");
-    expect(markup).not.toContain("animate-shine-icon");
-  });
-
-  it("labels standalone actionable pull request attention", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
-        gitSection={null}
-        gitSectionPending={false}
-        archivedSection={null}
-        environmentGoneSection={null}
-        parentThreadSection={null}
-        childThreadsSection={null}
-        pullRequestSection={{
-          pullRequest: {
-            ...pullRequestFixture,
-            checks: {
-              state: "failing",
-              totalCount: 1,
-              passedCount: 0,
-              failedCount: 1,
-              pendingCount: 0,
-            },
-            attention: "checks_failed",
-          },
-        }}
-        expandedSection={null}
-        onToggleSection={noop}
-      />,
-    );
-
-    expect(markup).toContain("PR #128");
-    expect(markup).toContain("· Checks failing");
-    expect(markup).not.toContain("Checks failure");
-  });
-
-  it("shows pull request and diff labels together when only PR and git context are visible", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
-        gitSection={makeGitSection("uncommitted")}
-        gitSectionPending={false}
-        archivedSection={null}
-        environmentGoneSection={null}
-        parentThreadSection={null}
-        childThreadsSection={null}
-        pullRequestSection={{ pullRequest: pullRequestFixture }}
-        expandedSection={null}
-        onToggleSection={noop}
-      />,
-    );
-
-    expect(markup).toContain("PR #128");
-    expect(markup).not.toContain("Open PR #128");
-    expect(markup).not.toContain("· Ready to merge");
-    expect(markup).toContain("Uncommitted");
-    expect(markup).toContain("1 file");
-  });
-
-  it("keeps the pull request action visible beside other context segments", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
-        gitSection={makeGitSection("uncommitted")}
-        gitSectionPending={false}
-        archivedSection={null}
-        environmentGoneSection={null}
-        parentThreadSection={null}
-        childThreadsSection={null}
-        pullRequestSection={{
-          pullRequest: pullRequestFixture,
-          actions: {
-            onMerge: noop,
-            selectedMergeMethod: "rebase",
-          },
-        }}
-        expandedSection={null}
-        onToggleSection={noop}
-      />,
-    );
-
-    expect(markup).toContain("PR #128");
-    expect(markup).toContain("Uncommitted");
-    expect(markup).toContain("Rebase and merge");
-  });
-
-  it("uses the shared committed git label beside pull request context", () => {
-    const markup = renderToStaticMarkup(
-      <ThreadPromptContextBanner
-        gitSection={makeGitSection("committed")}
-        gitSectionPending={false}
-        archivedSection={null}
-        environmentGoneSection={null}
-        parentThreadSection={null}
-        childThreadsSection={null}
-        pullRequestSection={{ pullRequest: pullRequestFixture }}
-        expandedSection={null}
-        onToggleSection={noop}
-      />,
-    );
-
-    expect(markup).toContain("PR #128");
-    expect(markup).toContain("Committed");
-    expect(markup).toContain("1 file");
-  });
-
-  it.each([
-    {
-      label: "checked open",
-      pullRequest: pullRequestFixture,
-      expectedMinWidthClass: "min-w-13",
-    },
-    {
-      label: "merged",
-      pullRequest: {
-        ...pullRequestFixture,
-        state: "merged" as const,
-        attention: "merged" as const,
-      },
-      expectedMinWidthClass: "min-w-8",
-    },
-    {
-      label: "closed",
-      pullRequest: {
-        ...pullRequestFixture,
-        state: "closed" as const,
-        attention: "closed" as const,
-      },
-      expectedMinWidthClass: "min-w-8",
-    },
-  ])(
-    "reserves only the width needed by a $label pull request status pill",
-    ({ pullRequest, expectedMinWidthClass }) => {
-      render(
-        <MemoryRouter>
-          <ThreadPromptContextBanner
-            gitSection={makeGitSection("committed")}
-            gitSectionPending={false}
-            archivedSection={null}
-            environmentGoneSection={null}
-            parentThreadSection={null}
-            childThreadsSection={null}
-            pullRequestSection={{ pullRequest }}
-            expandedSection={null}
-            onToggleSection={noop}
-          />
-        </MemoryRouter>,
-      );
-
-      const pullRequestLink = screen.getByRole("link", {
-        name: /Pull request 128:/,
-      });
-      expect(
-        ["min-w-8", "min-w-13"].filter((className) =>
-          pullRequestLink.classList.contains(className),
-        ),
-      ).toEqual([expectedMinWidthClass]);
-    },
-  );
 });
 
 describe("ThreadPromptContextBanner git section body", () => {
-  function renderBanner(expandedSection: "git" | null) {
+  function renderBanner(expandedSection: "bb--git/changed-files" | null) {
     return (
       <MemoryRouter>
-        <ThreadPromptContextBanner
+        <Banner
           gitSection={makeGitSection("uncommitted")}
           gitSectionPending={false}
           archivedSection={null}
           environmentGoneSection={null}
           parentThreadSection={null}
           childThreadsSection={null}
-          pullRequestSection={null}
           expandedSection={expandedSection}
           onToggleSection={noop}
         />
@@ -646,7 +612,7 @@ describe("ThreadPromptContextBanner git section body", () => {
     const { rerender } = render(renderBanner(null));
     expect(screen.queryByRole("list", { hidden: true })).toBeNull();
 
-    rerender(renderBanner("git"));
+    rerender(renderBanner("bb--git/changed-files"));
     expect(screen.getByRole("list")).toBeTruthy();
     expect(
       screen.getByRole("button", { name: `Open ${changedFile.path}` }),

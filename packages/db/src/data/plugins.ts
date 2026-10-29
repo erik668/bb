@@ -1,4 +1,4 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNotNull, isNull } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { installedPlugins, pluginArtifacts } from "../schema.js";
 
@@ -85,6 +85,7 @@ export interface InstalledPluginRow {
   rootDir: string;
   version: string;
   enabled: boolean;
+  enabledFollowsDefault: boolean;
   removedAt: number | null;
   installedAt: number;
   updatedAt: number;
@@ -101,6 +102,7 @@ export interface UpsertInstalledPluginInput {
   rootDir: string;
   version: string;
   enabled: boolean;
+  enabledFollowsDefault: boolean;
 }
 
 export interface LegacyInstalledPluginRegistration {
@@ -126,7 +128,7 @@ type NormalizeLegacyPluginSourceIntent =
 
 export type NormalizeLegacyInstalledPluginInput = Omit<
   UpsertInstalledPluginInput,
-  "exactResolution" | "sourceIntent"
+  "exactResolution" | "sourceIntent" | "enabledFollowsDefault"
 > & {
   sourceIntent: NormalizeLegacyPluginSourceIntent;
   exactResolution: LegacyPluginExactResolution;
@@ -321,6 +323,7 @@ export function upsertInstalledPlugin(
       rootDir: plugin.rootDir,
       version: plugin.version,
       enabled: plugin.enabled,
+      enabledFollowsDefault: plugin.enabledFollowsDefault,
       ...normalized,
       removedAt: null,
       installedAt: now,
@@ -333,6 +336,7 @@ export function upsertInstalledPlugin(
         rootDir: plugin.rootDir,
         version: plugin.version,
         enabled: plugin.enabled,
+        enabledFollowsDefault: plugin.enabledFollowsDefault,
         ...normalized,
         removedAt: null,
         updatedAt: now,
@@ -385,7 +389,7 @@ export function setInstalledPluginEnabled(
 ): boolean {
   const result = db
     .update(installedPlugins)
-    .set({ enabled, updatedAt: Date.now() })
+    .set({ enabled, enabledFollowsDefault: false, updatedAt: Date.now() })
     .where(eq(installedPlugins.id, id))
     .run();
   return result.changes > 0;
@@ -461,6 +465,25 @@ export function deleteInstalledPlugin(db: DbConnection, id: string): boolean {
   const result = db
     .delete(installedPlugins)
     .where(eq(installedPlugins.id, id))
+    .run();
+  return result.changes > 0;
+}
+
+export function restoreRemovedInstalledPlugin(
+  db: DbConnection,
+  id: string,
+): boolean {
+  const result = db
+    .update(installedPlugins)
+    .set({
+      enabled: true,
+      enabledFollowsDefault: false,
+      removedAt: null,
+      updatedAt: Date.now(),
+    })
+    .where(
+      and(eq(installedPlugins.id, id), isNotNull(installedPlugins.removedAt)),
+    )
     .run();
   return result.changes > 0;
 }

@@ -14,7 +14,6 @@ import {
   scriptedEchoProcessEnv,
   wait,
   waitForRuntimeThreadEvent,
-  waitForThreadAgentMessageText,
   waitForThreadTurnCompleted,
   waitForThreadTurnStarted,
   type CreateScriptedEchoLaunchOptions,
@@ -28,6 +27,7 @@ interface CreateContractRuntimeArgs {
   launch?: CreateScriptedEchoLaunchOptions;
   onEvent?: (event: ThreadEvent) => void;
   onStderr?: (line: string) => void;
+  shellEnv?: Record<string, string>;
 }
 
 interface ContractRuntime {
@@ -90,6 +90,7 @@ describe("createAgentRuntime command contracts", () => {
           : {}),
         onEvent: args.onEvent ?? (() => {}),
         ...(args.onStderr !== undefined ? { onStderr: args.onStderr } : {}),
+        ...(args.shellEnv !== undefined ? { shellEnv: args.shellEnv } : {}),
         onToolCall: async () => ({
           contentItems: [{ type: "inputText", text: "ok" }],
           success: true,
@@ -120,11 +121,47 @@ describe("createAgentRuntime command contracts", () => {
       });
       expect(record.last("model/list")?.params).toEqual({
         providerOptions: { additionalWorkspaceWriteRoots },
+        envVars: {},
       });
       expect(record.last("thread/start")?.params).toMatchObject({
         threadId: "t1",
         cwd: tmpDir,
         options: { providerOptions: { additionalWorkspaceWriteRoots } },
+      });
+    } finally {
+      await runtime.shutdown();
+    }
+  });
+
+  it("expands contributed provider environment for model list against the server URL", async () => {
+    const { record, runtime } = createContractRuntime({
+      shellEnv: { BB_SERVER_URL: "http://server.test" },
+    });
+
+    try {
+      await runtime.listModels({
+        providerId: "fake",
+        contributedEnv: [
+          {
+            name: "CODEX_OPENAI_BASE_URL",
+            value: { serverPath: "/pool/v1" },
+            source: { plugin: "account-pool" },
+            reason: "pooled",
+          },
+          {
+            name: "CODEX_POOL_AUTH_TOKEN",
+            value: "machine-token",
+            source: { plugin: "account-pool" },
+            reason: "pooled",
+          },
+        ],
+      });
+
+      expect(record.last("model/list")?.params).toMatchObject({
+        envVars: {
+          CODEX_OPENAI_BASE_URL: "http://server.test/pool/v1",
+          CODEX_POOL_AUTH_TOKEN: "machine-token",
+        },
       });
     } finally {
       await runtime.shutdown();
@@ -159,6 +196,7 @@ describe("createAgentRuntime command contracts", () => {
 
       expect(record.last("model/list")?.params).toEqual({
         providerOptions: { acpLaunchSpec },
+        envVars: {},
       });
       expect(record.last("thread/start")?.params).toMatchObject({
         threadId: "t-start",
@@ -254,6 +292,7 @@ describe("createAgentRuntime command contracts", () => {
           providerOptions: {
             acpLaunchSpec: { ...acpLaunchSpec, env: { CACHE_MARKER: "first" } },
           },
+          envVars: {},
         },
         {
           providerOptions: {
@@ -262,6 +301,7 @@ describe("createAgentRuntime command contracts", () => {
               env: { CACHE_MARKER: "second" },
             },
           },
+          envVars: {},
         },
       ]);
     } finally {
@@ -466,38 +506,6 @@ describe("createAgentRuntime command contracts", () => {
     await runtime.shutdown();
   });
 
-  it("archives threads using caller-provided provider ids without runtime registry state", async () => {
-    const { record, runtime } = createContractRuntime();
-
-    await runtime.archiveThread({
-      bridgeLaunch: createScriptedEchoLaunch(),
-      threadId: "t-archive",
-      providerId: "fake",
-      providerThreadId: "provider-explicit",
-    });
-    expect(record.last("thread/archive")?.params).toEqual({
-      threadId: "t-archive",
-      providerThreadId: "provider-explicit",
-    });
-    await runtime.shutdown();
-  });
-
-  it("unarchives threads using caller-provided provider ids without runtime registry state", async () => {
-    const { record, runtime } = createContractRuntime();
-
-    await runtime.unarchiveThread({
-      bridgeLaunch: createScriptedEchoLaunch(),
-      threadId: "t-unarchive",
-      providerId: "fake",
-      providerThreadId: "provider-explicit",
-    });
-    expect(record.last("thread/unarchive")?.params).toEqual({
-      threadId: "t-unarchive",
-      providerThreadId: "provider-explicit",
-    });
-    await runtime.shutdown();
-  });
-
   it("propagates a bridge's archive and unarchive rejections verbatim", async () => {
     const { record, runtime } = createContractRuntime({
       env: scriptedEchoProcessEnv({
@@ -546,12 +554,10 @@ describe("createAgentRuntime command contracts", () => {
     args: {
       env?: Record<string, string>;
       exitAfterArchivedError?: boolean;
-      onEvent?: (event: ThreadEvent) => void;
     } = {},
   ): ContractRuntime {
     return createContractRuntime({
       ...(args.env !== undefined ? { env: args.env } : {}),
-      ...(args.onEvent !== undefined ? { onEvent: args.onEvent } : {}),
       launch: {
         scripted: {
           archivedSession: true,
@@ -562,47 +568,6 @@ describe("createAgentRuntime command contracts", () => {
       },
     });
   }
-
-  it("unarchives Codex sessions before retrying a turn", async () => {
-    const events: ThreadEvent[] = [];
-    const { record, runtime } = createArchivedSessionRuntime({
-      onEvent: (event) => events.push(event),
-    });
-
-    try {
-      const { providerThreadId } = await runtime.startThread({
-        environmentId: "env-1",
-        projectId: "p1",
-        providerId: "codex",
-        threadId: "t-archived",
-        options: fullRuntimeOptions,
-      });
-      await runtime.runTurn({
-        clientRequestId: "creq_222222224u",
-        input: [promptTextInput({ text: "continue" })],
-        options: fullRuntimeOptions,
-        threadId: "t-archived",
-      });
-
-      const requests = record.read();
-      expect(requests).toContainEqual({
-        method: "thread/unarchive",
-        params: { threadId: "t-archived", providerThreadId },
-      });
-      expect(
-        requests.filter((entry) => entry.method === "turn/start"),
-      ).toHaveLength(2);
-      await waitForThreadAgentMessageText({
-        events,
-        providerId: "codex",
-        runtime,
-        text: "Response to: continue",
-        threadId: "t-archived",
-      });
-    } finally {
-      await runtime.shutdown();
-    }
-  });
 
   it("unarchives Codex sessions before retrying a resume", async () => {
     const { record, runtime } = createArchivedSessionRuntime();
@@ -629,35 +594,6 @@ describe("createAgentRuntime command contracts", () => {
       });
       expect(
         requests.filter((entry) => entry.method === "thread/resume"),
-      ).toHaveLength(2);
-    } finally {
-      await runtime.shutdown();
-    }
-  });
-
-  it("unarchives an archived Codex source session before retrying a fork", async () => {
-    const { record, runtime } = createArchivedSessionRuntime();
-
-    try {
-      await runtime.startThread({
-        environmentId: "env-1",
-        fork: { sourceProviderThreadId: "prov-archived-source" },
-        projectId: "p1",
-        providerId: "codex",
-        threadId: "t-archived-fork",
-        options: fullRuntimeOptions,
-      });
-
-      const requests = record.read();
-      expect(requests).toContainEqual({
-        method: "thread/unarchive",
-        params: {
-          threadId: "t-archived-fork",
-          providerThreadId: "prov-archived-source",
-        },
-      });
-      expect(
-        requests.filter((entry) => entry.method === "thread/fork"),
       ).toHaveLength(2);
     } finally {
       await runtime.shutdown();

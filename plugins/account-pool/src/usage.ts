@@ -1,9 +1,10 @@
 import { z } from "zod";
-import type {
-  AccountQuota,
-  FamilyQuota,
-  FamilyWeekly,
-  ModelFamily,
+import {
+  EMPTY_FAMILY_WEEKLY,
+  type AccountQuota,
+  type FamilyQuota,
+  type FamilyWeekly,
+  type ModelFamily,
 } from "./contracts.js";
 import { modelFamily, parseReset } from "./quota.js";
 
@@ -49,6 +50,14 @@ const usagePayloadSchema = z
     seven_day_opus: usageBucketSchema.nullish(),
     seven_day_haiku: usageBucketSchema.nullish(),
     limits: z.array(usageLimitSchema).optional(),
+    extra_usage: z
+      .object({
+        is_enabled: z.boolean(),
+        utilization: z.number().nonnegative().nullish(),
+        monthly_limit: z.number().nonnegative().nullish(),
+        used_credits: z.number().nonnegative().nullish(),
+      })
+      .nullish(),
   })
   .passthrough();
 
@@ -126,19 +135,14 @@ export function quotaFromUsage(
     data.seven_day_sonnet == null &&
     data.seven_day_opus == null &&
     data.seven_day_haiku == null &&
-    data.limits === undefined
+    data.limits === undefined &&
+    data.extra_usage === undefined
   )
     return null;
   const familyWeekly: FamilyWeekly =
     data.limits === undefined
       ? { ...previous.familyWeekly }
-      : {
-          fable: null,
-          sonnet: null,
-          opus: null,
-          haiku: null,
-          other: null,
-        };
+      : { ...EMPTY_FAMILY_WEEKLY };
   for (const limit of data.limits ?? []) {
     if (
       limit.kind !== "weekly_scoped" &&
@@ -171,6 +175,23 @@ export function quotaFromUsage(
   return {
     ...previous,
     accountId,
+    extraUsage:
+      data.extra_usage === undefined
+        ? previous.extraUsage
+        : data.extra_usage === null
+          ? null
+          : {
+              status:
+                data.extra_usage.is_enabled &&
+                (data.extra_usage.utilization ?? 0) < 100 &&
+                (data.extra_usage.monthly_limit == null ||
+                  (data.extra_usage.used_credits ?? 0) <
+                    data.extra_usage.monthly_limit)
+                  ? "allowed"
+                  : "rejected",
+              observedAt: now,
+              source: "usage",
+            },
     fiveHourUtilization: fiveHour?.utilization ?? previous.fiveHourUtilization,
     fiveHourResetAt: fiveHour?.resetAt ?? previous.fiveHourResetAt,
     fiveHourStatus: fiveHour?.status ?? previous.fiveHourStatus,

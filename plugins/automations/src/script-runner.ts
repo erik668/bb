@@ -1,8 +1,12 @@
-import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { constants } from "node:fs";
+import {
+  experimental_hostToolchain as hostToolchain,
+  experimental_execHostFile,
+  experimental_spawnHostProcess as spawn,
+} from "@get-bb/plugin-sdk/process";
+import type { ChildProcess } from "node:child_process";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
-import { promisify } from "node:util";
-import { access, mkdir, stat } from "node:fs/promises";
+import { stripVTControlCharacters } from "node:util";
+import { mkdir, stat } from "node:fs/promises";
 import {
   AUTOMATION_SCRIPT_TIMEOUT_MAX_MS,
   type AutomationScriptInterpreter,
@@ -10,14 +14,18 @@ import {
 import {
   resolveAutomationScriptPath,
   resolveDefaultInterpreter,
-  resolveInterpreterCommand,
   scriptsRoot,
 } from "./script-files.js";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = experimental_execHostFile;
 const SCRIPT_OUTPUT_MAX_BYTES = 1024 * 1024;
+const SCRIPT_FAILURE_DETAIL_MAX_CHARS = 200;
+const SCRIPT_TERMINATE_GRACE_MS = 1_000;
+const SCRIPT_STOP_WAIT_MS = 3_000;
+const SCRIPT_INTERRUPTED_REASON =
+  "interrupted: the automations plugin stopped before the script finished";
 
-let resolvedBbPath: string | null = null;
+let verifiedBbPath: string | null = null;
 
 const BB_NOT_INJECTED_WARNING =
   "[bb] warning: could not locate the bb CLI, so `bb` is not on PATH for this script.";
@@ -31,37 +39,9 @@ async function commandWorks(command: string, args: string[]): Promise<boolean> {
   }
 }
 
-export function bbBinaryCandidates(env: NodeJS.ProcessEnv): string[] {
-  const candidates: string[] = [];
-  const pushIfAbsolute = (candidate: string): void => {
-    if (isAbsolute(candidate)) {
-      candidates.push(candidate);
-    }
-  };
-  const fromCli = env.BB_CLI?.trim();
-  if (fromCli !== undefined && fromCli.length > 0) {
-    pushIfAbsolute(fromCli);
-  }
-  const fromCliDir = env.BB_CLI_DIR?.trim();
-  if (fromCliDir !== undefined && fromCliDir.length > 0) {
-    pushIfAbsolute(join(fromCliDir, "bb"));
-  }
-  for (const entry of (env.PATH ?? "").split(delimiter)) {
-    const trimmed = entry.trim();
-    if (trimmed.length > 0) {
-      pushIfAbsolute(join(trimmed, "bb"));
-    }
-  }
-  candidates.push("/opt/homebrew/bin/bb", "/usr/local/bin/bb");
-  return candidates;
-}
-
-async function isExecutableFile(candidate: string): Promise<boolean> {
+async function isDirectory(candidate: string): Promise<boolean> {
   try {
-    const stats = await stat(candidate);
-    if (!stats.isFile()) return false;
-    await access(candidate, constants.X_OK);
-    return true;
+    return (await stat(candidate)).isDirectory();
   } catch {
     return false;
   }
@@ -70,15 +50,12 @@ async function isExecutableFile(candidate: string): Promise<boolean> {
 async function resolveBbBinary(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string | null> {
-  if (resolvedBbPath !== null) return resolvedBbPath;
-  for (const candidate of bbBinaryCandidates(env)) {
-    if (!(await isExecutableFile(candidate))) continue;
-    if (await commandWorks(candidate, ["--version"])) {
-      resolvedBbPath = candidate;
-      return candidate;
-    }
-  }
-  return null;
+  const candidate = hostToolchain.resolve("bb", { env });
+  if (candidate === null) return null;
+  if (candidate === verifiedBbPath) return candidate;
+  if (!(await commandWorks(candidate, ["--version"]))) return null;
+  verifiedBbPath = candidate;
+  return candidate;
 }
 
 export function scriptPathEnv(
@@ -116,7 +93,42 @@ export function isWakeAgentSuppressed(output: string): boolean {
 export interface ScriptRunResult {
   exitCode: number | null;
   output: string;
+  stderr: string;
   timedOut: boolean;
+  interrupted: boolean;
+}
+
+export interface ScriptRunScope {
+  readonly signal: AbortSignal;
+  track(run: Promise<void>): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export function createScriptRunScope(): ScriptRunScope {
+  const controller = new AbortController();
+  const running = new Set<Promise<void>>();
+  return {
+    signal: controller.signal,
+    track(run) {
+      running.add(run);
+      const untrack = (): void => {
+        running.delete(run);
+      };
+      run.then(untrack, untrack);
+      return run;
+    },
+    async stop() {
+      controller.abort();
+      let waitTimer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        Promise.allSettled(running),
+        new Promise<void>((resolve) => {
+          waitTimer = setTimeout(resolve, SCRIPT_STOP_WAIT_MS);
+        }),
+      ]);
+      clearTimeout(waitTimer);
+    },
+  };
 }
 
 interface ScriptRunOutcome {
@@ -127,9 +139,41 @@ interface ScriptRunOutcome {
   skipReason: string | null;
 }
 
+function firstStderrLine(stderr: string): string | null {
+  let start = 0;
+  while (start < stderr.length) {
+    const newline = stderr.indexOf("\n", start);
+    const lineEnd = newline === -1 ? stderr.length : newline;
+    const trimmedEnd =
+      lineEnd > start && stderr[lineEnd - 1] === "\r" ? lineEnd - 1 : lineEnd;
+    if (trimmedEnd > start) {
+      const trimmed = stripVTControlCharacters(stderr.slice(start, trimmedEnd))
+        .replace(/\p{Cc}/gu, " ")
+        .trim();
+      if (trimmed.length > 0) {
+        return trimmed.length > SCRIPT_FAILURE_DETAIL_MAX_CHARS
+          ? `${trimmed.slice(0, SCRIPT_FAILURE_DETAIL_MAX_CHARS - 1)}…`
+          : trimmed;
+      }
+    }
+    if (newline === -1) break;
+    start = newline + 1;
+  }
+  return null;
+}
+
 export function mapScriptResultToRun(
   result: ScriptRunResult,
 ): ScriptRunOutcome {
+  if (result.interrupted) {
+    return {
+      status: "skipped",
+      output: null,
+      exitCode: null,
+      error: null,
+      skipReason: SCRIPT_INTERRUPTED_REASON,
+    };
+  }
   if (result.timedOut) {
     return {
       status: "failed",
@@ -140,11 +184,14 @@ export function mapScriptResultToRun(
     };
   }
   if (result.exitCode !== 0) {
+    const detail = firstStderrLine(result.stderr);
     return {
       status: "failed",
       output: result.output.length > 0 ? result.output : null,
       exitCode: result.exitCode,
-      error: `Script exited with code ${result.exitCode}`,
+      error: `Script exited with code ${result.exitCode}${
+        detail === null ? "" : `: ${detail}`
+      }`,
       skipReason: null,
     };
   }
@@ -196,9 +243,20 @@ function executeWithProcessGroup(args: {
   cwd: string;
   timeoutMs: number;
   env: NodeJS.ProcessEnv;
+  signal: AbortSignal;
 }): Promise<ScriptRunResult> {
+  if (args.signal.aborted) {
+    return Promise.resolve({
+      exitCode: null,
+      output: "",
+      stderr: "",
+      timedOut: false,
+      interrupted: true,
+    });
+  }
   return new Promise((resolve) => {
     let timedOut = false;
+    let interrupted = false;
     let outputLimitExceeded = false;
     let outputBytes = 0;
     const stdoutChunks: Buffer[] = [];
@@ -217,7 +275,7 @@ function executeWithProcessGroup(args: {
       if (forceKill) return;
       forceKill = setTimeout(() => {
         signalProcessGroup(child, "SIGKILL");
-      }, 1_000);
+      }, SCRIPT_TERMINATE_GRACE_MS);
       forceKill.unref();
     };
     const capture = (target: Buffer[], chunk: Buffer | string): void => {
@@ -239,19 +297,25 @@ function executeWithProcessGroup(args: {
       capture(stderrChunks, `${error.message}\n`);
       terminateGroup();
     });
+    const interrupt = (): void => {
+      interrupted = true;
+      terminateGroup();
+    };
+    args.signal.addEventListener("abort", interrupt, { once: true });
     child.once("close", (code) => {
+      args.signal.removeEventListener("abort", interrupt);
       clearTimeout(timeout);
       if (forceKill) clearTimeout(forceKill);
-      if (timedOut || outputLimitExceeded) {
-        signalProcessGroup(child, "SIGKILL");
-      }
+      signalProcessGroup(child, "SIGKILL");
       const suffix = outputLimitExceeded ? "\n[output truncated]\n" : "";
+      const stderr = Buffer.concat(stderrChunks).toString("utf8");
       resolve({
-        exitCode: timedOut ? null : outputLimitExceeded ? 1 : code,
-        output: `${Buffer.concat(stdoutChunks).toString("utf8")}${Buffer.concat(
-          stderrChunks,
-        ).toString("utf8")}${suffix}`,
+        exitCode:
+          timedOut || interrupted ? null : outputLimitExceeded ? 1 : code,
+        output: `${Buffer.concat(stdoutChunks).toString("utf8")}${stderr}${suffix}`,
+        stderr,
         timedOut,
+        interrupted,
       });
     });
     timeout = setTimeout(() => {
@@ -272,6 +336,8 @@ export async function executeStoredScript(args: {
   timeoutMs: number;
   env?: Record<string, string>;
   serverUrl: string;
+  workingDir: string;
+  signal: AbortSignal;
 }): Promise<ScriptRunResult> {
   const scriptPath = await resolveAutomationScriptPath({
     dataDir: args.pluginDataDir,
@@ -280,7 +346,6 @@ export async function executeStoredScript(args: {
   });
   const interpreter =
     args.interpreter ?? resolveDefaultInterpreter(args.scriptFile);
-  const command = resolveInterpreterCommand(interpreter);
   const bbPath = await resolveBbBinary();
   const warning = bbPath === null ? `${BB_NOT_INJECTED_WARNING}\n` : "";
   const scriptEnv: NodeJS.ProcessEnv = {
@@ -295,14 +360,20 @@ export async function executeStoredScript(args: {
   if (bbPath !== null) {
     scriptEnv.BB_CLI = bbPath;
   }
-  const cwd = scriptsRoot(args.pluginDataDir);
-  await mkdir(cwd, { recursive: true });
+  await mkdir(scriptsRoot(args.pluginDataDir), { recursive: true });
+  if (!(await isDirectory(args.workingDir))) {
+    throw new Error(
+      `Script working directory is not an existing directory: ${args.workingDir}`,
+    );
+  }
+  const cwd = args.workingDir;
   const result = await executeWithProcessGroup({
-    command,
+    command: interpreter,
     scriptPath,
     cwd,
     timeoutMs: Math.min(args.timeoutMs, AUTOMATION_SCRIPT_TIMEOUT_MAX_MS),
     env: scriptEnv,
+    signal: args.signal,
   });
   return { ...result, output: `${warning}${result.output}` };
 }

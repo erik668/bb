@@ -21,6 +21,8 @@ export function makeThreadResponse(
   return {
     ...thread,
     activeBackgroundAgentCount: 0,
+    canRestoreEnvironment: false,
+    canEditMessages: true,
     canSpawnChild: true,
     queuedMessageCount: 0,
     ...overrides,
@@ -34,20 +36,23 @@ export function makeThreadTimelineResponse(
   const response: ThreadTimelineResponse = {
     rows: [],
     contextBoundarySeq: null,
+    completedTurnDisplay: "collapse",
     activePromptMode: null,
     activeThinking: null,
     activeWorkflows: [],
     activeBackgroundCommands: [],
     pendingTodos: null,
     goal: null,
+    providerCommands: null,
+    sessionOptions: null,
     modelFallback: null,
     maxSeq: 0,
+    tag: `timeline-${overrides.maxSeq ?? 0}`,
     timelinePage: {
-      kind: "latest",
-      segmentLimit: 20,
       returnedSegmentCount: 0,
-      hasOlderRows: false,
       olderCursor: null,
+      historySnapshot: "snapshot-1",
+      olderRowsSourceSeqEnd: null,
     },
   };
   return {

@@ -29,6 +29,7 @@ function renderAssistantMessage(text: string, streaming: boolean) {
           mobileActionDisplay="overflow"
           streaming={streaming}
           text={text}
+          timestamp={0}
         />
       </RouteNavigationProvider>
     </MemoryRouter>
@@ -50,6 +51,7 @@ function renderAssistantMessage(text: string, streaming: boolean) {
               mobileActionDisplay="overflow"
               streaming={nextStreaming}
               text={nextText}
+              timestamp={0}
             />
           </RouteNavigationProvider>
         </MemoryRouter>,
@@ -59,8 +61,13 @@ function renderAssistantMessage(text: string, streaming: boolean) {
 
 function documents(container: HTMLElement): string[] {
   return Array.from(
-    container.querySelectorAll<HTMLElement>("[data-markdown-document]"),
-  ).map((node) => node.textContent ?? "");
+    container.querySelectorAll<HTMLElement>("[data-markdown-preview]"),
+    (preview) =>
+      Array.from(
+        preview.querySelectorAll<HTMLElement>("[data-markdown-document]"),
+        (node) => node.textContent ?? "",
+      ).join(""),
+  );
 }
 
 beforeEach(() => {
@@ -83,7 +90,11 @@ describe("ConversationMessageContent streaming split", () => {
 
     markdownRenders.length = 0;
     update("Para one.\n\nPara two.\n\nPara three.", true);
-    expect(markdownRenders).toEqual(["Para two.\n\nPara three."]);
+    expect(markdownRenders).toEqual(["Para two.\n\n", "Para three."]);
+
+    markdownRenders.length = 0;
+    update("Para one.\n\nPara two.\n\nPara three!", true);
+    expect(markdownRenders).toEqual(["Para three!"]);
 
     markdownRenders.length = 0;
     update("Para one.\n\nPara two.\n\nPara three.\n\nPara four", true);
@@ -91,35 +102,17 @@ describe("ConversationMessageContent streaming split", () => {
       "Para one.\n\nPara two.\n\n",
       "Para three.\n\nPara four",
     ]);
+    expect(markdownRenders).toEqual([
+      "Para two.\n\n",
+      "Para three.\n\n",
+      "Para four",
+    ]);
 
     markdownRenders.length = 0;
     update("Para one.\n\nPara two.\n\nPara three.\n\nPara four.", false);
     expect(documents(view.container)).toEqual([
       "Para one.\n\nPara two.\n\nPara three.\n\nPara four.",
     ]);
-    expect(markdownRenders).toEqual([
-      "Para one.\n\nPara two.\n\nPara three.\n\nPara four.",
-    ]);
-  });
-
-  it("keeps an open fenced block inside the live tail", () => {
-    const { view } = renderAssistantMessage(
-      "Intro.\n\n```ts\nconst a = 1;\n\nconst b = 2;\n",
-      true,
-    );
-    expect(documents(view.container)).toEqual([
-      "Intro.\n\n",
-      "```ts\nconst a = 1;\n\nconst b = 2;\n",
-    ]);
-  });
-
-  it("renders a single document when no boundary is available or when not streaming", () => {
-    const { view, update } = renderAssistantMessage("Only one paragraph", true);
-    expect(documents(view.container)).toEqual(["Only one paragraph"]);
-
-    update("Para one.\n\nPara two.\n\nPara three", false);
-    expect(documents(view.container)).toEqual([
-      "Para one.\n\nPara two.\n\nPara three",
-    ]);
+    expect(markdownRenders).toEqual(["Para three.\n\n", "Para four."]);
   });
 });

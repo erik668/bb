@@ -61,6 +61,7 @@ const REGISTRATION_FIELDS = {
   supportsServiceTier: "capabilities.supportsServiceTier",
   maintenance: "maintenance",
   composerActions: "composerActions",
+  completedTurnDisplay: "completedTurnDisplay",
   extensionKinds: "extensionKinds",
   models: "models",
   env: "env",
@@ -97,6 +98,7 @@ const EXECUTION_OPTION_FIELDS = {
   serviceTier: "serviceTier",
   reasoningLevel: "reasoningLevel",
   promptMode: "promptMode",
+  sessionOptions: "sessionOptions",
   instructions: "instructions",
   providerOptions: "providerOptions",
 } as const satisfies Record<
@@ -255,12 +257,12 @@ describe("guardrail G10: docs/provider-plugin-api.md matches the contract", () =
       "bb.providers.register({",
       "export const experimental_providerBridge = experimental_defineProviderBridge({",
       "{",
-      "{ model, serviceTier?, reasoningLevel, promptMode?, instructions,",
+      "{ model, serviceTier?, reasoningLevel, promptMode?, sessionOptions?,",
       "// provider/recovery",
       "{ childRef: string, label: string, status: ItemStatus,",
       "presentation: {",
       "TimelineRow { kind: string, payload, presentation }",
-      "app.slots.experimental_timelineRenderer({ kind, component })",
+      "app.slots.experimental_timelineRenderer({ kind, component });",
     ]);
   });
 

@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  matchPath,
+  useLocation,
+  useNavigate,
+  useParams,
+} from "react-router-dom";
 import {
   keepPreviousData,
   useQueries,
@@ -9,10 +14,7 @@ import {
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { buildSkillEditThreadPrompt } from "@bb/shared-ui/resource-edit-prompt";
 import type { EditableSkillScope, SkillSummary } from "@bb/server-contract";
-import {
-  ResourceListState,
-  useResourceRouteLabel,
-} from "@bb/shared-ui/resource-list";
+import { ResourceListState } from "@bb/shared-ui/resource-list";
 import {
   RegistrySkillDetailView,
   RegistrySkillsBrowsePage,
@@ -26,6 +28,9 @@ import {
 import { useSystemProviders } from "@/hooks/queries/system-queries";
 import { isSkillEditable } from "@/components/tools/skill-taxonomy";
 import { CREATE_SKILL_PROMPT } from "@bb/client-core";
+import { usePrimaryHost } from "@/hooks/queries/host-queries";
+import { getAbsoluteDirname } from "@bb/shared-ui/lib/absolute-file-path";
+import { buildMarkdownHostFileImageRouting } from "@/components/ui/markdown-file-image-routing";
 import {
   buildRegistrySkillReferencePrompt,
   fetchRegistrySkillDetail,
@@ -36,8 +41,9 @@ import {
   REGISTRY_PAGE_SIZE,
   registryRepositoryKey,
   resolveInstalledRegistrySkill,
+  type RegistryRanking,
+  type RegistrySkill,
 } from "@/lib/skills-registry";
-import type { RegistryRanking, RegistrySkill } from "@/lib/skills-registry";
 import {
   getRegistrySkillDetailRoutePath,
   getRegistrySkillsRoutePath,
@@ -84,6 +90,9 @@ function SkillDetailPage({
   }, [skill?.id]);
   const filesQuery = useSkillFiles(projectId, skill);
   const contentQuery = useSkillContent(projectId, skill, selectedPath);
+  const primaryHost = usePrimaryHost({ enabled: skill !== null });
+  const previewHostId =
+    primaryHost?.status === "connected" ? primaryHost.id : null;
   const deleteSkill = useDeleteSkill(projectId);
   const { canOpenPreferredFileTarget, openPathInPreferredFileTarget } =
     useLocalOpenTargets({ enabled: skill !== null });
@@ -92,6 +101,14 @@ function SkillDetailPage({
     skill && skill.manageable && isSkillEditable(skill) ? skill.scope : null;
   const editableScope: EditableSkillScope | null =
     skill && isSkillEditable(skill) ? skill.scope : null;
+  const markdownLinkRouting = useMemo(() => {
+    if (skill === null) return undefined;
+    return buildMarkdownHostFileImageRouting({
+      path: selectedPath,
+      rootPath: getAbsoluteDirname({ path: skill.filePath }),
+      hostId: previewHostId,
+    });
+  }, [previewHostId, selectedPath, skill]);
 
   return (
     <SkillDetailDialogView
@@ -107,6 +124,7 @@ function SkillDetailPage({
       canDelete={deletableScope !== null}
       canOpenInEditor={editableScope !== null && canOpenPreferredFileTarget}
       isDeleting={deleteSkill.isPending}
+      markdownLinkRouting={markdownLinkRouting}
       onEdit={() => {
         if (skill) onEdit(skill);
       }}
@@ -152,7 +170,7 @@ export function SkillsLibrary() {
     skillsQuery.isFetching && skillsQuery.data === undefined && !hasError;
   const isRegistryBrowseRoute =
     location.pathname === getRegistrySkillsRoutePath() ||
-    (location.pathname === getSkillsRoutePath() &&
+    (matchPath(getSkillsRoutePath(), location.pathname) !== null &&
       new URLSearchParams(location.search).get("view") !== "library");
   const registryRequestPage =
     isRegistryBrowseRoute || routeRegistrySkillId !== undefined
@@ -371,9 +389,6 @@ export function SkillsLibrary() {
   });
   const selectedRegistrySkill =
     registrySkillOnPage ?? registryEntryQuery.data ?? null;
-  useResourceRouteLabel(
-    selectedSkill?.name ?? selectedRegistrySkill?.name ?? null,
-  );
   const registryDetailQuery = useQuery({
     queryKey: ["skills-registry-detail", selectedRegistrySkill?.id ?? "none"],
     queryFn: ({ signal }) =>

@@ -16,25 +16,10 @@ import { clientTurnRequestIdSchema } from "./protocol-ids.js";
 import {
   systemMessageKindSchema,
   systemMessageSubjectSchema,
+  systemThreadInterruptedReasonSchema,
 } from "./system-message.js";
 
-export const systemEventTypeValues = [
-  "client/thread/start",
-  "client/turn/requested",
-  "client/turn/rejected",
-  "client/turn/start",
-  "system/error",
-  "system/manager/user_message",
-  "system/thread/interrupted",
-  "system/operation",
-  "system/interaction/lifecycle",
-  "system/permissionGrant/lifecycle",
-  "system/userQuestion/lifecycle",
-  "system/thread-provisioning",
-  // Legacy persisted watchdog diagnostic; retained for read/decode/render
-  // only, with no current producer.
-  "system/provider-turn-watchdog",
-] as const;
+export { systemEventTypeValues } from "./thread-event-types.js";
 
 const threadTurnInitiatorValues = ["user", "agent", "system"] as const;
 export const threadTurnInitiatorSchema = z.enum(threadTurnInitiatorValues);
@@ -131,38 +116,11 @@ export const turnRequestRejectedEventDataSchema = z.object({
   message: z.string().min(1),
 });
 
-export const systemErrorEventDataSchema = z
-  .object({
-    code: z.string().optional(),
-    message: z.string(),
-    detail: z.string().optional(),
-    reconnectAttempt: z.number().int().positive().optional(),
-    reconnectTotal: z.number().int().positive().optional(),
-  })
-  .superRefine((value, ctx) => {
-    const hasReconnectAttempt = value.reconnectAttempt !== undefined;
-    const hasReconnectTotal = value.reconnectTotal !== undefined;
-    if (hasReconnectAttempt !== hasReconnectTotal) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "system/error reconnectAttempt and reconnectTotal must be provided together",
-      });
-      return;
-    }
-
-    if (
-      value.reconnectAttempt !== undefined &&
-      value.reconnectTotal !== undefined &&
-      value.reconnectAttempt > value.reconnectTotal
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "system/error reconnectAttempt cannot be greater than reconnectTotal",
-      });
-    }
-  });
+export const systemErrorEventDataSchema = z.object({
+  code: z.string().optional(),
+  message: z.string(),
+  detail: z.string().optional(),
+});
 export type SystemErrorEventData = z.infer<typeof systemErrorEventDataSchema>;
 
 const ownershipChangeOperationActionValues = [
@@ -189,6 +147,8 @@ export type OwnershipChangeOperationMetadata = z.infer<
 >;
 
 export const THREAD_CONTEXT_CLEAR_OPERATION = "context_clear";
+export const THREAD_CONTEXT_CLEARED_DETAIL =
+  "New prompts won’t include messages above. Thread history and workspace are unchanged.";
 
 export const systemOperationEventDataSchema = z.object({
   operation: z.string(),
@@ -226,77 +186,15 @@ export const systemUserQuestionLifecycleEventDataSchema = z.object({
   payload: userQuestionPendingInteractionPayloadSchema,
 });
 
-const systemThreadInterruptedReasonValues = [
-  "manual-stop",
-  "host-daemon-restarted",
-  "provider-turn-idle",
-  "workflow-result-cleanup",
-] as const;
-export const systemThreadInterruptedReasonSchema = z.enum(
-  systemThreadInterruptedReasonValues,
-);
-export type SystemThreadInterruptedReason = z.infer<
-  typeof systemThreadInterruptedReasonSchema
->;
+export const systemThreadInterruptedEventDataSchema = z.object({
+  reason: systemThreadInterruptedReasonSchema,
+  cause: z.literal("host-connection-lost").optional(),
+});
 
-const workflowResultCleanupAcceptanceValues = [
-  "accepted",
-  "idempotent",
-] as const;
-export const workflowResultCleanupAcceptanceSchema = z.enum(
-  workflowResultCleanupAcceptanceValues,
-);
-export type WorkflowResultCleanupAcceptance = z.infer<
-  typeof workflowResultCleanupAcceptanceSchema
->;
-
-export const workflowResultCleanupProvenanceSchema = z
-  .object({
-    pluginId: z.string().min(1),
-    runId: z.string().min(1),
-    callId: z.string().min(1),
-    childThreadId: z.string().min(1),
-    resultSha256: z.string().regex(/^[a-f0-9]{64}$/u),
-    acceptance: workflowResultCleanupAcceptanceSchema,
-  })
-  .strict();
-export type WorkflowResultCleanupProvenance = z.infer<
-  typeof workflowResultCleanupProvenanceSchema
->;
-
-export const systemThreadInterruptedEventDataSchema = z
-  .object({
-    reason: systemThreadInterruptedReasonSchema,
-    cause: z.literal("host-connection-lost").optional(),
-    workflowResult: workflowResultCleanupProvenanceSchema.optional(),
-  })
-  .superRefine((value, ctx) => {
-    if (
-      value.reason === "workflow-result-cleanup" &&
-      value.workflowResult === undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["workflowResult"],
-        message:
-          "workflowResult is required for workflow-result-cleanup interruptions",
-      });
-    }
-    if (
-      value.reason !== "workflow-result-cleanup" &&
-      value.workflowResult !== undefined
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ["workflowResult"],
-        message:
-          "workflowResult is only allowed for workflow-result-cleanup interruptions",
-      });
-    }
-  });
-export type SystemThreadInterruptedEventData = z.infer<
-  typeof systemThreadInterruptedEventDataSchema
->;
+export const WORKSPACE_PROVISIONING_STEP_KEYS = {
+  workspacePath: "workspace-path",
+  workspaceBranch: "workspace-branch",
+} as const;
 
 export const provisioningTranscriptEntrySchema = z.object({
   type: z.enum(["step", "output"]),
@@ -326,7 +224,7 @@ export type SystemThreadProvisioningStatus = z.infer<
 export const systemThreadProvisioningEventDataSchema = z.object({
   provisioningId: z.string(),
   status: systemThreadProvisioningStatusSchema,
-  environmentId: z.string(),
+  environmentId: z.string().nullable(),
   entries: z.array(provisioningTranscriptEntrySchema),
 });
 

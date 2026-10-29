@@ -1,12 +1,12 @@
 ---
 name: docs
-description: Access and update the user's Docs vaults. Use whenever the user asks to read, find, create, update, or store a note, document, plan, or HTML artifact; when a Docs @-mention appears in context; or when an answer should link to a document the user can open in Docs.
+description: "Read, edit, or save documents in BB Docs vaults, including documents supplied through Docs mentions."
 ---
 
 # Docs
 
 Docs is the user's filesystem-first document library. Documents can live on
-the primary machine or another connected host, but the `bb docs` command
+the server machine or another connected host, but the `bb docs` command
 handles that routing through named vaults.
 
 ## Access documents
@@ -62,9 +62,11 @@ bb docs pull --all --vault personal --into ./docs-work
 
 Always edit the pulled files with ordinary workspace tools, then run `status`
 before `push`. The manifest in `.bb-docs-state.json` records stable vault paths
-and remote SHA-256 versions; do not edit it. Pull and push fail closed when both
-the local and vault copies changed. Resolve the content manually, then pull or
-push again. `push --dry-run --diff` previews without writing.
+and remote SHA-256 versions; do not edit it. Pull and push fail closed with
+exit 3 when both the local and vault copies changed. Resolve the content
+manually, then pull or push again. `push --dry-run --diff` previews without
+writing. Inside a thread the workspace is on the thread's host; a standalone
+CLI call targets the server machine unless it passes `--workspace-host <id>`.
 
 Local file and empty-directory deletions are ignored by default. Only use
 `push --delete` when the user explicitly asked to delete the corresponding
@@ -76,6 +78,12 @@ pull into a new clean `--into` directory.
 The direct `write`, `mkdir`, `move`, and `remove` commands are deprecated. Do
 not use them for agent edits; they remain temporarily available only for
 backward compatibility.
+
+Run `bb docs --help` for the command list and `bb docs <command> --help` for a
+command's arguments, options, and rules. Each command accepts only the options
+its help lists; an unknown command, unknown option, or stray argument exits 2
+before touching a vault, and with `--json` the failure also prints
+`{"ok":false,"error":{"code","message","hint"?}}` on stdout.
 
 Use Markdown for documents and plans. Use a self-contained `.html` file for a
 visual artifact or interactive report; relative assets can live beside it.
@@ -91,6 +99,39 @@ Emit this leaf directive on its own line:
 ```
 
 `vault` and `path` are required. Include a short human-readable `title` when
-known. The rendered card opens an editable, autosaving document in the thread
-side panel; its secondary action opens the full Docs editor. Use the directive for both
+known. Markdown cards are editable and autosave in the timeline; Open in tab opens
+the same document in Docs. Use the directive for both
 Markdown documents and full HTML artifacts.
+
+## Propose changes for approval
+
+When the user asks to update a mentioned document or revise a pending proposal,
+keep the saved file intact and propose the revision for approval. Read the
+current file and proposal first, write the complete candidate into a workspace
+Markdown file, then run:
+
+```sh
+bb docs read letter.md --vault personal --json
+bb docs proposal letter.md --vault personal --json
+bb docs propose letter.md --vault personal --file ./candidate.md --expected-sha256 HASH --version N --json
+```
+
+Use `--version none` only when `proposal` returned null. Otherwise pass its exact
+version, including when the previous proposal was rejected or accepted. Use the
+hash from the current document read. A conflict means the user changed the
+file or proposal while you worked: read again and reconcile your revision;
+never retry automatically using a newer version. A Docs mention includes the
+current file and proposal metadata to support this workflow.
+
+Return the usual `::docs` directive. The user can accept, reject, edit the
+candidate, or ask for further changes. Do not run `accept` on the user's behalf
+unless explicitly asked.
+
+```sh
+bb docs proposal-update <path> --content <markdown> --version N [--vault <id>] [--json]
+bb docs accept|reject|undo|redo <path> --version N [--vault <id>] [--json]
+```
+
+`proposal-update` replaces only the pending candidate. The resolution commands
+perform the same actions as the card's buttons. Existing pull/edit/push remains available for direct
+changes the user requested without proposal review.

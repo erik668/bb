@@ -1,13 +1,28 @@
-import type { PluginCommandPaletteActionContext } from "@get-bb/plugin-sdk";
-import type { PluginThreadPanelOpenHandler } from "@/components/plugin/plugin-thread-panel-navigation";
+import { pluginCommandId, type PluginCommandId } from "@bb/domain";
+import type { PluginCommandContext } from "@get-bb/plugin-sdk";
+import type { AppPanelController } from "@/lib/app-fixed-tab-navigation";
+import {
+  createPluginPanelController,
+  createRetiredOpenPanel,
+} from "@/lib/plugin-panel-controller";
 import type { PluginCommandPaletteActionSlot } from "@/lib/plugin-slots";
+import { getPluginDisplayName } from "@/lib/plugin-logos";
 import type { PaletteAction } from "./palette-action";
 
+type AppCommandSlot = Extract<
+  PluginCommandPaletteActionSlot,
+  { target: "app" }
+>;
+type ComposerCommandSlot = Extract<
+  PluginCommandPaletteActionSlot,
+  { target: "composer" }
+>;
+
 export interface BuildPluginPaletteActionsArgs {
-  slots: readonly PluginCommandPaletteActionSlot[];
+  slots: readonly AppCommandSlot[];
   threadId: string | null;
   projectId: string | null;
-  openThreadPanel: PluginThreadPanelOpenHandler | null;
+  panel: AppPanelController | null;
 }
 
 function describeError(error: unknown): string {
@@ -15,22 +30,22 @@ function describeError(error: unknown): string {
 }
 
 function actionContext(
-  slot: PluginCommandPaletteActionSlot,
+  slot: AppCommandSlot,
   args: BuildPluginPaletteActionsArgs,
-): PluginCommandPaletteActionContext {
-  return {
+): PluginCommandContext {
+  const experimental_panel = createPluginPanelController(
+    slot.pluginId,
+    () => args.panel,
+  );
+  const context: PluginCommandContext & {
+    openPanel: ReturnType<typeof createRetiredOpenPanel>;
+  } = {
     threadId: args.threadId,
     projectId: args.projectId,
-    openPanel: (options) => {
-      if (args.openThreadPanel === null) {
-        console.warn(
-          `[plugin:${slot.pluginId}] commandPaletteAction "${slot.id}" openPanel declined: no thread side panel on this surface`,
-        );
-        return false;
-      }
-      return args.openThreadPanel({ ...options, pluginId: slot.pluginId });
-    },
+    experimental_panel,
+    openPanel: createRetiredOpenPanel(experimental_panel),
   };
+  return context;
 }
 
 export function buildPluginPaletteActions(
@@ -53,7 +68,8 @@ export function buildPluginPaletteActions(
     }
     actions.push({
       id: `plugin:${slot.pluginId}/${slot.id}`,
-      group: "Plugins",
+      bucket: "Plugins",
+      group: getPluginDisplayName(slot.pluginId),
       title: slot.title,
       shortcut: null,
       run: () => {
@@ -72,4 +88,33 @@ export function buildPluginPaletteActions(
     });
   }
   return actions;
+}
+
+export interface BuildPluginComposerCommandActionsArgs {
+  slots: readonly ComposerCommandSlot[];
+  target: EventTarget | null;
+  isCommandAvailable: (
+    command: PluginCommandId,
+    target: EventTarget | null,
+  ) => boolean;
+  dispatch: (command: PluginCommandId, target: EventTarget | null) => void;
+}
+
+export function buildPluginComposerCommandActions(
+  args: BuildPluginComposerCommandActionsArgs,
+): PaletteAction[] {
+  return args.slots.flatMap((slot) => {
+    const command = pluginCommandId(slot.pluginId, slot.id);
+    if (!args.isCommandAvailable(command, args.target)) return [];
+    return [
+      {
+        id: command,
+        bucket: "Plugins",
+        group: getPluginDisplayName(slot.pluginId),
+        title: slot.title,
+        shortcut: null,
+        run: () => args.dispatch(command, args.target),
+      },
+    ];
+  });
 }

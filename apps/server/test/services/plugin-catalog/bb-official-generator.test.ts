@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { PLUGIN_CATALOG_CATEGORIES } from "@bb/domain";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  bbOfficialShelfOrder,
   generateBbOfficialMarketplace,
   parseBbOfficialCatalogFields,
   readBundledPluginOverview,
@@ -18,7 +19,10 @@ import {
   parseBundledMarketplaceManifestJson,
 } from "../../../src/services/plugin-catalog/marketplace-manifest.js";
 import { loadBundledMarketplace } from "../../../src/services/plugin-catalog/bundled-marketplace.js";
-import { BUNDLED_PLUGINS } from "../../../src/services/plugins/builtin-registry.js";
+import {
+  accountPoolDefaultEnabled,
+  BUNDLED_PLUGINS,
+} from "../../../src/services/plugins/builtin-registry.js";
 
 const run = promisify(execFile);
 const cleanup: string[] = [];
@@ -35,6 +39,40 @@ afterEach(async () => {
 });
 
 describe("bb-official marketplace generator", () => {
+  it("lists optional plugins before plugins on by default, each newest first", () => {
+    expect(
+      bbOfficialShelfOrder([
+        {
+          id: "new-included",
+          onByDefault: true,
+          publishedAt: "2026-10-09T00:00:00Z",
+        },
+        {
+          id: "old-optional",
+          onByDefault: false,
+          publishedAt: "2026-07-01T00:00:00Z",
+        },
+        { id: "undated-optional", onByDefault: false },
+        {
+          id: "old-included",
+          onByDefault: true,
+          publishedAt: "2026-07-01T00:00:00Z",
+        },
+        {
+          id: "new-optional",
+          onByDefault: false,
+          publishedAt: "2026-10-01T00:00:00Z",
+        },
+      ]),
+    ).toEqual([
+      "new-optional",
+      "old-optional",
+      "undated-optional",
+      "new-included",
+      "old-included",
+    ]);
+  });
+
   it("generates one valid v2 entry for every bundled plugin", async () => {
     const raw = await readFile(
       new URL(
@@ -65,7 +103,25 @@ describe("bb-official marketplace generator", () => {
       {
         id: "bb-official",
         displayName: "BB Official",
-        pluginIds: BUNDLED_PLUGINS.map((plugin) => plugin.pluginId),
+        pluginIds: bbOfficialShelfOrder(
+          catalog.plugins.map((entry) => {
+            const plugin = BUNDLED_PLUGINS.find(
+              (candidate) => candidate.pluginId === entry.id,
+            );
+            return {
+              id: entry.id,
+              onByDefault:
+                plugin !== undefined &&
+                plugin.autoInstall &&
+                (plugin.name === "account-pool"
+                  ? accountPoolDefaultEnabled({})
+                  : plugin.defaultEnabled),
+              ...(entry.publishedAt === undefined
+                ? {}
+                : { publishedAt: entry.publishedAt }),
+            };
+          }),
+        ),
       },
     ]);
     for (const plugin of BUNDLED_PLUGINS) {
@@ -162,7 +218,7 @@ describe("bb-official marketplace generator", () => {
       cwd: root,
       env: {
         ...process.env,
-        GIT_AUTHOR_DATE: "2025-01-02T03:04:05Z",
+        GIT_AUTHOR_DATE: "2026-01-02T03:04:05Z",
         GIT_COMMITTER_DATE: "2026-01-02T03:04:05Z",
       },
     });
@@ -171,7 +227,7 @@ describe("bb-official marketplace generator", () => {
       cwd: root,
       env: {
         ...process.env,
-        GIT_AUTHOR_DATE: "2025-02-03T04:05:06Z",
+        GIT_AUTHOR_DATE: "2026-02-03T04:05:06Z",
         GIT_COMMITTER_DATE: "2026-02-03T04:05:06Z",
       },
     });
@@ -184,13 +240,10 @@ describe("bb-official marketplace generator", () => {
       },
     });
 
-    const sampleDates = dates.get("sample");
-    expect(Date.parse(sampleDates?.publishedAt ?? "")).toBe(
-      Date.parse("2026-01-02T03:04:05Z"),
-    );
-    expect(Date.parse(sampleDates?.updatedAt ?? "")).toBe(
-      Date.parse("2026-02-03T04:05:06Z"),
-    );
+    expect(dates.get("sample")).toEqual({
+      publishedAt: "2026-01-02T03:04:05Z",
+      updatedAt: "2026-02-03T04:05:06Z",
+    });
   });
 
   it("omits dates and prints one warning in a shallow repository", async () => {
@@ -247,7 +300,14 @@ describe("bb-official marketplace generator", () => {
       repositoryRoot: checkout,
       catalogFieldsPath: path.join(checkout, "plugins", "bb-official.json"),
       outputPath,
-      plugins: [{ name: "sample", pluginId: "sample" }],
+      plugins: [
+        {
+          name: "sample",
+          pluginId: "sample",
+          autoInstall: true,
+          defaultEnabled: true,
+        },
+      ],
       warn: (message) => warnings.push(message),
     });
 

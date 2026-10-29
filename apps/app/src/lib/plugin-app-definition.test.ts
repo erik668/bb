@@ -1,17 +1,26 @@
 import { describe, expect, it, vi } from "vitest";
 import type {
   ExperimentalSidebarFooterDisclosureController,
+  PluginAppSlots,
   PluginSidebarFooterActionContext,
 } from "@get-bb/plugin-sdk";
-import { getCollectedSidebarFooterItems } from "@get-bb/plugin-sdk/internal/plugin-app-collector";
+import {
+  getCollectedSidebarFooterItems,
+  type LegacyThreadHeaderActionRegistration,
+} from "@get-bb/plugin-sdk/internal/plugin-app-collector";
 import { loadPluginApp } from "@get-bb/plugin-sdk/testing/app";
 import {
   collectPluginAppRegistrations,
   definePluginApp,
   isPluginAppDefinition,
 } from "./plugin-app-definition";
+import { resolveFileOpenerReplacement } from "./plugin-slot-resolvers";
 
 function Component() {
+  return null;
+}
+
+function useNoBadge() {
   return null;
 }
 
@@ -32,19 +41,6 @@ describe("definePluginApp", () => {
 });
 
 describe("collectPluginAppRegistrations — experimental_appOverlay", () => {
-  it("collects additive app overlays", () => {
-    const definition = definePluginApp((app) => {
-      app.slots.experimental_appOverlay({
-        id: "office",
-        component: Component,
-      });
-    });
-
-    expect(collectPluginAppRegistrations(definition).appOverlays).toEqual([
-      { id: "office", component: Component },
-    ]);
-  });
-
   it("rejects duplicate ids and malformed components", () => {
     const duplicate = definePluginApp((app) => {
       app.slots.experimental_appOverlay({
@@ -72,10 +68,120 @@ describe("collectPluginAppRegistrations — experimental_appOverlay", () => {
   });
 });
 
-describe("collectPluginAppRegistrations — experimental_threadHeaderAction", () => {
+describe("collectPluginAppRegistrations — experimental_threadAction", () => {
+  const item = () => null;
+  const useData = () => 1;
+  const experimental_bulkItem = () => null;
+
+  it("collects a thread action with its hooks", () => {
+    const definition = definePluginApp((app) => {
+      app.slots.experimental_threadAction({
+        id: "notifications",
+        title: "Notifications",
+        icon: "Notification",
+        group: "3_settings",
+        order: 5,
+        useData,
+        item,
+        experimental_bulkItem,
+      });
+    });
+    expect(collectPluginAppRegistrations(definition).threadActions).toEqual([
+      {
+        id: "notifications",
+        title: "Notifications",
+        icon: "Notification",
+        group: "3_settings",
+        order: 5,
+        useData,
+        item,
+        experimental_bulkItem,
+      },
+    ]);
+  });
+
+  it("keeps a header placement", () => {
+    const definition = definePluginApp((app) => {
+      app.slots.experimental_threadAction({
+        id: "commit",
+        title: "Commit",
+        icon: "GitBranch",
+        group: "git",
+        placement: "header",
+        item,
+      });
+    });
+    expect(
+      collectPluginAppRegistrations(definition).threadActions[0]?.placement,
+    ).toBe("header");
+  });
+
+  it("rejects two thread actions with the same id", () => {
+    const definition = definePluginApp((app) => {
+      app.slots.experimental_threadAction({
+        id: "a",
+        title: "One",
+        icon: "Pin",
+        group: "2_organize",
+        item,
+      });
+      app.slots.experimental_threadAction({
+        id: "a",
+        title: "Two",
+        icon: "Pin",
+        group: "2_organize",
+        item,
+      });
+    });
+    expect(() => collectPluginAppRegistrations(definition)).toThrow(/"a"/);
+  });
+
+  it.each([
+    ["item", { item: null }, '"item" must be a function'],
+    ["useData", { item, useData: 1 }, '"useData" must be a function'],
+    [
+      "experimental_bulkItem",
+      { item, experimental_bulkItem: 1 },
+      '"experimental_bulkItem" must be a function',
+    ],
+    ["icon", { item, icon: "" }, "icon"],
+    ["group", { item, group: "" }, "group"],
+    ["order", { item, order: Number.NaN }, '"order" must be a finite number'],
+    [
+      "placement",
+      { item, placement: "toolbar" },
+      '"placement" must be "menu" or "header"',
+    ],
+  ])("rejects a malformed %s", (_field, fields, message) => {
+    const definition = definePluginApp((app) => {
+      app.slots.experimental_threadAction({
+        id: "a",
+        title: "One",
+        icon: "Pin",
+        group: "2_organize",
+        ...fields,
+      } as unknown as Parameters<
+        typeof app.slots.experimental_threadAction
+      >[0]);
+    });
+    expect(() => collectPluginAppRegistrations(definition)).toThrow(message);
+  });
+});
+
+interface LegacyHeaderActionSlots {
+  experimental_threadHeaderAction(
+    registration: LegacyThreadHeaderActionRegistration,
+  ): void;
+}
+
+function legacySlots(slots: PluginAppSlots): LegacyHeaderActionSlots {
+  return slots as unknown as LegacyHeaderActionSlots;
+}
+
+describe("collectPluginAppRegistrations — legacy experimental_threadHeaderAction", () => {
   it("collects a header action", () => {
     const definition = definePluginApp((app) => {
-      app.slots.experimental_threadHeaderAction({
+      legacySlots(app.slots).experimental_threadHeaderAction({
         id: "subagents",
         title: "Subagents",
         component: Component,
@@ -88,12 +194,12 @@ describe("collectPluginAppRegistrations — experimental_threadHeaderAction", ()
 
   it("rejects two header actions with the same id", () => {
     const definition = definePluginApp((app) => {
-      app.slots.experimental_threadHeaderAction({
+      legacySlots(app.slots).experimental_threadHeaderAction({
         id: "subagents",
         title: "One",
         component: Component,
       });
-      app.slots.experimental_threadHeaderAction({
+      legacySlots(app.slots).experimental_threadHeaderAction({
         id: "subagents",
         title: "Two",
         component: Component,
@@ -111,7 +217,7 @@ describe("collectPluginAppRegistrations — experimental_threadHeaderAction", ()
         title: "Inbox",
         component: Component,
       });
-      app.slots.experimental_threadHeaderAction({
+      legacySlots(app.slots).experimental_threadHeaderAction({
         id: "inbox",
         title: "Inbox",
         component: Component,
@@ -124,12 +230,43 @@ describe("collectPluginAppRegistrations — experimental_threadHeaderAction", ()
 
   it("rejects a missing title", () => {
     const definition = definePluginApp((app) => {
-      app.slots.experimental_threadHeaderAction({
+      legacySlots(app.slots).experimental_threadHeaderAction({
         id: "subagents",
         component: Component,
       } as never);
     });
     expect(() => collectPluginAppRegistrations(definition)).toThrow(/title/);
+  });
+});
+
+describe("collectPluginAppRegistrations — experimental_browserToolbarAction", () => {
+  it("collects a browser toolbar action", () => {
+    const definition = definePluginApp((app) => {
+      app.slots.experimental_browserToolbarAction({
+        id: "annotate",
+        title: "Annotate",
+        component: Component,
+      });
+    });
+    expect(
+      collectPluginAppRegistrations(definition).browserToolbarActions,
+    ).toEqual([{ id: "annotate", title: "Annotate", component: Component }]);
+  });
+
+  it("rejects duplicate browser toolbar action ids", () => {
+    const definition = definePluginApp((app) => {
+      app.slots.experimental_browserToolbarAction({
+        id: "annotate",
+        title: "One",
+        component: Component,
+      });
+      app.slots.experimental_browserToolbarAction({
+        id: "annotate",
+        title: "Two",
+        component: Component,
+      });
+    });
+    expect(() => collectPluginAppRegistrations(definition)).toThrow(/annotate/);
   });
 });
 
@@ -328,6 +465,68 @@ describe("collectPluginAppRegistrations — experimental_sidebarFooter", () => {
 });
 
 describe("collectPluginAppRegistrations", () => {
+  it.each(["design_board", "workspace-file"])(
+    "registers and resolves a file opener for %s",
+    (extension) => {
+      const definition = definePluginApp((app) => {
+        app.slots.fileOpener({
+          id: "viewer",
+          title: "Viewer",
+          extensions: [extension],
+          component: Component,
+        });
+      });
+      const collected = collectPluginAppRegistrations(definition);
+      const registrations = collected.fileOpeners.map((registration) => ({
+        ...registration,
+        pluginId: "extension-viewer",
+        generation: 1,
+      }));
+
+      expect(collected.fileOpeners).toEqual([
+        {
+          id: "viewer",
+          title: "Viewer",
+          extensions: [extension],
+          component: Component,
+        },
+      ]);
+      expect(
+        resolveFileOpenerReplacement({
+          registrations,
+          path: `project/file.${extension.toUpperCase()}`,
+        }),
+      ).toEqual({ kind: "plugin", registration: registrations[0] });
+    },
+  );
+
+  it.each([
+    "_board",
+    "board_",
+    "-board",
+    "board-",
+    "design__board",
+    "design--board",
+    "design_-board",
+    "design_BOARD",
+    "design.board",
+    "design/board",
+    "design board",
+  ])("rejects a malformed file opener extension %s", (extension) => {
+    const definition = definePluginApp((app) => {
+      app.slots.fileOpener({
+        id: "viewer",
+        title: "Viewer",
+        extensions: [extension],
+        component: Component,
+      });
+    });
+
+    expect(() => collectPluginAppRegistrations(definition)).toThrow(
+      /extensions must be lowercase alphanumerics/,
+    );
+  });
+
   it("produces the same complete registration set in the app and test runtimes", async () => {
     const run = () => {};
     const mount = () => {};
@@ -354,10 +553,13 @@ describe("collectPluginAppRegistrations", () => {
         icon: "Columns",
         path: "panel",
         component: Component,
-        experimental_sidebarAccessory: Component,
+        experimental_useBadge: useNoBadge,
         headerContent: Component,
       });
-      app.slots.threadPanelAction({
+      Reflect.get(
+        app.slots,
+        "threadPanelAction",
+      )({
         id: "thread-panel",
         title: "Thread panel",
         icon: "Columns",
@@ -388,7 +590,7 @@ describe("collectPluginAppRegistrations", () => {
         description: "A thread list.",
         component: Component,
       });
-      app.slots.experimental_threadHeaderAction({
+      legacySlots(app.slots).experimental_threadHeaderAction({
         id: "thread-header",
         title: "Thread header",
         component: Component,
@@ -445,6 +647,7 @@ describe("collectPluginAppRegistrations", () => {
       });
       app.slots.settingsSection({
         id: "custom-settings",
+        experimental_page: "mobile",
         title: "Custom settings",
         component: Component,
       });
@@ -459,7 +662,10 @@ describe("collectPluginAppRegistrations", () => {
         path: "board",
         component: Component,
       });
-      app.slots.threadPanelAction({
+      Reflect.get(
+        app.slots,
+        "threadPanelAction",
+      )({
         id: "issue",
         title: "Issue",
         icon: "Columns",
@@ -514,6 +720,7 @@ describe("collectPluginAppRegistrations", () => {
     expect(registrations.settingsSections).toEqual([
       {
         id: "custom-settings",
+        experimental_page: "mobile",
         title: "Custom settings",
         component: Component,
       },
@@ -530,7 +737,7 @@ describe("collectPluginAppRegistrations", () => {
         component: Component,
       },
     ]);
-    expect(registrations.threadPanelActions).toEqual([
+    expect(registrations.threadPanelActions).toMatchObject([
       {
         id: "issue",
         title: "Issue",
@@ -583,6 +790,37 @@ describe("collectPluginAppRegistrations", () => {
     ]);
   });
 
+  it("keeps loading a pre-0.6.53 nav panel that passes experimental_sidebarAccessory and warns", () => {
+    const warned = vi.fn<(message: string) => void>();
+    const definition = definePluginApp((app) => {
+      app.slots.navPanel({
+        id: "board",
+        title: "Board",
+        icon: "columns",
+        path: "board",
+        component: Component,
+        experimental_sidebarAccessory: Component,
+      } as never);
+    });
+
+    const registrations = collectPluginAppRegistrations(definition, warned);
+
+    expect(registrations.navPanels).toEqual([
+      {
+        id: "board",
+        title: "Board",
+        icon: "columns",
+        path: "board",
+        component: Component,
+      },
+    ]);
+    expect(warned.mock.calls).toEqual([
+      [
+        'slots.navPanel: "experimental_sidebarAccessory" is ignored: it was replaced by "experimental_useBadge", a hook returning a badge value, in SDK 0.6.53',
+      ],
+    ]);
+  });
+
   it("rejects invalid composer customizations individually while siblings survive", () => {
     const rejected = vi.fn<(reason: string) => void>();
     const definition = definePluginApp((app) => {
@@ -593,14 +831,17 @@ describe("collectPluginAppRegistrations", () => {
         id: "bad-scope",
         scopes: ["modal" as never],
       });
-      app.composer.customize({ id: "valid-last", scopes: ["side-chat"] });
+      app.composer.customize({
+        id: "valid-last",
+        scopes: ["side-chat" as never, "thread"],
+      });
     });
 
     const registrations = collectPluginAppRegistrations(definition, rejected);
 
     expect(registrations.composerCustomizations).toEqual([
       { id: "valid-first" },
-      { id: "valid-last", scopes: ["side-chat"] },
+      { id: "valid-last", scopes: ["thread"] },
     ]);
     expect(rejected.mock.calls.map(([reason]) => reason)).toEqual([
       expect.stringContaining('"id" must match'),
@@ -866,7 +1107,10 @@ describe("collectPluginAppRegistrations", () => {
       "thread panel action with a non-function run",
       () =>
         definePluginApp((app) => {
-          app.slots.threadPanelAction({
+          app.slots.experimental_tab({
+            context: { kind: "thread" },
+            availability: "action",
+            icon: "Info",
             id: "x",
             title: "X",
             component: Component,
@@ -946,7 +1190,7 @@ describe("collectPluginAppRegistrations", () => {
       'slots.navPanel: unknown field "experimental_badge"',
     ],
     [
-      "nav panel with a non-component experimental sidebar accessory",
+      "nav panel with a non-function experimental badge hook",
       () =>
         definePluginApp((app) => {
           app.slots.navPanel({
@@ -955,10 +1199,10 @@ describe("collectPluginAppRegistrations", () => {
             icon: "columns",
             path: "x",
             component: Component,
-            experimental_sidebarAccessory: "nope" as never,
+            experimental_useBadge: "nope" as never,
           });
         }),
-      /"experimental_sidebarAccessory" must be a React component/,
+      /"experimental_useBadge" must be a React hook function/,
     ],
     [
       "message directive with uppercase id",
@@ -1044,9 +1288,9 @@ describe("collectPluginAppRegistrations", () => {
     });
   });
 
-  it("keeps an experimental_sidebarAccessory registration", () => {
-    function SidebarAccessory() {
-      return null;
+  it("keeps an experimental_useBadge registration", () => {
+    function useBadge() {
+      return { count: 3, label: "3 open tasks" };
     }
     const definition = definePluginApp((app) => {
       app.slots.navPanel({
@@ -1055,13 +1299,13 @@ describe("collectPluginAppRegistrations", () => {
         icon: "columns",
         path: "board",
         component: Component,
-        experimental_sidebarAccessory: SidebarAccessory,
+        experimental_useBadge: useBadge,
       });
     });
     expect(
       collectPluginAppRegistrations(definition).navPanels[0],
     ).toMatchObject({
-      experimental_sidebarAccessory: SidebarAccessory,
+      experimental_useBadge: useBadge,
     });
   });
 });

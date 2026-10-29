@@ -1,3 +1,4 @@
+import { requestMatchesEntityTag } from "../files/entity-tag.js";
 import { Buffer } from "node:buffer";
 import type { HostDaemonOnlineRpcResultByType } from "@bb/host-daemon-contract";
 import { ApiError } from "../../errors.js";
@@ -6,8 +7,7 @@ const OCTET_STREAM_MIME_TYPE = "application/octet-stream";
 const REVALIDATE_CACHE_CONTROL = "private, no-cache";
 
 export type DaemonFileReadResult =
-  | HostDaemonOnlineRpcResultByType["host.read_file"]
-  | HostDaemonOnlineRpcResultByType["host.read_file_relative"];
+  HostDaemonOnlineRpcResultByType["host.read_file"];
 
 interface CreateDaemonFileContentResponseOptions {
   headers?: HeadersInit;
@@ -18,21 +18,13 @@ function daemonFileEntityTag(result: DaemonFileReadResult): string {
   return `"${result.sha256}"`;
 }
 
-export function requestMatchesEntityTag(
-  ifNoneMatch: string | undefined,
-  entityTag: string,
-): boolean {
-  if (ifNoneMatch === undefined) {
-    return false;
+export function requireDaemonFileContentResult(
+  result: DaemonFileReadResult,
+): Exclude<DaemonFileReadResult, { notModified: true }> {
+  if ("notModified" in result) {
+    throw new Error("Unconditional daemon file read returned not modified");
   }
-  const trimmed = ifNoneMatch.trim();
-  if (trimmed === "*") {
-    return true;
-  }
-  return trimmed
-    .split(",")
-    .map((tag) => tag.trim().replace(/^W\//u, ""))
-    .includes(entityTag);
+  return result;
 }
 
 function buildFileContentHeaders(
@@ -54,6 +46,9 @@ function buildFileContentHeaders(
 }
 
 function decodeDaemonFileContent(result: DaemonFileReadResult): ArrayBuffer {
+  if ("notModified" in result) {
+    throw new Error("Cannot decode a not-modified daemon file result");
+  }
   const bytes =
     result.contentEncoding === "utf8"
       ? Buffer.from(result.content, "utf8")
@@ -68,6 +63,7 @@ export function createDaemonFileContentResponse(
 ): Response {
   const headers = buildFileContentHeaders(result, options);
   if (
+    "notModified" in result ||
     requestMatchesEntityTag(options.ifNoneMatch, daemonFileEntityTag(result))
   ) {
     return new Response(null, { status: 304, headers });

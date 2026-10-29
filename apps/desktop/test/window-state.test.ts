@@ -3,15 +3,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  hasVisibleArea,
-  readPersistedWindowStateEntries,
+  readPersistedWindowStateFile,
   restoreWindowState,
-  writePersistedWindowStateEntries,
+  writePersistedWindowStateFile,
 } from "../src/window-state.js";
-import type {
-  DisplayWorkArea,
-  PersistedWindowStateEntry,
-  PersistedWindowState,
+import {
+  DEFAULT_WINDOW_STATE,
+  type DisplayWorkArea,
+  type PersistedWindowStateEntry,
+  type PersistedWindowState,
 } from "../src/types.js";
 
 interface TempDir {
@@ -26,17 +26,6 @@ const displayWorkAreas: DisplayWorkArea[] = [
     y: 0,
   },
 ];
-
-const defaultState: PersistedWindowState = {
-  bounds: {
-    height: 900,
-    width: 1280,
-    x: 80,
-    y: 80,
-  },
-  isFullScreen: false,
-  isMaximized: false,
-};
 
 const tempDirs: TempDir[] = [];
 
@@ -71,7 +60,6 @@ describe("window state helpers", () => {
 
     expect(
       restoreWindowState({
-        defaultState,
         displayWorkAreas,
         persistedState,
       }),
@@ -92,26 +80,49 @@ describe("window state helpers", () => {
 
     expect(
       restoreWindowState({
-        defaultState,
         displayWorkAreas,
         persistedState,
       }),
-    ).toEqual(defaultState);
+    ).toEqual(DEFAULT_WINDOW_STATE);
   });
 
   it("requires meaningful overlap with a display work area", () => {
     expect(
-      hasVisibleArea({
-        bounds: {
-          height: 400,
-          width: 400,
-          x: 1_435,
-          y: 895,
-        },
+      restoreWindowState({
         displayWorkAreas,
+        persistedState: {
+          bounds: {
+            height: 400,
+            width: 400,
+            x: 1_435,
+            y: 895,
+          },
+          isFullScreen: false,
+          isMaximized: false,
+        },
       }),
-    ).toBe(false);
+    ).toEqual(DEFAULT_WINDOW_STATE);
   });
+
+  it.each([undefined, -1, 100, "large"])(
+    "reads legacy geometry and defaults invalid zoom %s",
+    async (zoomFactor) => {
+      const tempDir = await createTempDir();
+      await writeFile(
+        join(tempDir.path, "window-state.json"),
+        JSON.stringify({
+          windows: [{ ...DEFAULT_WINDOW_STATE, stateKey: "main" }],
+          zoomFactor,
+        }),
+      );
+      expect(
+        await readPersistedWindowStateFile({ userDataPath: tempDir.path }),
+      ).toEqual({
+        windows: [{ ...DEFAULT_WINDOW_STATE, stateKey: "main" }],
+        zoomFactor: 1,
+      });
+    },
+  );
 
   it("persists and reads multiple window states across restart", async () => {
     const tempDir = await createTempDir();
@@ -140,42 +151,14 @@ describe("window state helpers", () => {
       },
     ];
 
-    await writePersistedWindowStateEntries({
-      entries: persistedStates,
+    const file = { windows: persistedStates, zoomFactor: 1.3 };
+    await writePersistedWindowStateFile({
+      file,
       userDataPath: tempDir.path,
     });
 
     await expect(
-      readPersistedWindowStateEntries({ userDataPath: tempDir.path }),
-    ).resolves.toEqual(persistedStates);
-  });
-
-  it("reads legacy single-window state as the main window entry", async () => {
-    const tempDir = await createTempDir();
-    const legacyState: PersistedWindowState = {
-      bounds: {
-        height: 720,
-        width: 1100,
-        x: 40,
-        y: 60,
-      },
-      isFullScreen: false,
-      isMaximized: true,
-    };
-
-    await writeFile(
-      join(tempDir.path, "window-state.json"),
-      `${JSON.stringify(legacyState, null, 2)}\n`,
-      "utf8",
-    );
-
-    await expect(
-      readPersistedWindowStateEntries({ userDataPath: tempDir.path }),
-    ).resolves.toEqual([
-      {
-        ...legacyState,
-        stateKey: "main",
-      },
-    ]);
+      readPersistedWindowStateFile({ userDataPath: tempDir.path }),
+    ).resolves.toEqual(file);
   });
 });

@@ -1,14 +1,23 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { Label } from "../../shared/contract.js";
-import { useProjects } from "../../shell/data.js";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { Label, Task } from "../../shared/contract.js";
+import { errorMessage } from "../../shared/errors.js";
+import { useProjects, useTasksRpc } from "../../shell/data.js";
 import { useTasksNavigation } from "../../shell/routes.js";
 import { NewTaskDialog } from "../manage/new-task-dialog.js";
 import { DetailToasts, useDetailToasts } from "../detail/toast.js";
-import { Button } from "@bb/shared-ui/button";
-import { DelayedLoading } from "@bb/shared-ui/delayed-loading";
-import { Icon } from "@bb/shared-ui/icon";
-import { Skeleton } from "@bb/shared-ui/skeleton";
-import { useLabels, useListTasks, useTaskListMeta } from "./data.js";
+import { EmptyState } from "../../components/empty-state.js";
+import { Button } from "@/components/ui/button";
+import { DelayedLoading } from "@/components/ui/delayed-loading";
+import { Icon } from "@/components/ui/icon";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  matchesFilters,
+  useLabels,
+  useListTaskEdit,
+  useListTasks,
+  useTaskListMeta,
+  type TaskEdit,
+} from "./data.js";
 import {
   EMPTY_FILTERS,
   hasActiveFilters,
@@ -34,40 +43,14 @@ import {
   selectedLabelIds,
   STATUS_LABELS,
 } from "./lib.js";
-import { editedTasks, matchesFilters } from "./optimistic.js";
-import { useListTaskEdits } from "./use-task-edits.js";
 import { TaskRow } from "./row.js";
+import { rowWindows, useRowWindowViewport } from "./row-window.js";
+
+const NO_LABELS: readonly Label[] = [];
 
 interface ListViewProps {
   projectId: string | null;
   activeOnly?: boolean;
-}
-
-function EmptyState({
-  icon,
-  title,
-  description,
-  action,
-}: {
-  icon: Parameters<typeof Icon>[0]["name"];
-  title: string;
-  description?: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center">
-      <div className="flex size-10 items-center justify-center rounded-md bg-secondary text-muted-foreground">
-        <Icon name={icon} className="size-5" />
-      </div>
-      <div className="space-y-1">
-        <p className="text-sm font-medium">{title}</p>
-        {description ? (
-          <p className="text-sm text-muted-foreground">{description}</p>
-        ) : null}
-      </div>
-      {action}
-    </div>
-  );
 }
 
 function LoadingRows() {
@@ -93,6 +76,11 @@ function LoadingRows() {
 
 export function ListView({ projectId, activeOnly = false }: ListViewProps) {
   const navigation = useTasksNavigation();
+  const rpc = useTasksRpc();
+  const openTask = useCallback(
+    (taskKey: string) => navigation.go({ kind: "task", taskKey }),
+    [navigation],
+  );
   const projects = useProjects();
   const { toasts, push, dismiss } = useDetailToasts();
   const preferenceScope = listPreferenceScope(projectId, activeOnly);
@@ -143,8 +131,27 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     priorities: filters.priorities,
     labelIds,
   });
-  const meta = useTaskListMeta(tasksQuery.data);
-  const edits = useListTaskEdits(tasksQuery.data, (message) => push(message));
+  const meta = useTaskListMeta(projectId);
+  const taskEdit = useListTaskEdit(tasksQuery.reads);
+  const { mutate: mutateTask } = taskEdit;
+  const refreshTasks = tasksQuery.refresh;
+  const editTask = useCallback(
+    (task: Task, patch: TaskEdit) => {
+      mutateTask({ taskId: task.id, ...patch }).then(
+        (result) => {
+          if (result.ok) return;
+          push(result.error.message);
+          refreshTasks();
+        },
+        (error: unknown) => push(errorMessage(error)),
+      );
+    },
+    [mutateTask, push, refreshTasks],
+  );
+  const pendingTaskIds = useMemo(
+    () => new Set(taskEdit.pendingInputs.map((input) => input.taskId)),
+    [taskEdit.pendingInputs],
+  );
 
   const labelsById = useMemo(
     () => new Map((labels.data ?? []).map((label) => [label.id, label])),
@@ -159,6 +166,22 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     }
     return map;
   }, [labels.data]);
+  const moveToProject = useCallback(
+    (task: Task, targetProjectId: string) => {
+      rpc
+        .call("moveTaskToProject", {
+          taskId: task.id,
+          projectId: targetProjectId,
+        })
+        .then(
+          (result) => {
+            if (!result.ok) push(result.error.message);
+          },
+          (error: unknown) => push(errorMessage(error)),
+        );
+    },
+    [rpc, push],
+  );
   const projectsById = useMemo(
     () =>
       new Map((projects.data ?? []).map((project) => [project.id, project])),
@@ -167,7 +190,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
 
   const displayTasks = useMemo(() => {
     if (tasksQuery.data === undefined) return undefined;
-    return editedTasks(tasksQuery.data, edits.entries).filter((task) =>
+    return tasksQuery.data.filter((task) =>
       matchesFilters(
         task,
         filters.statuses,
@@ -175,13 +198,7 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
         labelIds ?? [],
       ),
     );
-  }, [
-    tasksQuery.data,
-    edits.entries,
-    filters.statuses,
-    filters.priorities,
-    labelIds,
-  ]);
+  }, [tasksQuery.data, filters.statuses, filters.priorities, labelIds]);
   const groups = useMemo(
     () => groupTasksByStatus(sortTasks(displayTasks ?? [], sort)),
     [displayTasks, sort],
@@ -212,6 +229,15 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
     contentReady: tasksQuery.data !== undefined && tasksQuery.data.length > 0,
     loading: tasksQuery.isLoading || scopeChanged,
     revision: tasksQuery.data?.length ?? 0,
+  });
+
+  const viewport = useRowWindowViewport(scrollRef, groups);
+  const ranges = rowWindows({
+    counts: groups.map((group) => group.tasks.length),
+    headerHeight: viewport.headerHeight,
+    rowHeight: viewport.rowHeight,
+    scrollTop: viewport.scrollTop,
+    viewportHeight: viewport.height,
   });
 
   let body: React.ReactNode;
@@ -271,35 +297,47 @@ export function ListView({ projectId, activeOnly = false }: ListViewProps) {
       );
     }
   } else {
-    body = groups.map((group) => (
-      <section key={group.status}>
-        {}
-        <div
-          data-status-group-header={group.status}
-          className="sticky top-0 z-20 isolate flex items-center gap-2 border-b border-border-hairline bg-background px-3.5 pb-1.5 pt-2.5 text-sm font-semibold"
-        >
-          <StatusIcon status={group.status} />
-          {STATUS_LABELS[group.status]}
-          <span className="text-xs font-normal tabular-nums text-subtle-foreground">
-            {group.tasks.length}
-          </span>
-        </div>
-        {group.tasks.map((task) => (
-          <TaskRow
-            key={task.id}
-            task={task}
-            meta={meta.data?.get(task.id)}
-            project={projectsById.get(task.projectId)}
-            showProject={showProject}
-            labelsById={labelsById}
-            projectLabels={labelsByProject.get(task.projectId) ?? []}
-            onEdit={edits.edit}
-            onOpen={() => navigation.go({ kind: "task", taskKey: task.key })}
-            pending={edits.pending.has(task.id)}
-          />
-        ))}
-      </section>
-    ));
+    body = groups.map((group, groupIndex) => {
+      const [start, end] = ranges[groupIndex] ?? [0, group.tasks.length];
+      const hiddenAbove = start * viewport.rowHeight;
+      const hiddenBelow = (group.tasks.length - end) * viewport.rowHeight;
+      return (
+        <section key={group.status}>
+          <div
+            data-status-group-header={group.status}
+            className="sticky top-0 z-20 isolate flex items-center gap-2 border-b border-border-hairline bg-background px-3.5 pb-1.5 pt-2.5 text-sm font-semibold"
+          >
+            <StatusIcon status={group.status} />
+            {STATUS_LABELS[group.status]}
+            <span className="text-xs font-normal tabular-nums text-subtle-foreground">
+              {group.tasks.length}
+            </span>
+          </div>
+          {hiddenAbove > 0 ? (
+            <div aria-hidden style={{ height: hiddenAbove }} />
+          ) : null}
+          {group.tasks.slice(start, end).map((task) => (
+            <TaskRow
+              key={task.id}
+              task={task}
+              meta={meta.data?.get(task.id)}
+              project={projectsById.get(task.projectId)}
+              showProject={showProject}
+              labelsById={labelsById}
+              projectLabels={labelsByProject.get(task.projectId) ?? NO_LABELS}
+              projects={projects.data ?? []}
+              onMoveToProject={moveToProject}
+              onEdit={editTask}
+              onOpen={openTask}
+              pending={pendingTaskIds.has(task.id)}
+            />
+          ))}
+          {hiddenBelow > 0 ? (
+            <div aria-hidden style={{ height: hiddenBelow }} />
+          ) : null}
+        </section>
+      );
+    });
   }
 
   return (

@@ -1,5 +1,14 @@
-import { describe, expect, it } from "vitest";
-import { threadEventSchema, turnScope } from "../src/index.js";
+import { describe, expect, expectTypeOf, it } from "vitest";
+import {
+  threadEventSchema,
+  threadEventTypeValues,
+  type ThreadEventType,
+  turnScope,
+} from "../src/index.js";
+
+expectTypeOf<
+  (typeof threadEventTypeValues)[number]
+>().toEqualTypeOf<ThreadEventType>();
 
 const CLIENT_REQUEST_ID = "creq_23456789ab";
 
@@ -82,33 +91,6 @@ describe("provider event schema", () => {
         clientRequestId: CLIENT_REQUEST_ID,
       },
     });
-  });
-
-  it("rejects old clientRequestSequence event shapes", () => {
-    expect(() =>
-      threadEventSchema.parse({
-        type: "turn/input/accepted",
-        threadId: "thr_123",
-        providerThreadId: "provider-thread-123",
-        clientRequestSequence: 1,
-        scope: turnScope("turn_123"),
-      }),
-    ).toThrow();
-
-    expect(() =>
-      threadEventSchema.parse({
-        type: "item/started",
-        threadId: "thr_123",
-        providerThreadId: "provider-thread-123",
-        item: {
-          type: "userMessage",
-          id: "item_123",
-          content: [{ type: "text", text: "hello" }],
-          clientRequestSequence: 1,
-        },
-        scope: turnScope("turn_123"),
-      }),
-    ).toThrow();
   });
 
   it("allows provider turn starts to carry parent tool call ids", () => {

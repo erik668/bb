@@ -1,10 +1,17 @@
-import { useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import type {
   TimelineConversationAttachments,
   TimelineRowBase,
   TimelineUserConversationRow,
 } from "@bb/server-contract";
-import type { PromptTextMention, ThreadOriginKind } from "@bb/domain";
+import type { PromptTextMention } from "@bb/domain";
 import { fileNameFromPath } from "@bb/thread-view";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -16,12 +23,12 @@ import {
   parseLocalFileHref,
   resolveRelativeLocalFileHref,
 } from "@/components/ui/markdown-local-file-link.js";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
-import { computeMutedPrefixLength } from "@bb/client-core";
-import type {
-  TimelineTitleActionResolver,
-  TimelineTitleLinkResolver,
-} from "./TimelineTitleView.js";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
+import {
+  computeMutedPrefixLength,
+  parseAutomationDueMessage,
+} from "@bb/client-core";
+import type { TimelineTitleActionResolver } from "./TimelineTitleView.js";
 import type {
   ThreadTimelineAddToChatHandler,
   ThreadTimelineLinkHandler,
@@ -47,12 +54,16 @@ import {
   type MarkdownMessageDirectives,
 } from "@/components/ui/markdown-message-directives.js";
 import {
+  CodeFenceRendererHost,
+  useCodeFenceRendererRegistry,
+} from "@/components/ui/markdown-code-fence-renderers.js";
+import {
   boundedMarkdownPreview,
   closeUnterminatedMarkdownCodeSpan,
   USER_MESSAGE_CHAR_CAP,
 } from "@bb/client-core";
 import { turnRequestLabel } from "@bb/client-core";
-import { splitStreamingMarkdown } from "./streaming-markdown-split.js";
+import { resolveStreamingMarkdown } from "./streaming-markdown-split.js";
 import { TurnRequestLabel } from "./TurnRequestLabel.js";
 import {
   MessageActionBar,
@@ -68,28 +79,30 @@ import {
 } from "./SelectableMessageProse.js";
 import type { ThreadTimelinePluginMessageAction } from "./types.js";
 import type { PromptDraftAttachment } from "@bb/client-core";
-import { buildThreadHostFileContentUrl } from "@/lib/file-content-urls";
+import { buildMarkdownMessageLinkRouting } from "@/components/ui/markdown-message-link-routing";
+import { markStreamTrace } from "@/lib/stream-trace";
 
 interface ConversationMessageContentBaseProps {
+  actionMetadata?: ReactNode;
   attachments: TimelineConversationAttachments | null;
+  onCopyLink?: () => void;
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
-  onOpenPluginPanel?: MarkdownMessageDirectives["openThreadPanel"];
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
   projectId?: string;
   resolveUserAttachmentImageSrc?: UserAttachmentImageSrcResolver;
   text: string;
+  timestamp: number;
+  workspaceRootPath?: string;
 }
 
 interface ConversationMessageContentUserProps extends ConversationMessageContentBaseProps {
   role: "user";
   mobileActionDisplay?: "inline" | "overflow";
-  originKind: ThreadOriginKind | null;
   initiator: TimelineUserConversationRow["initiator"];
   mentions: readonly PromptTextMention[];
   onAddToChat?: ThreadTimelineAddToChatHandler;
   onEdit?: () => void;
   resolveMentionLink?: PromptMentionLinkResolver;
-  resolveSegmentLinkHref?: TimelineTitleLinkResolver;
   onOpenLink?: ThreadTimelineLinkHandler;
   onTitleAction?: TimelineTitleActionResolver;
   senderThreadId: TimelineUserConversationRow["senderThreadId"];
@@ -98,6 +111,7 @@ interface ConversationMessageContentUserProps extends ConversationMessageContent
   senderIsPluginSideChat: boolean;
   systemMessageKind: TimelineUserConversationRow["systemMessageKind"];
   systemMessageSubject: TimelineUserConversationRow["systemMessageSubject"];
+  threadId?: string;
   turnRequest: TimelineUserConversationRow["turnRequest"];
 }
 
@@ -128,7 +142,6 @@ interface ConversationMessageContentAssistantProps
   onOpenLink?: ThreadTimelineLinkHandler;
   onAddToChat?: ThreadTimelineAddToChatHandler;
   onFork?: () => void;
-  onSendToMain?: () => void;
   forkDisabled?: boolean;
   onSelectProse?: (selection: MessageProseSelection | null) => void;
   showActions: boolean;
@@ -142,20 +155,20 @@ type ConversationMessageContentProps =
   | ConversationMessageContentAssistantProps;
 
 interface UserConversationMessageProps {
+  actionMetadata?: ReactNode;
   addToChatAttachments: readonly PromptDraftAttachment[];
   attachmentItems: ConversationAttachmentItems;
-  originKind: ThreadOriginKind | null;
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
   initiator: TimelineUserConversationRow["initiator"];
   mentions: readonly PromptTextMention[];
   mobileActionDisplay: "inline" | "overflow";
   onAddToChat?: ThreadTimelineAddToChatHandler;
+  onCopyLink?: () => void;
   onEdit?: () => void;
   onOpenLink?: ThreadTimelineLinkHandler;
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
   projectId?: string;
   resolveMentionLink?: PromptMentionLinkResolver;
-  resolveSegmentLinkHref?: TimelineTitleLinkResolver;
   onTitleAction?: TimelineTitleActionResolver;
   senderThreadId: TimelineUserConversationRow["senderThreadId"];
   senderThreadProjectId: string | null;
@@ -164,43 +177,45 @@ interface UserConversationMessageProps {
   systemMessageKind: TimelineUserConversationRow["systemMessageKind"];
   systemMessageSubject: TimelineUserConversationRow["systemMessageSubject"];
   text: string;
+  timestamp: number;
+  threadId?: string;
   turnRequest: TimelineUserConversationRow["turnRequest"];
+  workspaceRootPath?: string;
 }
 
 interface AssistantConversationMessageProps extends AssistantMessageRowIdentity {
+  actionMetadata?: ReactNode;
   addToChatAttachments: readonly PromptDraftAttachment[];
   attachmentItems: ConversationAttachmentItems;
   pluginActions?: readonly ThreadTimelinePluginMessageAction[];
   onAddToChat?: ThreadTimelineAddToChatHandler;
+  onCopyLink?: () => void;
   onFork?: () => void;
-  onSendToMain?: () => void;
   forkDisabled?: boolean;
   onSelectProse?: (selection: MessageProseSelection | null) => void;
   onOpenLink?: ThreadTimelineLinkHandler;
   onOpenLocalFileLink?: ThreadTimelineLocalFileLinkHandler;
-  onOpenPluginPanel?: MarkdownMessageDirectives["openThreadPanel"];
   projectId?: string;
   showActions: boolean;
   mobileActionDisplay: "inline" | "overflow";
   streaming: boolean;
   text: string;
+  timestamp: number;
   workspaceRootPath?: string;
 }
 
 interface CollapsibleMessageTextProps {
+  linkRouting?: MarkdownLinkRouting;
   mentions: readonly PromptTextMention[];
   resolveMentionLink?: PromptMentionLinkResolver;
-  resolveSegmentLinkHref?: TimelineTitleLinkResolver;
-  onOpenLink?: ThreadTimelineLinkHandler;
   text: string;
   mutePrefixLength?: number;
 }
 
 function CollapsibleMessageText({
+  linkRouting,
   mentions,
   resolveMentionLink,
-  resolveSegmentLinkHref,
-  onOpenLink,
   text,
   mutePrefixLength,
 }: CollapsibleMessageTextProps) {
@@ -232,10 +247,9 @@ function CollapsibleMessageText({
   const promptMentions = useMemo<MarkdownPromptMentions>(
     () => ({
       mentions: body.mentions,
-      resolveLinkHref: resolveSegmentLinkHref,
       resolveMentionLink,
     }),
-    [body.mentions, resolveSegmentLinkHref, resolveMentionLink],
+    [body.mentions, resolveMentionLink],
   );
   const rawThreadMentions = useMemo<MarkdownThreadMentions>(
     () => ({
@@ -244,12 +258,8 @@ function CollapsibleMessageText({
     }),
     [body.mentions],
   );
-  const linkRouting = useMemo<MarkdownLinkRouting | undefined>(
-    () => (onOpenLink ? { onOpenLink } : undefined),
-    [onOpenLink],
-  );
-
   const isOverflowing = useIsOverflowing({
+    axis: "vertical",
     elementRef: bodyRef,
     enabled: !isExpanded,
     measurementKey: body.text,
@@ -268,9 +278,10 @@ function CollapsibleMessageText({
       ) : null}
       <div
         ref={bodyRef}
+        data-image-gallery-clipped={!isExpanded ? "" : undefined}
         className={cn(
-          "break-words",
-          !isExpanded && "max-h-[15lh] overflow-hidden",
+          "break-words overflow-x-auto",
+          !isExpanded && "max-h-[15lh] overflow-y-hidden",
         )}
         style={
           !isExpanded && showToggle ? COLLAPSED_MESSAGE_FADE_STYLE : undefined
@@ -280,6 +291,7 @@ function CollapsibleMessageText({
           <span>{body.text}</span>
         ) : (
           <MarkdownPreview
+            tableLayout="contained"
             content={
               collapsedPreview?.wasCapped === true
                 ? closeUnterminatedMarkdownCodeSpan(body.text)
@@ -313,32 +325,36 @@ function buildAddToChatAttachments(
       type: "localImage" as const,
       path,
       name: fileNameFromPath(path),
-      sizeBytes: 0,
     })),
-    ...attachments.localFilePaths.map((path) => ({
-      type: "localFile" as const,
-      path,
-      name: fileNameFromPath(path),
-      sizeBytes: 0,
-    })),
+    ...attachments.localFilePaths.map((path) => {
+      const detail = attachments.localFileDetails.find(
+        (file) => file.path === path,
+      );
+      return {
+        type: "localFile" as const,
+        path,
+        name: detail?.name ?? fileNameFromPath(path),
+        ...(detail?.sizeBytes == null ? {} : { sizeBytes: detail.sizeBytes }),
+      };
+    }),
   ];
 }
 
 function UserConversationMessage({
+  actionMetadata,
   addToChatAttachments,
   attachmentItems,
-  originKind,
   initiator,
   mentions,
   mobileActionDisplay,
   onAddToChat,
+  onCopyLink,
   onEdit,
   onOpenLink,
   onOpenLocalFileLink,
   pluginActions = [],
   projectId,
   resolveMentionLink,
-  resolveSegmentLinkHref,
   onTitleAction,
   senderThreadId,
   senderThreadProjectId,
@@ -347,43 +363,59 @@ function UserConversationMessage({
   systemMessageKind,
   systemMessageSubject,
   text,
+  timestamp,
+  threadId,
   turnRequest,
+  workspaceRootPath,
 }: UserConversationMessageProps) {
-  if (initiator === "agent" && senderThreadId !== null) {
-    const body = generatedConversationBodySlice({ initiator, text });
-    const bodyMentions = shiftMentionsToTextRange({
-      mentions,
-      rangeStart: body.startOffset,
-      rangeEnd: body.startOffset + body.text.length,
-    });
-    return (
-      <GeneratedConversationMessage
-        attachmentItems={attachmentItems}
-        originKind={originKind}
-        mentions={bodyMentions}
-        onOpenLink={onOpenLink}
-        onOpenLocalFileLink={onOpenLocalFileLink}
-        projectId={projectId}
-        resolveMentionLink={resolveMentionLink}
-        resolveSegmentLinkHref={resolveSegmentLinkHref}
-        onTitleAction={onTitleAction}
-        sourceKind="agent"
-        sourceName={
-          senderIsPluginSideChat ? "side chat" : (senderThreadTitle ?? "Agent")
+  const linkRouting = useMemo(
+    () =>
+      buildMarkdownMessageLinkRouting({
+        onOpenLink,
+        onOpenLocalFileLink,
+        threadId,
+        workspaceRootPath,
+      }),
+    [onOpenLink, onOpenLocalFileLink, threadId, workspaceRootPath],
+  );
+  const automationDue =
+    initiator === "user" ? parseAutomationDueMessage(text) : null;
+  const generatedSource =
+    initiator === "agent" && senderThreadId !== null
+      ? {
+          sourceKind: "agent" as const,
+          sourceName: senderIsPluginSideChat
+            ? "side chat"
+            : (senderThreadTitle ?? "Agent"),
+          sourceProjectId: senderThreadProjectId,
+          sourceThreadId: senderThreadId,
+          sourceIsPluginSideChat: senderIsPluginSideChat,
         }
-        sourceProjectId={senderThreadProjectId}
-        sourceThreadId={senderThreadId}
-        sourceIsPluginSideChat={senderIsPluginSideChat}
-        systemMessageKind={systemMessageKind}
-        systemMessageSubject={systemMessageSubject}
-        text={body.text}
-        turnRequest={turnRequest}
-      />
-    );
-  }
-
-  if (initiator === "system") {
-    const body = generatedConversationBodySlice({ initiator, text });
+      : initiator === "system"
+        ? {
+            sourceKind: "system" as const,
+            sourceName: "BB",
+            sourceProjectId: null,
+            sourceThreadId: null,
+            sourceIsPluginSideChat: false,
+          }
+        : automationDue !== null
+          ? {
+              sourceKind: "automation" as const,
+              sourceName: "Automation",
+              sourceProjectId: null,
+              sourceThreadId: null,
+              sourceIsPluginSideChat: false,
+            }
+          : null;
+  if (generatedSource !== null) {
+    const body =
+      automationDue === null
+        ? generatedConversationBodySlice({ initiator, text })
+        : {
+            startOffset: automationDue.bodyOffset,
+            text: text.slice(automationDue.bodyOffset),
+          };
     const bodyMentions = shiftMentionsToTextRange({
       mentions,
       rangeStart: body.startOffset,
@@ -391,24 +423,26 @@ function UserConversationMessage({
     });
     return (
       <GeneratedConversationMessage
+        {...generatedSource}
         attachmentItems={attachmentItems}
-        originKind={null}
+        automationLink={
+          automationDue === null || projectId === undefined
+            ? null
+            : { projectId, automationId: automationDue.automationId }
+        }
         mentions={bodyMentions}
         onOpenLink={onOpenLink}
         onOpenLocalFileLink={onOpenLocalFileLink}
         projectId={projectId}
         resolveMentionLink={resolveMentionLink}
-        resolveSegmentLinkHref={resolveSegmentLinkHref}
         onTitleAction={onTitleAction}
-        sourceKind="system"
-        sourceName="BB"
-        sourceProjectId={null}
-        sourceThreadId={null}
-        sourceIsPluginSideChat={false}
         systemMessageKind={systemMessageKind}
         systemMessageSubject={systemMessageSubject}
         text={body.text}
+        threadId={threadId}
+        timestamp={timestamp}
         turnRequest={turnRequest}
+        workspaceRootPath={workspaceRootPath}
       />
     );
   }
@@ -428,15 +462,13 @@ function UserConversationMessage({
             />
           </div>
         ) : null}
-        {}
         <div className="flex w-fit max-w-full flex-col items-end">
           <div className="max-w-full rounded-xl border border-border-seam bg-surface-recessed px-4 py-2.5 text-sm leading-relaxed text-foreground">
             {messageText ? (
               <CollapsibleMessageText
                 mentions={mentions}
                 resolveMentionLink={resolveMentionLink}
-                resolveSegmentLinkHref={resolveSegmentLinkHref}
-                onOpenLink={onOpenLink}
+                linkRouting={linkRouting}
                 text={text}
                 mutePrefixLength={mutePrefixLength || undefined}
               />
@@ -446,21 +478,28 @@ function UserConversationMessage({
             <ConversationAttachments
               align="end"
               filePaths={attachmentItems.filePaths}
+              fileDetails={attachmentItems.fileDetails}
               imageItems={attachmentItems.imageItems}
               onOpenLocalFileLink={onOpenLocalFileLink}
               projectId={projectId}
             />
           </div>
-          {}
           <MessageActionBar
+            timestamp={timestamp}
             messageText={messageText}
             alignment="end"
             mobileActionDisplay={mobileActionDisplay}
             addToChatAttachments={addToChatAttachments}
-            copyImageUrl={attachmentItems.imageItems[0]?.src}
+            copyImageUrl={
+              attachmentItems.imageItems.find(
+                (item) => item.mediaType !== "video",
+              )?.src
+            }
             onAddToChat={onAddToChat}
+            onCopyLink={onCopyLink}
             onEdit={onEdit}
             pluginActions={pluginActions}
+            metadata={actionMetadata}
           />
         </div>
       </div>
@@ -469,66 +508,51 @@ function UserConversationMessage({
 }
 
 function AssistantConversationMessage({
+  actionMetadata,
   addToChatAttachments,
   attachmentItems,
   id,
   onAddToChat,
+  onCopyLink,
   onFork,
-  onSendToMain,
   forkDisabled,
   onSelectProse,
   onOpenLink,
   onOpenLocalFileLink,
-  onOpenPluginPanel,
   pluginActions,
   projectId,
   showActions,
   mobileActionDisplay,
   streaming,
   text,
+  timestamp,
   threadId,
   turnId,
   workspaceRootPath,
 }: AssistantConversationMessageProps) {
-  const streamingSplit = useMemo(
-    () => (streaming ? splitStreamingMarkdown(text) : null),
+  useLayoutEffect(() => {
+    if (streaming) {
+      markStreamTrace("bb:stream-row-commit", {
+        rowId: id,
+        threadId: threadId ?? null,
+        textLength: text.length,
+      });
+    }
+  }, [id, streaming, text, threadId]);
+  const { split: streamingSplit, liveMarkdown } = useMemo(
+    () => resolveStreamingMarkdown(text, streaming),
     [streaming, text],
   );
-  const linkRouting = useMemo<MarkdownLinkRouting>(() => {
-    const localImage: NonNullable<MarkdownLinkRouting["localImage"]> = {
-      absolutePaths: {
-        kind: "trusted-host",
-      },
-      resolveSrc: ({ path }) => buildThreadHostFileContentUrl(threadId, path),
-    };
-    const routing: MarkdownLinkRouting = {
-      localImage,
-    };
-    if (workspaceRootPath !== undefined) {
-      localImage.relativePaths = {
-        baseDir: workspaceRootPath,
-        rootPath: workspaceRootPath,
-      };
-    }
-    if (onOpenLink) {
-      routing.onOpenLink = onOpenLink;
-    }
-    if (onOpenLocalFileLink) {
-      routing.localFile = {
-        absoluteLinks: {
-          kind: "trusted-host",
-        },
-        onOpenLink: onOpenLocalFileLink,
-      };
-      if (workspaceRootPath !== undefined) {
-        routing.localFile.relativeLinks = {
-          baseDir: workspaceRootPath,
-          rootPath: workspaceRootPath,
-        };
-      }
-    }
-    return routing;
-  }, [onOpenLink, onOpenLocalFileLink, threadId, workspaceRootPath]);
+  const linkRouting = useMemo(
+    () =>
+      buildMarkdownMessageLinkRouting({
+        onOpenLink,
+        onOpenLocalFileLink,
+        threadId,
+        workspaceRootPath,
+      }),
+    [onOpenLink, onOpenLocalFileLink, threadId, workspaceRootPath],
+  );
 
   const messageDirectiveRegistry = useMessageDirectiveRegistry();
   const openDirectiveWorkspaceFile = useMemo<
@@ -572,7 +596,6 @@ function AssistantConversationMessage({
         projectId: projectId ?? null,
       },
       openWorkspaceFile: openDirectiveWorkspaceFile,
-      openThreadPanel: onOpenPluginPanel ?? null,
     };
   }, [
     messageDirectiveRegistry,
@@ -581,8 +604,44 @@ function AssistantConversationMessage({
     turnId,
     projectId,
     openDirectiveWorkspaceFile,
-    onOpenPluginPanel,
   ]);
+
+  const codeFenceRendererRegistry = useCodeFenceRendererRegistry();
+  const codeFenceMessage = useMemo(
+    () => ({ id, threadId, turnId, projectId: projectId ?? null }),
+    [id, threadId, turnId, projectId],
+  );
+  const markdown = (
+    <>
+      <MarkdownPreview
+        allowHtml
+        className={
+          streamingSplit === null
+            ? undefined
+            : STREAMING_SETTLED_MARKDOWN_CLASS_NAME
+        }
+        content={
+          streamingSplit === null ? liveMarkdown : streamingSplit.settled
+        }
+        incrementalBlocks
+        linkRouting={linkRouting}
+        messageDirectives={messageDirectives}
+        threadMentions={ASSISTANT_THREAD_MENTIONS}
+      />
+      {streamingSplit === null ? null : (
+        <MarkdownPreview
+          allowHtml
+          className={STREAMING_TAIL_MARKDOWN_CLASS_NAME}
+          content={liveMarkdown}
+          sourcePrefix={streamingSplit.settled}
+          incrementalBlocks
+          linkRouting={linkRouting}
+          messageDirectives={messageDirectives}
+          threadMentions={ASSISTANT_THREAD_MENTIONS}
+        />
+      )}
+    </>
+  );
 
   return (
     <div
@@ -592,47 +651,44 @@ function AssistantConversationMessage({
       )}
       data-message-column=""
     >
-      {}
       <SelectableMessageProse onSelect={onSelectProse}>
-        <MarkdownPreview
-          className={
-            streamingSplit === null
-              ? undefined
-              : STREAMING_SETTLED_MARKDOWN_CLASS_NAME
-          }
-          content={streamingSplit === null ? text : streamingSplit.settled}
-          linkRouting={linkRouting}
-          messageDirectives={messageDirectives}
-          threadMentions={ASSISTANT_THREAD_MENTIONS}
-        />
-        {streamingSplit === null ? null : (
-          <MarkdownPreview
-            className={STREAMING_TAIL_MARKDOWN_CLASS_NAME}
-            content={streamingSplit.tail}
-            linkRouting={linkRouting}
-            messageDirectives={messageDirectives}
-            threadMentions={ASSISTANT_THREAD_MENTIONS}
-          />
+        {codeFenceRendererRegistry === null ? (
+          markdown
+        ) : (
+          <CodeFenceRendererHost
+            registry={codeFenceRendererRegistry}
+            message={codeFenceMessage}
+            streaming={streaming}
+          >
+            {markdown}
+          </CodeFenceRendererHost>
         )}
       </SelectableMessageProse>
       <ConversationAttachments
         filePaths={attachmentItems.filePaths}
+        fileDetails={attachmentItems.fileDetails}
         imageItems={attachmentItems.imageItems}
         onOpenLocalFileLink={onOpenLocalFileLink}
         projectId={projectId}
       />
       {showActions ? (
         <MessageActionBar
+          timestamp={timestamp}
           messageText={text}
           alignment="start"
           mobileActionDisplay={mobileActionDisplay}
           addToChatAttachments={addToChatAttachments}
-          copyImageUrl={attachmentItems.imageItems[0]?.src}
+          copyImageUrl={
+            attachmentItems.imageItems.find(
+              (item) => item.mediaType !== "video",
+            )?.src
+          }
           onAddToChat={onAddToChat}
+          onCopyLink={onCopyLink}
           onFork={onFork}
-          onSendToMain={onSendToMain}
           disabled={forkDisabled}
           pluginActions={pluginActions}
+          metadata={actionMetadata}
         />
       ) : null}
     </div>
@@ -645,7 +701,6 @@ export function ConversationMessageContent(
   const {
     attachments,
     onOpenLocalFileLink,
-    onOpenPluginPanel,
     projectId,
     resolveUserAttachmentImageSrc,
     text,
@@ -667,20 +722,20 @@ export function ConversationMessageContent(
   if (props.role === "user") {
     return (
       <UserConversationMessage
+        actionMetadata={props.actionMetadata}
         addToChatAttachments={addToChatAttachments}
         attachmentItems={attachmentItems}
-        originKind={props.originKind}
         pluginActions={props.pluginActions}
         initiator={props.initiator}
         mentions={props.mentions}
         mobileActionDisplay={props.mobileActionDisplay ?? "overflow"}
         onAddToChat={props.onAddToChat}
+        onCopyLink={props.onCopyLink}
         onEdit={props.onEdit}
         onOpenLink={props.onOpenLink}
         onOpenLocalFileLink={onOpenLocalFileLink}
         projectId={projectId}
         resolveMentionLink={props.resolveMentionLink}
-        resolveSegmentLinkHref={props.resolveSegmentLinkHref}
         onTitleAction={props.onTitleAction}
         senderThreadId={props.senderThreadId}
         senderThreadProjectId={props.senderThreadProjectId ?? null}
@@ -689,30 +744,34 @@ export function ConversationMessageContent(
         systemMessageKind={props.systemMessageKind}
         systemMessageSubject={props.systemMessageSubject}
         text={text}
+        timestamp={props.timestamp}
+        threadId={props.threadId}
         turnRequest={props.turnRequest}
+        workspaceRootPath={props.workspaceRootPath}
       />
     );
   }
 
   return (
     <AssistantConversationMessage
+      actionMetadata={props.actionMetadata}
       addToChatAttachments={addToChatAttachments}
       attachmentItems={attachmentItems}
       id={props.id}
       pluginActions={props.pluginActions}
       onAddToChat={props.onAddToChat}
+      onCopyLink={props.onCopyLink}
       onFork={props.onFork}
-      onSendToMain={props.onSendToMain}
       forkDisabled={props.forkDisabled}
       onSelectProse={props.onSelectProse}
       onOpenLink={props.onOpenLink}
       onOpenLocalFileLink={onOpenLocalFileLink}
-      onOpenPluginPanel={onOpenPluginPanel}
       projectId={projectId}
       showActions={props.showActions}
       mobileActionDisplay={props.mobileActionDisplay}
       streaming={props.streaming}
       text={text}
+      timestamp={props.timestamp}
       threadId={props.threadId}
       turnId={props.turnId}
       workspaceRootPath={props.workspaceRootPath}

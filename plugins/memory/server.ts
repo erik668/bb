@@ -1,10 +1,13 @@
 import { randomBytes } from "node:crypto";
 import {
   defineRpcContract,
+  PluginCliError,
+  cliCommand,
+  defineCli,
   type BbPluginApi,
-  type PluginCliContext,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { isMemoryKind, MEMORY_KINDS, type MemoryKind } from "./memory-kinds.js";
 import {
   CANDIDATE_STATUSES,
   CandidateStore,
@@ -36,16 +39,8 @@ const DEFAULT_RESULT_LIMIT = 20;
 const MAX_RESULT_LIMIT = 100;
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,79}$/;
 const TAG_PATTERN = /^[a-z0-9][a-z0-9._-]{0,39}$/;
-const MEMORY_KINDS = [
-  "fact",
-  "preference",
-  "decision",
-  "procedure",
-  "episode",
-  "reference",
-] as const;
 
-export type MemoryKind = (typeof MEMORY_KINDS)[number];
+export type { MemoryKind };
 export type MemoryScope = "global" | "project";
 export type ReadScope = MemoryScope | "all";
 type PluginDatabase = ReturnType<BbPluginApi["storage"]["database"]>;
@@ -330,13 +325,7 @@ interface MemoryUpdate {
   writeReason: string;
 }
 
-interface ParsedArgv {
-  positionals: string[];
-  options: Map<string, string[]>;
-  flags: Set<string>;
-}
-
-class CliError extends Error {}
+class CliError extends PluginCliError {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -386,12 +375,6 @@ function parseMemoryRow(row: unknown): MemoryRecord {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
-}
-
-function isMemoryKind(value: unknown): value is MemoryKind {
-  return (
-    typeof value === "string" && MEMORY_KINDS.some((kind) => kind === value)
-  );
 }
 
 function toMemorySummary(memory: MemoryRecord): MemorySummary {
@@ -485,109 +468,62 @@ function validateTags(values: string[]): string[] {
   return tags;
 }
 
-function parseKind(value: string | undefined): MemoryKind {
-  const kind = value ?? "fact";
-  if (!isMemoryKind(kind)) {
-    throw new CliError(`kind must be one of: ${MEMORY_KINDS.join(", ")}`);
-  }
-  return kind;
-}
-
-function parseCandidateStatusOption(
-  value: string | undefined,
-): CandidateStatus {
-  const status = value ?? "pending";
-  if (!CANDIDATE_STATUSES.some((candidate) => candidate === status)) {
+function requireNativeProject(projectId: string | undefined): string {
+  if (projectId === undefined) {
     throw new CliError(
-      `status must be one of: ${CANDIDATE_STATUSES.join(", ")}`,
+      "provider-native memory observations require a BB project context",
     );
   }
-  return status as CandidateStatus;
+  return projectId;
 }
 
-function parseInteger(
-  label: string,
-  value: string | undefined,
-  options: { defaultValue?: number; min: number; max: number },
-): number {
-  if (value === undefined && options.defaultValue !== undefined) {
-    return options.defaultValue;
-  }
-  if (value === undefined || !/^-?\d+$/u.test(value)) {
-    throw new CliError(`${label} must be an integer`);
-  }
-  const parsed = Number(value);
-  if (parsed < options.min || parsed > options.max) {
-    throw new CliError(
-      `${label} must be between ${options.min} and ${options.max}`,
-    );
-  }
-  return parsed;
-}
+const IGNORED_STRING_OPTION = {
+  type: "string",
+  repeatable: true,
+  hidden: true,
+  description: "Ignored",
+} as const;
 
-function parseArgv(argv: string[]): ParsedArgv {
-  const positionals: string[] = [];
-  const options = new Map<string, string[]>();
-  const flags = new Set<string>();
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index] ?? "";
-    if (!token.startsWith("--")) {
-      positionals.push(token);
-      continue;
-    }
-    const name = token.slice(2);
-    const next = argv[index + 1];
-    if (next === undefined || next.startsWith("--")) {
-      flags.add(name);
-      continue;
-    }
-    const values = options.get(name) ?? [];
-    values.push(next);
-    options.set(name, values);
-    index += 1;
-  }
-  return { positionals, options, flags };
-}
-
-function option(args: ParsedArgv, name: string): string | undefined {
-  const values = args.options.get(name);
-  return values?.[values.length - 1];
-}
-
-function requireOption(args: ParsedArgv, name: string): string {
-  const value = option(args, name);
-  if (value === undefined) throw new CliError(`missing required --${name}`);
-  return value;
-}
-
-function readScope(
-  args: ParsedArgv,
-  defaultScope: ReadScope = "all",
-): ReadScope {
-  const value = option(args, "scope") ?? defaultScope;
-  if (value !== "global" && value !== "project" && value !== "all") {
-    throw new CliError("scope must be global, project, or all");
-  }
-  return value;
+/**
+ * Keeps the retired agent write commands as hidden stubs that accept their
+ * old flags, so an agent learns why active memory is owner-only instead of
+ * seeing an unknown-option error.
+ */
+function ownerOnlyCommand(action: "update" | "forget") {
+  return cliCommand({
+    summary: `Active-memory ${action} is restricted to Settings → Memory`,
+    hidden: true,
+    positionals: [{ name: "args", description: "Ignored", variadic: true }],
+    options: {
+      "expected-version": IGNORED_STRING_OPTION,
+      reason: IGNORED_STRING_OPTION,
+      summary: IGNORED_STRING_OPTION,
+      details: IGNORED_STRING_OPTION,
+      kind: IGNORED_STRING_OPTION,
+      tag: IGNORED_STRING_OPTION,
+      importance: IGNORED_STRING_OPTION,
+      pinned: IGNORED_STRING_OPTION,
+      json: { type: "boolean", hidden: true, description: "Ignored" },
+    },
+    run() {
+      throw new CliError(
+        `active-memory ${action} is restricted to Settings → Memory so agents cannot bypass workspace-owner review`,
+      );
+    },
+  });
 }
 
 function writeScope(
-  args: ParsedArgv,
-  ctx: PluginCliContext,
-): {
-  scope: MemoryScope;
-  projectId: string | null;
-} {
-  const value = requireOption(args, "scope");
-  if (value === "global") return { scope: "global", projectId: null };
-  if (value !== "project")
-    throw new CliError("write scope must be project or global");
-  if (!ctx.projectId) {
+  scope: MemoryScope,
+  projectId: string | undefined,
+): { scope: MemoryScope; projectId: string | null } {
+  if (scope === "global") return { scope: "global", projectId: null };
+  if (projectId === undefined) {
     throw new CliError(
       "project-scoped memory requires a BB project context; run inside a project thread",
     );
   }
-  return { scope: "project", projectId: ctx.projectId };
+  return { scope: "project", projectId };
 }
 
 function scopeSql(
@@ -778,9 +714,7 @@ class MemoryStore {
     const memory = parseMemoryRow(row);
     if (touch) {
       this.db
-        .prepare(
-          "UPDATE memories SET last_accessed_at = ?, access_count = access_count + 1 WHERE id = ?",
-        )
+        .prepare("UPDATE memories SET last_accessed_at = ? WHERE id = ?")
         .run(Date.now(), memory.id);
     }
     return memory;
@@ -1036,22 +970,8 @@ function renderCatalog(store: MemoryStore, projectId: string): string {
   return `${header}${finalLines.join("\n")}${footer}`;
 }
 
-const USAGE = [
-  "Usage:",
-  "  bb memory catalog [--scope all|project|global] [--limit N] [--json]",
-  "  bb memory search <query...> [--scope all|project|global] [--limit N] [--json]",
-  "  bb memory get <id-or-name> [--scope all|project|global] [--json]",
-  "  bb memory propose --scope project|global --name NAME --summary TEXT --details TEXT --reason TEXT --evidence TEXT [--evidence TEXT]... [--kind KIND] [--tag TAG]... [--importance 0-100] [--pinned] [--json]",
-  "  bb memory add ...  # compatibility alias for propose; never activates memory",
-  "  bb memory candidates [--scope all|project|global] [--status pending|approved|rejected] [--limit N] [--json]",
-  "  bb memory candidate <id> [--json]",
-  "  bb memory challenge <candidate-id> --summary TEXT --evidence TEXT [--evidence TEXT]... [--json]",
-  "  bb memory history <id> [--limit N] [--json]",
-  "  bb memory native status [--json]",
-  "  bb memory native scan --environment <id> [--json]",
-  "  bb memory native observations [--status available|removed] [--limit N] [--json]",
-  "  bb memory native read <observation-id> [--json]",
-].join("\n");
+const SCOPE_DESCRIPTION = "Which memories to read";
+const READ_SCOPES = ["all", "project", "global"] as const;
 
 function jsonOutput(value: unknown): string {
   return JSON.stringify(value, null, 2);
@@ -1232,6 +1152,16 @@ export default async function plugin(bb: BbPluginApi) {
   nativeSettings.onChange((next) => {
     nativeBridge.setEnabled(next.nativeMemoryObservations);
   });
+  const describeNativeMemory = (projectId: string | null) => ({
+    enabled: nativeBridge.isEnabled(),
+    mode: "shadow" as const,
+    layouts: [...NATIVE_MEMORY_LAYOUTS],
+    projectId,
+    counts: projectId
+      ? nativeObservations.counts(projectId)
+      : { available: 0, removed: 0 },
+    promotion: "workspace-owner-only" as const,
+  });
 
   bb.events.on("thread.idle", async ({ thread }) => {
     // Whether an environment has agent-native memory is a fact about the
@@ -1261,17 +1191,13 @@ export default async function plugin(bb: BbPluginApi) {
       const { id } = input;
       const current = store.getAdmin(id);
       if (!current) throw new Error(`memory "${id}" was not found`);
-      const kindValue = input.kind;
-      if (!isMemoryKind(kindValue)) {
-        throw new Error(`kind must be one of: ${MEMORY_KINDS.join(", ")}`);
-      }
       const memory = store.update(
         id,
         {
           expectedVersion: input.expectedVersion,
           summary: input.summary,
           details: input.details,
-          kind: kindValue,
+          kind: input.kind,
           tags: input.tags,
           importance: input.importance,
           pinned: input.pinned,
@@ -1324,16 +1250,7 @@ export default async function plugin(bb: BbPluginApi) {
       return { candidate: result.candidate, receipt: result.receipt };
     },
     nativeMemoryStatus(input) {
-      return {
-        enabled: nativeBridge.isEnabled(),
-        mode: "shadow" as const,
-        layouts: [...NATIVE_MEMORY_LAYOUTS],
-        projectId: input.projectId,
-        counts: input.projectId
-          ? nativeObservations.counts(input.projectId)
-          : { available: 0, removed: 0 },
-        promotion: "workspace-owner-only" as const,
-      };
+      return describeNativeMemory(input.projectId);
     },
     listNativeMemoryObservations(input) {
       return {
@@ -1361,146 +1278,470 @@ export default async function plugin(bb: BbPluginApi) {
     renderCatalog(store, projectId),
   );
 
-  bb.cli.register({
-    name: "memory",
-    summary: "Read and maintain durable global and project memories",
-    commands: [
-      {
-        name: "catalog",
-        summary: "List compact memory summaries",
-        usage:
-          "bb memory catalog [--scope all|project|global] [--limit N] [--json]",
-      },
-      {
-        name: "search",
-        summary: "Search memory summaries and details",
-        usage:
-          "bb memory search <query...> [--scope all|project|global] [--limit N] [--json]",
-      },
-      {
-        name: "get",
-        summary: "Read one complete memory",
-        usage:
-          "bb memory get <id-or-name> [--scope all|project|global] [--json]",
-      },
-      {
-        name: "propose",
-        summary: "Propose a memory for workspace-owner review",
-        usage:
-          "bb memory propose --scope project|global --name NAME --summary TEXT --details TEXT --reason TEXT --evidence TEXT [options]",
-      },
-      {
-        name: "add",
-        summary: "Compatibility alias for propose; never activates memory",
-        usage: "bb memory add [same options as propose]",
-      },
-      {
-        name: "candidates",
-        summary: "List candidate memories and review state",
-        usage:
-          "bb memory candidates [--scope all|project|global] [--status pending|approved|rejected] [--limit N] [--json]",
-      },
-      {
-        name: "candidate",
-        summary: "Read one complete candidate memory",
-        usage: "bb memory candidate <id> [--json]",
-      },
-      {
-        name: "challenge",
-        summary: "Attach counterevidence before owner review",
-        usage:
-          "bb memory challenge <id> --summary TEXT --evidence TEXT [--evidence TEXT]... [--json]",
-      },
-      {
-        name: "history",
-        summary: "Show a memory's version history",
-        usage: "bb memory history <id> [--limit N] [--json]",
-      },
-      {
-        name: "native",
-        summary: "Inspect provider-native memory observations in shadow mode",
-        usage:
-          "bb memory native status|scan|observations|read [options] [--json]",
-      },
-    ],
-    async run(argv, ctx) {
-      const [command, ...rest] = argv;
-      if (command === undefined || command === "help" || command === "--help") {
-        return { exitCode: 0, stdout: USAGE };
-      }
-      try {
-        const args = parseArgv(rest);
-        const wantsJson = args.flags.has("json");
-        if (command === "native") {
-          const [nativeCommand, ...nativePositionals] = args.positionals;
-          if (!nativeCommand || nativeCommand === "help") {
-            return {
-              exitCode: 0,
-              stdout: USAGE.split("\n")
-                .filter((line) => line.includes("bb memory native"))
-                .join("\n"),
-            };
-          }
-          if (nativeCommand === "status") {
-            const counts = ctx.projectId
-              ? nativeObservations.counts(ctx.projectId)
-              : { available: 0, removed: 0 };
-            const status = {
-              enabled: nativeBridge.isEnabled(),
-              mode: "shadow",
-              layouts: [...NATIVE_MEMORY_LAYOUTS],
-              projectId: ctx.projectId ?? null,
-              counts,
-              promotion: "workspace-owner-only",
-            };
-            return {
-              exitCode: 0,
-              stdout: wantsJson
-                ? jsonOutput({ ok: true, ...status })
-                : `${status.enabled ? "Enabled" : "Disabled"} (shadow mode)\nAvailable: ${counts.available}\nRemoved: ${counts.removed}\nPromotion: workspace-owner-only`,
-            };
-          }
-          if (!ctx.projectId) {
-            throw new CliError(
-              "provider-native memory observations require a BB project context",
-            );
-          }
-          if (nativeCommand === "scan") {
-            const environmentId = requireOption(args, "environment");
-            const outcome = await nativeBridge.scanEnvironment({
-              environmentId,
-              projectId: ctx.projectId,
-            });
-            return {
-              exitCode: outcome.kind === "unsupported" ? 1 : 0,
-              ...(outcome.kind === "unsupported"
-                ? { stderr: outcome.reason }
-                : {
-                    stdout: wantsJson
-                      ? jsonOutput({ ok: true, outcome })
-                      : jsonOutput(outcome),
-                  }),
-            };
-          }
-          if (nativeCommand === "observations") {
-            const stateValue = option(args, "status") ?? "available";
-            if (stateValue !== "available" && stateValue !== "removed") {
-              throw new CliError("status must be available or removed");
-            }
-            const state: NativeMemoryObservationState = stateValue;
-            const limit = parseInteger("limit", option(args, "limit"), {
-              defaultValue: DEFAULT_RESULT_LIMIT,
+  bb.cli.register(
+    defineCli({
+      name: "memory",
+      summary: "Read durable memories and propose new ones for owner review",
+      description:
+        "Memories are summaries first: search or list, then read one in full.\nProject scope holds repository facts; global scope holds durable user preferences.",
+      commands: {
+        catalog: cliCommand({
+          summary: "List compact memory summaries",
+          aliases: ["list"],
+          options: {
+            scope: {
+              type: "enum",
+              values: READ_SCOPES,
+              default: "all",
+              description: SCOPE_DESCRIPTION,
+            },
+            limit: {
+              type: "integer",
               min: 1,
               max: MAX_RESULT_LIMIT,
-            });
-            const observations = nativeObservations.list(
+              default: DEFAULT_RESULT_LIMIT,
+              description: "How many memories to list",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const { scope, limit } = input.options;
+            const result = store.list(scope, ctx.projectId, limit);
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({
+                    ok: true,
+                    scope,
+                    memories: result.memories.map(toMemorySummary),
+                    total: result.total,
+                  })
+                : result.memories
+                    .map((memory) => displayMemory(memory, false))
+                    .join("\n") || "No memories.",
+            };
+          },
+        }),
+        search: cliCommand({
+          summary: "Search memory summaries and details",
+          positionals: [
+            {
+              name: "query",
+              description: "Words to match; every word is searched",
+              required: true,
+              variadic: true,
+            },
+          ],
+          options: {
+            scope: {
+              type: "enum",
+              values: READ_SCOPES,
+              default: "all",
+              description: SCOPE_DESCRIPTION,
+            },
+            limit: {
+              type: "integer",
+              min: 1,
+              max: MAX_RESULT_LIMIT,
+              default: DEFAULT_RESULT_LIMIT,
+              description: "How many matches to return",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const query = input.positionals.query.join(" ").trim();
+            if (!query) throw new CliError("search requires a query");
+            const { scope, limit } = input.options;
+            const memories = store.search(query, scope, ctx.projectId, limit);
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({
+                    ok: true,
+                    query,
+                    scope,
+                    memories: memories.map(toMemorySummary),
+                  })
+                : memories
+                    .map((memory) => displayMemory(memory, false))
+                    .join("\n") || "No matches.",
+            };
+          },
+        }),
+        get: cliCommand({
+          summary: "Read one complete memory",
+          positionals: [
+            {
+              name: "id-or-name",
+              description: "Memory id or its unique name",
+              required: true,
+            },
+          ],
+          options: {
+            scope: {
+              type: "enum",
+              values: READ_SCOPES,
+              default: "all",
+              description: SCOPE_DESCRIPTION,
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const idOrName = input.positionals["id-or-name"];
+            const memory = store.get(
+              idOrName,
+              input.options.scope,
               ctx.projectId,
-              state,
-              limit,
+            );
+            if (!memory) {
+              throw new CliError(
+                `memory "${idOrName}" was not found in the current scope`,
+              );
+            }
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, memory })
+                : displayMemory(memory, true),
+            };
+          },
+        }),
+        propose: cliCommand({
+          summary: "Propose a memory for workspace-owner review",
+          description:
+            "Files a candidate; it becomes active only after approval in Settings → Memory.",
+          aliases: ["add"],
+          unexpectedPositionalHint:
+            "memory text belongs in --details <TEXT>, not a bare argument",
+          options: {
+            scope: {
+              type: "enum",
+              values: ["project", "global"],
+              required: true,
+              description:
+                "project for repository facts, global for user preferences",
+            },
+            name: {
+              type: "string",
+              required: true,
+              placeholder: "NAME",
+              aliases: ["title"],
+              description:
+                "Unique 1-80 character lowercase name (letters, digits, dots, underscores, hyphens)",
+            },
+            summary: {
+              type: "string",
+              required: true,
+              placeholder: "TEXT",
+              description: "One line retrieval summary, at most 400 characters",
+            },
+            details: {
+              type: "string",
+              required: true,
+              placeholder: "TEXT",
+              aliases: ["body", "text", "content"],
+              description: "Full memory text, at most 16000 characters",
+            },
+            reason: {
+              type: "string",
+              required: true,
+              placeholder: "TEXT",
+              description:
+                "Why this is worth remembering, at most 500 characters",
+            },
+            kind: {
+              type: "enum",
+              values: MEMORY_KINDS,
+              default: "fact",
+              aliases: ["type"],
+              description: "What kind of memory this is",
+            },
+            tag: {
+              type: "string",
+              repeatable: true,
+              split: ",",
+              placeholder: "TAG",
+              aliases: ["tags"],
+              description:
+                "Lowercase tag; repeat or pass a comma-separated list, at most 20",
+            },
+            importance: {
+              type: "integer",
+              min: 0,
+              max: 100,
+              default: 50,
+              description: "Ranking weight for the injected catalog",
+            },
+            pinned: {
+              type: "boolean",
+              description: "Keep this memory at the top of the catalog",
+            },
+            evidence: {
+              type: "string",
+              repeatable: true,
+              placeholder: "TEXT",
+              description:
+                "Verifiable evidence for the claim; repeat for each item, at least one",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const candidate = candidates.propose({
+              ...writeScope(input.options.scope, ctx.projectId),
+              name: input.options.name,
+              summary: input.options.summary,
+              details: input.options.details,
+              kind: input.options.kind,
+              tags: input.options.tag,
+              importance: input.options.importance,
+              pinned: input.options.pinned,
+              evidence: input.options.evidence,
+              proposedByThreadId: ctx.threadId ?? null,
+              proposalReason: input.options.reason,
+            });
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, candidate })
+                : `Proposed ${candidate.id} v${candidate.version} (${candidate.scope}/${candidate.name}); workspace-owner approval is required in Settings → Memory.`,
+            };
+          },
+        }),
+        candidates: cliCommand({
+          summary: "List candidate memories and review state",
+          options: {
+            scope: {
+              type: "enum",
+              values: READ_SCOPES,
+              default: "all",
+              description: SCOPE_DESCRIPTION,
+            },
+            status: {
+              type: "enum",
+              values: CANDIDATE_STATUSES,
+              default: "pending",
+              description: "Which review state to list",
+            },
+            limit: {
+              type: "integer",
+              min: 1,
+              max: MAX_RESULT_LIMIT,
+              default: DEFAULT_RESULT_LIMIT,
+              description: "How many candidates to list",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const { scope, status, limit } = input.options;
+            const listed = candidates.list(scope, ctx.projectId, status, limit);
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, scope, status, candidates: listed })
+                : listed
+                    .map((candidate) => displayCandidate(candidate, false))
+                    .join("\n") || "No memory candidates.",
+            };
+          },
+        }),
+        candidate: cliCommand({
+          summary: "Read one complete candidate memory",
+          positionals: [
+            { name: "id", description: "Candidate id", required: true },
+          ],
+          options: {
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const id = input.positionals.id;
+            const candidate = candidates.get(id, ctx.projectId);
+            if (!candidate) {
+              throw new CliError(`memory candidate "${id}" was not found`);
+            }
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, candidate })
+                : displayCandidate(candidate, true),
+            };
+          },
+        }),
+        challenge: cliCommand({
+          summary: "Attach counterevidence before owner review",
+          positionals: [
+            { name: "id", description: "Candidate id", required: true },
+          ],
+          options: {
+            summary: {
+              type: "string",
+              required: true,
+              placeholder: "TEXT",
+              description: "Why the candidate may be wrong",
+            },
+            evidence: {
+              type: "string",
+              repeatable: true,
+              placeholder: "TEXT",
+              description:
+                "Counterevidence; repeat for each item, at least one",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const candidate = candidates.challenge(
+              input.positionals.id,
+              input.options.summary,
+              input.options.evidence,
+              ctx.threadId ?? null,
+              ctx.projectId,
             );
             return {
               exitCode: 0,
-              stdout: wantsJson
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, candidate })
+                : `Challenged ${candidate.id}; review version is now v${candidate.version}.`,
+            };
+          },
+        }),
+        update: ownerOnlyCommand("update"),
+        forget: ownerOnlyCommand("forget"),
+        history: cliCommand({
+          summary: "Show a memory's version history",
+          positionals: [
+            { name: "id", description: "Memory id", required: true },
+          ],
+          options: {
+            limit: {
+              type: "integer",
+              min: 1,
+              max: MAX_RESULT_LIMIT,
+              default: DEFAULT_RESULT_LIMIT,
+              description: "How many versions to show, newest first",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const id = input.positionals.id;
+            const history = store.history(
+              id,
+              ctx.projectId,
+              input.options.limit,
+            );
+            if (history.length === 0) {
+              throw new CliError(`memory history for "${id}" was not found`);
+            }
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, id, history })
+                : jsonOutput(history),
+            };
+          },
+        }),
+        "native status": cliCommand({
+          summary: "Show the provider-native memory shadow bridge state",
+          options: {
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const status = describeNativeMemory(ctx.projectId ?? null);
+            const { counts } = status;
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? jsonOutput({ ok: true, ...status })
+                : `${status.enabled ? "Enabled" : "Disabled"} (shadow mode)\nAvailable: ${counts.available}\nRemoved: ${counts.removed}\nPromotion: ${status.promotion}`,
+            };
+          },
+        }),
+        "native scan": cliCommand({
+          summary: "Scan one environment for provider-native memory",
+          options: {
+            environment: {
+              type: "string",
+              required: true,
+              placeholder: "ID",
+              description: "Environment to scan",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          async run(input, ctx) {
+            const outcome = await nativeBridge.scanEnvironment({
+              environmentId: input.options.environment,
+              projectId: requireNativeProject(ctx.projectId),
+            });
+            if (outcome.kind === "unsupported") {
+              return { exitCode: 1, stderr: outcome.reason };
+            }
+            return {
+              exitCode: 0,
+              stdout: jsonOutput(
+                input.options.json ? { ok: true, outcome } : outcome,
+              ),
+            };
+          },
+        }),
+        "native observations": cliCommand({
+          summary: "List provider-native memory observations",
+          options: {
+            status: {
+              type: "enum",
+              values: ["available", "removed"],
+              default: "available",
+              description: "Which observations to list",
+            },
+            limit: {
+              type: "integer",
+              min: 1,
+              max: MAX_RESULT_LIMIT,
+              default: DEFAULT_RESULT_LIMIT,
+              description: "How many observations to list",
+            },
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          run(input, ctx) {
+            const state = input.options.status;
+            const observations = nativeObservations.list(
+              requireNativeProject(ctx.projectId),
+              state,
+              input.options.limit,
+            );
+            return {
+              exitCode: 0,
+              stdout: input.options.json
                 ? jsonOutput({ ok: true, state, observations })
                 : observations
                     .map(
@@ -1509,15 +1750,27 @@ export default async function plugin(bb: BbPluginApi) {
                     )
                     .join("\n") || "No provider-native memory observations.",
             };
-          }
-          if (nativeCommand === "read") {
-            const observationId = nativePositionals[0];
-            if (!observationId) {
-              throw new CliError("native read requires an observation id");
-            }
+          },
+        }),
+        "native read": cliCommand({
+          summary: "Read one observation as untrusted evidence",
+          positionals: [
+            {
+              name: "observation-id",
+              description: "Observation id",
+              required: true,
+            },
+          ],
+          options: {
+            json: {
+              type: "boolean",
+              description: "Emit machine-readable JSON",
+            },
+          },
+          async run(input, ctx) {
             const read = await nativeBridge.readObservation(
-              observationId,
-              ctx.projectId,
+              input.positionals["observation-id"],
+              requireNativeProject(ctx.projectId),
             );
             if (read.result.kind === "stale") {
               throw new CliError(
@@ -1529,7 +1782,7 @@ export default async function plugin(bb: BbPluginApi) {
             }
             return {
               exitCode: 0,
-              stdout: wantsJson
+              stdout: input.options.json
                 ? jsonOutput({
                     ok: true,
                     observation: read.observation,
@@ -1542,183 +1795,9 @@ export default async function plugin(bb: BbPluginApi) {
                     read.result.content,
                   ].join("\n"),
             };
-          }
-          throw new CliError(`unknown native subcommand "${nativeCommand}"`);
-        }
-        if (command === "catalog" || command === "list") {
-          const scope = readScope(args);
-          const limit = parseInteger("limit", option(args, "limit"), {
-            defaultValue: DEFAULT_RESULT_LIMIT,
-            min: 1,
-            max: MAX_RESULT_LIMIT,
-          });
-          const result = store.list(scope, ctx.projectId, limit);
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({
-                  ok: true,
-                  scope,
-                  memories: result.memories.map(toMemorySummary),
-                  total: result.total,
-                })
-              : result.memories
-                  .map((memory) => displayMemory(memory, false))
-                  .join("\n") || "No memories.",
-          };
-        }
-        if (command === "search") {
-          const query = args.positionals.join(" ").trim();
-          if (!query) throw new CliError("search requires a query");
-          const scope = readScope(args);
-          const limit = parseInteger("limit", option(args, "limit"), {
-            defaultValue: DEFAULT_RESULT_LIMIT,
-            min: 1,
-            max: MAX_RESULT_LIMIT,
-          });
-          const memories = store.search(query, scope, ctx.projectId, limit);
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({
-                  ok: true,
-                  query,
-                  scope,
-                  memories: memories.map(toMemorySummary),
-                })
-              : memories
-                  .map((memory) => displayMemory(memory, false))
-                  .join("\n") || "No matches.",
-          };
-        }
-        if (command === "get") {
-          const idOrName = args.positionals[0];
-          if (!idOrName) throw new CliError("get requires an id or name");
-          const memory = store.get(idOrName, readScope(args), ctx.projectId);
-          if (!memory)
-            throw new CliError(
-              `memory "${idOrName}" was not found in the current scope`,
-            );
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({ ok: true, memory })
-              : displayMemory(memory, true),
-          };
-        }
-        if (command === "propose" || command === "add") {
-          const scoped = writeScope(args, ctx);
-          const candidate = candidates.propose({
-            ...scoped,
-            name: requireOption(args, "name"),
-            summary: requireOption(args, "summary"),
-            details: requireOption(args, "details"),
-            kind: parseKind(option(args, "kind")),
-            tags: args.options.get("tag") ?? [],
-            importance: parseInteger("importance", option(args, "importance"), {
-              defaultValue: 50,
-              min: 0,
-              max: 100,
-            }),
-            pinned: args.flags.has("pinned"),
-            evidence: args.options.get("evidence") ?? [],
-            proposedByThreadId: ctx.threadId ?? null,
-            proposalReason: requireOption(args, "reason"),
-          });
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({ ok: true, candidate })
-              : `Proposed ${candidate.id} v${candidate.version} (${candidate.scope}/${candidate.name}); workspace-owner approval is required in Settings → Memory.`,
-          };
-        }
-        if (command === "candidates") {
-          const scope = readScope(args);
-          const status = parseCandidateStatusOption(option(args, "status"));
-          const limit = parseInteger("limit", option(args, "limit"), {
-            defaultValue: DEFAULT_RESULT_LIMIT,
-            min: 1,
-            max: MAX_RESULT_LIMIT,
-          });
-          const listedCandidates = candidates.list(
-            scope,
-            ctx.projectId,
-            status,
-            limit,
-          );
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({
-                  ok: true,
-                  scope,
-                  status,
-                  candidates: listedCandidates,
-                })
-              : listedCandidates
-                  .map((candidate) => displayCandidate(candidate, false))
-                  .join("\n") || "No memory candidates.",
-          };
-        }
-        if (command === "candidate") {
-          const id = args.positionals[0];
-          if (!id) throw new CliError("candidate requires an id");
-          const candidate = candidates.get(id, ctx.projectId);
-          if (!candidate) {
-            throw new CliError(`memory candidate "${id}" was not found`);
-          }
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({ ok: true, candidate })
-              : displayCandidate(candidate, true),
-          };
-        }
-        if (command === "challenge") {
-          const id = args.positionals[0];
-          if (!id) throw new CliError("challenge requires a candidate id");
-          const candidate = candidates.challenge(
-            id,
-            requireOption(args, "summary"),
-            args.options.get("evidence") ?? [],
-            ctx.threadId ?? null,
-            ctx.projectId,
-          );
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({ ok: true, candidate })
-              : `Challenged ${candidate.id}; review version is now v${candidate.version}.`,
-          };
-        }
-        if (command === "update" || command === "forget") {
-          throw new CliError(
-            `active-memory ${command} is restricted to Settings → Memory so agents cannot bypass workspace-owner review`,
-          );
-        }
-        if (command === "history") {
-          const id = args.positionals[0];
-          if (!id) throw new CliError("history requires a memory id");
-          const limit = parseInteger("limit", option(args, "limit"), {
-            defaultValue: DEFAULT_RESULT_LIMIT,
-            min: 1,
-            max: MAX_RESULT_LIMIT,
-          });
-          const history = store.history(id, ctx.projectId, limit);
-          if (history.length === 0)
-            throw new CliError(`memory history for "${id}" was not found`);
-          return {
-            exitCode: 0,
-            stdout: wantsJson
-              ? jsonOutput({ ok: true, id, history })
-              : jsonOutput(history),
-          };
-        }
-        throw new CliError(`unknown subcommand "${command}"\n${USAGE}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        return { exitCode: 1, stderr: message };
-      }
-    },
-  });
+          },
+        }),
+      },
+    }),
+  );
 }

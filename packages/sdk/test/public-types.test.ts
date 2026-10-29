@@ -3,7 +3,6 @@ import type {
   BbRealtime as RootBbRealtime,
   BbSdk as RootBbSdk,
   BbRealtimeConnectionEvent as RootRealtimeConnection,
-  EnvironmentStatusResult as RootEnvironmentStatus,
   FileReadResult as RootFileRead,
   GuideRenderResult as RootGuideRender,
   HostGetResult as RootHostGet,
@@ -32,7 +31,6 @@ import type {
   BbSdk as BrowserBbSdk,
   BrowserBbSdk as BrowserRuntimeBbSdk,
   BbRealtimeConnectionEvent as BrowserRealtimeConnection,
-  EnvironmentStatusResult as BrowserEnvironmentStatus,
   FileReadResult as BrowserFileRead,
   GuideRenderResult as BrowserGuideRender,
   HostGetResult as BrowserHostGet,
@@ -55,11 +53,11 @@ import type {
   ThemeSetInput as BrowserThemeSetInput,
   ThreadSectionListResult as BrowserThreadSectionList,
   ThreadSpawnResult as BrowserThreadSpawn,
+  createBrowserBbSdk,
 } from "@bb/sdk/browser";
 import type {
   BbSdk as CoreBbSdk,
   BbRealtimeConnectionEvent as CoreRealtimeConnection,
-  EnvironmentStatusResult as CoreEnvironmentStatus,
   FileReadResult as CoreFileRead,
   GuideRenderResult as CoreGuideRender,
   HostGetResult as CoreHostGet,
@@ -86,7 +84,6 @@ import type {
 import type {
   BbSdk as NodeBbSdk,
   BbRealtimeConnectionEvent as NodeRealtimeConnection,
-  EnvironmentStatusResult as NodeEnvironmentStatus,
   FileReadResult as NodeFileRead,
   GuideRenderResult as NodeGuideRender,
   HostGetResult as NodeHostGet,
@@ -110,10 +107,8 @@ import type {
   ThreadSectionListResult as NodeThreadSectionList,
   ThreadSpawnResult as NodeThreadSpawn,
 } from "@bb/sdk/node";
-import type { createBrowserBbSdk } from "@bb/sdk/browser";
 
 interface RootSurface {
-  environmentStatus: RootEnvironmentStatus;
   fileRead: RootFileRead;
   guideRender: RootGuideRender;
   hostGet: RootHostGet;
@@ -140,7 +135,6 @@ interface RootSurface {
 }
 
 interface BrowserSurface {
-  environmentStatus: BrowserEnvironmentStatus;
   fileRead: BrowserFileRead;
   guideRender: BrowserGuideRender;
   hostGet: BrowserHostGet;
@@ -167,7 +161,6 @@ interface BrowserSurface {
 }
 
 interface CoreSurface {
-  environmentStatus: CoreEnvironmentStatus;
   fileRead: CoreFileRead;
   guideRender: CoreGuideRender;
   hostGet: CoreHostGet;
@@ -194,7 +187,6 @@ interface CoreSurface {
 }
 
 interface NodeSurface {
-  environmentStatus: NodeEnvironmentStatus;
   fileRead: NodeFileRead;
   guideRender: NodeGuideRender;
   hostGet: NodeHostGet;
@@ -221,6 +213,9 @@ interface NodeSurface {
 }
 
 type ExpectedBbSdkKey =
+  | "experimental_desktopBrowsers"
+  | "experimental_promptHistory"
+  | "experimental_server"
   | "environments"
   | "files"
   | "guide"
@@ -240,20 +235,17 @@ type ExpectedBbSdkKey =
 type ExpectedRealtimeKey = "subscribe";
 
 type ExpectedEnvironmentsKey =
+  | "experimental_cleanup"
+  | "experimental_clearDiffViewed"
+  | "experimental_diffViewed"
+  | "experimental_markDiffViewed"
   | "archiveThreads"
   | "commit"
-  | "diff"
-  | "diffBranches"
-  | "diffFile"
-  | "diffFiles"
-  | "diffPatch"
+  | "delete"
+  | "list"
+  | "listProviders"
   | "get"
-  | "markPullRequestDraft"
-  | "markPullRequestReady"
-  | "mergePullRequest"
   | "paths"
-  | "pullRequest"
-  | "status"
   | "update";
 
 type ExpectedFilesKey =
@@ -270,20 +262,36 @@ type ExpectedGuideKey = "render";
 
 type ExpectedHostsKey =
   | "cloneDefaultPath"
+  | "experimental_create"
+  | "experimental_getEnrollmentCommand"
+  | "experimental_reconnect"
   | "createJoinCode"
   | "delete"
+  | "experimental_deleteOldServerCopy"
   | "directory"
+  | "experimental_discoverRepos"
   | "get"
   | "installProviderCli"
   | "list"
+  | "experimental_listProviders"
   | "pathsExist"
   | "pickFolder"
   | "providerCliStatus"
+  | "experimental_resume"
+  | "experimental_retryCleanup"
   | "retryUpdate"
+  | "experimental_suspend"
+  | "experimental_reconcile"
   | "update";
 
 type ExpectedPluginsKey =
+  | "experimental_discoverRpc"
+  | "experimental_getSafeMode"
+  | "experimental_setSafeMode"
+  | "experimental_pruneCache"
   | "applyUpdate"
+  | "experimental_startUpdate"
+  | "experimental_updateJobs"
   | "callRpc"
   | "catalog"
   | "checkUpdates"
@@ -292,19 +300,34 @@ type ExpectedPluginsKey =
   | "getSettings"
   | "getSource"
   | "install"
+  | "installJobs"
   | "list"
   | "listUpdateResults"
   | "marketplaces"
   | "reload"
   | "remove"
+  | "startInstall"
   | "token"
   | "updateSettings";
 
-type ExpectedPluginCatalogKey = "install" | "installPlan" | "search" | "status";
+type ExpectedPluginCatalogKey =
+  | "install"
+  | "installPlan"
+  | "search"
+  | "startInstall"
+  | "status";
 
 type ExpectedPluginMarketplacesKey = "add" | "list" | "refresh" | "remove";
 
+type ExpectedPluginInstallJobsKey = "cancel" | "get" | "list";
+
+type ExpectedExperimentalPromptHistoryKey = "list";
+
 type ExpectedProjectsKey =
+  | "machineEnvironment"
+  | "replaceMachineEnvironment"
+  | "setMachineEnvironmentVariable"
+  | "deleteMachineEnvironmentVariable"
   | "attachments"
   | "branches"
   | "commands"
@@ -325,18 +348,35 @@ type ExpectedProjectsKey =
 type ExpectedProjectSourcesKey = "add" | "delete" | "update";
 type ExpectedProjectAttachmentsKey = "copy" | "read" | "upload";
 
-type ExpectedProvidersKey = "list" | "models" | "experimental_probe";
+type ExpectedProvidersKey = "catalog" | "list" | "models" | "setEnabled";
 
 type ExpectedStatusKey = "get";
 
 type ExpectedSystemKey =
+  | "acknowledgeAppUpdate"
+  | "mobileAppDownloads"
+  | "mobileAppReleases"
+  | "appUpdate"
+  | "applyAppUpdate"
+  | "setMachineEnvironmentVariable"
+  | "deleteMachineEnvironmentVariable"
+  | "machineEnvironment"
+  | "replaceMachineEnvironment"
+  | "aiServices"
   | "attention"
   | "cliSkillsStatus"
   | "config"
   | "executionOptions"
   | "installCliSkills"
+  | "experimental_cliCommand"
+  | "experimental_installCliCommand"
+  | "experimental_recordTelemetryEvent"
+  | "experimental_removeCliCommand"
   | "reloadConfig"
+  | "setAiServiceSelection"
+  | "testAiService"
   | "transcribeVoice"
+  | "uiPreferences"
   | "updateExperiments"
   | "updateGeneralSettings"
   | "updateKeyboardSettings"
@@ -344,16 +384,20 @@ type ExpectedSystemKey =
   | "usageLimits"
   | "version";
 
-type ExpectedThemeKey = "catalog" | "get" | "set";
+type ExpectedSystemUiPreferencesKey = "list" | "reset" | "set";
+
+type ExpectedThemeKey = "catalog" | "get" | "resolve" | "set";
 
 type ExpectedThreadSectionsKey = "create" | "delete" | "list" | "update";
 
 type ExpectedThreadsKey =
-  | "experimental_inspectSource"
-  | "experimental_registerSupervisor"
-  | "experimental_supervisorInbox"
-  | "experimental_supervisorPeek"
-  | "experimental_notifySupervisor"
+  | "experimental_listAncestors"
+  | "experimental_listDescendants"
+  | "experimental_listCascade"
+  | "experimental_listPluginMetadata"
+  | "getPluginMetadata"
+  | "updatePluginMetadata"
+  | "context"
   | "archive"
   | "archiveAll"
   | "cancelPlan"
@@ -374,6 +418,7 @@ type ExpectedThreadsKey =
   | "listRunning"
   | "markRead"
   | "markUnread"
+  | "message"
   | "open"
   | "output"
   | "paneAction"
@@ -383,6 +428,7 @@ type ExpectedThreadsKey =
   | "queuedMessages"
   | "reorderPinned"
   | "resolveMentions"
+  | "restoreEnvironment"
   | "retry"
   | "search"
   | "send"
@@ -415,6 +461,8 @@ type ExpectedThreadInteractionsKey =
 type ExpectedThreadQueuedMessagesKey =
   | "create"
   | "delete"
+  | "experimental_holdForEdit"
+  | "experimental_releaseEditHold"
   | "list"
   | "reorder"
   | "send"
@@ -525,6 +573,9 @@ describe("SDK public type entrypoints", () => {
       keyof RootBbSdk["plugins"]["marketplaces"]
     >().toEqualTypeOf<ExpectedPluginMarketplacesKey>();
     expectTypeOf<
+      keyof RootBbSdk["plugins"]["installJobs"]
+    >().toEqualTypeOf<ExpectedPluginInstallJobsKey>();
+    expectTypeOf<
       keyof RootBbSdk["projects"]
     >().toEqualTypeOf<ExpectedProjectsKey>();
     expectTypeOf<
@@ -534,6 +585,9 @@ describe("SDK public type entrypoints", () => {
       keyof RootBbSdk["projects"]["sources"]
     >().toEqualTypeOf<ExpectedProjectSourcesKey>();
     expectTypeOf<
+      keyof RootBbSdk["experimental_promptHistory"]
+    >().toEqualTypeOf<ExpectedExperimentalPromptHistoryKey>();
+    expectTypeOf<
       keyof RootBbSdk["providers"]
     >().toEqualTypeOf<ExpectedProvidersKey>();
     expectTypeOf<
@@ -542,6 +596,9 @@ describe("SDK public type entrypoints", () => {
     expectTypeOf<
       keyof RootBbSdk["system"]
     >().toEqualTypeOf<ExpectedSystemKey>();
+    expectTypeOf<
+      keyof RootBbSdk["system"]["uiPreferences"]
+    >().toEqualTypeOf<ExpectedSystemUiPreferencesKey>();
     expectTypeOf<
       keyof RootBbSdk["terminals"]
     >().toEqualTypeOf<ExpectedTerminalsKey>();

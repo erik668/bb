@@ -1,11 +1,16 @@
 import ReconnectingWebSocket from "partysocket/ws";
 import {
+  realtimeSubscriptionTargetSchema,
+  type ThreadTimelineSubscriptionTarget,
+} from "@bb/domain";
+import {
   changedMessageLenientSchema,
   pluginSignalLenientSchema,
   pongMessageLenientSchema,
   realtimeSubscriptionTargetKey,
   threadOpenSignalLenientSchema,
   threadPaneActionSignalLenientSchema,
+  threadTimelineSignalLenientSchema,
 } from "@bb/server-contract";
 import type {
   ClientMessage,
@@ -15,8 +20,9 @@ import type {
   ThreadOpenFile,
   ThreadOpenSignal,
   ThreadPaneActionSignal,
+  ReceivedThreadTimelineSignal,
 } from "@bb/server-contract";
-import { buildDevWebSocketUrl } from "./dev-websocket-url";
+import { buildBrowserWebSocketUrl } from "./dev-websocket-url";
 import {
   isDocumentVisible,
   subscribeToDocumentVisibility,
@@ -26,6 +32,7 @@ type ChangeCallback = (message: ChangedMessage) => void;
 type ThreadOpenCallback = (signal: ThreadOpenSignal) => void;
 type ThreadPaneActionCallback = (signal: ThreadPaneActionSignal) => void;
 type PluginSignalCallback = (signal: PluginSignal) => void;
+type ThreadTimelineCallback = (signal: ReceivedThreadTimelineSignal) => void;
 export type WebSocketConnectedEvent =
   | { reconnected: false }
   | {
@@ -34,6 +41,9 @@ export type WebSocketConnectedEvent =
     };
 type ConnectedCallback = (event: WebSocketConnectedEvent) => void;
 type ConnectionStateCallback = () => void;
+type ResumedCallback = (
+  releasedTargets: readonly RealtimeSubscriptionTarget[],
+) => void;
 export type WebSocketConnectionState =
   | "connecting"
   | "connected"
@@ -41,6 +51,10 @@ export type WebSocketConnectionState =
 
 export const REALTIME_PING_INTERVAL_MS = 25_000;
 export const REALTIME_PONG_TIMEOUT_MS = 5_000;
+export const REALTIME_RESUME_PONG_TIMEOUT_MS = 1_500;
+export const REALTIME_RESUME_HIDDEN_THRESHOLD_MS = 5_000;
+export const REALTIME_MIN_RECONNECTION_DELAY_MS = 250;
+export const REALTIME_RECONNECTION_DELAY_JITTER_MS = 250;
 
 export interface WebSocketManagerBrowserEvents {
   subscribeToVisibility: (listener: () => void) => () => void;
@@ -64,6 +78,10 @@ function createDefaultBrowserEvents(): WebSocketManagerBrowserEvents {
   };
 }
 
+type HeldThreadTimelineTagSource = (
+  target: ThreadTimelineSubscriptionTarget,
+) => string | null;
+
 interface ActiveSubscription {
   count: number;
   target: RealtimeSubscriptionTarget;
@@ -72,13 +90,17 @@ interface ActiveSubscription {
 export class WebSocketManager {
   private socket: ReconnectingWebSocket | null = null;
   private subscriptions = new Map<string, ActiveSubscription>();
+  private readonly timelineTags = new Map<string, string>();
+  private heldThreadTimelineTag: HeldThreadTimelineTagSource = () => null;
   private callbacks = new Set<ChangeCallback>();
   private threadOpenCallbacks = new Set<ThreadOpenCallback>();
   private threadPaneActionCallbacks = new Set<ThreadPaneActionCallback>();
   private pluginSignalCallbacks = new Set<PluginSignalCallback>();
+  private threadTimelineCallbacks = new Set<ThreadTimelineCallback>();
   private pendingOpenFileByThreadId = new Map<string, ThreadOpenFile>();
   private connectedCallbacks = new Set<ConnectedCallback>();
   private connectionStateCallbacks = new Set<ConnectionStateCallback>();
+  private resumedCallbacks = new Set<ResumedCallback>();
   private hasConnected = false;
   private connectionState: WebSocketConnectionState = "connecting";
   private readonly browserEvents: WebSocketManagerBrowserEvents;
@@ -87,6 +109,13 @@ export class WebSocketManager {
   private disconnectedAt: number | null = null;
   private pingTimer: ReturnType<typeof setInterval> | null = null;
   private pongTimer: ReturnType<typeof setTimeout> | null = null;
+  private pongDeadline = 0;
+  private hiddenAt: number | null = null;
+  private releaseTimer: ReturnType<typeof setTimeout> | null = null;
+  private watchesReleased = false;
+  private readonly minReconnectionDelay =
+    REALTIME_MIN_RECONNECTION_DELAY_MS +
+    Math.random() * REALTIME_RECONNECTION_DELAY_JITTER_MS;
 
   constructor(browserEvents?: WebSocketManagerBrowserEvents) {
     this.browserEvents = browserEvents ?? createDefaultBrowserEvents();
@@ -95,14 +124,12 @@ export class WebSocketManager {
   connect(): void {
     if (this.socket) return;
 
-    const url =
-      buildDevWebSocketUrl({ path: "/ws" }) ??
-      `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/ws`;
+    const url = buildBrowserWebSocketUrl("/ws");
 
     const socket = new ReconnectingWebSocket(url, undefined, {
-      minReconnectionDelay: 1000,
+      minReconnectionDelay: this.minReconnectionDelay,
       maxReconnectionDelay: 30000,
-      reconnectionDelayGrowFactor: 1.5,
+      reconnectionDelayGrowFactor: 2,
       connectionTimeout: 10000,
       maxRetries: Infinity,
     });
@@ -116,9 +143,15 @@ export class WebSocketManager {
       this.hasConnected = true;
       this.setConnectionState("connected");
       this.startPingLoop();
-      for (const subscription of this.subscriptions.values()) {
-        this.sendMessage({ type: "subscribe", target: subscription.target });
-      }
+      if (this.watchesReleased)
+        this.sendMessage({ type: "visibility", visible: false });
+      const targets = this.activeSubscriptionTargets();
+      if (targets.length > 0)
+        this.sendMessage({
+          type: "subscribe",
+          targets,
+          ...this.timelineTagsFor(targets),
+        });
       const event: WebSocketConnectedEvent = reconnected
         ? { reconnected, disconnectedAt: disconnectedAt ?? Date.now() }
         : { reconnected };
@@ -174,13 +207,17 @@ export class WebSocketManager {
     if (this.unsubscribeBrowserEvents) {
       return;
     }
+    if (!this.browserEvents.isDocumentVisible()) {
+      this.hiddenAt ??= Date.now();
+      this.scheduleWatchRelease();
+    }
     const unsubscribeVisibility = this.browserEvents.subscribeToVisibility(
       () => {
         this.handleVisibilityChange();
       },
     );
     const unsubscribeOnline = this.browserEvents.subscribeToOnline(() => {
-      this.probeOrReconnect();
+      this.handleOnline();
     });
     this.unsubscribeBrowserEvents = () => {
       unsubscribeVisibility();
@@ -190,11 +227,74 @@ export class WebSocketManager {
 
   private handleVisibilityChange(): void {
     if (!this.browserEvents.isDocumentVisible()) {
+      this.hiddenAt ??= Date.now();
       this.stopPingLoop();
+      this.scheduleWatchRelease();
       return;
+    }
+    const hiddenAt = this.hiddenAt;
+    this.hiddenAt = null;
+    const releasedTargets = this.resumeWatching();
+    if (
+      hiddenAt !== null &&
+      Date.now() - hiddenAt >= REALTIME_RESUME_HIDDEN_THRESHOLD_MS
+    ) {
+      this.notifyResumed(releasedTargets);
     }
     this.probeOrReconnect();
     this.startPingLoop();
+  }
+
+  private handleOnline(): void {
+    if (!this.browserEvents.isDocumentVisible()) {
+      return;
+    }
+    this.notifyResumed([]);
+    this.probeOrReconnect();
+  }
+
+  private scheduleWatchRelease(): void {
+    if (this.releaseTimer !== null || this.watchesReleased) {
+      return;
+    }
+    this.releaseTimer = setTimeout(() => {
+      this.releaseTimer = null;
+      if (this.browserEvents.isDocumentVisible()) {
+        return;
+      }
+      this.watchesReleased = true;
+      this.sendMessage({ type: "visibility", visible: false });
+    }, REALTIME_RESUME_HIDDEN_THRESHOLD_MS);
+  }
+
+  private resumeWatching(): RealtimeSubscriptionTarget[] {
+    if (this.releaseTimer !== null) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+    }
+    if (!this.watchesReleased) {
+      return [];
+    }
+    this.watchesReleased = false;
+    this.sendMessage({ type: "visibility", visible: true });
+    return this.activeSubscriptionTargets();
+  }
+
+  private activeSubscriptionTargets(): RealtimeSubscriptionTarget[] {
+    return [...this.subscriptions.values()]
+      .filter((subscription) => subscription.count > 0)
+      .map((subscription) => subscription.target);
+  }
+
+  private notifyResumed(
+    releasedTargets: readonly RealtimeSubscriptionTarget[],
+  ): void {
+    if (!this.socket) {
+      return;
+    }
+    for (const callback of this.resumedCallbacks) {
+      callback(releasedTargets);
+    }
   }
 
   private probeOrReconnect(): void {
@@ -203,7 +303,10 @@ export class WebSocketManager {
     }
     switch (this.socket.readyState) {
       case WebSocket.OPEN:
-        this.sendPing();
+        this.sendPing({
+          ignoreRecentActivity: true,
+          timeoutMs: REALTIME_RESUME_PONG_TIMEOUT_MS,
+        });
         return;
       case WebSocket.CONNECTING:
         return;
@@ -220,7 +323,10 @@ export class WebSocketManager {
       return;
     }
     this.pingTimer = setInterval(() => {
-      this.sendPing();
+      this.sendPing({
+        ignoreRecentActivity: false,
+        timeoutMs: REALTIME_PONG_TIMEOUT_MS,
+      });
     }, REALTIME_PING_INTERVAL_MS);
   }
 
@@ -232,21 +338,36 @@ export class WebSocketManager {
     this.clearPongTimer();
   }
 
-  private sendPing(): void {
+  private sendPing({
+    ignoreRecentActivity,
+    timeoutMs,
+  }: {
+    ignoreRecentActivity: boolean;
+    timeoutMs: number;
+  }): void {
     if (this.socket?.readyState !== WebSocket.OPEN) {
       return;
     }
-    if (Date.now() - this.lastServerActivityAt < REALTIME_PONG_TIMEOUT_MS) {
+    const now = Date.now();
+    if (
+      !ignoreRecentActivity &&
+      now - this.lastServerActivityAt < REALTIME_PONG_TIMEOUT_MS
+    ) {
       return;
     }
     this.sendMessage({ type: "ping" });
+    const deadline = now + timeoutMs;
     if (this.pongTimer !== null) {
-      return;
+      if (this.pongDeadline <= deadline) {
+        return;
+      }
+      clearTimeout(this.pongTimer);
     }
+    this.pongDeadline = deadline;
     this.pongTimer = setTimeout(() => {
       this.pongTimer = null;
       this.reconnectNow();
-    }, REALTIME_PONG_TIMEOUT_MS);
+    }, timeoutMs);
   }
 
   private clearPongTimer(): void {
@@ -258,7 +379,6 @@ export class WebSocketManager {
 
   private noteServerActivity(): void {
     this.lastServerActivityAt = Date.now();
-    this.clearPongTimer();
   }
 
   private markSocketLost(at: number): void {
@@ -278,6 +398,20 @@ export class WebSocketManager {
     }
 
     if (pongMessageLenientSchema.safeParse(parsed).success) {
+      this.clearPongTimer();
+      return;
+    }
+
+    const threadTimeline = threadTimelineSignalLenientSchema.safeParse(parsed);
+    if (threadTimeline.success) {
+      const { target, timeline } = threadTimeline.data;
+      const key = realtimeSubscriptionTargetKey(target);
+      if (timeline !== null && this.subscriptions.has(key)) {
+        this.timelineTags.set(key, timeline.tag);
+      }
+      for (const cb of this.threadTimelineCallbacks) {
+        cb(threadTimeline.data);
+      }
       return;
     }
 
@@ -331,6 +465,12 @@ export class WebSocketManager {
       this.unsubscribeBrowserEvents();
       this.unsubscribeBrowserEvents = null;
     }
+    this.hiddenAt = null;
+    if (this.releaseTimer !== null) {
+      clearTimeout(this.releaseTimer);
+      this.releaseTimer = null;
+    }
+    this.watchesReleased = false;
     if (this.socket) {
       this.socket.close();
       this.socket = null;
@@ -345,34 +485,118 @@ export class WebSocketManager {
       existing.count += 1;
       return;
     }
+    if (!realtimeSubscriptionTargetSchema.safeParse(target).success) {
+      console.error(
+        "Skipped invalid realtime subscription target",
+        target.kind,
+      );
+      return;
+    }
 
     this.subscriptions.set(key, { count: 1, target });
     if (this.socket?.readyState === WebSocket.OPEN) {
-      this.sendMessage({ type: "subscribe", target });
+      this.sendMessage({
+        type: "subscribe",
+        target,
+        ...this.timelineTagsFor([target]),
+      });
     }
+  }
+
+  syncThreadTimelineTag(
+    target: ThreadTimelineSubscriptionTarget,
+    tag: string,
+  ): void {
+    const key = realtimeSubscriptionTargetKey(target);
+    if (this.timelineTags.get(key) === tag) {
+      return;
+    }
+    this.timelineTags.set(key, tag);
+    const subscription = this.subscriptions.get(key);
+    if (
+      subscription !== undefined &&
+      subscription.count > 0 &&
+      this.socket?.readyState === WebSocket.OPEN
+    ) {
+      this.sendMessage({
+        type: "subscribe",
+        target,
+        timelineTags: { [key]: tag },
+      });
+    }
+  }
+
+  setHeldThreadTimelineTagSource(
+    source: HeldThreadTimelineTagSource,
+  ): () => void {
+    this.heldThreadTimelineTag = source;
+    return () => {
+      if (this.heldThreadTimelineTag === source) {
+        this.heldThreadTimelineTag = () => null;
+      }
+    };
+  }
+
+  private timelineTagsFor(targets: readonly RealtimeSubscriptionTarget[]): {
+    timelineTags?: Record<string, string | null>;
+  } {
+    const timelineTargets = targets.filter(
+      (target): target is ThreadTimelineSubscriptionTarget =>
+        target.kind === "thread-timeline",
+    );
+    if (timelineTargets.length === 0) {
+      return {};
+    }
+    return {
+      timelineTags: Object.fromEntries(
+        timelineTargets.map((target) => {
+          const key = realtimeSubscriptionTargetKey(target);
+          const tag =
+            this.heldThreadTimelineTag(target) ??
+            this.timelineTags.get(key) ??
+            null;
+          if (tag !== null) {
+            this.timelineTags.set(key, tag);
+          }
+          return [key, tag];
+        }),
+      ),
+    };
   }
 
   unsubscribe(target: RealtimeSubscriptionTarget): void {
     const key = realtimeSubscriptionTargetKey(target);
     const existing = this.subscriptions.get(key);
-    if (!existing) {
+    if (!existing || existing.count === 0) {
       return;
     }
-    if (existing.count > 1) {
-      existing.count -= 1;
+    existing.count -= 1;
+    if (existing.count > 0) {
       return;
     }
-
-    this.subscriptions.delete(key);
-    if (this.socket?.readyState === WebSocket.OPEN) {
-      this.sendMessage({ type: "unsubscribe", target });
-    }
+    queueMicrotask(() => {
+      if (this.subscriptions.get(key) !== existing || existing.count > 0) {
+        return;
+      }
+      this.subscriptions.delete(key);
+      this.timelineTags.delete(key);
+      if (this.socket?.readyState === WebSocket.OPEN) {
+        this.sendMessage({ type: "unsubscribe", target });
+      }
+    });
   }
 
   onChanged(callback: ChangeCallback): () => void {
     this.callbacks.add(callback);
     return () => {
       this.callbacks.delete(callback);
+    };
+  }
+
+  onThreadTimeline(callback: ThreadTimelineCallback): () => void {
+    this.threadTimelineCallbacks.add(callback);
+    return () => {
+      this.threadTimelineCallbacks.delete(callback);
     };
   }
 
@@ -410,6 +634,13 @@ export class WebSocketManager {
     this.connectedCallbacks.add(callback);
     return () => {
       this.connectedCallbacks.delete(callback);
+    };
+  }
+
+  onResumed(callback: ResumedCallback): () => void {
+    this.resumedCallbacks.add(callback);
+    return () => {
+      this.resumedCallbacks.delete(callback);
     };
   }
 

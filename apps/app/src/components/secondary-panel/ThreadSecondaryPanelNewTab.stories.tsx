@@ -14,8 +14,10 @@ import {
   environmentPathsQueryKey,
   threadStoragePathsQueryKey,
 } from "@/hooks/queries/query-keys";
-import { ThreadSecondaryPanel } from "./ThreadSecondaryPanel";
-import type { SecondaryPanelRenderableTab } from "./ThreadSecondaryPanel";
+import {
+  ThreadSecondaryPanel,
+  type SecondaryPanelRenderableTab,
+} from "./ThreadSecondaryPanel";
 import { NewTabPage } from "./NewTabPage";
 import type { FileSearchSelection } from "./useThreadFileTabs";
 import { Icon } from "@bb/shared-ui/icon";
@@ -30,7 +32,7 @@ import {
 } from "@/lib/fixed-panel-tabs-state";
 import {
   getFileNameFromPath,
-  resolveRightPanelFileVisual,
+  resolveRightPanelFileIconName,
 } from "./rightPanelFileVisuals";
 import {
   resolveTerminalHost,
@@ -50,6 +52,7 @@ const MULTIPLE_HOSTS_THREAD_ID = "thr_new_tab_multiple_hosts_story";
 const RECENTS_THREAD_ID = "thr_new_tab_recents_story";
 const LONG_RECENTS_THREAD_ID = "thr_new_tab_long_recents_story";
 const SEARCH_THREAD_ID = "thr_new_tab_search_story";
+const ACTION_SEARCH_THREAD_ID = "thr_new_tab_action_search_story";
 const STORY_TERMINAL_ID = "term_new_tab_story";
 
 const MAC_STUDIO = makeHost({
@@ -485,7 +488,6 @@ function NewTabPanelStory({
           startTerminalTrailing={
             terminalHosts === undefined ? undefined : (
               <TerminalHostSelector
-                disabled={false}
                 hosts={terminalHosts}
                 isLoading={false}
                 onChange={setPreferredTerminalHostId}
@@ -543,10 +545,7 @@ function NewTabPanelStory({
         <Icon name="Terminal" className="size-3.5" aria-hidden />
       ) : (
         <Icon
-          name={
-            resolveRightPanelFileVisual({ path: outcome.selection.path })
-              .iconName
-          }
+          name={resolveRightPanelFileIconName(outcome.selection.path)}
           className="size-3.5"
           aria-hidden
         />
@@ -562,9 +561,6 @@ function NewTabPanelStory({
     <PanelStage presentation={presentation}>
       <ThreadSecondaryPanel
         activeTab={activeTab}
-        canUseGitUi
-        requestedMergeBaseBranch="main"
-        environmentId={ENVIRONMENT_ID}
         tabs={[panelTab]}
         fixedTabs={[]}
         isOpen
@@ -681,6 +677,20 @@ export function NewTab() {
           <NewTabPanelStory
             currentThreadId={SEARCH_THREAD_ID}
             initialQuery="review"
+            projectId={PROJECT_ID}
+            recentItems={RECENT_ROW_ITEMS}
+            showOpenBrowser
+            threadStoragePaths={THREAD_STORAGE_PATH_RESULTS}
+            workspacePaths={WORKSPACE_PATH_RESULTS}
+          />
+        </StoryRow>
+        <StoryRow
+          label="action search"
+          hint="matching actions lead the results; Enter opens the first one"
+        >
+          <NewTabPanelStory
+            currentThreadId={ACTION_SEARCH_THREAD_ID}
+            initialQuery="start"
             projectId={PROJECT_ID}
             recentItems={RECENT_ROW_ITEMS}
             showOpenBrowser

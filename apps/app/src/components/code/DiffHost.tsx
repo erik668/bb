@@ -1,26 +1,20 @@
-import { Suspense, lazy, useMemo, type ReactNode } from "react";
+import { useMemo } from "react";
 import type { ExperimentalDiffFullFileContents } from "@get-bb/plugin-sdk";
 import { PluginReplacementSlot } from "@/components/plugin/PluginReplacementSlot";
-import { deprecatedOriginalAlias } from "@/lib/plugin-sdk-deprecated-aliases";
-import type { ParsedGitDiffFile } from "@/components/git-diff/git-diff-parsing";
-import { buildFileDiffPatchText } from "@/components/git-diff/git-diff-patch-text";
+import type { ParsedGitDiffFile } from "@bb/shared-ui/git-diff/parsing";
+import { buildFileDiffPatchText } from "@bb/shared-ui/git-diff/patch-text";
+import { BbDiffSplit } from "./BbDiffSplit";
 import { useDiffRendererReplacement } from "./codeRendererProvider";
-import {
-  DEFAULT_CODE_OVERFLOW,
-  DEFAULT_DIFF_VIEW,
-  type DiffPresentation,
-} from "./code-rendering";
+import { DEFAULT_CODE_OVERFLOW, DEFAULT_DIFF_VIEW } from "./code-rendering";
+import type { DiffPresentation } from "@bb/shared-ui/git-diff/renderers";
 
 const DIFF_RENDERER_SLOT_KIND = "diffRenderer";
-
-const BbDiff = lazy(() => import("./BbDiff"));
 
 interface DiffHostProps extends Partial<DiffPresentation> {
   file: ParsedGitDiffFile;
   patchText?: string;
   fullFileContents: ExperimentalDiffFullFileContents | null;
   className?: string;
-  fallback?: ReactNode;
   onSelectionAddToChat?: (text: string) => void;
 }
 
@@ -32,7 +26,6 @@ export function DiffHost({
   overflow = DEFAULT_CODE_OVERFLOW,
   showLineNumbers = true,
   className,
-  fallback = null,
   onSelectionAddToChat,
 }: DiffHostProps) {
   const replacement = useDiffRendererReplacement();
@@ -43,18 +36,16 @@ export function DiffHost({
   );
 
   const original = (
-    <Suspense fallback={fallback}>
-      <BbDiff
-        file={file}
-        patchText={patchText}
-        fullFileContents={fullFileContents}
-        view={view}
-        overflow={overflow}
-        showLineNumbers={showLineNumbers}
-        className={className}
-        onSelectionAddToChat={onSelectionAddToChat}
-      />
-    </Suspense>
+    <BbDiffSplit
+      file={file}
+      patchText={patchText}
+      fullFileContents={fullFileContents}
+      view={view}
+      overflow={overflow}
+      showLineNumbers={showLineNumbers}
+      className={className}
+      onSelectionAddToChat={onSelectionAddToChat}
+    />
   );
 
   return (
@@ -73,7 +64,6 @@ export function DiffHost({
             showLineNumbers={showLineNumbers}
             experimental_fullFileContents={fullFileContents}
             Original={BoundOriginal}
-            experimental_Original={deprecatedOriginalAlias(BoundOriginal)}
           />
         </div>
       )}

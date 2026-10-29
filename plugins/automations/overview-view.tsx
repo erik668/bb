@@ -10,18 +10,19 @@ import type {
   AutomationResponse,
   AutomationsOverviewResponse,
 } from "./src/rpc-types.js";
+import { CREATE_AUTOMATION_PROMPT } from "./composer";
 import {
   AutomationLifecycleControl,
   automationIconName,
 } from "./detail-view.js";
-import { Icon } from "@bb/shared-ui/icon";
-import { DelayedLoading } from "@bb/shared-ui/delayed-loading";
+import { Icon } from "@/components/ui/icon";
+import { DelayedLoading } from "@/components/ui/delayed-loading";
 import {
   ResourcePagination,
   useResourcePagination,
   useResourceViewportPageSize,
-} from "@bb/shared-ui/resource-pagination";
-import { COARSE_POINTER_ICON_SIZE_SHRINK_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
+} from "@/components/ui/resource-pagination";
+import { COARSE_POINTER_ICON_SIZE_SHRINK_CLASS } from "@/components/ui/coarse-pointer-sizing";
 import {
   ResourceBrowseGrid,
   ResourceCollectionPage,
@@ -36,9 +37,9 @@ import {
   ResourceSortMenu,
   ResourceTemplateBrowseCard,
   ResourceToolbar,
-} from "@bb/shared-ui/resource-list";
-import { cn } from "@bb/shared-ui/lib/utils";
-import { Button } from "@bb/shared-ui/button";
+} from "@/components/ui/resource-list";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
 import {
   type AutomationStatusFilter,
   formatAutomationTrigger,
@@ -47,17 +48,16 @@ import {
   getOneShotLifecycle,
   matchesAutomationStatusFilters,
   oneShotLifecycleAllowsToggle,
+  PERSONAL_PROJECT_ID,
 } from "./lib/format-schedule.js";
-import { AutomationMetadataItem } from "./metadata.js";
-
-const PERSONAL_PROJECT_ID = "proj_personal";
+import { AutomationMetadataItem, automationErrorMessage } from "./metadata.js";
+import { AutomationActionsMenu } from "./actions-menu.js";
 
 const AUTOMATION_STATUS_FILTER_OPTIONS = [
   { id: "active", label: "Active" },
   { id: "paused", label: "Paused" },
 ] as const;
 
-export const CREATE_AUTOMATION_PROMPT = "Create a new bb automation to ";
 export const AUTOMATION_CREATE_TEMPLATES = [
   {
     label: "CI failure triage",
@@ -118,7 +118,7 @@ function AutomationRowLeading({
 }: {
   automation: AutomationResponse;
 }) {
-  if (automation.lastRunStatus === "failed") {
+  if (automationErrorMessage(automation) !== null) {
     return (
       <Icon
         name="CircleX"
@@ -155,10 +155,9 @@ function AutomationRowLeading({
 }
 
 export function automationProjectLabel(
-  project: OverviewEntry["project"] | null | undefined,
+  project: OverviewEntry["project"],
 ): string {
-  if (project == null) return "Workspace";
-  return project.id === PERSONAL_PROJECT_ID ? "Local" : project.name;
+  return project.name;
 }
 
 function automationProjectFilterId(
@@ -219,12 +218,14 @@ function AutomationRowMetadata({
           runCount: automation.runCount,
           lastRunStatus: automation.lastRunStatus,
         });
+  const errorMessage =
+    automation === null ? null : automationErrorMessage(automation);
   return (
     <ResourceMeta
       items={[
         <AutomationMetadataItem
-          icon={personalProject ? "Laptop" : "Folder"}
-          iconLabel={personalProject ? "Local project" : "Project"}
+          icon="Folder"
+          iconLabel={personalProject ? `Project: ${projectLabel}` : "Project"}
           title={projectLabel}
         >
           {projectLabel}
@@ -242,17 +243,28 @@ function AutomationRowMetadata({
             {scheduleMetadata.text}
           </AutomationMetadataItem>
         ) : null,
+        errorMessage !== null ? (
+          <span
+            data-automation-error=""
+            className="text-destructive"
+            title={errorMessage}
+          >
+            {errorMessage}
+          </span>
+        ) : null,
         automation === null ? "The stored configuration cannot be read." : null,
       ]}
     />
   );
 }
 
-function OverviewRow({
+export function OverviewRow({
   automation,
   project,
   onNavigate,
   onEnabledChange,
+  onRunNow,
+  onDelete,
 }: {
   automation: AutomationResponse;
   project: OverviewEntry["project"];
@@ -261,8 +273,11 @@ function OverviewRow({
     enabled: boolean,
     route: AutomationDetailRoute,
   ) => Promise<void>;
+  onRunNow: (route: AutomationDetailRoute) => Promise<void>;
+  onDelete: (route: AutomationDetailRoute, name: string) => void;
 }) {
   const [togglePending, setTogglePending] = useState(false);
+  const [runPending, setRunPending] = useState(false);
   const route = routeOf(automation);
   const oneShotLifecycle = getOneShotLifecycle({
     enabled: automation.enabled,
@@ -281,6 +296,18 @@ function OverviewRow({
       }
       muted={lifecycleLocked}
       onOpen={() => onNavigate(route)}
+      actions={
+        <AutomationActionsMenu
+          name={automation.name}
+          pending={runPending}
+          onRunNow={() => {
+            setRunPending(true);
+            void onRunNow(route).finally(() => setRunPending(false));
+          }}
+          onDelete={() => onDelete(route, automation.name)}
+        />
+      }
+      actionsVisibility="always"
       persistentActions={
         <AutomationLifecycleControl
           checked={automation.enabled && !lifecycleLocked}
@@ -310,6 +337,7 @@ function AutomationProblemRow({
   automation,
   project,
   onNavigate,
+  onDelete,
 }: {
   automation: AutomationReadProblem;
   project: OverviewEntry["project"];
@@ -317,6 +345,7 @@ function AutomationProblemRow({
     route: AutomationDetailRoute,
     options?: AutomationDetailNavigationOptions,
   ) => void;
+  onDelete: (route: AutomationDetailRoute, name: string) => void;
 }) {
   const repairTarget =
     automation.problem === "missing-agent-prompt" ? automation : null;
@@ -354,6 +383,20 @@ function AutomationProblemRow({
       onOpen={() =>
         onNavigate(route, repairTarget === null ? undefined : { editing: true })
       }
+      actions={
+        <AutomationActionsMenu
+          name={automation.name}
+          pending={false}
+          runDisabledReason={
+            repairTarget !== null
+              ? "Add a prompt before running this automation."
+              : "The stored configuration cannot be read."
+          }
+          onRunNow={() => {}}
+          onDelete={() => onDelete(route, automation.name)}
+        />
+      }
+      actionsVisibility="always"
       persistentActions={
         repairTarget !== null ? (
           <Button
@@ -370,7 +413,9 @@ function AutomationProblemRow({
   );
 }
 
-function automationProblemLabel(automation: AutomationReadProblem): string {
+export function automationProblemLabel(
+  automation: AutomationReadProblem,
+): string {
   return automation.problem === "missing-agent-prompt"
     ? "Prompt required"
     : "Invalid data";
@@ -403,8 +448,7 @@ function automationSearchValues(
     values.push(automationProblemSearchText(automation));
     if (automation.problem === "invalid-stored-data") return values;
   }
-  const status = formatScheduleStatusLabel(automation);
-  if (status !== undefined) values.push(status);
+  values.push(formatScheduleStatusLabel(automation));
   values.push(formatAutomationTrigger(automation.trigger));
   return values;
 }
@@ -415,6 +459,8 @@ export function AutomationOverviewView({
   onRetry,
   onOpenDetail,
   onEnabledChange,
+  onRunNow,
+  onDelete,
   onCreateViaChat,
   activeMode,
   onModeChange,
@@ -430,6 +476,8 @@ export function AutomationOverviewView({
     enabled: boolean,
     route: AutomationDetailRoute,
   ) => Promise<void>;
+  onRunNow: (route: AutomationDetailRoute) => Promise<void>;
+  onDelete: (route: AutomationDetailRoute, name: string) => void;
   onCreateViaChat: (prompt?: string) => void;
   activeMode: AutomationCollectionMode;
   onModeChange: (mode: AutomationCollectionMode) => void;
@@ -594,6 +642,7 @@ export function AutomationOverviewView({
               automation={automation}
               project={project}
               onNavigate={onOpenDetail}
+              onDelete={onDelete}
             />
           ) : (
             <OverviewRow
@@ -602,6 +651,8 @@ export function AutomationOverviewView({
               project={project}
               onNavigate={onOpenDetail}
               onEnabledChange={onEnabledChange}
+              onRunNow={onRunNow}
+              onDelete={onDelete}
             />
           );
         })}
@@ -617,7 +668,7 @@ export function AutomationOverviewView({
         {
           id: "installed",
           label: "Installed",
-          count: entries?.length ?? undefined,
+          count: entries?.length ?? "pending",
         },
         { id: "browse", label: "Browse" },
       ]}
@@ -626,6 +677,8 @@ export function AutomationOverviewView({
       actions={
         <ResourceCreateButton
           label="New automation"
+          shortLabel="New"
+          icon="Repeat"
           templates={AUTOMATION_CREATE_TEMPLATES}
           onCreate={onCreateViaChat}
         />

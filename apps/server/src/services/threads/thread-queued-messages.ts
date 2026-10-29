@@ -8,14 +8,20 @@ import type {
   PromptInput,
   QueuedMessagePayload,
   QueuedMessagePayloadKind,
+  QueuedMessageState,
   QueuedMessageWaitingOn,
+  StartedOnBehalfOf,
+  StartedOnBehalfOfInitiator,
   ThreadQueuedMessage,
+  ThreadCreateOrigin,
 } from "@bb/domain";
 import { z } from "zod";
 import { ApiError } from "../../errors.js";
+import { resolveDispatchAuthor } from "./dispatch-author.js";
 
 interface StoredQueuedThreadMessageRow {
-  claimedAt: number | null;
+  origin: ThreadCreateOrigin | null;
+  originPluginId: string | null;
   content: string;
   createdAt: number;
   failureReason: string | null;
@@ -30,6 +36,11 @@ interface StoredQueuedThreadMessageRow {
   permissionMode: PermissionMode;
   sendAt: number | null;
   serviceTier: string;
+  senderThreadId: string | null;
+  state: QueuedMessageState;
+  requestedByInitiator: StartedOnBehalfOfInitiator | null;
+  requestedByThreadId: string | null;
+  systemNotice: string | null;
   threadId: string;
   updatedAt: number;
   waitingOn: string | null;
@@ -89,6 +100,34 @@ export function parseStoredQueuedThreadMessageWaitingOn(
 }
 
 /**
+ * The requester a queued dispatch was written with, so a drained re-attempt
+ * resolves the same author its first attempt did. The two columns are written
+ * together; half a pair would silently demote an agent's dispatch to a user's,
+ * so it fails rather than degrading to null.
+ */
+export function storedQueuedThreadMessageRequestedBy(
+  row: Pick<
+    StoredQueuedThreadMessageRow,
+    "id" | "threadId" | "requestedByInitiator" | "requestedByThreadId"
+  >,
+): StartedOnBehalfOf | null {
+  if (row.requestedByInitiator === null && row.requestedByThreadId === null) {
+    return null;
+  }
+  if (row.requestedByInitiator === null || row.requestedByThreadId === null) {
+    throw new ApiError(
+      500,
+      "internal_error",
+      `Stored queued message ${row.id} for thread ${row.threadId} has half a requester`,
+    );
+  }
+  return {
+    initiator: row.requestedByInitiator,
+    senderThreadId: row.requestedByThreadId,
+  };
+}
+
+/**
  * Assemble the row's retry columns into the payload union. A `retry` row that
  * is missing either column is a write-side bug, not a shape a reader should
  * paper over, so it fails loudly rather than degrading to `inline`.
@@ -121,8 +160,20 @@ function toQueuedMessagePayload(
 export function toThreadQueuedMessage(
   row: StoredQueuedThreadMessageRow,
 ): ThreadQueuedMessage {
+  const author =
+    row.systemNotice !== null
+      ? { initiator: "system" as const, senderThreadId: null }
+      : resolveDispatchAuthor({
+          retrying: row.payloadKind === "retry",
+          senderThreadId: row.senderThreadId,
+          startedOnBehalfOf: storedQueuedThreadMessageRequestedBy(row),
+        });
   return threadQueuedMessageSchema.parse({
     id: row.id,
+    origin: row.origin,
+    originPluginId: row.originPluginId,
+    initiator: author.initiator,
+    senderThreadId: author.senderThreadId,
     threadId: row.threadId,
     content: parseStoredQueuedThreadMessageContent(row),
     model: row.model,
@@ -131,12 +182,13 @@ export function toThreadQueuedMessage(
     serviceTier: row.serviceTier,
     groupWithNext: row.groupWithNext,
     sendAt: row.sendAt,
+    state: row.state,
     waitingOn: parseStoredQueuedThreadMessageWaitingOn(row),
     failureReason: row.failureReason,
     payload: toQueuedMessagePayload(row),
     // An `inline` draft stops being editable the moment the drain claims it:
     // the row is on its way to a provider and a rewrite would be lost.
-    editable: row.payloadKind === "inline" && row.claimedAt === null,
+    editable: row.payloadKind === "inline" && row.state !== "claimed",
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   });

@@ -6,12 +6,11 @@ import { CREATE_PLUGIN_PROMPT } from "@bb/client-core";
 import {
   BROWSE_ARCHETYPES,
   UTILITY_EXAMPLES,
-  archetypePrompt,
+  briefPrompt,
 } from "./browse-hero-archetypes";
 import { BrowseArchetypeCards } from "./BrowseArchetypeCards";
 import { BrowseHeroCarousel } from "./BrowseHeroCarousel";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { MINI_APP_SCENES } from "./MiniAppScenes";
 
 const openComposer = vi.fn<(seed: string | undefined) => void>();
 
@@ -32,24 +31,6 @@ afterEach(() => {
 });
 
 describe("BrowseHeroCarousel", () => {
-  it("has a scene for every archetype", () => {
-    for (const archetype of BROWSE_ARCHETYPES) {
-      expect(MINI_APP_SCENES[archetype.id]).toBeTypeOf("function");
-    }
-  });
-
-  it("dresses the shared engine in plugin copy, not another surface's", () => {
-    render(<BrowseHeroCarousel autoplay={false} />);
-
-    const heading = screen.getByRole("heading", { level: 2 });
-    expect(heading.textContent).toContain("Turn bb into");
-    expect(heading.textContent).toContain(BROWSE_ARCHETYPES[0]?.noun);
-    expect(screen.getByText("Plugin")).toBeTruthy();
-    expect(
-      screen.getByRole("tablist", { name: "Plugin examples" }),
-    ).toBeTruthy();
-  });
-
   it("moves between slides from the tablist and wraps at both ends", () => {
     render(<BrowseHeroCarousel autoplay={false} />);
 
@@ -72,6 +53,13 @@ describe("BrowseHeroCarousel", () => {
     expect(
       screen.getAllByRole("tab")[last]?.getAttribute("aria-selected"),
     ).toBe("true");
+
+    fireEvent.keyDown(screen.getAllByRole("tab")[last] as HTMLElement, {
+      key: "ArrowRight",
+    });
+    expect(screen.getAllByRole("tab")[0]?.getAttribute("aria-selected")).toBe(
+      "true",
+    );
   });
 
   it("opens blank-seeded and closes through the openRequest channel", () => {
@@ -117,13 +105,20 @@ describe("BrowseHeroCarousel", () => {
         onComposingChange={onComposingChange}
       />,
     );
+    rerender(
+      <BrowseHeroCarousel
+        autoplay={false}
+        openRequest={{ nonce: 2, seed: briefPrompt(BROWSE_ARCHETYPES[0]!) }}
+        onComposingChange={onComposingChange}
+      />,
+    );
     expect(onComposingChange).toHaveBeenCalledTimes(1);
     expect(onComposingChange).toHaveBeenLastCalledWith(true);
 
     rerender(
       <BrowseHeroCarousel
         autoplay={false}
-        openRequest={{ nonce: 2, close: true }}
+        openRequest={{ nonce: 3, close: true }}
         onComposingChange={onComposingChange}
       />,
     );
@@ -142,28 +137,28 @@ describe("BrowseHeroCarousel", () => {
     rerender(
       <BrowseHeroCarousel
         autoplay={false}
-        openRequest={{ nonce: 1, seed: archetypePrompt(first) }}
+        openRequest={{ nonce: 1, seed: briefPrompt(first) }}
       />,
     );
-    expect(openComposer).toHaveBeenLastCalledWith(archetypePrompt(first));
+    expect(openComposer).toHaveBeenLastCalledWith(briefPrompt(first));
 
     rerender(
       <BrowseHeroCarousel
         autoplay={false}
-        openRequest={{ nonce: 2, seed: archetypePrompt(second) }}
+        openRequest={{ nonce: 2, seed: briefPrompt(second) }}
       />,
     );
-    expect(openComposer).toHaveBeenLastCalledWith(archetypePrompt(second));
+    expect(openComposer).toHaveBeenLastCalledWith(briefPrompt(second));
 
     rerender(
       <BrowseHeroCarousel
         autoplay={false}
-        openRequest={{ nonce: 2, seed: archetypePrompt(second) }}
+        openRequest={{ nonce: 2, seed: briefPrompt(first) }}
       />,
     );
-    expect(openComposer).toHaveBeenLastCalledWith(archetypePrompt(second));
+    expect(openComposer).toHaveBeenLastCalledWith(briefPrompt(second));
     expect(screen.getByTestId("real-composer").textContent).toBe(
-      archetypePrompt(second),
+      briefPrompt(second),
     );
   });
 
@@ -191,7 +186,7 @@ describe("BrowseArchetypeCards", () => {
     const target = BROWSE_ARCHETYPES[2]!;
     fireEvent.click(screen.getByText(target.title));
 
-    expect(onCreate).toHaveBeenCalledWith(archetypePrompt(target));
+    expect(onCreate).toHaveBeenCalledWith(briefPrompt(target));
   });
 
   it("seeds a utility example's prompt and shows both tiers", () => {

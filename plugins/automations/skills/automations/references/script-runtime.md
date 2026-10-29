@@ -15,9 +15,49 @@ The plugin stores a private copy under
 `<data dir>/plugins/automations/scripts/<automationId>/`. Runs use this copy.
 Source edits do not apply until an update copies the file again.
 
-The create and update commands print the exact refresh command. The create,
+The create and update commands print the exact refresh command; it keeps the
+interpreter, timeout, variables, and working directory. The create,
 update, and show commands print the stored path on the `Script:` line. JSON
 output returns it as `execution.storedScriptPath`.
+
+## Working directory
+
+Every script stores `execution.workingDirectory` as one of these policies:
+
+- `{"type":"automation-storage"}` uses the plugin's shared script storage
+  directory
+  `<data dir>/plugins/automations/scripts/`. Every automation on this policy
+  shares it; each automation's stored script lives in a subdirectory of it,
+  not in the working directory itself.
+- `{"type":"project"}` uses the project's source on the bb server host.
+- `{"type":"path","path":"/absolute/path"}` uses that directory on the bb
+  server host.
+
+New standard-project scripts default to `project` when that project has a
+source on the server's co-located host. Personal scripts and projects without
+such a source default to `automation-storage`. Automations stored before this
+field existed also decode as `automation-storage`, so an upgrade does not
+silently change their relative
+paths. Updating an existing script preserves its current policy unless the
+update includes `--working-directory`; changing an agent automation to script
+uses the same source-aware default.
+
+Use `--working-directory automation-storage|project|<absolute-server-path>` on
+create or
+update. A `project` policy fails if the project has no source on the server
+host. An explicit path must be absolute and an existing directory. The run
+fails instead of silently using another directory when either selection is
+unavailable.
+
+The create, update, and show commands print the directory the script actually
+runs in on the `Working dir:` line, or `unavailable` when a `project` policy
+has no source on the server host. JSON output returns it as
+`execution.resolvedWorkingDirectory`, which is `null` when unavailable. The
+`list` result carries the stored policy only, without this resolution.
+
+A failed run's summary includes its exit code and a terminal-control-stripped
+first non-empty stderr line. The complete captured stdout and stderr remain
+available unchanged in run output.
 
 ## Variables and CLI lookup
 
@@ -51,10 +91,16 @@ a `[bb] warning:` line. A later `bb` call then fails normally.
   the thread immediately. This path does not retry and does not use the failure
   count. The plugin treats a thread as unavailable when it is missing, deleted,
   archived, or cannot accept a run.
-- A timeout or output limit stops the process group. On Windows, it stops the
-  direct child.
-- Startup settles runs interrupted by a server restart or plugin reload.
-  Script runs without a process become skipped.
+- Run completion, a timeout, or an output limit stops remaining processes in
+  the script's process group. Scripts cannot leave background work running in
+  that group after a run completes. On Windows, only the direct child is stopped.
+- Stopping bb or reloading, disabling, or updating the automations plugin sends
+  `SIGTERM` to each running script's process group, then `SIGKILL` after one
+  second. The run becomes skipped with an `interrupted` reason.
+- A process that starts its own session or process group, such as `setsid`,
+  `tmux`, or a daemon, leaves the script's group and is not stopped.
+- Startup settles runs left open by a crash or forced quit. Script runs without
+  a process become skipped.
 - Agent runs without a thread become skipped. Other agent runs follow their
   thread state.
 

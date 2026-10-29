@@ -6,7 +6,7 @@ import { drizzleAdapter } from "@better-auth/drizzle-adapter";
 import { betterAuth } from "better-auth/minimal";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   CONNECT_SESSION_EXPIRES_IN_SECONDS,
   CONNECT_SESSION_UPDATE_AGE_SECONDS,
@@ -16,15 +16,20 @@ import {
   schema,
   server,
   session,
+  sha256Hex,
   user,
 } from "@bb/connect-db";
 
 import {
+  invalidateSessionCookie,
+  LOOKUP_FALLBACK_AFTER_MS,
+  LOOKUP_FALLBACK_WINDOW_MS,
+  LOOKUP_JOIN_TIMEOUT_MS,
+  LOOKUP_RETRY_DELAY_MS,
   MACHINE_LAST_SEEN_WRITE_INTERVAL_MS,
   markMachineSeen,
   resolveLabel,
   verifyMachineCredentialDetails,
-  verifySessionCookie,
   verifySessionCookieDetails,
 } from "./session.js";
 import { refreshAccountSessionCookies } from "./account-session.js";
@@ -429,6 +434,7 @@ describe("account session refresh", () => {
         db,
       ),
     ).resolves.toEqual({
+      sessionId: `id-${freshToken}`,
       userId: `user-${freshToken}`,
       needsRefresh: false,
     });
@@ -439,6 +445,7 @@ describe("account session refresh", () => {
         db,
       ),
     ).resolves.toEqual({
+      sessionId: `id-${dueToken}`,
       userId: `user-${dueToken}`,
       needsRefresh: true,
     });
@@ -474,6 +481,25 @@ describe("account session refresh", () => {
     expect(setCookies?.[0]).toContain("Max-Age=604800");
     expect(setCookies?.[0]).toContain("Domain=.getbb.app");
     expect(setCookies?.[0]).toContain("Secure");
+  });
+
+  it("stops reporting needsRefresh as soon as the session was renewed", async () => {
+    const refreshAt = Date.now();
+    const token = `session-${crypto.randomUUID()}`;
+    seedSession(token, refreshAt, refreshAt + expiresInMs - updateAgeMs);
+    const cookie = await signedSessionCookie(token, secret);
+
+    await expect(
+      verifySessionCookieDetails(cookie, secret, db),
+    ).resolves.toMatchObject({ needsRefresh: true });
+    await refreshAccountSessionCookies(
+      `__Secure-better-auth.session_token=${cookie}`,
+      "https://getbb.app",
+      createAuthFetch("https://getbb.app", "getbb.app"),
+    );
+    await expect(
+      verifySessionCookieDetails(cookie, secret, db),
+    ).resolves.toMatchObject({ needsRefresh: false });
   });
 
   it("leaves a fresh session unchanged before the update-age boundary", async () => {
@@ -554,109 +580,382 @@ function countingDb(target: typeof db): {
   return { db: proxied, counts };
 }
 
-describe("single-flight gate caches", () => {
-  it("collapses a cold burst of label lookups into one D1 round trip", async () => {
-    seedUser("acct-flight");
-    seedServer({
-      id: "srv-flight",
-      userId: "acct-flight",
-      name: "default",
-      subdomain: "flight-label",
-    });
-    const counted = countingDb(db);
-
-    const resolved = await Promise.all(
-      Array.from({ length: 6 }, () => resolveLabel("flight-label", counted.db)),
-    );
-
-    expect(counted.counts.select).toBe(1);
-    for (const label of resolved) {
-      expect(label).toMatchObject({ kind: "server", userId: "acct-flight" });
-    }
-  });
-
-  it("does not cache a failed lookup: the next request retries D1", async () => {
-    seedUser("acct-flight-retry");
-    seedServer({
-      id: "srv-flight-retry",
-      userId: "acct-flight-retry",
-      name: "default",
-      subdomain: "flight-retry",
-    });
-    let failNext = true;
-    const failingOnce = new Proxy(db, {
-      get(t, prop) {
-        if (prop === "select" && failNext) {
-          failNext = false;
-          throw new Error("d1 hiccup");
+function failingDb(
+  target: typeof db,
+  failures: number,
+): { db: typeof db; counts: { select: number } } {
+  const counts = { select: 0 };
+  const proxied = new Proxy(target, {
+    get(t, prop) {
+      if (prop === "select") {
+        counts.select += 1;
+        if (counts.select <= failures) {
+          throw new Error("D1_ERROR: D1 DB is overloaded.");
         }
-        const value = Reflect.get(t, prop);
-        return typeof value === "function" ? value.bind(t) : value;
+      }
+      const value = Reflect.get(t, prop);
+      return typeof value === "function" ? value.bind(t) : value;
+    },
+  });
+  return { db: proxied, counts };
+}
+
+function stalledDb(target: typeof db): typeof db {
+  const query: object = new Proxy(() => {}, {
+    get: (_query, prop) =>
+      prop === "then"
+        ? undefined
+        : prop === "get"
+          ? () => new Promise(() => {})
+          : () => query,
+  });
+  return new Proxy(target, {
+    get(t, prop) {
+      if (prop === "select") return () => query;
+      const value = Reflect.get(t, prop);
+      return typeof value === "function" ? value.bind(t) : value;
+    },
+  });
+}
+
+function gatedDb(target: typeof db, gate: Promise<void>): typeof db {
+  const wrap = (builder: object): object =>
+    new Proxy(builder, {
+      get(b, prop) {
+        const value = Reflect.get(b, prop);
+        if (typeof value !== "function") return value;
+        if (prop === "get") {
+          return async (...args: unknown[]) => {
+            await gate;
+            return value.apply(b, args);
+          };
+        }
+        return (...args: unknown[]) => {
+          const result = value.apply(b, args);
+          return typeof result === "object" && result !== null
+            ? wrap(result)
+            : result;
+        };
       },
     });
+  return new Proxy(target, {
+    get(t, prop) {
+      const value = Reflect.get(t, prop);
+      if (prop === "select" && typeof value === "function") {
+        return (...args: unknown[]) => wrap(value.apply(t, args));
+      }
+      return typeof value === "function" ? value.bind(t) : value;
+    },
+  });
+}
 
-    await expect(resolveLabel("flight-retry", failingOnce)).rejects.toThrow(
-      "d1 hiccup",
-    );
-    await expect(
-      resolveLabel("flight-retry", failingOnce),
-    ).resolves.toMatchObject({ kind: "server", userId: "acct-flight-retry" });
+async function seedSignedSession(
+  userId: string,
+  secret: string,
+  expiresAt = Date.now() + 60_000,
+): Promise<string> {
+  seedUser(userId);
+  const token = `sess_${crypto.randomUUID()}`;
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sigBuf = await crypto.subtle.sign(
+    "HMAC",
+    key,
+    new TextEncoder().encode(token),
+  );
+  const sig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
+  db.insert(session)
+    .values({
+      id: `sess-${token}`,
+      token,
+      expiresAt: new Date(expiresAt),
+      userId,
+      createdAt: now,
+      updatedAt: now,
+    })
+    .run();
+  return `${token}.${sig}`;
+}
+
+describe("gate lookup caches", () => {
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("collapses a cold burst of session verifications into one D1 round trip", async () => {
-    seedUser("acct-cookie-flight");
-    const token = `sess_flight_${crypto.randomUUID()}`;
-    const secret = "flight-secret";
-    const key = await crypto.subtle.importKey(
-      "raw",
-      new TextEncoder().encode(secret),
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    const sigBuf = await crypto.subtle.sign(
-      "HMAC",
-      key,
-      new TextEncoder().encode(token),
-    );
-    const sig = btoa(String.fromCharCode(...new Uint8Array(sigBuf)));
-    const cookieValue = `${token}.${sig}`;
-    db.insert(session)
-      .values({
-        id: `sess-${token}`,
-        token,
-        expiresAt: new Date(Date.now() + 60_000),
-        userId: "acct-cookie-flight",
-        createdAt: now,
-        updatedAt: now,
-      })
-      .run();
-    const counted = countingDb(db);
+  function seedLabel(label: string): void {
+    seedUser(`acct-${label}`);
+    seedServer({
+      id: `srv-${label}`,
+      userId: `acct-${label}`,
+      name: "default",
+      subdomain: label,
+    });
+  }
 
-    const verified = await Promise.all(
-      Array.from({ length: 6 }, () =>
-        verifySessionCookie(cookieValue, secret, counted.db),
+  it("runs one D1 lookup for a burst of concurrent requests", async () => {
+    seedLabel("burst-label");
+    const counted = countingDb(db);
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gated = gatedDb(counted.db, gate);
+
+    const burst = Array.from({ length: 20 }, () =>
+      resolveLabel("burst-label", gated),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+
+    const resolved = await Promise.all(burst);
+    expect(counted.counts.select).toBe(1);
+    expect(resolved.every((r) => r?.userId === "acct-burst-label")).toBe(true);
+  });
+
+  it("retries a failed lookup once for a whole burst and shares the final failure", async () => {
+    seedLabel("burst-failure");
+    vi.useFakeTimers();
+    const failing = failingDb(db, Infinity);
+
+    const burst = Array.from({ length: 5 }, () =>
+      resolveLabel("burst-failure", failing.db).then(
+        () => "resolved",
+        (error: Error) => error.message,
       ),
     );
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_DELAY_MS);
+
+    expect(await Promise.all(burst)).toEqual(
+      Array.from({ length: 5 }, () => "D1_ERROR: D1 DB is overloaded."),
+    );
+    expect(failing.counts.select).toBe(2);
+  });
+
+  it("absorbs a D1 failure by retrying once before answering", async () => {
+    seedLabel("blip-label");
+    vi.useFakeTimers();
+    const flaky = failingDb(db, 1);
+
+    const resolved = resolveLabel("blip-label", flaky.db);
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_DELAY_MS);
+
+    await expect(resolved).resolves.toMatchObject({
+      userId: "acct-blip-label",
+    });
+    expect(flaky.counts.select).toBe(2);
+  });
+
+  it("answers an expired label from its last value when D1 fails, without retrying", async () => {
+    seedLabel("fallback-label");
+    vi.useFakeTimers();
+    await resolveLabel("fallback-label", db);
+    vi.setSystemTime(Date.now() + 61_000);
+    const failing = failingDb(db, Infinity);
+
+    await expect(
+      resolveLabel("fallback-label", failing.db),
+    ).resolves.toMatchObject({ userId: "acct-fallback-label" });
+    expect(failing.counts.select).toBe(1);
+  });
+
+  it("answers an expired label from its last value when D1 stalls", async () => {
+    seedLabel("stalled-fallback");
+    vi.useFakeTimers();
+    await resolveLabel("stalled-fallback", db);
+    vi.setSystemTime(Date.now() + 61_000);
+
+    const resolved = resolveLabel("stalled-fallback", stalledDb(db));
+    await vi.advanceTimersByTimeAsync(LOOKUP_FALLBACK_AFTER_MS);
+
+    await expect(resolved).resolves.toMatchObject({
+      userId: "acct-stalled-fallback",
+    });
+  });
+
+  it("stops answering from the last value once the fallback window passes", async () => {
+    seedLabel("lapsed-fallback");
+    vi.useFakeTimers();
+    await resolveLabel("lapsed-fallback", db);
+    vi.setSystemTime(Date.now() + 60_000 + LOOKUP_FALLBACK_WINDOW_MS);
+
+    const resolved = resolveLabel(
+      "lapsed-fallback",
+      failingDb(db, Infinity).db,
+    ).catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_DELAY_MS);
+
+    expect(await resolved).toBe("D1_ERROR: D1 DB is overloaded.");
+  });
+
+  it("never answers a fresh read from the last value", async () => {
+    seedLabel("fresh-fallback");
+    vi.useFakeTimers();
+    await resolveLabel("fresh-fallback", db);
+
+    const resolved = resolveLabel(
+      "fresh-fallback",
+      failingDb(db, Infinity).db,
+      { fresh: true },
+    ).catch((error: Error) => error.message);
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_DELAY_MS);
+
+    expect(await resolved).toBe("D1_ERROR: D1 DB is overloaded.");
+  });
+
+  it("replaces a lookup that never settles with a single new one", async () => {
+    seedLabel("abandoned-label");
+    vi.useFakeTimers();
+    void resolveLabel("abandoned-label", stalledDb(db));
+    const counted = countingDb(db);
+    const waiters = Array.from({ length: 10 }, () =>
+      resolveLabel("abandoned-label", counted.db),
+    );
+
+    await vi.advanceTimersByTimeAsync(LOOKUP_JOIN_TIMEOUT_MS - 50);
+    expect(counted.counts.select).toBe(0);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const resolved = await Promise.all(waiters);
+    expect(resolved.every((r) => r?.userId === "acct-abandoned-label")).toBe(
+      true,
+    );
+    expect(counted.counts.select).toBe(1);
+  });
+
+  it("answers a label whose earlier lookup never settled", async () => {
+    seedUser("acct-stalled-label");
+    seedServer({
+      id: "srv-stalled-label",
+      userId: "acct-stalled-label",
+      name: "default",
+      subdomain: "stalled-label",
+    });
+
+    vi.useFakeTimers();
+    void resolveLabel("stalled-label", stalledDb(db));
+    const later = resolveLabel("stalled-label", db);
+    await vi.advanceTimersByTimeAsync(LOOKUP_JOIN_TIMEOUT_MS);
+
+    await expect(later).resolves.toMatchObject({
+      kind: "server",
+      userId: "acct-stalled-label",
+    });
+  });
+
+  it("verifies a session cookie whose earlier lookup never settled", async () => {
+    const secret = "stalled-secret";
+    const cookieValue = await seedSignedSession("acct-stalled-cookie", secret);
+
+    vi.useFakeTimers();
+    void verifySessionCookieDetails(cookieValue, secret, stalledDb(db));
+    const later = verifySessionCookieDetails(cookieValue, secret, db);
+    await vi.advanceTimersByTimeAsync(LOOKUP_JOIN_TIMEOUT_MS);
+
+    await expect(later).resolves.toMatchObject({
+      userId: "acct-stalled-cookie",
+    });
+  });
+
+  it("serves later session verifications from the cache", async () => {
+    const secret = "cached-secret";
+    const cookieValue = await seedSignedSession(
+      "acct-cached-cookie",
+      secret,
+      Date.now() + CONNECT_SESSION_EXPIRES_IN_SECONDS * 1000,
+    );
+    const counted = countingDb(db);
+
+    await verifySessionCookieDetails(cookieValue, secret, counted.db);
+    await verifySessionCookieDetails(cookieValue, secret, counted.db);
 
     expect(counted.counts.select).toBe(1);
-    expect(verified).toEqual(
-      Array.from({ length: 6 }, () => "acct-cookie-flight"),
+  });
+
+  it("rereads a cached session that is due for a refresh", async () => {
+    const secret = "due-secret";
+    const cookieValue = await seedSignedSession("acct-due-cookie", secret);
+    const counted = countingDb(db);
+
+    await verifySessionCookieDetails(cookieValue, secret, counted.db);
+    expect(counted.counts.select).toBe(1);
+    await verifySessionCookieDetails(cookieValue, secret, counted.db);
+    expect(counted.counts.select).toBe(2);
+  });
+
+  it("does not cache a lookup that was in flight when its cookie was invalidated", async () => {
+    const secret = "invalidated-secret";
+    const cookieValue = await seedSignedSession(
+      "acct-invalidated-cookie",
+      secret,
+    );
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    const inFlight = verifySessionCookieDetails(
+      cookieValue,
+      secret,
+      gatedDb(db, gate),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    invalidateSessionCookie(cookieValue);
+    release();
+    await inFlight;
+    const counted = countingDb(db);
+    await verifySessionCookieDetails(cookieValue, secret, counted.db);
+
+    expect(counted.counts.select).toBe(1);
+  });
+
+  it("fails closed for an expired session when D1 fails", async () => {
+    const secret = "fail-closed-secret";
+    const cookieValue = await seedSignedSession(
+      "acct-fail-closed",
+      secret,
+      Date.now() + CONNECT_SESSION_EXPIRES_IN_SECONDS * 1000,
+    );
+    vi.useFakeTimers({ toFake: ["Date"] });
+    await verifySessionCookieDetails(cookieValue, secret, db);
+    vi.setSystemTime(Date.now() + 61_000);
+
+    await expect(
+      verifySessionCookieDetails(
+        cookieValue,
+        secret,
+        failingDb(db, Infinity).db,
+      ),
+    ).rejects.toThrow("overloaded");
+  });
+
+  it("does not cache a lookup that failed its retry", async () => {
+    seedLabel("flight-retry");
+    vi.useFakeTimers();
+    const flaky = failingDb(db, 2);
+
+    const first = resolveLabel("flight-retry", flaky.db).catch(
+      (error: Error) => error.message,
+    );
+    await vi.advanceTimersByTimeAsync(LOOKUP_RETRY_DELAY_MS);
+
+    expect(await first).toBe("D1_ERROR: D1 DB is overloaded.");
+    await expect(resolveLabel("flight-retry", flaky.db)).resolves.toMatchObject(
+      { kind: "server", userId: "acct-flight-retry" },
     );
   });
 });
 
 describe("machine credential presence", () => {
   it("verifies the owning machine and throttles lastSeenAt writes", async () => {
+    const presence = { machineId: "machine-presence", lastSeenAt: null };
     seedUser("acct-machine");
     const credential = `bbcm_${crypto.randomUUID()}`;
-    const digest = await crypto.subtle.digest(
-      "SHA-256",
-      new TextEncoder().encode(credential),
-    );
-    const credentialHash = [...new Uint8Array(digest)]
-      .map((byte) => byte.toString(16).padStart(2, "0"))
-      .join("");
+    const credentialHash = await sha256Hex(credential);
     db.insert(machine)
       .values({
         id: "machine-presence",
@@ -671,8 +970,9 @@ describe("machine credential presence", () => {
     ).resolves.toEqual({
       machineId: "machine-presence",
       userId: "acct-machine",
+      lastSeenAt: null,
     });
-    expect(await markMachineSeen("machine-presence", db, 10_000)).toBe(true);
+    expect(await markMachineSeen(presence, db, 10_000)).toBe(true);
     expect(
       db
         .select()
@@ -684,7 +984,7 @@ describe("machine credential presence", () => {
 
     expect(
       await markMachineSeen(
-        "machine-presence",
+        presence,
         db,
         10_000 + MACHINE_LAST_SEEN_WRITE_INTERVAL_MS - 1,
       ),
@@ -700,10 +1000,156 @@ describe("machine credential presence", () => {
 
     expect(
       await markMachineSeen(
-        "machine-presence",
+        presence,
         db,
         10_000 + MACHINE_LAST_SEEN_WRITE_INTERVAL_MS,
       ),
     ).toBe(true);
+  });
+});
+
+describe("machine last-seen writes", () => {
+  it("skips the write while the stored lastSeenAt is recent", async () => {
+    seedUser("acct-recent");
+    db.insert(machine)
+      .values({
+        id: "machine-recent",
+        userId: "acct-recent",
+        credentialHash: "recent-hash",
+        lastSeenAt: new Date(50_000),
+        createdAt: new Date(0),
+      })
+      .run();
+    const verified = {
+      machineId: "machine-recent",
+      lastSeenAt: new Date(50_000),
+    };
+
+    expect(
+      await markMachineSeen(
+        verified,
+        db,
+        50_000 + MACHINE_LAST_SEEN_WRITE_INTERVAL_MS - 1,
+      ),
+    ).toBe(false);
+    expect(
+      await markMachineSeen(
+        verified,
+        db,
+        50_000 + MACHINE_LAST_SEEN_WRITE_INTERVAL_MS,
+      ),
+    ).toBe(true);
+  });
+});
+
+describe("machine credential cache", () => {
+  async function seedMachine(id: string): Promise<string> {
+    seedUser(`acct-${id}`);
+    const credential = `bbcm_${crypto.randomUUID()}`;
+    db.insert(machine)
+      .values({
+        id,
+        userId: `acct-${id}`,
+        credentialHash: await sha256Hex(credential),
+        createdAt: new Date(0),
+      })
+      .run();
+    return credential;
+  }
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("answers repeat daemon requests from the cache", async () => {
+    const credential = await seedMachine("machine-repeat");
+    const counted = countingDb(db);
+
+    await verifyMachineCredentialDetails(credential, counted.db);
+    const verified = await verifyMachineCredentialDetails(
+      credential,
+      counted.db,
+    );
+
+    expect(counted.counts.select).toBe(1);
+    expect(verified).toEqual({
+      machineId: "machine-repeat",
+      userId: "acct-machine-repeat",
+      lastSeenAt: null,
+    });
+  });
+
+  it("verifies a credential whose earlier lookup never settled", async () => {
+    const credential = await seedMachine("machine-stalled");
+
+    void verifyMachineCredentialDetails(credential, stalledDb(db));
+
+    await expect(
+      verifyMachineCredentialDetails(credential, db),
+    ).resolves.toEqual({
+      machineId: "machine-stalled",
+      userId: "acct-machine-stalled",
+      lastSeenAt: null,
+    });
+  });
+
+  it("caches an unknown credential so retries do not reach D1", async () => {
+    const counted = countingDb(db);
+    const unknown = `bbcm_${crypto.randomUUID()}`;
+
+    expect(await verifyMachineCredentialDetails(unknown, counted.db)).toBe(
+      null,
+    );
+    expect(await verifyMachineCredentialDetails(unknown, counted.db)).toBe(
+      null,
+    );
+    expect(counted.counts.select).toBe(1);
+  });
+
+  it("stops honoring a revoked credential once its entry expires", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const credential = await seedMachine("machine-revoked");
+    expect(await verifyMachineCredentialDetails(credential, db)).toEqual({
+      machineId: "machine-revoked",
+      userId: "acct-machine-revoked",
+      lastSeenAt: null,
+    });
+
+    db.update(machine)
+      .set({ revokedAt: new Date() })
+      .where(eq(machine.id, "machine-revoked"))
+      .run();
+    vi.setSystemTime(1_000_000 + 59_999);
+    expect(await verifyMachineCredentialDetails(credential, db)).not.toBe(null);
+
+    vi.setSystemTime(1_000_000 + 60_000);
+    expect(await verifyMachineCredentialDetails(credential, db)).toBe(null);
+  });
+
+  it("fails closed for an expired credential when D1 fails", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1_000_000);
+    const credential = await seedMachine("machine-fail-closed");
+    await verifyMachineCredentialDetails(credential, db);
+    vi.setSystemTime(1_000_000 + 60_000);
+
+    await expect(
+      verifyMachineCredentialDetails(credential, failingDb(db, Infinity).db),
+    ).rejects.toThrow("overloaded");
+  });
+
+  it("retries a failed D1 lookup once before answering", async () => {
+    const credential = await seedMachine("machine-flaky");
+    const flaky = failingDb(db, 1);
+
+    await expect(
+      verifyMachineCredentialDetails(credential, flaky.db),
+    ).resolves.toEqual({
+      machineId: "machine-flaky",
+      userId: "acct-machine-flaky",
+      lastSeenAt: null,
+    });
+    expect(flaky.counts.select).toBe(2);
   });
 });

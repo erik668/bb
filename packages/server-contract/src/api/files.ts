@@ -1,5 +1,9 @@
 import { z } from "zod";
-import { FILE_LIST_LIMIT_MAX } from "@bb/domain";
+import {
+  FILE_LIST_EXCLUDE_NAME_MAX_LENGTH,
+  FILE_LIST_EXCLUDE_NAMES_MAX,
+  FILE_LIST_LIMIT_MAX,
+} from "@bb/domain";
 import type { HostDaemonOnlineRpcResultByType } from "@bb/host-daemon-contract";
 
 export const hostFileReadRequestSchema = z
@@ -7,8 +11,13 @@ export const hostFileReadRequestSchema = z
     hostId: z.string().min(1).optional(),
     path: z.string().min(1),
     rootPath: z.string().min(1).optional(),
+    ref: z.string().min(1).optional(),
   })
-  .strict();
+  .strict()
+  .refine((request) => request.ref === undefined || request.rootPath !== undefined, {
+    message: "rootPath is required when ref is set",
+    path: ["rootPath"],
+  });
 export type HostFileReadRequest = z.infer<typeof hostFileReadRequestSchema>;
 
 export const hostFileWriteRequestSchema = z
@@ -25,12 +34,19 @@ export const hostFileWriteRequestSchema = z
   .strict();
 export type HostFileWriteRequest = z.infer<typeof hostFileWriteRequestSchema>;
 
+const fileListExcludeNamesRequestSchema = z
+  .array(z.string().min(1).max(FILE_LIST_EXCLUDE_NAME_MAX_LENGTH))
+  .max(FILE_LIST_EXCLUDE_NAMES_MAX)
+  .optional();
+
 export const hostFileListRequestSchema = z
   .object({
     hostId: z.string().min(1).optional(),
     path: z.string().min(1),
     query: z.string().optional(),
     limit: z.number().int().positive().max(FILE_LIST_LIMIT_MAX).optional(),
+    includeHidden: z.boolean().optional(),
+    excludeNames: fileListExcludeNamesRequestSchema,
   })
   .strict();
 export type HostFileListRequest = z.infer<typeof hostFileListRequestSchema>;
@@ -43,6 +59,8 @@ export const hostPathListRequestSchema = z
     limit: z.number().int().positive().max(FILE_LIST_LIMIT_MAX).optional(),
     includeFiles: z.boolean(),
     includeDirectories: z.boolean(),
+    includeHidden: z.boolean().optional(),
+    excludeNames: fileListExcludeNamesRequestSchema,
   })
   .strict();
 export type HostPathListRequest = z.infer<typeof hostPathListRequestSchema>;
@@ -92,8 +110,10 @@ export interface CreateFilePreviewResponse {
   expiresAtMs: number;
 }
 
-export type HostFileReadResponse =
-  HostDaemonOnlineRpcResultByType["host.read_file"];
+export type HostFileReadResponse = Exclude<
+  HostDaemonOnlineRpcResultByType["host.read_file"],
+  { notModified: true }
+>;
 export type HostFileWriteResponse =
   HostDaemonOnlineRpcResultByType["host.write_file"];
 export type HostFileListResponse =

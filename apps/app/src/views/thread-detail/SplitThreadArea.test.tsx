@@ -10,9 +10,16 @@ import {
   within,
 } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
-import { useContext, useMemo, useState, type ReactNode } from "react";
+import {
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
-import { QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import type { BbDesktopInfo } from "@bb/desktop-contract";
@@ -31,51 +38,140 @@ import {
   serializeSplitLayout,
   SPLIT_LAYOUT_STORAGE_KEY,
 } from "@/lib/split-layout";
-import type { PaneContent, SplitLayout } from "@/lib/split-layout";
-import { usePromptDraftStorage } from "@/hooks/usePromptDraftStorage";
+import type { LayoutNode, PaneContent, SplitLayout } from "@/lib/split-layout";
+import {
+  getPromptDraftAccessor,
+  usePromptDraftStorage,
+} from "@/hooks/usePromptDraftStorage";
+import { useRouteState } from "@/hooks/useRouteState";
+import { registerPaneComposerFocus } from "@/lib/pane-composer-focus";
 import { createBbDesktopApi } from "@/test/bb-desktop-test-utils";
-import { resourceRouteLabelAtom } from "@/components/layout/resourceRouteLabelAtom";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import {
+  PluginComposerHostScopeProvider,
   usePluginComposerHost,
+  usePublishPluginComposerHost,
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
-import { PaneContext, usePaneSecondaryPanelRegistration } from "./PaneContext";
+import { PluginContext } from "@/components/plugin/plugin-context";
+import { useComposer } from "@/lib/plugin-sdk-hooks";
+import {
+  PaneContext,
+  usePaneSecondaryPanelRegistration,
+  type PaneContextValue,
+} from "./PaneContext";
+import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
+import {
+  getPluginPageSecondaryPanelWidthPercentAtom,
+  secondaryPanelWidthPercentAtom,
+} from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { SplitThreadArea } from "./SplitThreadArea";
 import { applyThreadOpenToLayout } from "./splitThreadNavigation";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { LocationProbe } from "@/test/location-probe";
 
 const threadStore = vi.hoisted(
   () =>
     new Map<string, { archivedAt: number | null; deletedAt: number | null }>(),
 );
-const viewportState = vi.hoisted(() => ({ compact: false }));
+const viewportState = vi.hoisted(() => ({
+  compact: false,
+  listeners: new Set<() => void>(),
+}));
+const paneMounts = vi.hoisted(() => new Map<string, number>());
 const sidebarState = vi.hoisted(() => ({ showing: true }));
 const panelFullScreenState = vi.hoisted(() => ({
   isMainCollapsed: false,
 }));
 const panelGroupLayoutState = vi.hoisted(() => ({ layout: [100, 0] }));
-const panelCallbacks = vi.hoisted(
-  () =>
-    new Map<
-      string,
-      { onCollapse?: () => void; onResize?: (size: number) => void }
-    >(),
-);
 const commandHandlers = vi.hoisted(() => new Map<string, () => boolean>());
-interface ShortcutPresentationFixture {
-  ariaKeyshortcuts: string;
-  label: string;
-}
-const commandPresentationState = vi.hoisted(
-  (): {
-    isModifierHeld: boolean;
-    shortcut: ShortcutPresentationFixture | null;
-  } => ({ isModifierHeld: false, shortcut: null }),
+const paneContextRenders = vi.hoisted(
+  () => new Map<string, Array<PaneContextValue | null>>(),
 );
+const timelineProbe = vi.hoisted(() => ({
+  active: false,
+  calls: new Map<string, number>(),
+}));
+
+const composerScopeProbe = vi.hoisted(() => ({ active: false }));
+
+function ThreadComposerScope({
+  projectId,
+  threadId,
+}: {
+  projectId: string;
+  threadId: string;
+}) {
+  return (
+    <PluginComposerHostScopeProvider>
+      <ThreadComposerHostPublisher projectId={projectId} threadId={threadId} />
+      <PluginContext.Provider value="composer-scope-probe">
+        <PluginComposerScopeConsumer />
+      </PluginContext.Provider>
+    </PluginComposerHostScopeProvider>
+  );
+}
+
+function ThreadComposerHostPublisher({
+  projectId,
+  threadId,
+}: {
+  projectId: string;
+  threadId: string;
+}) {
+  const promptDraft = usePromptDraftStorage({
+    kind: "thread",
+    projectId,
+    threadId,
+  });
+  const host = useMemo<PluginComposerHost>(
+    () => ({
+      scope: { kind: "thread", threadId },
+      textEffectKey: promptDraft.storageKey,
+      getCurrent: promptDraft.getCurrent,
+      subscribeDraft: promptDraft.subscribe,
+      setDraft: promptDraft.setDraft,
+      focus: () => undefined,
+    }),
+    [
+      promptDraft.getCurrent,
+      promptDraft.setDraft,
+      promptDraft.storageKey,
+      promptDraft.subscribe,
+      threadId,
+    ],
+  );
+  usePublishPluginComposerHost(host);
+  return null;
+}
+
+function PluginComposerScopeConsumer() {
+  const composer = useComposer();
+  const scopeThreadId =
+    composer.scope.kind === "thread" ? composer.scope.threadId : "none";
+  return (
+    <div
+      data-testid="plugin-composer"
+      data-scope-thread={scopeThreadId}
+      data-key={composer.key}
+    >
+      <span data-testid="plugin-composer-text">{composer.text}</span>
+      <button
+        type="button"
+        data-testid="plugin-composer-replace"
+        onClick={() =>
+          composer.replace({
+            text: `plugin edit for ${scopeThreadId}`,
+            mentions: [],
+          })
+        }
+      />
+    </div>
+  );
+}
 
 function HostedComposerScopeProbe({ threadId }: { threadId: string }) {
   const composerHost = usePluginComposerHost();
@@ -90,6 +186,10 @@ function HostedComposerScopeProbe({ threadId }: { threadId: string }) {
 
 function RootComposeFixture() {
   const pane = useContext(PaneContext);
+  paneContextRenders.set("new-thread", [
+    ...(paneContextRenders.get("new-thread") ?? []),
+    pane,
+  ]);
   const [isPanelOpen, setIsPanelOpen] = useState(false);
   const panelModel = useMemo(
     () => ({
@@ -100,6 +200,7 @@ function RootComposeFixture() {
       panel: <div data-testid="hosted-new-thread-panel" />,
       onToggle: () => setIsPanelOpen((open) => !open),
       transitionsReady: true,
+      widthPercentAtom: secondaryPanelWidthPercentAtom,
     }),
     [isPanelOpen],
   );
@@ -107,12 +208,37 @@ function RootComposeFixture() {
     pane?.secondaryPanelHost ?? null,
     panelModel,
   );
-  return <div data-testid="root-compose-view" />;
+  useEffect(() => {
+    paneMounts.set("new-thread", (paneMounts.get("new-thread") ?? 0) + 1);
+  }, []);
+  return (
+    <div data-testid="root-compose-view">
+      <textarea data-testid="draft-new-thread" />
+    </div>
+  );
 }
 
-vi.mock("@bb/shared-ui/hooks/use-compact-viewport", () => ({
-  useIsCompactViewport: () => viewportState.compact,
-}));
+vi.mock("@bb/shared-ui/hooks/use-compact-viewport", async () => {
+  const React = await import("react");
+  const subscribe = (listener: () => void) => {
+    viewportState.listeners.add(listener);
+    return () => {
+      viewportState.listeners.delete(listener);
+    };
+  };
+  const getSnapshot = () => viewportState.compact;
+  return {
+    useIsCompactViewport: () =>
+      React.useSyncExternalStore(subscribe, getSnapshot, getSnapshot),
+  };
+});
+
+function setCompactViewport(compact: boolean) {
+  act(() => {
+    viewportState.compact = compact;
+    viewportState.listeners.forEach((listener) => listener());
+  });
+}
 
 vi.mock("@/hooks/queries/thread-queries", () => ({
   useThread: (id: string) => {
@@ -134,9 +260,16 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
   useAppCommandHandler: (command: string, handler: () => boolean) => {
     commandHandlers.set(command, handler);
   },
-  useAppCommandShortcut: () => commandPresentationState.shortcut,
-  useIsAppCommandModifierHeld: () => commandPresentationState.isModifierHeld,
-  useIndexedAppCommandHandlers: () => undefined,
+  useAppCommandShortcut: () => null,
+  useIsAppCommandModifierHeld: () => false,
+  useIndexedAppCommandHandlers: (
+    commands: readonly string[],
+    handler: (index: number) => boolean,
+  ) => {
+    commands.forEach((command, index) =>
+      commandHandlers.set(command, () => handler(index)),
+    );
+  },
 }));
 
 vi.mock("react-resizable-panels", async () => {
@@ -165,24 +298,11 @@ vi.mock("react-resizable-panels", async () => {
     );
   });
   PanelGroup.displayName = "MockPanelGroup";
-  const Panel = ({
-    children,
-    id,
-    onCollapse,
-    onResize,
-  }: {
-    children?: ReactNode;
-    id?: string;
-    onCollapse?: () => void;
-    onResize?: (size: number) => void;
-  }) => {
-    if (id !== undefined) panelCallbacks.set(id, { onCollapse, onResize });
-    return (
-      <div data-testid="workspace-panel" data-panel-id={id}>
-        {children}
-      </div>
-    );
-  };
+  const Panel = ({ children, id }: { children?: ReactNode; id?: string }) => (
+    <div data-testid="workspace-panel" data-panel-id={id}>
+      {children}
+    </div>
+  );
   const PanelResizeHandle = ({
     children,
     className,
@@ -205,6 +325,9 @@ vi.mock("react-resizable-panels", async () => {
 
 vi.mock("@/components/ui/sidebar.js", () => ({
   useIsSidebarShowing: () => sidebarState.showing,
+  useOptionalIsSidebarShowing: () => sidebarState.showing,
+  useSidebarKeepsCollapsedRail: () => false,
+  useIsSidebarFramed: () => false,
 }));
 
 vi.mock("@/views/RootComposeView", () => ({
@@ -216,13 +339,11 @@ vi.mock("@/components/plugin/PluginPanelRightPanelHost", () => ({
     children,
     flushPageInsets,
     panelPath,
-    pluginDetailTabsEnabled,
     pluginId,
   }: {
     children: ReactNode;
     flushPageInsets?: boolean;
     panelPath: string;
-    pluginDetailTabsEnabled?: boolean;
     pluginId: string;
   }) => {
     const pane = useContext(PaneContext);
@@ -250,6 +371,10 @@ vi.mock("@/components/plugin/PluginPanelRightPanelHost", () => ({
         ),
         onToggle: () => setIsPanelOpen((open) => !open),
         transitionsReady: true,
+        widthPercentAtom: getPluginPageSecondaryPanelWidthPercentAtom({
+          panelPath,
+          pluginId,
+        }),
       }),
       [isPanelOpen, panelPath, pluginId],
     );
@@ -262,124 +387,181 @@ vi.mock("@/components/plugin/PluginPanelRightPanelHost", () => ({
         data-testid="plugin-browser-host"
         data-flush-page-insets={String(flushPageInsets === true)}
         data-panel-path={panelPath}
-        data-plugin-detail-tabs-enabled={String(
-          pluginDetailTabsEnabled === true,
-        )}
         data-plugin-id={pluginId}
         data-detail-tab-open={String(isDetailTabOpen)}
       >
         {children}
-        {pluginDetailTabsEnabled === true ? (
-          <button type="button" onClick={() => setIsDetailTabOpen(true)}>
-            Open plugin detail tab
-          </button>
-        ) : null}
+        <button type="button" onClick={() => setIsDetailTabOpen(true)}>
+          Open plugin detail tab
+        </button>
       </div>
     );
   },
 }));
 
-vi.mock("./ThreadDetailView", () => ({
-  ThreadDetailView: ({
-    projectId = "proj_personal",
-    threadId = "thr-a",
-  }: {
-    projectId: string;
-    threadId: string;
-  }) => {
-    const pane = useContext(PaneContext);
-    const [isPanelOpen, setIsPanelOpen] = useState(threadId === "thr-a");
-    const composerHost = useMemo<PluginComposerHost>(() => {
-      const draft = { attachments: [], mentions: [], text: "" };
-      return {
-        scope: { kind: "thread", threadId },
-        textEffectKey: `test-draft-${threadId}`,
-        getCurrent: () => draft,
-        subscribeDraft: () => () => {},
-        setDraft: () => undefined,
-        focus: () => undefined,
-      };
-    }, [threadId]);
-    const panelModel = useMemo(
-      () => ({
-        composerHost,
-        contentKey: threadId,
-        isMainCollapsed: panelFullScreenState.isMainCollapsed,
-        isOpen: isPanelOpen,
-        panel: (
-          <div data-testid={`hosted-panel-${threadId}`}>
-            <HostedComposerScopeProbe threadId={threadId} />
-          </div>
-        ),
-        onToggle: () => setIsPanelOpen((open) => !open),
-        transitionsReady: true,
-      }),
-      [composerHost, isPanelOpen, threadId],
-    );
-    usePaneSecondaryPanelRegistration(
-      pane?.secondaryPanelHost ?? null,
-      panelModel,
-    );
-    const draft = usePromptDraftStorage({
-      kind: "thread",
-      projectId,
-      threadId,
+function RoutedThreadPaneFixture() {
+  const route = useRouteState();
+  return (
+    <ThreadPaneFixture
+      projectId={route.projectId ?? "proj_personal"}
+      threadId={route.threadId ?? "thr-a"}
+    />
+  );
+}
+
+vi.mock("./LazyThreadDetailView", () => ({
+  LazyThreadDetailView: (props: {
+    surface: "page" | "pane";
+    projectId?: string;
+    threadId?: string;
+    timelineEnabled?: boolean;
+  }) =>
+    props.surface === "page" ? (
+      <RoutedThreadPaneFixture />
+    ) : (
+      <ThreadPaneFixture
+        projectId={props.projectId ?? "proj_personal"}
+        threadId={props.threadId ?? "thr-a"}
+        timelineEnabled={props.timelineEnabled}
+      />
+    ),
+}));
+
+function ThreadPaneFixture({
+  projectId,
+  threadId,
+  timelineEnabled = true,
+}: {
+  projectId: string;
+  threadId: string;
+  timelineEnabled?: boolean;
+}) {
+  useQuery({
+    queryKey: ["timeline-probe", threadId],
+    queryFn: () => {
+      const next = (timelineProbe.calls.get(threadId) ?? 0) + 1;
+      timelineProbe.calls.set(threadId, next);
+      return next;
+    },
+    enabled: timelineProbe.active && timelineEnabled,
+  });
+  const pane = useContext(PaneContext);
+  paneContextRenders.set(threadId, [
+    ...(paneContextRenders.get(threadId) ?? []),
+    pane,
+  ]);
+  const [isPanelOpen, setIsPanelOpen] = useState(threadId === "thr-a");
+  const composerHost = useMemo<PluginComposerHost>(() => {
+    const draft = { attachments: [], mentions: [], text: "" };
+    return {
+      scope: { kind: "thread", threadId },
+      textEffectKey: `test-draft-${threadId}`,
+      getCurrent: () => draft,
+      subscribeDraft: () => () => {},
+      setDraft: () => undefined,
+      focus: () => undefined,
+    };
+  }, [threadId]);
+  const panelModel = useMemo(
+    () => ({
+      composerHost,
+      contentKey: threadId,
+      isMainCollapsed: panelFullScreenState.isMainCollapsed,
+      isOpen: isPanelOpen,
+      panel: (
+        <div data-testid={`hosted-panel-${threadId}`}>
+          <HostedComposerScopeProbe threadId={threadId} />
+        </div>
+      ),
+      onToggle: () => setIsPanelOpen((open) => !open),
+      transitionsReady: true,
+      widthPercentAtom: secondaryPanelWidthPercentAtom,
+    }),
+    [composerHost, isPanelOpen, threadId],
+  );
+  usePaneSecondaryPanelRegistration(
+    pane?.secondaryPanelHost ?? null,
+    panelModel,
+  );
+  const draft = usePromptDraftStorage({
+    kind: "thread",
+    projectId,
+    threadId,
+  });
+  const composerRootRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    paneMounts.set(threadId, (paneMounts.get(threadId) ?? 0) + 1);
+  }, [threadId]);
+  useEffect(() => {
+    const root = composerRootRef.current;
+    if (root === null) return;
+    return registerPaneComposerFocus(root, () => {
+      const textarea = textareaRef.current;
+      if (textarea === null || textarea.disabled) return false;
+      textarea.focus();
+      return true;
     });
-    return (
+  }, []);
+  return (
+    <div
+      data-testid={`pane-${threadId}`}
+      data-focused={pane?.isFocused ? "true" : "false"}
+      data-window-top-left-owner={pane?.ownsWindowTopLeft ? "true" : "false"}
+    >
       <div
-        data-testid={`pane-${threadId}`}
-        data-focused={pane?.isFocused ? "true" : "false"}
-        data-window-top-left-owner={pane?.ownsWindowTopLeft ? "true" : "false"}
-      >
-        <div
-          data-testid={`drag-${threadId}`}
-          onPointerDown={(event) => pane?.beginPaneDrag?.(event, threadId)}
-        />
+        data-testid={`drag-${threadId}`}
+        onPointerDown={(event) => pane?.beginPaneDrag?.(event, threadId)}
+      />
+      <div ref={composerRootRef}>
         <textarea
+          ref={textareaRef}
           data-testid={`draft-${threadId}`}
           value={draft.text}
           onChange={(event) => draft.setTextAndMentions(event.target.value, [])}
         />
-        <div
-          data-testid={`scroll-${threadId}`}
-          style={{ height: 20, overflow: "auto" }}
-        >
-          <div style={{ height: 100 }} />
-        </div>
-        {pane?.onRequestClose ? (
-          <button
-            type="button"
-            data-testid={`close-${threadId}`}
-            onClick={pane.onRequestClose}
-          >
-            close
-          </button>
-        ) : null}
-        {pane?.onToggleMaximize ? (
-          <button
-            type="button"
-            data-testid={`maximize-${threadId}`}
-            onClick={pane.onToggleMaximize}
-          >
-            {pane.isMaximized ? "restore" : "maximize"}
-          </button>
-        ) : null}
-        {pane?.onMoveToSide ? (
-          <button
-            type="button"
-            data-testid={`move-right-${threadId}`}
-            onClick={() => pane.onMoveToSide?.("right")}
-          >
-            move right
-          </button>
-        ) : null}
       </div>
-    );
-  },
-}));
+      <div
+        data-testid={`scroll-${threadId}`}
+        style={{ height: 20, overflow: "auto" }}
+      >
+        <div style={{ height: 100 }} />
+      </div>
+      {composerScopeProbe.active ? (
+        <ThreadComposerScope projectId={projectId} threadId={threadId} />
+      ) : null}
+      {pane?.onRequestClose ? (
+        <button
+          type="button"
+          data-testid={`close-${threadId}`}
+          onClick={pane.onRequestClose}
+        >
+          close
+        </button>
+      ) : null}
+      {pane?.onToggleMaximize ? (
+        <button
+          type="button"
+          data-testid={`maximize-${threadId}`}
+          onClick={pane.onToggleMaximize}
+        >
+          {pane.isMaximized ? "restore" : "maximize"}
+        </button>
+      ) : null}
+      {pane?.onMoveToSide ? (
+        <button
+          type="button"
+          data-testid={`move-right-${threadId}`}
+          onClick={() => pane.onMoveToSide?.("right")}
+        >
+          move right
+        </button>
+      ) : null}
+    </div>
+  );
+}
 
-const { queryClient, wrapper: _wrapper } = createQueryClientTestHarness();
-void _wrapper;
+const { queryClient } = createQueryClientTestHarness();
 
 function threadContent(threadId: string) {
   return {
@@ -414,6 +596,33 @@ function twoPaneLayout(
       ],
     },
     focusedPaneId,
+  };
+}
+
+function fourPaneThreadLayout(): SplitLayout {
+  const row = (
+    first: [string, string],
+    second: [string, string],
+  ): LayoutNode => ({
+    type: "split",
+    dir: "row",
+    sizes: [0.5, 0.5],
+    children: [
+      { type: "pane", paneId: first[0], content: threadContent(first[1]) },
+      { type: "pane", paneId: second[0], content: threadContent(second[1]) },
+    ],
+  });
+  return {
+    root: {
+      type: "split",
+      dir: "col",
+      sizes: [0.5, 0.5],
+      children: [
+        row(["pane-1", "thr-a"], ["pane-2", "thr-b"]),
+        row(["pane-3", "thr-c"], ["pane-4", "thr-d"]),
+      ],
+    },
+    focusedPaneId: "pane-1",
   };
 }
 
@@ -541,13 +750,73 @@ function twoPluginSplitLayout(): SplitLayout {
   };
 }
 
+const createdThread = { projectId: PERSONAL_PROJECT_ID, threadId: "thr-c" };
+
+function composerSplitLayout(): SplitLayout {
+  return {
+    root: {
+      type: "split",
+      dir: "row",
+      sizes: [0.5, 0.5],
+      children: [
+        { type: "pane", paneId: "pane-1", content: threadContent("thr-a") },
+        { type: "pane", paneId: "pane-2", content: newThreadContent },
+      ],
+    },
+    focusedPaneId: "pane-2",
+  };
+}
+
+function paneContents(layout: SplitLayout | null): PaneContent[] {
+  return layout === null
+    ? []
+    : listPanes(layout.root).map((pane) => pane.content);
+}
+
+async function findComposerPane(): Promise<PaneContextValue> {
+  await screen.findByTestId("root-compose-view");
+  const pane = paneContextRenders.get("new-thread")?.at(-1);
+  if (pane === undefined || pane === null) {
+    throw new Error("Expected pane context for the new-thread composer");
+  }
+  return pane;
+}
+
+function LeavableWorkspace() {
+  const [inWorkspace, setInWorkspace] = useState(true);
+  return (
+    <>
+      {inWorkspace ? <RouteAwareSplitArea /> : null}
+      <button
+        type="button"
+        data-testid="leave-workspace"
+        onClick={() => setInWorkspace(false)}
+      >
+        leave
+      </button>
+    </>
+  );
+}
+
 function threadPath(threadId: string): string {
   return `/threads/${threadId}`;
 }
 
-function LocationProbe() {
-  const location = useLocation();
-  return <div data-testid="location">{location.pathname}</div>;
+function registerDocsPanel() {
+  setPluginSlotRegistrations(
+    "docs",
+    makePluginRegistrationSet({
+      navPanels: [
+        {
+          id: "docs",
+          title: "Docs",
+          icon: "FileText",
+          path: "docs",
+          component: () => <div>Docs panel</div>,
+        },
+      ],
+    }),
+  );
 }
 
 function ExternalNav({ to }: { to: string }) {
@@ -590,7 +859,11 @@ function RouteAwareSplitArea() {
   return (
     <SplitThreadArea
       routeContent={
-        location.pathname.startsWith("/plugins/") ? docsContent : undefined
+        location.pathname === "/"
+          ? newThreadContent
+          : location.pathname.startsWith("/plugins/")
+            ? docsContent
+            : undefined
       }
     />
   );
@@ -602,6 +875,7 @@ function renderSplitArea(options: {
   externalTo?: string;
   routeContent?: PaneContent;
   routeAwareContent?: boolean;
+  leavableWorkspace?: boolean;
   pluginPanelLifecycle?: boolean;
   maximizedPaneId?: string;
 }) {
@@ -617,17 +891,21 @@ function renderSplitArea(options: {
       <JotaiProvider store={store}>
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={[options.path]}>
-            {options.pluginPanelLifecycle ? (
-              <PluginPanelLifecycleHarness />
-            ) : options.routeAwareContent ? (
-              <RouteAwareSplitArea />
-            ) : (
-              <SplitThreadArea routeContent={options.routeContent} />
-            )}
-            <LocationProbe />
-            {options.externalTo !== undefined ? (
-              <ExternalNav to={options.externalTo} />
-            ) : null}
+            <RouteNavigationProvider>
+              {options.pluginPanelLifecycle ? (
+                <PluginPanelLifecycleHarness />
+              ) : options.leavableWorkspace ? (
+                <LeavableWorkspace />
+              ) : options.routeAwareContent ? (
+                <RouteAwareSplitArea />
+              ) : (
+                <SplitThreadArea routeContent={options.routeContent} />
+              )}
+              <LocationProbe />
+              {options.externalTo !== undefined ? (
+                <ExternalNav to={options.externalTo} />
+              ) : null}
+            </RouteNavigationProvider>
           </MemoryRouter>
         </QueryClientProvider>
       </JotaiProvider>
@@ -642,16 +920,20 @@ beforeEach(() => {
   panelFullScreenState.isMainCollapsed = false;
   panelGroupLayoutState.layout = [100, 0];
   commandHandlers.clear();
-  commandPresentationState.isModifierHeld = false;
-  commandPresentationState.shortcut = null;
+  paneContextRenders.clear();
+  paneMounts.clear();
+  timelineProbe.active = false;
+  timelineProbe.calls.clear();
+  composerScopeProbe.active = false;
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
 
 afterEach(() => {
   cleanup();
+  window.dispatchEvent(new Event("pagehide"));
+  vi.restoreAllMocks();
   threadStore.clear();
-  panelCallbacks.clear();
   resetPluginSlotStoreForTest();
   delete window.bbDesktop;
   window.localStorage.clear();
@@ -672,7 +954,6 @@ describe("SplitThreadArea", () => {
     expect(host.dataset.pluginId).toBe("docs");
     expect(host.dataset.panelPath).toBe("docs");
     expect(host.dataset.flushPageInsets).toBe("true");
-    expect(host.dataset.pluginDetailTabsEnabled).toBe("false");
   });
 
   it("preserves detail state within the Guide and clears it for another plugin page", async () => {
@@ -682,7 +963,6 @@ describe("SplitThreadArea", () => {
     });
 
     const host = await screen.findByTestId("plugin-browser-host");
-    expect(host.dataset.pluginDetailTabsEnabled).toBe("true");
     fireEvent.click(
       screen.getByRole("button", { name: "Open plugin detail tab" }),
     );
@@ -798,6 +1078,30 @@ describe("SplitThreadArea", () => {
     });
   });
 
+  it("pauses a hidden pane timeline and refreshes it when restored", async () => {
+    timelineProbe.active = true;
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: twoPaneLayout("pane-1"),
+    });
+
+    await waitFor(() => {
+      expect(timelineProbe.calls.get("thr-a")).toBe(1);
+      expect(timelineProbe.calls.get("thr-b")).toBe(1);
+    });
+
+    fireEvent.click(screen.getByTestId("maximize-thr-a"));
+    await act(async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["timeline-probe", "thr-b"],
+      });
+    });
+    expect(timelineProbe.calls.get("thr-b")).toBe(1);
+
+    fireEvent.click(screen.getByTestId("maximize-thr-a"));
+    await waitFor(() => expect(timelineProbe.calls.get("thr-b")).toBe(2));
+  });
+
   it("temporarily replaces panel full screen with a clean thread full screen", async () => {
     panelFullScreenState.isMainCollapsed = true;
     renderSplitArea({
@@ -806,7 +1110,7 @@ describe("SplitThreadArea", () => {
     });
 
     expect(screen.queryByTestId("mock-collapsed-thread-rail")).toBeNull();
-    fireEvent.click(screen.getByTestId("maximize-thr-a"));
+    fireEvent.click(await screen.findByTestId("maximize-thr-a"));
 
     expect(screen.getByTestId("maximize-thr-a").textContent).toBe("restore");
     await waitFor(() => {
@@ -851,11 +1155,31 @@ describe("SplitThreadArea", () => {
   });
 
   it("stops the restore loop once positions settle instead of burning 30 frames", async () => {
+    const frames = new Map<number, FrameRequestCallback>();
+    let frameId = 0;
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      const id = ++frameId;
+      frames.set(id, callback);
+      return id;
+    });
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      frames.delete(id);
+    });
+    const flushFrames = () => {
+      for (let round = 0; frames.size > 0 && round < 30; round += 1) {
+        const callbacks = [...frames.values()];
+        frames.clear();
+        act(() => {
+          for (const callback of callbacks) callback(performance.now());
+        });
+      }
+      expect(frames.size).toBe(0);
+    };
     renderSplitArea({
       path: threadPath("thr-a"),
       layout: twoPaneLayout("pane-1"),
     });
-    const hiddenScroller = screen.getByTestId("scroll-thr-b");
+    const hiddenScroller = await screen.findByTestId("scroll-thr-b");
     hiddenScroller.scrollTop = 12;
     fireEvent.scroll(hiddenScroller);
 
@@ -871,7 +1195,7 @@ describe("SplitThreadArea", () => {
     });
 
     fireEvent.click(screen.getByTestId("maximize-thr-a"));
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    flushFrames();
     expect(writes).toHaveLength(0);
 
     Object.defineProperty(hiddenScroller, "scrollTop", {
@@ -882,7 +1206,7 @@ describe("SplitThreadArea", () => {
       },
     });
     fireEvent.click(screen.getByTestId("maximize-thr-a"));
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    flushFrames();
     expect(writes.length).toBeGreaterThan(0);
     expect(writes.length).toBeLessThanOrEqual(6);
   });
@@ -898,6 +1222,29 @@ describe("SplitThreadArea", () => {
     await waitFor(() => expect(store.get(maximizedPaneIdAtom)).toBe("pane-2"));
     expect(commandHandlers.get("pane.maximize.toggle")?.()).toBe(true);
     await waitFor(() => expect(store.get(maximizedPaneIdAtom)).toBeNull());
+  });
+
+  it("moves vertically between stacked chats and preserves focus at an edge", async () => {
+    const layout = twoPaneLayout("pane-1");
+    if (layout.root.type !== "split") throw new Error("Expected split fixture");
+    layout.root.dir = "col";
+    const store = renderSplitArea({ path: threadPath("thr-a"), layout });
+    await screen.findByTestId("pane-thr-a");
+    expect(commandHandlers.get("pane.focus.right")?.()).toBe(false);
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1");
+    act(() => {
+      expect(commandHandlers.get("pane.focus.down")?.()).toBe(true);
+    });
+    await waitFor(() =>
+      expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-2"),
+    );
+    expect(commandHandlers.get("pane.focus.down")?.()).toBe(false);
+    act(() => {
+      expect(commandHandlers.get("pane.focus.up")?.()).toBe(true);
+    });
+    await waitFor(() =>
+      expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1"),
+    );
   });
 
   it("routes arrangement actions through the existing split move operation", async () => {
@@ -924,7 +1271,7 @@ describe("SplitThreadArea", () => {
     });
     await screen.findByTestId("pane-thr-a");
 
-    expect(commandHandlers.get("pane.focus.next")?.()).toBe(true);
+    expect(commandHandlers.get("pane.focus.right")?.()).toBe(true);
     await waitFor(() => expect(store.get(maximizedPaneIdAtom)).toBe("pane-2"));
 
     const opened = applyThreadOpenToLayout(
@@ -1504,8 +1851,10 @@ describe("SplitThreadArea", () => {
     });
 
     const toggle = await screen.findByTestId("split-workspace-panel-toggle");
-    expect(toggle.querySelector("button")?.getAttribute("aria-expanded")).toBe(
-      "true",
+    await waitFor(() =>
+      expect(
+        toggle.querySelector("button")?.getAttribute("aria-expanded"),
+      ).toBe("true"),
     );
     expect(
       screen.queryByTestId("split-workspace-empty-panel-state"),
@@ -1713,10 +2062,15 @@ describe("SplitThreadArea", () => {
     expect(
       screen.getByRole("button", { name: "Collapse notes sidebar" }),
     ).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Close pane" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Close pane" })).toBeTruthy();
     expect(screen.queryByTestId("split-workspace-panel-toggle")).toBeNull();
     const remainingHost = screen.getByTestId("plugin-browser-host");
     expect(remainingHost.dataset.flushPageInsets).toBe("true");
+
+    fireEvent.click(screen.getByRole("button", { name: "Close pane" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/"),
+    );
   });
 
   it("mounts both panes with independent, threadId-keyed drafts", async () => {
@@ -1770,6 +2124,206 @@ describe("SplitThreadArea", () => {
     ).toEqual([screen.getByTestId("pane-thr-a")]);
   });
 
+  it("opens a created thread in the focused composer pane", async () => {
+    const store = renderSplitArea({
+      path: "/",
+      routeAwareContent: true,
+      layout: composerSplitLayout(),
+    });
+    const composerPane = await findComposerPane();
+
+    act(() => composerPane.navigateInPane(createdThread));
+
+    expect(await screen.findByTestId("pane-thr-c")).toBeTruthy();
+    expect(screen.getByTestId("pane-thr-a")).toBeTruthy();
+    expect(screen.queryByTestId("root-compose-view")).toBeNull();
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-2");
+    expect(screen.getByTestId("location").textContent).toBe(
+      threadPath("thr-c"),
+    );
+  });
+
+  it("replaces the originating composer pane without taking focus after focus moves", async () => {
+    const store = renderSplitArea({
+      path: "/",
+      routeAwareContent: true,
+      layout: composerSplitLayout(),
+    });
+    const composerPane = await findComposerPane();
+    fireEvent.pointerDown(await screen.findByTestId("pane-thr-a"));
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-a"),
+      );
+    });
+
+    act(() => composerPane.navigateInPane(createdThread));
+
+    expect(await screen.findByTestId("pane-thr-c")).toBeTruthy();
+    expect(screen.getByTestId("pane-thr-a")).toBeTruthy();
+    expect(screen.queryByTestId("root-compose-view")).toBeNull();
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1");
+    expect(screen.getByTestId("location").textContent).toBe(
+      threadPath("thr-a"),
+    );
+  });
+
+  it("drops a created thread whose originating composer pane has closed", async () => {
+    const store = renderSplitArea({
+      path: "/",
+      routeAwareContent: true,
+      layout: composerSplitLayout(),
+    });
+    const composerPane = await findComposerPane();
+    fireEvent.pointerDown(await screen.findByTestId("pane-thr-a"));
+    act(() => {
+      store.set(splitLayoutAtom, {
+        root: {
+          type: "pane",
+          paneId: "pane-1",
+          content: threadContent("thr-a"),
+        },
+        focusedPaneId: "pane-1",
+      });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-a"),
+      );
+    });
+
+    act(() => composerPane.navigateInPane(createdThread));
+
+    expect(store.get(splitLayoutAtom)).toEqual({
+      root: { type: "pane", paneId: "pane-1", content: threadContent("thr-a") },
+      focusedPaneId: "pane-1",
+    });
+    expect(screen.getByTestId("location").textContent).toBe(
+      threadPath("thr-a"),
+    );
+  });
+
+  it.each([
+    ["split", false],
+    ["compact", true],
+  ] as const)(
+    "drops a created thread whose %s composer pane now shows another thread",
+    async (_layoutMode, compact) => {
+      viewportState.compact = compact;
+      const store = renderSplitArea({
+        path: "/",
+        routeAwareContent: true,
+        externalTo: threadPath("thr-b"),
+        layout: composerSplitLayout(),
+      });
+      const composerPane = await findComposerPane();
+
+      fireEvent.click(screen.getByTestId("external-nav"));
+      await waitFor(() => {
+        expect(screen.queryByTestId("root-compose-view")).toBeNull();
+      });
+      const layoutBefore = store.get(splitLayoutAtom);
+
+      act(() => composerPane.navigateInPane(createdThread));
+
+      expect(store.get(splitLayoutAtom)).toBe(layoutBefore);
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-b"),
+      );
+    },
+  );
+
+  it("opens a created thread from a compact composer that is still on screen", async () => {
+    viewportState.compact = true;
+    const store = renderSplitArea({
+      path: "/",
+      routeAwareContent: true,
+      layout: composerSplitLayout(),
+    });
+    const composerPane = await findComposerPane();
+
+    act(() => composerPane.navigateInPane(createdThread));
+
+    await waitFor(() => {
+      expect(screen.queryByTestId("root-compose-view")).toBeNull();
+    });
+    expect(screen.getByTestId("location").textContent).toBe(
+      threadPath("thr-c"),
+    );
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-2");
+  });
+
+  it("keeps a compact viewer on the thread they opened from another pane", async () => {
+    viewportState.compact = true;
+    const store = renderSplitArea({
+      path: "/",
+      routeAwareContent: true,
+      externalTo: threadPath("thr-a"),
+      layout: composerSplitLayout(),
+    });
+    const composerPane = await findComposerPane();
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await waitFor(() => {
+      expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1");
+    });
+
+    act(() => composerPane.navigateInPane(createdThread));
+
+    expect(screen.getByTestId("location").textContent).toBe(
+      threadPath("thr-a"),
+    );
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1");
+    expect(paneContents(store.get(splitLayoutAtom))).toEqual([
+      threadContent("thr-a"),
+      threadContent("thr-c"),
+    ]);
+  });
+
+  it("does not navigate after the workspace has been left", async () => {
+    const store = renderSplitArea({
+      path: "/",
+      routeAwareContent: true,
+      leavableWorkspace: true,
+      layout: composerSplitLayout(),
+    });
+    const composerPane = await findComposerPane();
+
+    fireEvent.click(screen.getByTestId("leave-workspace"));
+    expect(screen.queryByTestId("root-compose-view")).toBeNull();
+
+    act(() => composerPane.navigateInPane(createdThread));
+
+    expect(screen.getByTestId("location").textContent).toBe("/");
+    expect(paneContents(store.get(splitLayoutAtom))).toEqual([
+      threadContent("thr-a"),
+      threadContent("thr-c"),
+    ]);
+  });
+
+  it("navigates a focused thread pane to another thread in place", async () => {
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: twoPaneLayout("pane-1"),
+    });
+    await screen.findByTestId("pane-thr-a");
+    await act(async () => {});
+    const threadPane = paneContextRenders.get("thr-a")?.at(-1);
+    if (threadPane === undefined || threadPane === null) {
+      throw new Error("Expected pane context for thr-a");
+    }
+
+    act(() => threadPane.navigateInPane(createdThread));
+
+    expect(await screen.findByTestId("pane-thr-c")).toBeTruthy();
+    expect(screen.queryByTestId("pane-thr-a")).toBeNull();
+    expect(screen.getByTestId("pane-thr-b")).toBeTruthy();
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1");
+    expect(screen.getByTestId("location").textContent).toBe(
+      threadPath("thr-c"),
+    );
+  });
+
   it("focuses an already-open pane instead of duplicating on external navigation", async () => {
     renderSplitArea({
       path: threadPath("thr-b"),
@@ -1787,26 +2341,222 @@ describe("SplitThreadArea", () => {
     expect(screen.queryAllByTestId(/^pane-/)).toHaveLength(2);
   });
 
-  it("restores a persisted layout on load", async () => {
-    renderSplitArea({
+  it("leaves uninvolved panes unrendered and pane callbacks stable when focus moves in a four-pane split", async () => {
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: fourPaneThreadLayout(),
+    });
+    for (const suffix of ["a", "b", "c", "d"]) {
+      expect(await screen.findByTestId(`pane-thr-${suffix}`)).toBeTruthy();
+    }
+    await act(async () => {});
+    const latestPane = (threadId: string) => {
+      const pane = paneContextRenders.get(threadId)?.at(-1);
+      if (pane === undefined || pane === null) {
+        throw new Error(`Expected pane context for ${threadId}`);
+      }
+      return pane;
+    };
+    const threadIds = ["thr-a", "thr-b", "thr-c", "thr-d"];
+    const before = new Map(
+      threadIds.map((threadId) => [threadId, latestPane(threadId)]),
+    );
+    const rendersBefore = new Map(
+      threadIds.map((threadId) => [
+        threadId,
+        paneContextRenders.get(threadId)?.length ?? 0,
+      ]),
+    );
+
+    fireEvent.pointerDown(screen.getByTestId("pane-thr-b"));
+    await waitFor(() => {
+      expect(screen.getByTestId("pane-thr-b").dataset.focused).toBe("true");
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-b"),
+      );
+    });
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-2");
+    expect(screen.getByTestId("pane-thr-a").dataset.focused).toBe("false");
+
+    for (const threadId of ["thr-c", "thr-d"]) {
+      expect(paneContextRenders.get(threadId)?.length).toBe(
+        rendersBefore.get(threadId),
+      );
+      expect(latestPane(threadId)).toBe(before.get(threadId));
+    }
+    for (const threadId of threadIds) {
+      const previous = before.get(threadId);
+      const next = latestPane(threadId);
+      expect(next.onRequestClose).toBe(previous?.onRequestClose);
+      expect(next.onToggleMaximize).toBe(previous?.onToggleMaximize);
+      expect(next.onMoveToSide).toBe(previous?.onMoveToSide);
+      expect(next.navigateInPane).toBe(previous?.navigateInPane);
+      expect(next.beginPaneDrag).toBe(previous?.beginPaneDrag);
+    }
+  });
+
+  it("moves maximization to the newly focused pane in a four-pane split", async () => {
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: fourPaneThreadLayout(),
+    });
+    await screen.findByTestId("pane-thr-d");
+    const latestPane = (threadId: string) =>
+      paneContextRenders.get(threadId)?.at(-1) ?? null;
+
+    fireEvent.click(screen.getByTestId("maximize-thr-a"));
+    await waitFor(() => expect(latestPane("thr-a")?.isMaximized).toBe(true));
+    expect(store.get(maximizedPaneIdAtom)).toBe("pane-1");
+
+    act(() => {
+      expect(commandHandlers.get("pane.focus.next")?.()).toBe(true);
+    });
+    await waitFor(() => {
+      expect(latestPane("thr-b")?.isMaximized).toBe(true);
+      expect(latestPane("thr-b")?.isFocused).toBe(true);
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-b"),
+      );
+    });
+    expect(latestPane("thr-a")?.isMaximized).toBe(false);
+    expect(store.get(maximizedPaneIdAtom)).toBe("pane-2");
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-2");
+  });
+
+  it.each([
+    ["pane.focus.right", "row"],
+    ["pane.focus.down", "col"],
+    ["pane.focus.next", "row"],
+    ["pane.focus.previous", "row"],
+    ["pane.focus.2", "row"],
+  ] as const)(
+    "%s transfers typing focus without changing drafts or selection",
+    async (command, dir) => {
+      renderSplitArea({
+        path: threadPath("thr-a"),
+        layout: twoPaneLayout("pane-1", dir),
+      });
+      const source = await screen.findByTestId("draft-thr-a");
+      const destination = screen.getByTestId(
+        "draft-thr-b",
+      ) as HTMLTextAreaElement;
+      fireEvent.change(destination, { target: { value: "destination draft" } });
+      destination.setSelectionRange(3, 7);
+      source.focus();
+      act(() => {
+        expect(commandHandlers.get(command)?.()).toBe(true);
+      });
+      await waitFor(() => expect(document.activeElement).toBe(destination));
+      expect(destination.value).toBe("destination draft");
+      expect([destination.selectionStart, destination.selectionEnd]).toEqual([
+        3, 7,
+      ]);
+      fireEvent.pointerDown(source);
+      await waitFor(() =>
+        expect(screen.getByTestId("pane-thr-a").dataset.focused).toBe("true"),
+      );
+      expect(document.activeElement).toBe(destination);
+    },
+  );
+
+  it("focuses the same numbered pane and transfers focus when maximized", async () => {
+    const store = renderSplitArea({
       path: threadPath("thr-a"),
       layout: twoPaneLayout("pane-1"),
     });
+    const source = await screen.findByTestId("draft-thr-a");
+    const target = screen.getByTestId("draft-thr-b");
+    screen.getByTestId("close-thr-a").focus();
+    act(() => {
+      commandHandlers.get("pane.focus.1")?.();
+    });
+    await waitFor(() => expect(document.activeElement).toBe(source));
+    act(() => {
+      store.set(maximizedPaneIdAtom, "pane-1");
+    });
+    act(() => {
+      commandHandlers.get("pane.focus.right")?.();
+    });
+    await waitFor(() => expect(document.activeElement).toBe(target));
+    expect(
+      target.closest("[data-split-pane-id]")?.getAttribute("aria-hidden"),
+    ).toBeNull();
+    act(() => {
+      commandHandlers.get("pane.focus.left")?.();
+    });
+    await waitFor(() => expect(document.activeElement).toBe(source));
+  });
 
-    expect(await screen.findByTestId("pane-thr-a")).toBeTruthy();
-    expect(screen.getByTestId("pane-thr-b")).toBeTruthy();
+  it.each([false, true])(
+    "handles a late composer and cancels pending focus on pointer activity: %s",
+    async (cancel) => {
+      renderSplitArea({
+        path: threadPath("thr-a"),
+        layout: twoPaneLayout("pane-1"),
+      });
+      const source = await screen.findByTestId("draft-thr-a");
+      const target = screen.getByTestId("draft-thr-b") as HTMLTextAreaElement;
+      target.disabled = true;
+      source.focus();
+      act(() => {
+        commandHandlers.get("pane.focus.next")?.();
+      });
+      const root = target.closest("[data-split-pane-id]");
+      await waitFor(() => expect(document.activeElement).toBe(root));
+      if (cancel) fireEvent.pointerDown(root!);
+      target.disabled = false;
+      if (cancel) {
+        await act(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+        });
+        expect(document.activeElement).toBe(root);
+      } else {
+        await waitFor(() => expect(document.activeElement).toBe(target));
+      }
+    },
+  );
+
+  it("focuses plugin content controls instead of pane chrome", async () => {
+    setPluginSlotRegistrations(
+      "docs",
+      makePluginRegistrationSet({
+        navPanels: [
+          {
+            id: "docs",
+            title: "Docs",
+            icon: "FileText",
+            path: "docs",
+            component: () => <input aria-label="Search docs" />,
+          },
+        ],
+        threadPanelActions: [],
+        pendingInteractions: [],
+        sidebarFooterActions: [],
+        fileOpeners: [],
+      }),
+    );
+    const layout = pluginSplitLayout();
+    layout.focusedPaneId = "pane-1";
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      layout,
+      routeAwareContent: true,
+    });
+    (await screen.findByTestId("draft-thr-a")).focus();
+    act(() => {
+      commandHandlers.get("pane.focus.next")?.();
+    });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("textbox", { name: "Search docs" }),
+      ),
+    );
   });
 
   it("restores eight successive default-right opens, then focuses and closes with valid URL state", async () => {
-    const layout = eightPaneThreadLayout();
-    expect(layout.root).toMatchObject({
-      type: "split",
-      dir: "row",
-      sizes: Array.from({ length: 8 }, () => 1 / 8),
-    });
     window.localStorage.setItem(
       SPLIT_LAYOUT_STORAGE_KEY,
-      serializeSplitLayout(layout),
+      serializeSplitLayout(eightPaneThreadLayout()),
     );
 
     const store = renderSplitArea({ path: threadPath("thr-h") });
@@ -1967,9 +2717,13 @@ describe("SplitThreadArea", () => {
       (await screen.findByText(path))
         .closest("header")
         ?.querySelector('[data-testid="app-page-header-content-row"]');
-    expect((await contentRow("top-left"))?.className).toContain("pl-[104px]");
+    expect((await contentRow("top-left"))?.className).toContain(
+      "pl-(--bb-macos-collapsed-top-left-reserve)",
+    );
     for (const path of ["top-right", "bottom-left", "bottom-right"]) {
-      expect((await contentRow(path))?.className).not.toContain("pl-[104px]");
+      expect((await contentRow(path))?.className).not.toContain(
+        "pl-(--bb-macos-collapsed-top-left-reserve)",
+      );
     }
 
     expect(screen.getAllByRole("button", { name: /Full Screen/ })).toHaveLength(
@@ -2099,7 +2853,7 @@ describe("SplitThreadArea", () => {
     await screen.findByText("Docs panel");
     expect(screen.getByTestId("split-workspace-panel-toggle")).toBeTruthy();
     const [pluginClose] = screen.getAllByRole("button", { name: "Close pane" });
-    const reserve = pluginClose?.nextElementSibling;
+    const reserve = pluginClose?.parentElement?.nextElementSibling;
     expect(reserve?.tagName).toBe("SPAN");
     expect(reserve?.getAttribute("aria-hidden")).toBe("true");
 
@@ -2108,7 +2862,7 @@ describe("SplitThreadArea", () => {
     );
     await waitFor(() =>
       expect(
-        screen.getAllByRole("button", { name: "Close pane" })[0]
+        screen.getAllByRole("button", { name: "Close pane" })[0]?.parentElement
           ?.nextElementSibling,
       ).toBeNull(),
     );
@@ -2137,7 +2891,7 @@ describe("SplitThreadArea", () => {
     );
   });
 
-  it("uses automation breadcrumbs in the split-owned plugin header", async () => {
+  it("uses page-owned breadcrumbs in the split-owned plugin header", async () => {
     setPluginSlotRegistrations(
       "automations",
       makePluginRegistrationSet({
@@ -2148,6 +2902,12 @@ describe("SplitThreadArea", () => {
             icon: "Clock",
             path: "automations",
             component: () => <div>Automation detail</div>,
+            experimental_usePageTitle: () => ({
+              breadcrumbs: [
+                { label: "Installed", to: "/plugins/automations/automations" },
+                { label: "Weekly review" },
+              ],
+            }),
           },
         ],
         threadPanelActions: [],
@@ -2162,7 +2922,7 @@ describe("SplitThreadArea", () => {
       panelPath: "automations",
       subPath: "proj_personal/weekly-review",
     };
-    const store = renderSplitArea({
+    renderSplitArea({
       path: "/plugins/automations/automations/proj_personal/weekly-review",
       layout: {
         root: { type: "pane", paneId: "pane-automation", content },
@@ -2174,14 +2934,9 @@ describe("SplitThreadArea", () => {
     const breadcrumb = await screen.findByRole("navigation", {
       name: "Breadcrumb",
     });
-    expect(breadcrumb.textContent).toContain("Automations");
     expect(breadcrumb.textContent).toContain("Installed");
-    expect(breadcrumb.textContent).toContain("weekly-review");
-
-    store.set(resourceRouteLabelAtom, "Weekly review");
-    await waitFor(() =>
-      expect(breadcrumb.textContent).toContain("Weekly review"),
-    );
+    expect(breadcrumb.textContent).toContain("Weekly review");
+    expect(screen.getByText("Automations")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("link", { name: "Installed" }));
     expect(screen.getByTestId("location").textContent).toBe(
@@ -2223,7 +2978,56 @@ describe("SplitThreadArea", () => {
 
     expect(await screen.findByTestId("pane-thr-a")).toBeTruthy();
     expect(screen.queryAllByTestId(/^pane-/)).toHaveLength(1);
+  });
+
+  it("closes the only thread into the new-thread page", async () => {
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      routeAwareContent: true,
+    });
+    fireEvent.click(await screen.findByTestId("close-thr-a"));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/"),
+    );
+    expect(screen.getByTestId("root-compose-view")).toBeTruthy();
+    expect(listPanes(store.get(splitLayoutAtom)!.root)[0]?.content).toEqual(
+      newThreadContent,
+    );
     expect(screen.queryByTestId("close-thr-a")).toBeNull();
+  });
+
+  it("closes the only plugin page into the new-thread page", async () => {
+    registerDocsPanel();
+    const store = renderSplitArea({
+      path: "/plugins/docs/docs",
+      routeAwareContent: true,
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Close pane" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/"),
+    );
+    expect(screen.getByTestId("root-compose-view")).toBeTruthy();
+    expect(listPanes(store.get(splitLayoutAtom)!.root)[0]?.content).toEqual(
+      newThreadContent,
+    );
+    expect(screen.queryByRole("button", { name: "Close pane" })).toBeNull();
+  });
+
+  it("shows close on a compact plugin page", async () => {
+    registerDocsPanel();
+    viewportState.compact = true;
+    renderSplitArea({
+      path: "/plugins/docs/docs",
+      routeAwareContent: true,
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Close pane" }));
+
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/"),
+    );
+    expect(screen.getByTestId("root-compose-view")).toBeTruthy();
   });
 
   it("moves the URL to the surviving pane when the focused pane is closed", async () => {
@@ -2244,20 +3048,43 @@ describe("SplitThreadArea", () => {
     expect(screen.queryByTestId("pane-thr-b")).toBeNull();
   });
 
-  it("prunes a stale (archived) pane from a restored split", async () => {
-    threadStore.set("thr-b", { archivedAt: 123, deletedAt: null });
-    renderSplitArea({
-      path: threadPath("thr-a"),
-      layout: twoPaneLayout("pane-1"),
+  it.each(["pane-1", "pane-2"] as const)(
+    "keeps archived threads in a restored split focused on %s",
+    async (focusedPaneId) => {
+      threadStore.set("thr-b", { archivedAt: 123, deletedAt: null });
+      const path = threadPath(focusedPaneId === "pane-1" ? "thr-a" : "thr-b");
+      const store = renderSplitArea({
+        path,
+        layout: twoPaneLayout(focusedPaneId),
+      });
+
+      expect(await screen.findByTestId("pane-thr-b")).toBeTruthy();
+      expect(screen.getByTestId("pane-thr-a")).toBeTruthy();
+      expect(screen.getByTestId("location").textContent).toBe(path);
+      expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe(focusedPaneId);
+      expect(threadStore.get("thr-b")?.archivedAt).toBe(123);
+    },
+  );
+
+  it("keeps an archived thread when navigating over an active thread in the same pane", async () => {
+    threadStore.set("thr-c", { archivedAt: 123, deletedAt: null });
+    const store = renderSplitArea({
+      path: threadPath("thr-b"),
+      layout: twoPaneLayout("pane-2"),
+      externalTo: threadPath("thr-c"),
     });
 
-    await waitFor(() => {
-      expect(screen.queryByTestId("pane-thr-b")).toBeNull();
-    });
+    expect(await screen.findByTestId("pane-thr-b")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("external-nav"));
+
+    expect(await screen.findByTestId("pane-thr-c")).toBeTruthy();
     expect(screen.getByTestId("pane-thr-a")).toBeTruthy();
+    expect(screen.queryByTestId("pane-thr-b")).toBeNull();
     expect(screen.getByTestId("location").textContent).toBe(
-      threadPath("thr-a"),
+      threadPath("thr-c"),
     );
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-2");
+    expect(threadStore.get("thr-c")?.archivedAt).toBe(123);
   });
 
   it("prunes a stale focused pane and moves focus + URL to the survivor", async () => {
@@ -2276,5 +3103,229 @@ describe("SplitThreadArea", () => {
         threadPath("thr-a"),
       );
     });
+  });
+});
+
+describe("SplitThreadArea compact breakpoint crossings", () => {
+  function singleThreadLayout(threadId = "thr-a"): SplitLayout {
+    return {
+      root: {
+        type: "pane",
+        paneId: "pane-1",
+        content: threadContent(threadId),
+      },
+      focusedPaneId: "pane-1",
+    };
+  }
+
+  function latestPaneContext(threadId: string): PaneContextValue {
+    const pane = paneContextRenders.get(threadId)?.at(-1);
+    if (pane === undefined || pane === null) {
+      throw new Error(`Expected pane context for ${threadId}`);
+    }
+    return pane;
+  }
+
+  function paneChrome(pane: PaneContextValue) {
+    return {
+      paneId: pane.paneId,
+      isFocused: pane.isFocused,
+      isSplitPane: pane.isSplitPane,
+      secondaryPanelHost: pane.secondaryPanelHost,
+      reservesWindowPanelToggle: pane.reservesWindowPanelToggle,
+      canClose: pane.onRequestClose !== null,
+      isMaximized: pane.isMaximized,
+      canMaximize: pane.onToggleMaximize !== null,
+      canMove: pane.onMoveToSide !== undefined,
+      isBoundedPane: pane.isBoundedPane,
+      isTopRow: pane.isTopRow,
+      ownsWindowTopLeft: pane.ownsWindowTopLeft,
+      canDrag: pane.beginPaneDrag !== undefined,
+    };
+  }
+
+  it("keeps one thread pane mounted with draft, focus, selection and scroll across crossings", async () => {
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: singleThreadLayout(),
+    });
+    const pane = await screen.findByTestId("pane-thr-a");
+    const textarea = screen.getByTestId<HTMLTextAreaElement>("draft-thr-a");
+    fireEvent.change(textarea, { target: { value: "unsent draft" } });
+    textarea.focus();
+    textarea.setSelectionRange(2, 7);
+    const scroller = screen.getByTestId("scroll-thr-a");
+    scroller.scrollTop = 40;
+
+    for (const compact of [true, false, true, false]) {
+      setCompactViewport(compact);
+      expect(screen.getByTestId("pane-thr-a")).toBe(pane);
+      expect(screen.getByTestId("draft-thr-a")).toBe(textarea);
+      expect(textarea.value).toBe("unsent draft");
+      expect(document.activeElement).toBe(textarea);
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([2, 7]);
+      expect(scroller.scrollTop).toBe(40);
+    }
+    expect(paneMounts.get("thr-a")).toBe(1);
+    expect(store.get(splitLayoutAtom)).toEqual(singleThreadLayout());
+  });
+
+  it("gives the single thread pane the same chrome on both sides of the breakpoint", async () => {
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: singleThreadLayout(),
+    });
+    await screen.findByTestId("pane-thr-a");
+    const desktop = paneChrome(latestPaneContext("thr-a"));
+    setCompactViewport(true);
+    const compact = paneChrome(latestPaneContext("thr-a"));
+
+    expect(compact).toEqual(desktop);
+    expect(compact).toEqual({
+      paneId: "pane-1",
+      isFocused: true,
+      isSplitPane: false,
+      secondaryPanelHost: null,
+      reservesWindowPanelToggle: false,
+      canClose: true,
+      isMaximized: false,
+      canMaximize: false,
+      canMove: false,
+      isBoundedPane: false,
+      isTopRow: true,
+      ownsWindowTopLeft: true,
+      canDrag: false,
+    });
+    expect(screen.queryByTestId("maximize-thr-a")).toBeNull();
+  });
+
+  it("follows compact route navigation to another thread without a stale frame", async () => {
+    viewportState.compact = true;
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: singleThreadLayout(),
+      externalTo: threadPath("thr-b"),
+    });
+    await screen.findByTestId("pane-thr-a");
+    fireEvent.click(screen.getByTestId("external-nav"));
+
+    expect(screen.getByTestId("pane-thr-b")).toBeTruthy();
+    expect(screen.queryByTestId("pane-thr-a")).toBeNull();
+    await waitFor(() =>
+      expect(paneContents(store.get(splitLayoutAtom))).toEqual([
+        threadContent("thr-b"),
+      ]),
+    );
+  });
+
+  function threadDraft(threadId: string) {
+    return getPromptDraftAccessor({
+      kind: "thread",
+      projectId: PERSONAL_PROJECT_ID,
+      threadId,
+    });
+  }
+
+  function threadDraftKey(threadId: string): string {
+    return threadDraft(threadId).storageKey;
+  }
+
+  function threadDraftText(threadId: string): string {
+    return threadDraft(threadId).getCurrent().text;
+  }
+
+  function pluginComposer() {
+    const element = screen.getByTestId("plugin-composer");
+    return {
+      element,
+      scopeThreadId: element.dataset.scopeThread,
+      key: element.dataset.key,
+      text: screen.getByTestId("plugin-composer-text").textContent,
+    };
+  }
+
+  it("keeps the plugin composer scoped to the thread across crossings", async () => {
+    composerScopeProbe.active = true;
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: singleThreadLayout(),
+    });
+    await screen.findByTestId("pane-thr-a");
+    const consumer = pluginComposer().element;
+    expect(pluginComposer()).toMatchObject({
+      scopeThreadId: "thr-a",
+      key: threadDraftKey("thr-a"),
+      text: "",
+    });
+
+    setCompactViewport(true);
+    expect(pluginComposer().element).toBe(consumer);
+    expect(pluginComposer()).toMatchObject({
+      scopeThreadId: "thr-a",
+      key: threadDraftKey("thr-a"),
+    });
+    act(() => {
+      fireEvent.click(screen.getByTestId("plugin-composer-replace"));
+    });
+    expect(threadDraftText("thr-a")).toBe("plugin edit for thr-a");
+    expect(screen.getByTestId<HTMLTextAreaElement>("draft-thr-a").value).toBe(
+      "plugin edit for thr-a",
+    );
+    expect(pluginComposer().text).toBe("plugin edit for thr-a");
+
+    setCompactViewport(false);
+    expect(pluginComposer().element).toBe(consumer);
+    expect(pluginComposer()).toMatchObject({
+      scopeThreadId: "thr-a",
+      key: threadDraftKey("thr-a"),
+      text: "plugin edit for thr-a",
+    });
+    expect(threadDraftText("thr-b")).toBe("");
+  });
+
+  it("opens a thread from the compact composer without remounting it", async () => {
+    viewportState.compact = true;
+    const store = renderSplitArea({
+      path: "/",
+      layout: {
+        root: { type: "pane", paneId: "pane-1", content: newThreadContent },
+        focusedPaneId: "pane-1",
+      },
+      routeAwareContent: true,
+      externalTo: threadPath("thr-a"),
+    });
+    await screen.findByTestId("root-compose-view");
+    fireEvent.click(screen.getByTestId("external-nav"));
+
+    expect(await screen.findByTestId("pane-thr-a")).toBeTruthy();
+    await waitFor(() =>
+      expect(paneContents(store.get(splitLayoutAtom))).toEqual([
+        threadContent("thr-a"),
+      ]),
+    );
+    expect(paneMounts.get("thr-a")).toBe(1);
+    expect(latestPaneContext("thr-a").paneId).toBe("pane-1");
+    expect(latestPaneContext("thr-a").onRequestClose).not.toBeNull();
+  });
+
+  it("keeps one new-thread composer mounted with focus and selection across crossings", async () => {
+    renderSplitArea({ path: "/", routeContent: newThreadContent });
+    const composer = await screen.findByTestId("root-compose-view");
+    const textarea =
+      screen.getByTestId<HTMLTextAreaElement>("draft-new-thread");
+    fireEvent.change(textarea, { target: { value: "new thread draft" } });
+    textarea.focus();
+    textarea.setSelectionRange(4, 10);
+
+    for (const compact of [true, false, true, false]) {
+      setCompactViewport(compact);
+      expect(screen.getByTestId("root-compose-view")).toBe(composer);
+      expect(document.activeElement).toBe(textarea);
+      expect([textarea.selectionStart, textarea.selectionEnd]).toEqual([4, 10]);
+      const pane = await findComposerPane();
+      expect(pane.paneId).toBe("pane-1");
+      expect(pane.onRequestClose).toBeNull();
+    }
+    expect(paneMounts.get("new-thread")).toBe(1);
   });
 });

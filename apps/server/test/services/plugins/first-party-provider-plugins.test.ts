@@ -67,7 +67,7 @@ const FIRST_PARTY_PROVIDER_DECLARATIONS = [
     supportsThreadRename: false,
     fork: "tip",
     supportsManualCompaction: true,
-    supportsUsage: false,
+    supportsUsage: true,
     visibility: "installed",
     hasLogo: true,
   },
@@ -92,7 +92,7 @@ const FIRST_PARTY_PROVIDER_DECLARATIONS = [
     supportsThreadArchive: false,
     supportsThreadRename: false,
     fork: "none",
-    supportsManualCompaction: false,
+    supportsManualCompaction: true,
     supportsUsage: false,
     visibility: "installed",
     hasLogo: true,
@@ -147,7 +147,7 @@ async function installFirstPartyProviderPlugins(
 }
 
 describe("first-party provider plugins", () => {
-  it("are the sole source of the built-in providers", async () => {
+  it("registers the built-in providers with their client fields and restores their position after re-enabling", async () => {
     await withTestHarness(
       { seedFirstPartyProviders: false },
       async (harness) => {
@@ -211,15 +211,7 @@ describe("first-party provider plugins", () => {
             (plugin) => plugin.visibility === "always",
           ).map((plugin) => [plugin.providerId, plugin.fork !== "none"]),
         );
-      },
-    );
-  }, 60_000);
 
-  it("pins the client-read ProviderInfo fields of the four core providers", async () => {
-    await withTestHarness(
-      { seedFirstPartyProviders: false },
-      async (harness) => {
-        await installFirstPartyProviderPlugins(harness);
         const clientFields = (providerId: string) => {
           const info = harness.deps.providerRegistry.get(providerId)?.info;
           if (info === undefined) throw new Error(`${providerId} missing`);
@@ -243,6 +235,7 @@ describe("first-party provider plugins", () => {
           };
         };
         const skills = { kind: "skills", trigger: "/" } as const;
+        const explicitSkills = { kind: "skills", trigger: "$" } as const;
         const plan = {
           kind: "plan",
           command: { trigger: "/", name: "plan", trailingText: " " },
@@ -268,7 +261,7 @@ describe("first-party provider plugins", () => {
             supportsSessionRewind: true,
             modelCatalogScope: "host",
           },
-          composerActions: [skills, plan, goal],
+          composerActions: [skills, explicitSkills, plan, goal],
         });
         expect(clientFields("claude-code")).toStrictEqual({
           id: "claude-code",
@@ -282,14 +275,14 @@ describe("first-party provider plugins", () => {
           capabilities: {
             supportsThreadArchive: false,
             supportsThreadRename: false,
-            supportsServiceTier: false,
+            supportsServiceTier: true,
             supportsNativeUserQuestion: true,
             permissionModes: ["accept-edits", "auto", "full"],
             supportsFork: true,
             supportsSessionRewind: true,
             modelCatalogScope: "host",
           },
-          composerActions: [skills, plan],
+          composerActions: [skills, explicitSkills, plan],
         });
         expect(clientFields("pi")).toStrictEqual({
           id: "pi",
@@ -307,7 +300,7 @@ describe("first-party provider plugins", () => {
             supportsSessionRewind: true,
             modelCatalogScope: "workspace",
           },
-          composerActions: [skills],
+          composerActions: [skills, explicitSkills],
         });
         expect(clientFields("acp-cursor")).toStrictEqual({
           id: "acp-cursor",
@@ -325,7 +318,7 @@ describe("first-party provider plugins", () => {
             supportsSessionRewind: false,
             modelCatalogScope: "host",
           },
-          composerActions: [skills],
+          composerActions: [skills, explicitSkills],
         });
 
         const claude = harness.deps.providerRegistry.get("claude-code");
@@ -338,25 +331,21 @@ describe("first-party provider plugins", () => {
           "ultracode",
           "max",
         ]);
-        expect(claude?.fallbackModels.map((model) => model.id)).toContain(
-          "claude-opus-5[1m]",
-        );
-        expect(claude?.envPassthrough).toEqual(["BB_CLAUDE_CODE_EXECUTABLE"]);
+        expect(claude?.fallbackModels).toEqual([]);
+        expect(claude?.info.serviceTiers?.map((tier) => tier.id)).toEqual([
+          "default",
+          "fast",
+        ]);
+        expect(claude?.envPassthrough).toEqual([
+          "BB_CLAUDE_CODE_EXECUTABLE",
+          "CLAUDE_CODE_OAUTH_TOKEN",
+        ]);
         expect(
           harness.deps.providerRegistry
             .get("codex")
             ?.info.serviceTiers?.map((tier) => tier.id),
-        ).toEqual(["default", "fast"]);
-      },
-    );
-  }, 60_000);
+        ).toEqual(["default", "fast", "ultrafast"]);
 
-  it("disabling a provider plugin removes its provider, and re-enabling restores its position", async () => {
-    await withTestHarness(
-      { seedFirstPartyProviders: false },
-      async (harness) => {
-        const registry = harness.deps.providerRegistry;
-        await installFirstPartyProviderPlugins(harness);
         expect(registry.get("pi")?.pluginId).toBe("provider-pi");
 
         await harness.pluginService.setEnabled("provider-pi", false);
@@ -375,8 +364,8 @@ describe("first-party provider plugins", () => {
           "acp-grok",
           "acp-hermes-agent",
         ]);
-        const infos = await listSystemProviderInfos(harness.deps, {});
-        expect(infos.find((info) => info.id === "pi")).toBeUndefined();
+        const remainingInfos = await listSystemProviderInfos(harness.deps, {});
+        expect(remainingInfos.find((info) => info.id === "pi")).toBeUndefined();
 
         await harness.pluginService.setEnabled("provider-pi", true);
         expect(registry.get("pi")?.pluginId).toBe("provider-pi");

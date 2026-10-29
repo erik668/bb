@@ -1,40 +1,53 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import ts from "typescript";
 import * as pluginSdkApp from "@get-bb/plugin-sdk/app";
 import {
   type BbPluginApi,
   type ExperimentalAppOverlayProps,
+  type ExperimentalMessageMetadataProps,
   type PluginAppBuilder,
   type PluginAppSlots,
   type PluginContentScriptContext,
   type PluginContentScriptRegistration,
   type PluginDiffRendererProps,
+  type ExperimentalComposerProps,
   type PluginFileOpenerProps,
   type PluginHomepageSectionProps,
   type PluginHttpAuthMode,
-  type PluginCommandPaletteActionContext,
-  type PluginCommandPaletteActionRegistration,
+  type PluginCommandContext,
+  type PluginCommandRegistration,
   type PluginMessageActionContext,
   type PluginMessageActionRegistration,
+  type ThreadChatMessageReference,
   type PluginMessageDirectiveProps,
+  type ExperimentalCodeFenceRendererProps,
   type PluginNavPanelProps,
   type PluginNavPanelRegistration,
   type PluginNewThreadPanelProps,
   type PluginPendingInteractionProps,
+  type PluginEnvironmentProviderInputsProps,
+  type PluginMachineProviderInputsProps,
   type PluginProviderIconRegistration,
   type PluginTimelineRendererProps,
   type PluginSettingDescriptor,
   type PluginSettingsSectionProps,
   type PluginSidebarFooterActionProps,
-  type ExperimentalSidebarNavigationProps,
   type PluginSourceCodeRendererProps,
-  type PluginThreadHeaderActionProps,
+  type ExperimentalThreadContextSegmentProps,
+  type ExperimentalThreadInfoProps,
+  type ExperimentalThreadRowMetadataProps,
+  type PluginThreadActionItemInput,
+  type ExperimentalPluginBrowserToolbarActionProps,
   type PluginThreadListProps,
+  type ExperimentalSidebarNavigationProps,
+  type ExperimentalSidebarNavigationRegistration,
+  type ExperimentalSidebarHeaderProps,
   type PluginSidebarFooterActionRegistration,
   type PluginThreadEventPayloads,
-  type PluginThreadPanelProps,
+  type ExperimentalThreadActionTabProps,
   type ThreadChatMessageAction,
   type ThreadChatProps,
 } from "@get-bb/plugin-sdk";
@@ -44,7 +57,7 @@ const REPO_ROOT = fileURLToPath(new URL("../../../../../", import.meta.url));
 
 const SKILL_ROOT = fileURLToPath(
   new URL(
-    "../../../src/services/skills/builtin-skills/bb-plugin-authoring/",
+    "../../../../../plugins/bb-guide/skills/bb-plugin-authoring/",
     import.meta.url,
   ),
 );
@@ -66,8 +79,13 @@ function readReference(name: string): string {
 }
 
 function exportedTypeNames(source: string): string[] {
-  return [...source.matchAll(/^export (?:interface|type) ([A-Za-z0-9_]+)/gm)]
-    .map((match) => match[1])
+  return [
+    ...source.matchAll(
+      /(\/\*\*(?:(?!\*\/)[\s\S])*\*\/\s*)?^export (?:interface|type) ([A-Za-z0-9_]+)/gm,
+    ),
+  ]
+    .filter((match) => !(match[1] ?? "").includes("@internal"))
+    .map((match) => match[2])
     .filter((name): name is string => name !== undefined);
 }
 
@@ -129,7 +147,6 @@ const FRONTEND_TEST_EXPORT_NAMES = [
 
 const PUBLIC_PLUGIN_SDK_EXPORT_NAMES = [
   "bb-plugin-sdk.d.ts",
-  "bb-plugin-sdk-ai-services.d.ts",
   "bb-plugin-sdk-provider-bridge.d.ts",
   "bb-plugin-sdk-provider-bridge-testing.d.ts",
   "bb-plugin-sdk-provider-bridge-acp.d.ts",
@@ -141,6 +158,10 @@ const PUBLIC_PLUGIN_SDK_EXPORT_NAMES = [
       join(REPO_ROOT, "packages/plugin-sdk/bundled-types", filename),
       "utf8",
     ),
+  ).filter(
+    (name) =>
+      !name.startsWith("InternalDoNotUse") &&
+      !name.startsWith("internal_DO_NOT_USE_"),
   ),
 );
 
@@ -163,8 +184,12 @@ const BB_PLUGIN_API_KEYS = [
   "hosts",
   "experimental_aiServices",
   "experimental_hooks",
+  "experimental_environments",
+  "experimental_machines",
+  "experimental_serverAccess",
   "sdk",
   "onDispose",
+  "onInstall",
 ] as const satisfies readonly (keyof BbPluginApi)[];
 
 type MissingApiKey = Exclude<
@@ -207,15 +232,22 @@ const _assertAllAuthModesListed: MissingAuthMode extends never ? true : never =
 void _assertAllAuthModesListed;
 
 const THREAD_EVENT_PAYLOAD_FIELDS = {
+  "experimental_thread.events": ["thread", "sequence"],
+  "experimental_thread.parentChanged": ["thread", "previousParentThreadId"],
+  "experimental_terminal.input": ["terminal"],
+  "experimental_host.deleted": ["host"],
+  "experimental_environment.removed": ["removal"],
   "thread.created": ["thread"],
   "thread.active": ["thread"],
   "thread.idle": ["thread", "lastAssistantText"],
   "thread.failed": ["thread", "error"],
   "thread.archived": ["thread"],
+  "thread.unarchived": ["thread"],
   "thread.deleted": ["thread"],
   "interaction.pending": ["thread", "interaction"],
   "message.queued": ["entry"],
   "message.dispatched": ["entry"],
+  "message.cancelled": ["entry"],
   "turn.failed": [
     "threadId",
     "requestId",
@@ -226,7 +258,9 @@ const THREAD_EVENT_PAYLOAD_FIELDS = {
     "attemptNumber",
   ],
 } as const satisfies {
-  [E in keyof PluginThreadEventPayloads]: readonly (keyof PluginThreadEventPayloads[E])[];
+  [
+    E in keyof PluginThreadEventPayloads
+  ]: readonly (keyof PluginThreadEventPayloads[E])[];
 };
 
 type MissingThreadEventField = {
@@ -245,28 +279,42 @@ type SlotPropsByName = {
   settingsSection: PluginSettingsSectionProps;
   experimental_appOverlay: ExperimentalAppOverlayProps;
   navPanel: PluginNavPanelProps;
-  threadPanelAction: PluginThreadPanelProps;
+  experimental_tab: ExperimentalThreadActionTabProps | PluginNavPanelProps;
   experimental_newThreadPanelAction: PluginNewThreadPanelProps;
   pendingInteraction: PluginPendingInteractionProps;
   sidebarFooterAction: PluginSidebarFooterActionProps;
-  experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
   experimental_threadList: PluginThreadListProps;
-  experimental_threadHeaderAction: PluginThreadHeaderActionProps;
+  experimental_sidebarNavigation: ExperimentalSidebarNavigationProps;
+  experimental_threadContextSegment: ExperimentalThreadContextSegmentProps;
+  experimental_threadRowMetadata: ExperimentalThreadRowMetadataProps;
+  experimental_threadInfoRow: ExperimentalThreadInfoProps;
+  experimental_threadInfoSection: ExperimentalThreadInfoProps;
+  experimental_threadAction: PluginThreadActionItemInput<unknown>;
+  experimental_browserToolbarAction: ExperimentalPluginBrowserToolbarActionProps;
   fileOpener: PluginFileOpenerProps;
   experimental_sourceCodeRenderer: PluginSourceCodeRendererProps;
   experimental_diffRenderer: PluginDiffRendererProps;
+  experimental_composer: ExperimentalComposerProps;
   messageDirective: PluginMessageDirectiveProps;
+  experimental_codeFenceRenderer: ExperimentalCodeFenceRendererProps;
   messageAction: PluginMessageActionContext;
-  commandPaletteAction: PluginCommandPaletteActionContext;
+  experimental_messageMetadata: ExperimentalMessageMetadataProps;
+  commandPaletteAction: PluginCommandContext;
   experimental_providerIcon: PluginProviderIconRegistration;
   experimental_timelineRenderer: PluginTimelineRendererProps;
+  experimental_environmentProviderInputs: PluginEnvironmentProviderInputsProps;
+  experimental_machineProviderInputs: PluginMachineProviderInputsProps;
 };
+
+type SlotPropKeys<T> = T extends unknown ? keyof T : never;
 
 type MissingSlot = Exclude<keyof PluginAppSlots, keyof SlotPropsByName>;
 const _assertAllSlotsListed: MissingSlot extends never ? true : never = true;
 void _assertAllSlotsListed;
 
 const APP_BUILDER_FIELDS = [
+  "commands",
+  "experimental_icons",
   "slots",
   "composer",
   "contentScripts",
@@ -317,39 +365,49 @@ const FRONTEND_SLOT_PROP_FIELDS = {
   settingsSection: [],
   experimental_appOverlay: [],
   navPanel: ["subPath"],
-  threadPanelAction: ["threadId", "params"],
+  experimental_tab: ["threadId", "environment", "subPath", "params"],
   experimental_newThreadPanelAction: ["projectId", "params"],
   pendingInteraction: ["interaction", "submit", "cancel"],
   sidebarFooterAction: [],
-  experimental_sidebarNavigation: [
-    "items",
-    "activeItemId",
-    "isCompactViewport",
-    "experimental_activate",
-    "experimental_Original",
-  ],
   experimental_threadList: [
     "activeThreadId",
     "activeProjectId",
     "isCompactViewport",
     "onNavigate",
     "searchQuery",
-    "Original",
-    "experimental_Original",
   ],
-  experimental_threadHeaderAction: [
+  experimental_threadContextSegment: [
     "threadId",
     "projectId",
+    "environment",
+    "segments",
+    "isExpanded",
+    "onToggle",
+  ],
+  experimental_threadInfoRow: ["threadId", "projectId", "environment"],
+  experimental_threadInfoSection: ["threadId", "projectId", "environment"],
+  experimental_threadRowMetadata: ["thread", "data"],
+  experimental_threadAction: [
+    "thread",
+    "data",
+    "sdk",
+    "navigate",
+    "experimental_panel",
+  ],
+  experimental_browserToolbarAction: [
+    "threadId",
+    "tabId",
+    "url",
+    "experimental_page",
     "isCompactViewport",
   ],
-  fileOpener: ["path", "source", "Original", "experimental_Original"],
+  fileOpener: ["path", "source", "experimental_lineRange", "Original"],
   experimental_sourceCodeRenderer: [
     "content",
     "path",
     "overflow",
     "highlightedLines",
     "Original",
-    "experimental_Original",
   ],
   experimental_diffRenderer: [
     "patch",
@@ -359,12 +417,27 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "showLineNumbers",
     "experimental_fullFileContents",
     "Original",
-    "experimental_Original",
   ],
+  experimental_composer: [],
   messageDirective: ["attributes", "source", "message", "openWorkspaceFile"],
-  messageAction: ["threadId", "message", "selectedText", "openPanel"],
-  commandPaletteAction: ["threadId", "projectId", "openPanel"],
-  experimental_providerIcon: ["providerId", "icon"],
+  experimental_codeFenceRenderer: [
+    "code",
+    "language",
+    "status",
+    "index",
+    "message",
+    "Original",
+  ],
+  experimental_messageMetadata: ["message"],
+  messageAction: [
+    "threadId",
+    "message",
+    "selectedText",
+    "experimental_panel",
+    "composer",
+  ],
+  commandPaletteAction: ["threadId", "projectId", "experimental_panel"],
+  experimental_providerIcon: ["providerKind", "providerId", "icon"],
   experimental_timelineRenderer: [
     "row",
     "payload",
@@ -372,13 +445,25 @@ const FRONTEND_SLOT_PROP_FIELDS = {
     "thread",
     "Original",
   ],
+  experimental_environmentProviderInputs: [
+    "projectId",
+    "target",
+    "value",
+    "onChange",
+  ],
+  experimental_machineProviderInputs: ["value", "onChange"],
+  experimental_sidebarNavigation: [
+    "isCompactViewport",
+    "placement",
+    "experimental_Original",
+  ],
 } as const satisfies {
-  [S in keyof SlotPropsByName]: readonly (keyof SlotPropsByName[S])[];
+  [S in keyof SlotPropsByName]: readonly SlotPropKeys<SlotPropsByName[S]>[];
 };
 
 type MissingSlotPropField = {
   [S in keyof SlotPropsByName]: Exclude<
-    keyof SlotPropsByName[S],
+    SlotPropKeys<SlotPropsByName[S]>,
     (typeof FRONTEND_SLOT_PROP_FIELDS)[S][number]
   >;
 }[keyof SlotPropsByName];
@@ -387,15 +472,49 @@ const _assertAllSlotPropFieldsListed: MissingSlotPropField extends never
   : never = true;
 void _assertAllSlotPropFieldsListed;
 
+const SIDEBAR_NAVIGATION_REGISTRATION_FIELDS = [
+  "id",
+  "title",
+  "description",
+  "placement",
+  "component",
+  "headerComponent",
+] as const satisfies readonly (keyof ExperimentalSidebarNavigationRegistration)[];
+
+type MissingSidebarNavigationRegistrationField = Exclude<
+  keyof ExperimentalSidebarNavigationRegistration,
+  (typeof SIDEBAR_NAVIGATION_REGISTRATION_FIELDS)[number]
+>;
+const _assertAllSidebarNavigationRegistrationFieldsListed: MissingSidebarNavigationRegistrationField extends never
+  ? true
+  : never = true;
+void _assertAllSidebarNavigationRegistrationFieldsListed;
+
+const SIDEBAR_HEADER_PROP_FIELDS = [
+  "width",
+  "controlSize",
+  "isCompactViewport",
+] as const satisfies readonly (keyof ExperimentalSidebarHeaderProps)[];
+
+type MissingSidebarHeaderPropField = Exclude<
+  keyof ExperimentalSidebarHeaderProps,
+  (typeof SIDEBAR_HEADER_PROP_FIELDS)[number]
+>;
+const _assertAllSidebarHeaderPropFieldsListed: MissingSidebarHeaderPropField extends never
+  ? true
+  : never = true;
+void _assertAllSidebarHeaderPropFieldsListed;
+
 const NAV_PANEL_REGISTRATION_FIELDS = [
   "id",
   "title",
   "icon",
   "path",
   "component",
-  "fixedTabs",
-  "experimental_sidebarAccessory",
+  "experimental_useBadge",
+  "experimental_usePageTitle",
   "headerContent",
+  "experimental_sidebar",
 ] as const satisfies readonly (keyof PluginNavPanelRegistration)[];
 
 type MissingNavPanelRegistrationField = Exclude<
@@ -439,15 +558,34 @@ const _assertAllMessageActionRegistrationFieldsListed: MissingMessageActionRegis
   : never = true;
 void _assertAllMessageActionRegistrationFieldsListed;
 
+const MESSAGE_REFERENCE_FIELDS = [
+  "id",
+  "threadId",
+  "role",
+  "text",
+  "sourceSeqEnd",
+  "experimental_messageSeq",
+] as const satisfies readonly (keyof ThreadChatMessageReference)[];
+
+type MissingMessageReferenceField = Exclude<
+  keyof ThreadChatMessageReference,
+  (typeof MESSAGE_REFERENCE_FIELDS)[number]
+>;
+const _assertAllMessageReferenceFieldsListed: MissingMessageReferenceField extends never
+  ? true
+  : never = true;
+void _assertAllMessageReferenceFieldsListed;
+
 const COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS = [
+  "defaultShortcut",
   "id",
   "title",
   "isAvailable",
   "run",
-] as const satisfies readonly (keyof PluginCommandPaletteActionRegistration)[];
+] as const satisfies readonly (keyof PluginCommandRegistration)[];
 
 type MissingCommandPaletteActionRegistrationField = Exclude<
-  keyof PluginCommandPaletteActionRegistration,
+  keyof PluginCommandRegistration,
   (typeof COMMAND_PALETTE_ACTION_REGISTRATION_FIELDS)[number]
 >;
 const _assertAllCommandPaletteActionRegistrationFieldsListed: MissingCommandPaletteActionRegistrationField extends never
@@ -496,6 +634,43 @@ describe("bb-plugin-authoring skill", () => {
   const skillEntry = readFileSync(SKILL_PATH, "utf8");
   const skill = readSkillTree();
 
+  it("typechecks the machine provider guide example against the public SDK", () => {
+    const source = readReference("backend-machines.md").match(
+      /```ts\n([\s\S]*?)```/u,
+    )?.[1];
+    expect(source).toBeDefined();
+    const filename = fileURLToPath(
+      new URL("./machine-guide-example.ts", import.meta.url),
+    );
+    const options: ts.CompilerOptions = {
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true,
+      target: ts.ScriptTarget.ESNext,
+      module: ts.ModuleKind.NodeNext,
+      moduleResolution: ts.ModuleResolutionKind.NodeNext,
+    };
+    const host = ts.createCompilerHost(options);
+    const readSource = host.getSourceFile.bind(host);
+    host.getSourceFile = (
+      file,
+      languageVersion,
+      onError,
+      shouldCreateNewSourceFile,
+    ) =>
+      resolve(file) === filename
+        ? ts.createSourceFile(file, source!, languageVersion)
+        : readSource(file, languageVersion, onError, shouldCreateNewSourceFile);
+    const program = ts.createProgram([filename], options, host);
+    expect(
+      ts
+        .getPreEmitDiagnostics(program)
+        .map((diagnostic) =>
+          ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
+        ),
+    ).toEqual([]);
+  });
+
   it("has frontmatter naming the skill after its directory", () => {
     expect(skillEntry).toMatch(/^---\nname: bb-plugin-authoring\n/);
   });
@@ -530,24 +705,6 @@ describe("bb-plugin-authoring skill", () => {
     for (const name of PUBLIC_PLUGIN_SDK_EXPORT_NAMES) {
       expect(skill, `${name} is not documented in the skill`).toContain(name);
     }
-  });
-
-  it("keeps fake-host and distribution examples aligned with implementation", () => {
-    const testing = readReference("testing.md");
-    const quickstart = readReference("quickstart.md");
-    const distribution = readReference("distribution.md");
-
-    expect(testing).toContain(
-      "experimental_callHostRpc: async ({ method, input, hostId, signal })",
-    );
-    expect(testing).toContain('const body = JSON.stringify({ event: "test" })');
-    expect(testing).toMatch(
-      /experimental_emitHostSignal\(\s*"host-test",\s*"changed",\s*\{\s*reason: "test",?\s*\}/,
-    );
-    expect(testing).not.toContain("resolveAgentConfiguration(context)");
-    expect(quickstart).toContain("server.js.map");
-    expect(quickstart).toContain("--omit=dev --omit=optional");
-    expect(distribution).not.toMatch(/"engines"\s*:/);
   });
 
   it("documents the complete frontend content-script lifecycle contract", () => {
@@ -604,6 +761,18 @@ describe("bb-plugin-authoring skill", () => {
     }
   });
 
+  it("documents every sidebar navigation registration field and header prop", () => {
+    for (const field of [
+      ...SIDEBAR_NAVIGATION_REGISTRATION_FIELDS,
+      ...SIDEBAR_HEADER_PROP_FIELDS,
+    ]) {
+      expect(
+        skill,
+        `sidebar navigation field "${field}" is not documented in the skill`,
+      ).toContain(field);
+    }
+  });
+
   it("documents every navPanel registration field", () => {
     for (const field of NAV_PANEL_REGISTRATION_FIELDS) {
       expect(
@@ -630,7 +799,12 @@ describe("bb-plugin-authoring skill", () => {
         `messageAction registration field "${field}" is not documented in the skill`,
       ).toContain(field);
     }
-    expect(skill).toContain("sourceSeqEnd");
+    for (const field of MESSAGE_REFERENCE_FIELDS) {
+      expect(
+        skill,
+        `message reference field "${field}" is not documented in the skill`,
+      ).toContain(field);
+    }
   });
 
   it("documents every commandPaletteAction registration field", () => {
@@ -659,24 +833,6 @@ describe("bb-plugin-authoring skill", () => {
         `ThreadChatMessageAction field "${field}" is not documented in the skill`,
       ).toContain(field);
     }
-  });
-
-  it("documents the explicit plugin branding contract", () => {
-    expect(skill).toContain("bb.name");
-    expect(skill).toContain("bb.description");
-    expect(skill).toContain("bb.branding");
-    expect(skill).toContain("logo.light");
-    expect(skill).toContain("logo.dark");
-    expect(skill).toContain("no root logo auto-detection");
-    expect(skill).toContain("currentColor");
-    expect(skill).toContain("branding.icon");
-    expect(skill).toContain("./assets/icon.svg");
-    expect(skill).toContain("CSS mask");
-    expect(skill).toContain("canonical BB icon name");
-    expect(skill).toContain("BB reuses this icon on roomy");
-    expect(skill).toContain("Logo-only");
-    expect(skill).toContain("manifests remain supported");
-    expect(skill).toContain("Do not duplicate");
   });
 
   it("documents every frontend slot and its prop fields", () => {

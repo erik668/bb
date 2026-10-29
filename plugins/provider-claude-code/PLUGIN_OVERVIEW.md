@@ -5,15 +5,15 @@ Start a thread, pick Claude Code, and let it work in your repository from bb. Th
 - Permission modes `accept-edits`, `auto`, and `full`, plus a plan action in the composer.
 - Reasoning levels from Low to Max, plus Ultracode, which turns on multi-agent workflow orchestration.
 - Checkpoint forks, manual compaction, and native questions from the agent.
-- Claude Code skills and CLAUDE.md files from your home directory and project.
+- Claude Code skills and provider-native CLAUDE.md or supported AGENTS.md files
+  from your home directory and project.
 - Health, usage, and install status for Claude Code on each host, with an install or update action.
 
 ## Settings
 
 - `Claude Code memory`: let Claude Code read and write its auto-memory.
-- `Disable provider subagents`: hide the native Task tool so the agent delegates through bb.
+- `Disable provider subagents`: hide native Agent, Task, and ListAgents tools so the agent delegates through bb. Changes restart Claude before the next turn, preserving the conversation.
 - `Disable Workflow tool`: hide the native Workflow tool.
-- `Release idle Claude processes`: close a quiet process after 30 seconds and resume it on the next turn.
 - `Claude in Chrome`: start Claude Code with the browser tools.
 
 ## Requirements

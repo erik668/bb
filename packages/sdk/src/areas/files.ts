@@ -14,6 +14,12 @@ export interface FileReadArgs {
   hostId?: string;
   path: string;
   rootPath?: string;
+  /**
+   * Read the file as it is at this git revision of the repository at
+   * `rootPath` instead of from disk. Requires `rootPath`; `path` stays the
+   * file's absolute path in the working tree.
+   */
+  ref?: string;
   signal?: AbortSignal;
 }
 
@@ -33,6 +39,8 @@ export interface FileListArgs {
   path: string;
   query?: string;
   limit?: number;
+  includeHidden?: boolean;
+  excludeNames?: string[];
   signal?: AbortSignal;
 }
 
@@ -100,6 +108,7 @@ export function createFilesArea(args: CreateSdkAreaArgs): FilesArea {
               hostId: input.hostId,
               path: input.path,
               rootPath: input.rootPath,
+              ref: input.ref,
             },
           },
           ...signalRequestArgs(input.signal),
@@ -116,7 +125,9 @@ export function createFilesArea(args: CreateSdkAreaArgs): FilesArea {
         transport.api.v1.files.list.$post(
           {
             json: {
+              excludeNames: input.excludeNames,
               hostId: input.hostId,
+              includeHidden: input.includeHidden,
               limit: input.limit,
               path: input.path,
               query: input.query,
@@ -131,9 +142,11 @@ export function createFilesArea(args: CreateSdkAreaArgs): FilesArea {
         transport.api.v1.files.paths.$post(
           {
             json: {
+              excludeNames: input.excludeNames,
               hostId: input.hostId,
               includeDirectories: input.includeDirectories,
               includeFiles: input.includeFiles,
+              includeHidden: input.includeHidden,
               limit: input.limit,
               path: input.path,
               query: input.query,

@@ -12,44 +12,80 @@ import { GeneralSettingsSection } from "./SettingsView";
 afterEach(cleanup);
 
 function renderSection(overrides?: {
+  terminalCopyOnSelect?: boolean;
+  onTerminalCopyOnSelectChange?: (enabled: boolean) => void;
+  generalSettingsDisabled?: boolean;
   managedBranchPrefix?: string;
   onManagedBranchPrefixChange?: (prefix: string) => void;
 }) {
   return render(
     <GeneralSettingsSection
+      confirmThreadArchive={true}
+      onConfirmThreadArchiveChange={vi.fn()}
+      keepHistoryAfterContextClear={false}
+      onKeepHistoryAfterContextClearChange={vi.fn()}
+      summarizeShellCommands={true}
+      onSummarizeShellCommandsChange={vi.fn()}
       desktopBrowserAvailable={false}
+      generalSettingsDisabled={overrides?.generalSettingsDisabled ?? false}
+      terminalCopyOnSelect={overrides?.terminalCopyOnSelect ?? true}
+      onTerminalCopyOnSelectChange={
+        overrides?.onTerminalCopyOnSelectChange ?? vi.fn()
+      }
       managedBranchPrefix={overrides?.managedBranchPrefix ?? "bb/"}
-      managedBranchPrefixDisabled={false}
       navigateToThreadAfterCreate={false}
       onManagedBranchPrefixChange={
         overrides?.onManagedBranchPrefixChange ?? vi.fn()
       }
       onNavigateToThreadAfterCreateChange={vi.fn()}
       onOpenLinksInAppBrowserChange={vi.fn()}
+      onReplaySetupGuide={vi.fn()}
       onRewriteLocalhostLinksChange={vi.fn()}
-      onRichTextEditingChange={vi.fn()}
       onSteerActiveThreadOnEnterChange={vi.fn()}
-      onStreamerModeChange={vi.fn()}
       openLinksInAppBrowser={false}
       rewriteLocalhostLinks={false}
-      richTextEditing={false}
       steerActiveThreadOnEnter={false}
-      steerActiveThreadOnEnterDisabled={false}
-      streamerMode={false}
-      streamerModeDisabled={false}
     />,
   );
 }
 
 function branchPrefixInput() {
-  const input = screen.getByLabelText("Worktree branch prefix");
+  const input = screen.getByLabelText("New branch prefix");
   if (!(input instanceof HTMLInputElement)) {
-    throw new Error("Worktree branch prefix control is not an input");
+    throw new Error("New branch prefix control is not an input");
   }
   return input;
 }
 
-describe("worktree branch prefix setting", () => {
+describe("terminal copy-on-select setting", () => {
+  it("displays the saved value and allows opting out", () => {
+    const onChange = vi.fn();
+    renderSection({ onTerminalCopyOnSelectChange: onChange });
+    const toggle = screen.getByRole("switch", { name: "Copy on select" });
+    expect(toggle.getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(toggle);
+    expect(onChange).toHaveBeenCalledWith(false);
+    cleanup();
+    renderSection({ terminalCopyOnSelect: false });
+    expect(
+      screen
+        .getByRole("switch", { name: "Copy on select" })
+        .getAttribute("aria-checked"),
+    ).toBe("false");
+  });
+
+  it("prevents changes while settings are loading or saving", () => {
+    const onChange = vi.fn();
+    renderSection({
+      generalSettingsDisabled: true,
+      onTerminalCopyOnSelectChange: onChange,
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "Copy on select" }));
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("new branch prefix setting", () => {
   it("saves a valid prefix on Enter", () => {
     const onChange = vi.fn();
     renderSection({ onManagedBranchPrefixChange: onChange });

@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { QueryObserver } from "@tanstack/react-query";
-import type { QueryClient, QueryKey } from "@tanstack/react-query";
+import {
+  QueryObserver,
+  type QueryClient,
+  type QueryKey,
+} from "@tanstack/react-query";
 import { createAppQueryClient } from "@/lib/query-client";
 import {
-  environmentDiffFilesQueryKey,
-  environmentDiffPatchQueryKey,
   hostsQueryKey,
   sidebarNavigationQueryKey,
   systemProvidersQueryKey,
@@ -104,8 +105,10 @@ describe("system cache effects", () => {
     const threadKey = threadQueryKey("thread-1");
     const threadBootstrapKey = threadDetailBootstrapQueryKey("thread-1");
     const timelineKey = threadTimelineQueryKey("thread-1");
-    const conversationOutlineKey =
-      threadConversationOutlineQueryKey("thread-1");
+    const conversationOutlineKey = threadConversationOutlineQueryKey(
+      "thread-1",
+      "user",
+    );
     const queuedMessagesKey = threadQueuedMessagesQueryKey("thread-1");
     const promptHistoryKey = threadPromptHistoryQueryKey("thread-1");
     const pendingInteractionsKey =
@@ -147,7 +150,7 @@ describe("system cache effects", () => {
     queryClient.setQueryData(threadHostFilePreviewKey, {
       kind: "text",
       path: "/tmp/log.txt",
-      url: "/api/v1/threads/thread-1/host-files/content?path=%2Ftmp%2Flog.txt",
+      url: "/api/v1/threads/thread-1/host-files/tmp/log.txt",
       mimeType: "text/plain",
       content: "old",
     });
@@ -204,6 +207,8 @@ describe("system cache effects", () => {
     queryClient.setQueryData(versionKey, {
       currentVersion: "0.0.5",
       latestVersion: "0.0.6",
+      currentCommit: null,
+      installKind: "npm",
       source: "npm",
       updateAvailable: true,
       isDevelopment: false,
@@ -237,7 +242,7 @@ describe("system cache effects", () => {
       observeIdleQuery(queryClient, threadTimelineQueryKey("thread-1")),
       observeIdleQuery(
         queryClient,
-        threadConversationOutlineQueryKey("thread-1"),
+        threadConversationOutlineQueryKey("thread-1", "user"),
       ),
     ];
 
@@ -370,48 +375,4 @@ describe("system cache effects", () => {
     expect(queryClient.getQueryState(neverFetchedKey)).toBeUndefined();
   });
 
-  it("refetches an active diff TOC query but evicts the observer-less patch cache after reconnect", async () => {
-    const queryClient = createCacheEffectQueryClient();
-    const diffFilesKey = environmentDiffFilesQueryKey("env-1", "all", "main");
-    const diffPatchKey = environmentDiffPatchQueryKey(
-      "env-1",
-      "all",
-      "main",
-      "file.ts",
-    );
-    queryClient.setQueryData(diffFilesKey, {
-      outcome: "available",
-      files: [],
-      shortstat: "1 file changed",
-      mergeBaseRef: "base-ref",
-    });
-    queryClient.setQueryData(diffPatchKey, {
-      path: "file.ts",
-      patch: "diff --git a/file.ts b/file.ts\n",
-      truncated: false,
-    });
-    const diffFilesQueryFn = vi.fn(async () => ({
-      outcome: "available" as const,
-      files: [],
-      shortstat: "",
-      mergeBaseRef: "base-ref",
-    }));
-    const diffFilesObserver = new QueryObserver(queryClient, {
-      queryKey: diffFilesKey,
-      queryFn: diffFilesQueryFn,
-      staleTime: Infinity,
-    });
-    const unsubscribeDiffFiles = diffFilesObserver.subscribe(() => {});
-    diffFilesQueryFn.mockClear();
-
-    invalidateRealtimeQueriesAfterServerReconnect({
-      disconnectedAt: afterAllCachedData(),
-      queryClient,
-    });
-
-    await vi.waitFor(() => expect(diffFilesQueryFn).toHaveBeenCalledTimes(1));
-    expect(queryClient.getQueryData(diffPatchKey)).toBeUndefined();
-
-    unsubscribeDiffFiles();
-  });
 });

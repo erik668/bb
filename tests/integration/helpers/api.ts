@@ -1,74 +1,78 @@
-import type {
-  AvailableModel,
-  Environment,
-  Host,
-  PendingInteraction,
-  Thread,
-  ThreadExecutionOptions,
-  ThreadEventRow,
-  ThreadGitDiffResponse,
-} from "@bb/domain";
 import {
+  type AvailableModel,
+  type Environment,
+  type Host,
+  type PendingInteraction,
+  type Thread,
+  type ThreadExecutionOptions,
+  type ThreadEventRow,
   environmentSchema,
   hostSchema,
   pendingInteractionSchema,
   resolveEnvironmentMergeBaseBranch,
   threadEventRowSchema,
   threadSchema,
+  type JsonValue,
+  gitBranchOptionsSchema,
+  type GitBranchOptions,
+  GIT_PLUGIN_ID,
 } from "@bb/domain";
 import { listPreferredTestModels } from "@bb/test-helpers";
-import type {
-  CreateProjectRequest,
-  CreateThreadRequest,
-  EnvironmentActionRequest,
-  EnvironmentActionResponse,
-  EnvironmentDiffBranchesResponse,
-  EnvironmentDiffFilesResponse,
-  EnvironmentDiffPatchResponse,
-  EnvironmentStatusResponse,
-  ProjectResponse,
-  ResolvePendingInteractionRequest,
-  SendMessageRequest,
-  ThreadPendingInteractionsResponse,
-  ThreadTimelineResponse,
-  ThreadResponse,
-  UpdateThreadRequest,
-  WorkspaceArgs,
-} from "@bb/server-contract";
 import {
+  type CreateProjectRequest,
+  type CreateThreadRequest,
+  type EnvironmentActionRequest,
+  type EnvironmentActionResponse,
+  type ProjectResponse,
+  type ResolvePendingInteractionRequest,
+  type SendMessageRequest,
+  type ThreadPendingInteractionsResponse,
+  type ThreadTimelineResponse,
+  type ThreadResponse,
+  type UnmanagedBranchSpec,
+  type UpdateThreadRequest,
+  type WorkspaceArgs,
   createPublicApiClient,
   environmentActionResponseSchema,
-  environmentDiffBranchesResponseSchema,
-  environmentDiffFilesResponseSchema,
-  environmentDiffPatchResponseSchema,
-  environmentDiffResponseSchema,
-  environmentStatusResponseSchema,
   projectResponseSchema,
   systemExecutionOptionsResponseSchema,
   threadPendingInteractionsResponseSchema,
   threadResponseSchema,
   threadTimelineResponseSchema,
+  THREAD_EVENT_LIST_PAGE_SIZE,
 } from "@bb/server-contract";
+import {
+  type ThreadGitDiffResponse,
+  gitDiffResultSchema,
+  gitFilesResultSchema,
+  gitPatchKey,
+  gitPatchResultSchema,
+  gitStatusResultSchema,
+  type GitFilesResult,
+  type GitPatchResult,
+  type GitStatusResult,
+} from "bb-plugin-bb--git/contract";
+import { z } from "zod";
+import { createNodeBbSdk } from "@bb/sdk/node";
 
 export interface CreateHostThreadOptions {
   execution?: ThreadExecutionRequestOptions;
   hostId: string;
   input?: CreateThreadRequest["input"];
-  origin?: CreateThreadRequest["origin"];
   parentThreadId?: string;
   projectId: string;
   providerId?: string;
   title?: string;
   workspace:
     | { type: "managed-worktree" }
-    | { path: string | null; type: "unmanaged" };
+    | { type: "personal" }
+    | { branch?: UnmanagedBranchSpec; path: string | null; type: "unmanaged" };
 }
 
 export interface CreateReuseThreadOptions {
   execution?: ThreadExecutionRequestOptions;
   environmentId: string;
   input?: CreateThreadRequest["input"];
-  origin?: CreateThreadRequest["origin"];
   parentThreadId?: string;
   projectId: string;
   providerId?: string;
@@ -131,15 +135,13 @@ function defaultModelForProvider(providerId: string): string {
 function toWorkspaceArgs(
   workspace: CreateHostThreadOptions["workspace"],
 ): WorkspaceArgs {
-  if (workspace.type === "unmanaged") {
+  if (workspace.type === "unmanaged" || workspace.type === "personal") {
     return workspace;
   }
   return { ...workspace, baseBranch: { kind: "default" } };
 }
 
-export function requireEnvironmentMergeBaseBranch(
-  environment: Environment,
-): string {
+function requireEnvironmentMergeBaseBranch(environment: Environment): string {
   const mergeBaseBranch = resolveEnvironmentMergeBaseBranch(environment);
   if (!mergeBaseBranch) {
     throw new Error(`Environment ${environment.id} has no merge base branch`);
@@ -159,7 +161,7 @@ export async function archiveThread(
   api: PublicApiClient,
   threadId: string,
 ): Promise<void> {
-  const response = await api.threads[":id"].archive.$post({
+  const response = await api.threads[":id"]["archive-all"].$post({
     param: { id: threadId },
   });
   await expectStatus(response, 200, `archive thread ${threadId}`);
@@ -176,22 +178,19 @@ export async function createProject(
   return projectResponseSchema.parse(await response.json());
 }
 
-export async function createHostThread(
+async function postThread(
   api: PublicApiClient,
-  options: CreateHostThreadOptions,
+  environment: CreateThreadRequest["environment"],
+  options: CreateHostThreadOptions | CreateReuseThreadOptions,
+  label: string,
 ): Promise<Thread> {
-  const origin = options.origin ?? DEFAULT_PUBLIC_TEST_THREAD_ORIGIN;
   const providerId = options.providerId ?? "fake";
   const { model, ...execution } = options.execution ?? {};
   const response = await api.threads.$post({
     json: {
-      environment: {
-        type: "host",
-        hostId: options.hostId,
-        workspace: toWorkspaceArgs(options.workspace),
-      },
+      environment,
       input: options.input ?? defaultThreadInput(DEFAULT_THREAD_BOOTSTRAP_TEXT),
-      origin,
+      origin: DEFAULT_PUBLIC_TEST_THREAD_ORIGIN,
       ...execution,
       model: model ?? defaultModelForProvider(providerId),
       parentThreadId: options.parentThreadId,
@@ -202,37 +201,39 @@ export async function createHostThread(
       originKind: null,
     },
   });
-  await expectStatus(response, 201, "create host thread");
+  await expectStatus(response, 201, label);
   return threadSchema.parse(await response.json());
+}
+
+export async function createHostThread(
+  api: PublicApiClient,
+  options: CreateHostThreadOptions,
+): Promise<Thread> {
+  return postThread(
+    api,
+    {
+      type: "host",
+      hostId: options.hostId,
+      workspace: toWorkspaceArgs(options.workspace),
+    },
+    options,
+    "create host thread",
+  );
 }
 
 export async function createReuseThread(
   api: PublicApiClient,
   options: CreateReuseThreadOptions,
 ): Promise<Thread> {
-  const origin = options.origin ?? DEFAULT_PUBLIC_TEST_THREAD_ORIGIN;
-  const providerId = options.providerId ?? "fake";
-  const { model, ...execution } = options.execution ?? {};
-  const response = await api.threads.$post({
-    json: {
-      environment: {
-        type: "reuse",
-        environmentId: options.environmentId,
-      },
-      input: options.input ?? defaultThreadInput(DEFAULT_THREAD_BOOTSTRAP_TEXT),
-      origin,
-      ...execution,
-      model: model ?? defaultModelForProvider(providerId),
-      parentThreadId: options.parentThreadId,
-      projectId: options.projectId,
-      providerId,
-      title: options.title,
-      startedOnBehalfOf: null,
-      originKind: null,
+  return postThread(
+    api,
+    {
+      type: "reuse",
+      environmentId: options.environmentId,
     },
-  });
-  await expectStatus(response, 201, "create reuse thread");
-  return threadSchema.parse(await response.json());
+    options,
+    "create reuse thread",
+  );
 }
 
 export async function deleteThread(
@@ -257,91 +258,89 @@ export async function getEnvironment(
   return environmentSchema.parse(await response.json());
 }
 
-export async function getEnvironmentBranches(
-  api: PublicApiClient,
-  environmentId: string,
-): Promise<EnvironmentDiffBranchesResponse> {
-  const response = await api.environments[":id"].diff.branches.$get({
-    param: { id: environmentId },
-    query: {},
+function callGitPlugin(
+  baseUrl: string,
+  method: string,
+  input: JsonValue,
+): Promise<unknown> {
+  return createNodeBbSdk({ baseUrl }).plugins.callRpc({
+    pluginId: GIT_PLUGIN_ID,
+    method,
+    input,
+    outputSchema: z.unknown(),
   });
-  await expectStatus(
-    response,
-    200,
-    `get environment branches ${environmentId}`,
+}
+
+export async function getEnvironmentBranches(
+  baseUrl: string,
+  environmentId: string,
+): Promise<GitBranchOptions> {
+  return gitBranchOptionsSchema.parse(
+    await callGitPlugin(baseUrl, "branches", { environmentId }),
   );
-  return environmentDiffBranchesResponseSchema.parse(await response.json());
 }
 
 export async function getEnvironmentDiff(
   api: PublicApiClient,
+  baseUrl: string,
   environmentId: string,
 ): Promise<ThreadGitDiffResponse> {
   const mergeBaseBranch = await requireMergeBaseBranch(api, environmentId);
-  const response = await api.environments[":id"].diff.$get({
-    param: { id: environmentId },
-    query: {
-      mergeBaseBranch,
-      target: "all",
-    },
-  });
-  await expectStatus(response, 200, `get environment diff ${environmentId}`);
-  const diffResponse = environmentDiffResponseSchema.parse(
-    await response.json(),
+  const result = gitDiffResultSchema.parse(
+    await callGitPlugin(baseUrl, "diff", {
+      environmentId,
+      target: { type: "all", mergeBaseBranch },
+    }),
   );
-  if (diffResponse.outcome === "available") {
-    return diffResponse.diff;
-  }
-  if (diffResponse.outcome === "not_applicable") {
-    throw new Error(diffResponse.message);
-  }
-  throw new Error(diffResponse.failure.message);
+  if (result.outcome === "available") return result.diff;
+  if (result.outcome === "not_applicable") throw new Error(result.message);
+  throw new Error(result.failure.message);
 }
 
 export async function getEnvironmentDiffFiles(
-  api: PublicApiClient,
+  baseUrl: string,
   environmentId: string,
-): Promise<EnvironmentDiffFilesResponse> {
-  const response = await api.environments[":id"].diff.files.$get({
-    param: { id: environmentId },
-    query: { target: "uncommitted" },
-  });
-  await expectStatus(
-    response,
-    200,
-    `get environment diff files ${environmentId}`,
+): Promise<GitFilesResult> {
+  return gitFilesResultSchema.parse(
+    await callGitPlugin(baseUrl, "files", {
+      environmentId,
+      target: { type: "uncommitted" },
+      ignoreWhitespace: false,
+    }),
   );
-  return environmentDiffFilesResponseSchema.parse(await response.json());
 }
 
-export async function getEnvironmentDiffPatch(
-  api: PublicApiClient,
+export async function getEnvironmentDiffPatches(
+  baseUrl: string,
   environmentId: string,
-  paths: string[],
-): Promise<EnvironmentDiffPatchResponse> {
-  const response = await api.environments[":id"].diff.patch.$post({
-    param: { id: environmentId },
-    json: { target: { type: "uncommitted" }, paths },
-  });
-  await expectStatus(
-    response,
-    200,
-    `get environment diff patch ${environmentId}`,
+  files: readonly { path: string; revision: string }[],
+): Promise<Record<string, GitPatchResult>> {
+  const keys = files.map((file) =>
+    gitPatchKey({
+      environmentId,
+      target: { type: "uncommitted" },
+      ignoreWhitespace: false,
+      path: file.path,
+      revision: file.revision,
+    }),
   );
-  return environmentDiffPatchResponseSchema.parse(await response.json());
+  return z
+    .record(z.string(), gitPatchResultSchema)
+    .parse(await callGitPlugin(baseUrl, "patches", { keys }));
 }
 
 export async function getEnvironmentStatus(
   api: PublicApiClient,
+  baseUrl: string,
   environmentId: string,
-): Promise<EnvironmentStatusResponse> {
+): Promise<GitStatusResult> {
   const mergeBaseBranch = await requireMergeBaseBranch(api, environmentId);
-  const response = await api.environments[":id"].status.$get({
-    param: { id: environmentId },
-    query: { mergeBaseBranch },
-  });
-  await expectStatus(response, 200, `get environment status ${environmentId}`);
-  return environmentStatusResponseSchema.parse(await response.json());
+  return gitStatusResultSchema.parse(
+    await callGitPlugin(baseUrl, "workspaceStatus", {
+      environmentId,
+      mergeBaseBranch,
+    }),
+  );
 }
 
 export async function getAvailableModels(
@@ -391,12 +390,26 @@ export async function getThreadEvents(
   api: PublicApiClient,
   threadId: string,
 ): Promise<ThreadEventRow[]> {
-  const response = await api.threads[":id"].events.$get({
-    param: { id: threadId },
-    query: { limit: "10000" },
-  });
-  await expectStatus(response, 200, `get thread events ${threadId}`);
-  return threadEventRowSchema.array().parse(await response.json());
+  const rows: ThreadEventRow[] = [];
+  let afterSeq: string | undefined;
+  for (;;) {
+    const response = await api.threads[":id"].events.$get({
+      param: { id: threadId },
+      query: {
+        ...(afterSeq === undefined ? {} : { afterSeq }),
+        limit: String(THREAD_EVENT_LIST_PAGE_SIZE),
+        order: "asc",
+      },
+    });
+    await expectStatus(response, 200, `get thread events ${threadId}`);
+    const page = threadEventRowSchema.array().parse(await response.json());
+    rows.push(...page);
+    const last = page.at(-1);
+    if (last === undefined || page.length < THREAD_EVENT_LIST_PAGE_SIZE) {
+      return rows;
+    }
+    afterSeq = String(last.seq);
+  }
 }
 
 export async function getThreadOutput(
@@ -503,6 +516,16 @@ export async function unarchiveThread(
     param: { id: threadId },
   });
   await expectStatus(response, 200, `unarchive thread ${threadId}`);
+}
+
+export async function restoreThreadEnvironment(
+  api: PublicApiClient,
+  threadId: string,
+): Promise<void> {
+  const response = await api.threads[":id"]["restore-environment"].$post({
+    param: { id: threadId },
+  });
+  await expectStatus(response, 200, `restore thread ${threadId} environment`);
 }
 
 export async function updateThread(

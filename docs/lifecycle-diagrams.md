@@ -37,7 +37,7 @@ flowchart LR
     starting -->|"run.succeeded"| idle
     starting -->|"run.failed ⟨notDeleted⟩"| error
     starting -->|"stop.requested"| stopping
-    active -->|"run.succeeded"| idle
+    active -->|"run.succeeded<br/>stop.settled"| idle
     active -->|"run.failed ⟨notDeleted⟩"| error
     active -->|"stop.requested"| stopping
     stopping -->|"stop.settled<br/>run.succeeded"| idle
@@ -51,24 +51,20 @@ flowchart LR
 ```mermaid
 flowchart LR
     __start((start))
+    creating["creating"]
     provisioning["provisioning"]
     ready["ready"]
-    retiring["retiring"]
     error["error"]
-    destroying["destroying"]
     destroyed["destroyed"]
-    __start --> provisioning
+    __start --> creating
+    creating -->|"provision.requested"| provisioning
+    creating -->|"provision.failed<br/>provision.cancelled"| error
+    creating -->|"destroy.recorded"| destroyed
     provisioning -->|"provision.succeeded<br/>provision.cancelled (workspace on disk)"| ready
     provisioning -->|"provision.failed"| error
-    provisioning -->|"provision.cancelled (no workspace)"| destroying
+    provisioning -->|"provision.cancelled (no workspace)"| destroyed
     ready -->|"provision.requested"| provisioning
-    ready -->|"retire.requested ⟨managed⟩"| retiring
-    retiring -->|"retire.cancelled"| ready
-    retiring -->|"destroy.started ⟨managed⟩"| destroying
+    ready -->|"destroy.recorded"| destroyed
     error -->|"provision.requested"| provisioning
-    error -->|"destroy.started ⟨managed⟩"| destroying
-    error -->|"destroy.completed ⟨matchingDestroyAttempt⟩"| destroyed
-    destroying -->|"destroy.completed ⟨matchingDestroyAttempt⟩"| destroyed
-    destroying -->|"destroy.failed ⟨matchingDestroyAttempt⟩"| retiring
-    destroying -->|"destroy.lost"| error
+    error -->|"destroy.recorded"| destroyed
 ```

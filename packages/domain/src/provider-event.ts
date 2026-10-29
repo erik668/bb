@@ -1,3 +1,4 @@
+import { contextSnapshotSchema } from "./context-snapshot.js";
 import { z } from "zod";
 import {
   systemErrorEventDataSchema,
@@ -8,7 +9,6 @@ import {
   systemProviderTurnWatchdogEventDataSchema,
   systemThreadProvisioningEventDataSchema,
   systemUserQuestionLifecycleEventDataSchema,
-  systemEventTypeValues,
   systemThreadInterruptedEventDataSchema,
   clientTurnLifecycleEventDataSchema,
   turnRequestEventDataSchema,
@@ -28,7 +28,8 @@ import {
 import { threadTimelineGoalStatusSchema } from "./thread-timeline-goal.js";
 import { threadEventItemPresentationSchema } from "./item-presentation.js";
 import { extensionKindSchema } from "./provider-extension-kind.js";
-
+import { threadUsageCostSchema } from "./thread-usage-cost.js";
+export { threadUsageCostSchema } from "./thread-usage-cost.js";
 export const threadEventItemStatusSchema = z.enum([
   "pending",
   "completed",
@@ -261,6 +262,20 @@ const threadEventItemTruncationSchema = z.object({
   resultText: threadEventTextTruncationSchema.optional(),
 });
 
+export const threadEventImageGenerationItemSchema = z.object({
+  type: z.literal("imageGeneration"),
+  id: z.string(),
+  status: threadEventItemStatusSchema,
+  prompt: z.string().nullable(),
+  path: z.string().nullable(),
+  result: z.string().optional(),
+  error: z.string().nullable(),
+  transparentBackground: z.boolean(),
+  truncation: threadEventItemTruncationSchema.optional(),
+  ...itemPresentationField,
+  parentToolCallId: z.string().optional(),
+});
+
 const threadEventUserContentSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), text: z.string() }),
   z.object({ type: z.literal("image"), url: z.string() }),
@@ -275,6 +290,8 @@ export const threadEventTokenUsageBreakdownSchema = z.object({
   totalTokens: z.number(),
   inputTokens: z.number(),
   cachedInputTokens: z.number(),
+  cacheReadInputTokens: z.number().nonnegative().optional(),
+  cacheWriteInputTokens: z.number().nonnegative().optional(),
   outputTokens: z.number(),
   reasoningOutputTokens: z.number(),
 });
@@ -282,19 +299,26 @@ export type ThreadEventTokenUsageBreakdown = z.infer<
   typeof threadEventTokenUsageBreakdownSchema
 >;
 
+export type ThreadUsageCost = z.infer<typeof threadUsageCostSchema>;
+
 const threadEventContextWindowUsageSchema = z.object({
+  snapshot: contextSnapshotSchema.optional(),
   usedTokens: z.number().nullable(),
   modelContextWindow: z.number().nullable(),
   estimated: z.boolean(),
+  cost: threadUsageCostSchema.optional(),
 });
 export type ThreadEventContextWindowUsage = z.infer<
   typeof threadEventContextWindowUsageSchema
 >;
 
+export const promptCacheTtlMsSchema = z.number().int().positive();
+
 const threadEventTokenUsageSchema = z.object({
   total: threadEventTokenUsageBreakdownSchema,
   last: threadEventTokenUsageBreakdownSchema,
   modelContextWindow: z.number().nullable(),
+  promptCacheTtlMs: promptCacheTtlMsSchema.optional(),
 });
 
 export const threadEventWarningCategorySchema = z.enum([
@@ -343,6 +367,7 @@ export const threadEventBackgroundTaskItemSchema = z.object({
   status: threadEventItemStatusSchema,
   taskStatus: backgroundTaskStatusSchema,
   skipTranscript: z.boolean(),
+  foreground: z.boolean(),
   workflowName: z.string().optional(),
   workflow: workflowProgressSnapshotSchema.optional(),
   usage: backgroundTaskUsageSchema.optional(),
@@ -393,12 +418,14 @@ export const threadEventItemSchema = z.discriminatedUnion("type", [
     changes: z.array(threadEventFileChangeSchema),
     status: threadEventItemStatusSchema,
     approvalStatus: threadEventItemApprovalStatusSchema,
+    error: z.string().optional(),
     ...itemPresentationField,
     parentToolCallId: z.string().optional(),
   }),
   threadEventWebSearchItemSchema,
   threadEventWebFetchItemSchema,
   threadEventImageViewItemSchema,
+  threadEventImageGenerationItemSchema,
   threadEventFileReadItemSchema,
   threadEventSearchItemSchema,
   z.object({
@@ -444,37 +471,15 @@ export const threadEventItemSchema = z.discriminatedUnion("type", [
 export type ThreadEventItem = z.infer<typeof threadEventItemSchema>;
 export type ThreadEventItemType = ThreadEventItem["type"];
 
-export const CORE_ITEM_KINDS = [
-  "userMessage",
-  "agentMessage",
-  "commandExecution",
-  "fileChange",
-  "fileRead",
-  "search",
-  "webSearch",
-  "webFetch",
-  "imageView",
-  "toolCall",
-  "reasoning",
-  "plan",
-  "planSteps",
-  "contextCompaction",
-  "backgroundTask",
-  "delegation",
-] as const satisfies readonly Exclude<ThreadEventItemType, "extension">[];
-export type CoreItemKind = (typeof CORE_ITEM_KINDS)[number];
-
-type CoreItemKindsAreExhaustive =
-  Exclude<ThreadEventItemType, "extension"> extends CoreItemKind
-    ? CoreItemKind extends Exclude<ThreadEventItemType, "extension">
-      ? true
-      : never
-    : never;
-const coreItemKindsAreExhaustive: CoreItemKindsAreExhaustive = true;
-void coreItemKindsAreExhaustive;
-
-export function isCoreItemKind(value: string): value is CoreItemKind {
-  return (CORE_ITEM_KINDS as readonly string[]).includes(value);
+function itemTextDeltaEventSchema<TType extends string>(type: TType) {
+  return z.object({
+    type: z.literal(type),
+    threadId: z.string(),
+    providerThreadId: z.string(),
+    itemId: z.string(),
+    delta: z.string(),
+    parentToolCallId: z.string().optional(),
+  });
 }
 
 const unscopedProviderEventSchema = z.discriminatedUnion("type", [
@@ -515,6 +520,7 @@ const unscopedProviderEventSchema = z.discriminatedUnion("type", [
     threadId: z.string(),
     providerThreadId: z.string(),
     threadName: z.string(),
+    source: z.literal("agent").optional(),
   }),
   z.object({
     type: z.literal("thread/compacted"),
@@ -553,14 +559,7 @@ const unscopedProviderEventSchema = z.discriminatedUnion("type", [
     providerThreadId: z.string(),
     item: threadEventItemSchema,
   }),
-  z.object({
-    type: z.literal("item/agentMessage/delta"),
-    threadId: z.string(),
-    providerThreadId: z.string(),
-    itemId: z.string(),
-    delta: z.string(),
-    parentToolCallId: z.string().optional(),
-  }),
+  itemTextDeltaEventSchema("item/agentMessage/delta"),
   z.object({
     type: z.literal("item/commandExecution/outputDelta"),
     threadId: z.string(),
@@ -570,38 +569,10 @@ const unscopedProviderEventSchema = z.discriminatedUnion("type", [
     reset: z.boolean().optional(),
     parentToolCallId: z.string().optional(),
   }),
-  z.object({
-    type: z.literal("item/fileChange/outputDelta"),
-    threadId: z.string(),
-    providerThreadId: z.string(),
-    itemId: z.string(),
-    delta: z.string(),
-    parentToolCallId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal("item/reasoning/summaryTextDelta"),
-    threadId: z.string(),
-    providerThreadId: z.string(),
-    itemId: z.string(),
-    delta: z.string(),
-    parentToolCallId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal("item/reasoning/textDelta"),
-    threadId: z.string(),
-    providerThreadId: z.string(),
-    itemId: z.string(),
-    delta: z.string(),
-    parentToolCallId: z.string().optional(),
-  }),
-  z.object({
-    type: z.literal("item/plan/delta"),
-    threadId: z.string(),
-    providerThreadId: z.string(),
-    itemId: z.string(),
-    delta: z.string(),
-    parentToolCallId: z.string().optional(),
-  }),
+  itemTextDeltaEventSchema("item/fileChange/outputDelta"),
+  itemTextDeltaEventSchema("item/reasoning/summaryTextDelta"),
+  itemTextDeltaEventSchema("item/reasoning/textDelta"),
+  itemTextDeltaEventSchema("item/plan/delta"),
   z.object({
     type: z.literal("item/mcpToolCall/progress"),
     threadId: z.string(),
@@ -655,6 +626,12 @@ const unscopedProviderEventSchema = z.discriminatedUnion("type", [
     explanation: z.string().optional(),
   }),
   z.object({
+    type: z.literal("turn/mainRun/updated"),
+    threadId: z.string(),
+    providerThreadId: z.string(),
+    state: z.enum(["idle", "running"]),
+  }),
+  z.object({
     type: z.literal("turn/diff/updated"),
     threadId: z.string(),
     providerThreadId: z.string(),
@@ -686,6 +663,15 @@ const unscopedProviderEventSchema = z.discriminatedUnion("type", [
           source: z.union([
             z.literal("shell"),
             z.object({ plugin: z.string() }).strict(),
+            z
+              .object({
+                core: z.enum([
+                  "machine-git",
+                  "machine-environment",
+                  "project-environment",
+                ]),
+              })
+              .strict(),
           ]),
           value: z.union([
             z.string(),
@@ -733,9 +719,6 @@ export type ProviderUnhandledEvent = Extract<
   ProviderEvent,
   { type: "provider/unhandled" }
 >;
-const providerEventTypeValues = unscopedProviderEventSchema.options.map(
-  (option) => option.shape.type.value,
-);
 
 const unscopedSystemEventSchema = z.discriminatedUnion("type", [
   z
@@ -819,60 +802,22 @@ const unscopedSystemEventSchema = z.discriminatedUnion("type", [
 ]);
 const systemEventSchema = unscopedSystemEventSchema.and(scopedEventDataSchema);
 
-const legacyClientRequestKey = ["clientRequest", "Sequence"].join("");
-
-function isEventPropertyBag(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-const rejectLegacyClientRequestSequenceSchema = z
-  .unknown()
-  .superRefine((value, ctx) => {
-    if (!isEventPropertyBag(value)) {
+export const threadEventSchema = z
+  .union([providerEventSchema, systemEventSchema])
+  .superRefine((event, ctx) => {
+    const result = validateThreadEventScope({
+      type: event.type,
+      scope: event.scope,
+    });
+    if (!result.valid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: result.message ?? "Invalid thread event scope",
+        path: ["scope"],
+      });
       return;
     }
-
-    if (Object.hasOwn(value, legacyClientRequestKey)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "legacy request sequence field is no longer accepted",
-        path: [legacyClientRequestKey],
-      });
-    }
-
-    const item = value.item;
-    if (
-      isEventPropertyBag(item) &&
-      item.type === "userMessage" &&
-      Object.hasOwn(item, legacyClientRequestKey)
-    ) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message:
-          "legacy user-message request sequence field is no longer accepted",
-        path: ["item", legacyClientRequestKey],
-      });
-    }
   });
-
-export const threadEventSchema = rejectLegacyClientRequestSequenceSchema.pipe(
-  z
-    .union([providerEventSchema, systemEventSchema])
-    .superRefine((event, ctx) => {
-      const result = validateThreadEventScope({
-        type: event.type,
-        scope: event.scope,
-      });
-      if (!result.valid) {
-        ctx.addIssue({
-          code: z.ZodIssueCode.custom,
-          message: result.message ?? "Invalid thread event scope",
-          path: ["scope"],
-        });
-        return;
-      }
-    }),
-);
 export type ThreadEvent = z.infer<typeof threadEventSchema>;
 export type ThreadEventType = ThreadEvent["type"];
 
@@ -904,14 +849,8 @@ export function isThreadEventWithItem(
       return false;
   }
 }
-export const threadEventTypeValues = [
-  ...providerEventTypeValues,
-  ...systemEventTypeValues,
-] as const;
-const threadEventTypeSet = new Set<string>(threadEventTypeValues);
-export const threadEventTypeSchema = z
-  .string()
-  .refine(
-    (value): value is ThreadEventType => threadEventTypeSet.has(value),
-    "Invalid thread event type",
-  );
+
+export {
+  threadEventTypeValues,
+  threadEventTypeSchema,
+} from "./thread-event-types.js";

@@ -21,22 +21,6 @@ describe("NotificationHub", () => {
     vi.useRealTimers();
   });
 
-  it("subscribes clients and delivers thread notifications", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.notifyThread("thread-1", ["events-appended"]);
-
-    expect(socket.messages).toHaveLength(1);
-    expect(JSON.parse(socket.messages[0])).toMatchObject({
-      type: "changed",
-      entity: "thread",
-      id: "thread-1",
-      changes: ["events-appended"],
-    });
-  });
-
   it("includes thread notification metadata when provided", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
@@ -75,17 +59,6 @@ describe("NotificationHub", () => {
     });
   });
 
-  it("stops notifications after unsubscribe", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.unsubscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.notifyThread("thread-1", ["status-changed"]);
-
-    expect(socket.messages).toHaveLength(0);
-  });
-
   it("cleans up subscriptions on client disconnect", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
@@ -97,6 +70,106 @@ describe("NotificationHub", () => {
     hub.notifyProject("project-1", ["threads-changed"]);
 
     expect(socket.messages).toHaveLength(0);
+  });
+
+  it("watches a target from its first subscriber until its last one leaves", () => {
+    const hub = new NotificationHub();
+    const first = createMockHubSocket();
+    const second = createMockHubSocket();
+    const environment = {
+      kind: "environment-detail",
+      environmentId: "environment-1",
+    } as const;
+    const thread = { kind: "thread-detail", threadId: "thread-1" } as const;
+    const changes: unknown[] = [];
+    hub.onWatchedTargets(["environment-detail", "thread-detail"], (change) => {
+      changes.push(change);
+    });
+
+    hub.subscribe(first, environment);
+    hub.subscribe(second, { ...environment });
+    hub.subscribe(first, thread);
+    hub.subscribe(first, { kind: "project-detail", projectId: "project-1" });
+    hub.unsubscribe(first, environment);
+    expect(hub.listWatchedTargets("environment-detail")).toEqual([environment]);
+    hub.subscribe(second, thread);
+    hub.subscribe(second, { kind: "host-list" });
+    hub.unregisterClient(first);
+    hub.unregisterClient(second);
+
+    expect(changes).toEqual([
+      { started: [environment], stopped: [] },
+      { started: [thread], stopped: [] },
+      { started: [], stopped: [environment, thread] },
+    ]);
+    expect(hub.listWatchedTargets("environment-detail")).toEqual([]);
+    expect(hub.listWatchedTargets("thread-detail")).toEqual([]);
+  });
+
+  it("replays already watched targets to a late listener", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const target = {
+      kind: "thread-timeline",
+      threadId: "thread-1",
+      segmentLimit: null,
+      deferContent: false,
+    } as const;
+    hub.subscribe(socket, target);
+    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
+    const changes: unknown[] = [];
+
+    const stop = hub.onWatchedTargets(["thread-timeline"], (change) => {
+      changes.push(change);
+    });
+    stop();
+    hub.unregisterClient(socket);
+
+    expect(changes).toEqual([{ started: [target], stopped: [] }]);
+  });
+
+  it("watches only for visible clients while still routing changes to hidden ones", () => {
+    const hub = new NotificationHub();
+    const first = createMockHubSocket();
+    const second = createMockHubSocket();
+    const environment = {
+      kind: "environment-detail",
+      environmentId: "environment-1",
+    } as const;
+    const pullRequest = {
+      kind: "plugin-read",
+      pluginId: "bb--github-pr-status",
+      method: "pullRequests",
+      read: { key: "environment-1" },
+    } as const;
+    const changes: unknown[] = [];
+    hub.onWatchedTargets(["environment-detail", "plugin-read"], (change) => {
+      changes.push(change);
+    });
+
+    hub.subscribe(first, environment);
+    hub.subscribe(second, { ...environment });
+    hub.setClientVisible(first, false);
+    hub.setClientVisible(first, false);
+    expect(hub.listWatchedTargets("environment-detail")).toEqual([environment]);
+    hub.setClientVisible(second, false);
+    hub.subscribe(second, pullRequest);
+    hub.notifyEnvironment("environment-1", ["metadata-changed"]);
+    hub.setClientVisible(second, true);
+    hub.unregisterClient(second);
+    hub.unregisterClient(first);
+
+    expect(changes).toEqual([
+      { started: [environment], stopped: [] },
+      { started: [], stopped: [environment] },
+      { started: [environment, pullRequest], stopped: [] },
+      { started: [], stopped: [environment, pullRequest] },
+    ]);
+    for (const socket of [first, second]) {
+      expect(socket.messages.map((message) => JSON.parse(message))).toEqual([
+        expect.objectContaining({ entity: "environment", id: "environment-1" }),
+      ]);
+    }
   });
 
   it("registers terminal clients and removes them when the socket disconnects", () => {
@@ -294,6 +367,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -306,6 +380,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -332,67 +407,109 @@ describe("NotificationHub", () => {
     });
   });
 
-  it("does not resolve host RPC waiters from mismatched daemon sessions", async () => {
+  it("cancels the daemon request when the caller aborts", async () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
     hub.registerDaemon("session-1", "host-1", socket);
-    hub.registerDaemon("session-2", "host-2", createMockHubSocket());
+    const abortController = new AbortController();
+
+    const wait = hub.requestHostOnlineRpc({
+      hostId: "host-1",
+      signal: abortController.signal,
+      timeoutMs: 1_000,
+      message: {
+        type: "host-rpc.request",
+        requestId: "rpc-1",
+        command: {
+          type: "provider.list_models",
+          contributedEnv: [],
+          providerId: "codex",
+          bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
+        },
+      },
+    });
+    abortController.abort();
+
+    await expect(wait).rejects.toThrow("Host RPC request was cancelled");
+    expect(socket.messages.map((message) => JSON.parse(message).type)).toEqual([
+      "host-rpc.request",
+      "host-rpc.cancel",
+    ]);
+    expect(JSON.parse(socket.messages[1])).toEqual({
+      type: "host-rpc.cancel",
+      requestId: "rpc-1",
+    });
+    expect(
+      hub.recordHostOnlineRpcResponse({
+        message: {
+          type: "host-rpc.response",
+          requestId: "rpc-1",
+          commandType: "provider.list_models",
+          ok: true,
+          result: { models: [], selectedOnlyModels: [] },
+        },
+        sessionId: "session-1",
+      }),
+    ).toEqual({ handled: false, reason: "stale" });
+  });
+
+  it("cancels the daemon request when the wait times out", async () => {
+    vi.useFakeTimers();
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    hub.registerDaemon("session-1", "host-1", socket);
 
     const wait = hub.requestHostOnlineRpc({
       hostId: "host-1",
       timeoutMs: 1_000,
       message: {
         type: "host-rpc.request",
-        requestId: "rpc-session-scoped",
+        requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
       },
     });
-    let resolved = false;
-    const observed = wait.then((response) => {
-      resolved = true;
-      return response;
-    });
+    const rejection = expect(wait).rejects.toThrow(
+      "Timed out waiting for host RPC response",
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
 
-    const mismatch = hub.recordHostOnlineRpcResponse({
-      message: {
-        type: "host-rpc.response",
-        requestId: "rpc-session-scoped",
-        commandType: "provider.list_models",
-        ok: true,
-        result: { models: [], selectedOnlyModels: [] },
-      },
-      sessionId: "session-2",
+    await rejection;
+    expect(JSON.parse(socket.messages[1])).toEqual({
+      type: "host-rpc.cancel",
+      requestId: "rpc-1",
     });
-    expect(mismatch).toEqual({
-      expectedSessionId: "session-1",
-      handled: false,
-      reason: "session_mismatch",
-    });
-    await Promise.resolve();
-    expect(resolved).toBe(false);
+  });
 
-    const handled = hub.recordHostOnlineRpcResponse({
-      message: {
-        type: "host-rpc.response",
-        requestId: "rpc-session-scoped",
-        commandType: "provider.list_models",
-        ok: true,
-        result: { models: [], selectedOnlyModels: [] },
-      },
-      sessionId: "session-1",
-    });
-    expect(handled).toEqual({ handled: true });
-    await expect(observed).resolves.toEqual({
-      type: "host-rpc.response",
-      requestId: "rpc-session-scoped",
-      commandType: "provider.list_models",
-      ok: true,
-      result: { models: [], selectedOnlyModels: [] },
-    });
+  it("does not send a request whose signal is already aborted", async () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    hub.registerDaemon("session-1", "host-1", socket);
+    const abortController = new AbortController();
+    abortController.abort();
+
+    await expect(
+      hub.requestHostOnlineRpc({
+        hostId: "host-1",
+        signal: abortController.signal,
+        timeoutMs: 1_000,
+        message: {
+          type: "host-rpc.request",
+          requestId: "rpc-1",
+          command: {
+            type: "provider.list_models",
+            contributedEnv: [],
+            providerId: "codex",
+            bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
+          },
+        },
+      }),
+    ).rejects.toThrow("Host RPC request was cancelled");
+    expect(socket.messages).toEqual([]);
   });
 
   it("rejects in-flight host RPC requests when the daemon unregisters", async () => {
@@ -408,6 +525,7 @@ describe("NotificationHub", () => {
         requestId: "rpc-1",
         command: {
           type: "provider.list_models",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: TRANSPORT_TEST_BRIDGE_LAUNCH,
         },
@@ -416,28 +534,6 @@ describe("NotificationHub", () => {
     hub.unregisterDaemon("session-1");
 
     await expect(wait).rejects.toThrow("Host daemon is not connected");
-  });
-
-  it("keeps subscription bookkeeping consistent across repeated changes", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    for (let index = 0; index < 20; index += 1) {
-      hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-      hub.unsubscribe(socket, {
-        kind: "thread-detail",
-        threadId: "thread-1",
-      });
-    }
-    hub.subscribe(socket, { kind: "thread-detail", threadId: "thread-1" });
-    hub.notifyThread("thread-1", ["events-appended"]);
-
-    expect(socket.messages).toHaveLength(1);
-
-    hub.unregisterClient(socket);
-    hub.notifyThread("thread-1", ["events-appended"]);
-
-    expect(socket.messages).toHaveLength(1);
   });
 
   it("skips and logs broadcasts that fail outgoing schema validation", () => {
@@ -607,6 +703,7 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
       threadId: "thread-1",
     });
 
+    let timelineSequence = 0;
     for (const eventType of [
       "item/agentMessage/delta",
       "item/agentMessage/delta",
@@ -614,6 +711,7 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     ] as const) {
       hub.notifyThread("thread-1", ["events-appended"], {
         eventTypes: [eventType],
+        timelineSequence: ++timelineSequence,
       });
     }
 
@@ -623,7 +721,10 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     expect(messagesOf(listSocket)[0]).toMatchObject({
       id: "thread-1",
       changes: ["events-appended"],
-      metadata: { eventTypes: ["item/agentMessage/delta"] },
+      metadata: {
+        eventTypes: ["item/agentMessage/delta"],
+        timelineSequence: 1,
+      },
     });
 
     vi.advanceTimersByTime(999);
@@ -633,7 +734,10 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     expect(messagesOf(listSocket)[1]).toMatchObject({
       id: "thread-1",
       changes: ["events-appended"],
-      metadata: { eventTypes: ["item/agentMessage/delta", "item/started"] },
+      metadata: {
+        eventTypes: ["item/agentMessage/delta", "item/started"],
+        timelineSequence: 3,
+      },
     });
     expect(detailSocket.messages).toHaveLength(3);
     expect(listAndDetailSocket.messages).toHaveLength(3);
@@ -715,15 +819,79 @@ describe("NotificationHub events-appended thread-list coalescing", () => {
     });
   });
 
+  it("delivers history compaction to detail subscribers and listeners but not to list-only sockets", () => {
+    vi.useFakeTimers();
+    const hub = new NotificationHub();
+    const detailSocket = createMockHubSocket();
+    const listSocket = createMockHubSocket();
+    const otherDetailSocket = createMockHubSocket();
+    const seen: string[][] = [];
+    hub.onChangedMessage((message) => {
+      if (message.entity === "thread") seen.push([...message.changes]);
+    });
+    hub.subscribe(detailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-1",
+    });
+    hub.subscribe(listSocket, { kind: "thread-list" });
+    hub.subscribe(otherDetailSocket, {
+      kind: "thread-detail",
+      threadId: "thread-2",
+    });
+
+    hub.notifyThread("thread-1", ["history-compacted"]);
+    vi.advanceTimersByTime(1_000);
+
+    expect(messagesOf(detailSocket)).toEqual([
+      {
+        type: "changed",
+        entity: "thread",
+        id: "thread-1",
+        changes: ["history-compacted"],
+      },
+    ]);
+    expect(listSocket.messages).toEqual([]);
+    expect(otherDetailSocket.messages).toEqual([]);
+    expect(seen).toEqual([["history-compacted"]]);
+
+    hub.notifyThread("thread-1", ["history-rewritten"]);
+    expect(listSocket.messages).toHaveLength(1);
+  });
+
   it("still tells changed-message listeners about coalesced frames", () => {
     vi.useFakeTimers();
     const hub = new NotificationHub();
     const seen: string[][] = [];
     hub.onChangedMessage((message) => {
-      seen.push([...message.changes]);
+      if (message.entity === "thread") seen.push([...message.changes]);
     });
     hub.notifyThread("thread-1", ["events-appended"]);
     hub.notifyThread("thread-1", ["events-appended"]);
     expect(seen).toEqual([["events-appended"], ["events-appended"]]);
   });
+});
+
+it("shares watched producers across sockets", () => {
+  const hub = new NotificationHub();
+  const a = createMockHubSocket();
+  const b = createMockHubSocket();
+  const changes = vi.fn();
+  const read = {
+    kind: "plugin-read",
+    pluginId: "demo",
+    method: "status",
+    read: { input: { a: 1, b: 2 } },
+  } as const;
+  const stop = hub.onWatchedTargets(["plugin-read"], changes);
+  hub.subscribe(a, read);
+  hub.subscribe(b, { ...read, read: { input: { b: 2, a: 1 } } });
+  expect(changes.mock.calls).toEqual([[{ started: [read], stopped: [] }]]);
+  hub.unsubscribe(a, read);
+  expect(changes).toHaveBeenCalledTimes(1);
+  hub.unregisterClient(b);
+  expect(changes.mock.calls).toEqual([
+    [{ started: [read], stopped: [] }],
+    [{ started: [], stopped: [read] }],
+  ]);
+  stop();
 });

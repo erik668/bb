@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, type SQL } from "drizzle-orm";
+import { and, asc, count, eq, inArray, isNull, type SQL } from "drizzle-orm";
 import type {
   TerminalSessionCloseReason,
   TerminalSessionStatus,
@@ -16,6 +16,7 @@ export interface CreateTerminalSessionInput {
   daemonSessionId: string | null;
   environmentId: string | null;
   hostId: string;
+  id?: string;
   initialCwd: string;
   now?: number;
   rows: number;
@@ -34,29 +35,21 @@ export type TerminalSessionScope = TerminalStatusScope &
     | { daemonSessionId: string; kind: "daemon"; terminalId?: string }
     | { environmentId: string; kind: "environment" }
     | { hostId: string; kind: "host" }
+    | { cwd: string | null; hostId: string; kind: "host-path" }
     | { kind: "terminal"; terminalId: string }
-    | { kind: "thread"; terminalId?: string; threadId: string }
-    | {
-        environmentId: string;
-        kind: "threadless-environment";
-        terminalId?: string;
-      }
+    | { kind: "thread"; threadId: string }
+    | { environmentId: string; kind: "threadless-environment" }
   );
 
 export type TerminalSessionSingleScope = TerminalStatusScope &
   (
     | { daemonSessionId: string; kind: "daemon"; terminalId: string }
     | { kind: "terminal"; terminalId: string }
-    | { kind: "thread"; terminalId: string; threadId: string }
-    | {
-        environmentId: string;
-        kind: "threadless-environment";
-        terminalId: string;
-      }
   );
 
 export type TerminalSessionMutation =
-  | { kind: "disconnect" }
+  | { kind: "disconnect"; retainDaemonSession: boolean }
+  | { daemonSessionId: string; kind: "reconnect" }
   | {
       closeReason: TerminalSessionCloseReason;
       exitCode?: number | null;
@@ -86,12 +79,11 @@ export interface UpdateTerminalSessionArgs {
 }
 
 export interface UpdateTerminalSessionsArgs {
-  now?: number;
   scope: TerminalSessionScope;
   update: TerminalSessionMutation;
 }
 
-const NON_TERMINAL_SESSION_STATUSES: TerminalSessionStatus[] = [
+export const NON_TERMINAL_SESSION_STATUSES: TerminalSessionStatus[] = [
   "starting",
   "running",
   "disconnected",
@@ -119,24 +111,26 @@ function terminalScope(
     case "host":
       scoped = eq(terminalSessions.hostId, scope.hostId);
       break;
+    case "host-path":
+      scoped = and(
+        eq(terminalSessions.hostId, scope.hostId),
+        isNull(terminalSessions.threadId),
+        isNull(terminalSessions.environmentId),
+        scope.cwd === null
+          ? undefined
+          : eq(terminalSessions.initialCwd, scope.cwd),
+      );
+      break;
     case "terminal":
       scoped = eq(terminalSessions.id, scope.terminalId);
       break;
     case "thread":
-      scoped = and(
-        eq(terminalSessions.threadId, scope.threadId),
-        scope.terminalId
-          ? eq(terminalSessions.id, scope.terminalId)
-          : undefined,
-      );
+      scoped = eq(terminalSessions.threadId, scope.threadId);
       break;
     case "threadless-environment":
       scoped = and(
         eq(terminalSessions.environmentId, scope.environmentId),
         isNull(terminalSessions.threadId),
-        scope.terminalId
-          ? eq(terminalSessions.id, scope.terminalId)
-          : undefined,
       );
       break;
   }
@@ -155,7 +149,17 @@ function mutationValues(
 ): Partial<typeof terminalSessions.$inferInsert> {
   switch (update.kind) {
     case "disconnect":
-      return { daemonSessionId: null, status: "disconnected", updatedAt: now };
+      return {
+        ...(update.retainDaemonSession ? {} : { daemonSessionId: null }),
+        status: "disconnected",
+        updatedAt: now,
+      };
+    case "reconnect":
+      return {
+        daemonSessionId: update.daemonSessionId,
+        status: "running",
+        updatedAt: now,
+      };
     case "exit":
       return {
         closeReason: update.closeReason,
@@ -199,7 +203,7 @@ export function createTerminalSession(
   return db
     .insert(terminalSessions)
     .values({
-      id: createTerminalSessionId(),
+      id: input.id ?? createTerminalSessionId(),
       threadId: input.threadId,
       environmentId: input.environmentId,
       hostId: input.hostId,
@@ -238,11 +242,31 @@ export function listTerminalSessions(
     .all();
 }
 
+export function countTerminalSessions(
+  db: TerminalSessionConnection,
+  args: ListTerminalSessionsArgs,
+): number {
+  return db
+    .select({ count: count() })
+    .from(terminalSessions)
+    .where(
+      terminalScope(
+        args.scope,
+        args.visible
+          ? inArray(terminalSessions.status, NON_TERMINAL_SESSION_STATUSES)
+          : undefined,
+      ),
+    )
+    .get()!.count;
+}
+
 export function getTerminalSession(
   db: TerminalSessionConnection,
   scope: TerminalSessionSingleScope,
 ): TerminalSessionRow | null {
-  return db.select().from(terminalSessions).where(terminalScope(scope)).get() ?? null;
+  return (
+    db.select().from(terminalSessions).where(terminalScope(scope)).get() ?? null
+  );
 }
 
 export function updateTerminalSession(
@@ -265,7 +289,7 @@ export function updateTerminalSessions(
 ): TerminalSessionRow[] {
   return db
     .update(terminalSessions)
-    .set(mutationValues(args.update, args.now ?? Date.now()))
+    .set(mutationValues(args.update, Date.now()))
     .where(terminalScope(args.scope, mutationWhere(args.update)))
     .returning()
     .all();

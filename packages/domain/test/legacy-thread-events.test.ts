@@ -3,7 +3,6 @@ import {
   LEGACY_CODEX_GOAL_EXTENSION_KIND,
   convertLegacyStoredThreadEvent,
   isLegacyDelegationToolCall,
-  isLegacyThreadEventType,
   upgradeLegacyToolItem,
 } from "../src/legacy-thread-events.js";
 import {
@@ -164,9 +163,48 @@ describe("legacy thread event conversion", () => {
         providerId: "codex",
         providerRequestId: "req_2",
       },
-      payload,
+      payload: {
+        ...payload,
+        questions: [{ ...payload.questions[0], required: true }],
+      },
       resolution: null,
     });
+  });
+
+  it("reads a background task row stored before the foreground flag as background work", () => {
+    const legacyItem = {
+      type: "backgroundTask",
+      id: "task-1",
+      familyId: "task-1",
+      taskType: "local_agent",
+      description: "Review",
+      status: "completed",
+      taskStatus: "completed",
+      skipTranscript: false,
+    };
+    for (const [type, scope] of [
+      ["item/started", turnScope("turn-1")],
+      ["item/backgroundTask/progress", threadScope()],
+      ["item/backgroundTask/completed", threadScope()],
+    ] as const) {
+      const event = parseStoredThreadEvent({
+        type,
+        threadId: "thread-1",
+        providerThreadId: "provider-1",
+        scope,
+        data: { item: legacyItem },
+      });
+      expect("item" in event && event.item).toEqual({
+        ...legacyItem,
+        foreground: false,
+      });
+    }
+
+    const current = {
+      type: "item/backgroundTask/progress" as const,
+      data: { item: { ...legacyItem, foreground: true } },
+    };
+    expect(convertLegacyStoredThreadEvent(current)).toBe(current);
   });
 
   it("passes every other type through untouched", () => {
@@ -175,10 +213,6 @@ describe("legacy thread event conversion", () => {
       data: { name: "A thread", providerThreadId: "provider-1" },
     };
     expect(convertLegacyStoredThreadEvent(stored)).toBe(stored);
-    expect(isLegacyThreadEventType("thread/goal/updated")).toBe(true);
-    expect(isLegacyThreadEventType("thread/extensionState/updated")).toBe(
-      false,
-    );
   });
 });
 

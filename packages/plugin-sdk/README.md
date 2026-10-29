@@ -9,36 +9,26 @@ The authoritative contracts are the exported declarations in
 [`src/app-contract.ts`](src/app-contract.ts). Keep author-facing guidance in
 the built-in `bb-plugin-authoring` skill synchronized with those declarations.
 
-## Building declarations
-
-From the repository root, run `pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk`.
-The declaration generator defaults to the available CPU count, capped by the
-number of output bundles. On a memory-constrained host, limit it to one worker:
-
-```sh
-pnpm exec turbo run build:types --filter=@get-bb/plugin-sdk --concurrency=1 -- --concurrency=1
-```
-
-The first `--concurrency` limits Turbo tasks; the argument after `--` limits
-declaration workers. The generator accepts `--concurrency N` or
-`--concurrency=N`, requires one positive safe integer, and caps it to the output
-count. Each slot remains occupied until its worker exits successfully with a
-result. On failure, queued bundles stop and active workers finish before the
-build rejects. Concurrency limits the number of workers, not their memory use;
-Node heap settings and host resource limits still apply. Generated declarations
-remain uncommitted build outputs.
-
 ## Composer customization
 
 Composer UI extensions register through `app.composer.customize(...)`. A
 `ComposerCustomization` can contribute React action and banner components,
-host-rendered `ComposerPlusMenuItem` rows, and `ComposerRichTextSpec` rules.
-Mounted components use `useComposer()` for writes, effects, and input locking,
-and `useComposerView()` for the reactive scope, layout, draft, and run state.
-Any mounted plugin component can use
-`useBbNavigate().openThreadPanel(...)` to request one of the
-same plugin's registered thread-panel actions; it returns false when the
-current surface has no thread side panel.
+host-rendered `ComposerPlusMenuItem` and `ComposerSendMenuItem` rows, and
+`ComposerRichTextSpec` rules. Mounted components use `useComposer()`: one
+stable handle for the composer's text, mentions, picker selection, scope,
+layout, run and submit state, writes, effects, and input locking. Selection is
+reactive and is `null` for composers without pickers. Panels and pages that
+write into a composer the user picks use `useComposers()`, one handle per
+composer on screen.
+Any mounted plugin component can call `experimental_useAppPanel()` for the
+side panel of the surface it renders in (a thread view, a plugin page, or the
+New thread screen). `openTab({ tab, target?, params?, title? })` selects one of
+the plugin's registered `experimental_tab` tabs; on the New thread screen a
+thread-context action tab resolves against `experimental_newThreadPanelAction`
+with the same id. `toggleTab(options)` closes the panel when that tab is
+showing and otherwise opens it, and `close()` closes the panel. Commands,
+thread actions, message actions and panel actions receive the same controller
+as `experimental_panel`.
 
 Use `UrlLink` for a real anchor that applies BB's current
 in-app/external-browser preference on ordinary HTTP(S) activation, or
@@ -59,28 +49,34 @@ and ill-formed Unicode—have no active href and cannot record a preview in the
 frontend harness. Buttons and menus can call
 `experimental_openFilePreview({ target, location })` or
 `experimental_openFileExternally({ target, location })`; both return whether
-the current host accepted the intent. Targets never infer an ambient workspace.
-The frontend harness records both methods and accepts `openFilePreview` and
-`openFileExternally` behavior options.
+the current host accepted the intent. The
+`experimental_useCanOpenFileExternally(target)` hook reports whether the
+external open can succeed now (false while loading) and re-renders the
+component when that changes; use it to disable an Open externally control.
+Targets never infer an ambient workspace.
+The frontend harness records both methods and accepts `openFilePreview`,
+`openFileExternally`, and `canOpenFileExternally` behavior options.
 
-A nav panel's `fixedTabs` entries must include the containing nav
-panel's `id` as `panelId`; each entry is also a stable reference to that
-plugin's own tab. Give a targeted tab an `experimental_target.validate` type guard, call
-`experimental_useAppPanel().openFixedTab({ surface: { kind:
-"current" }, tab, target })`, and read the in-memory state inside the tab with
-`experimental_useFixedTabTarget(tab)`. The target survives tab, panel, and
+To show a terminal beside your UI, create it with `useSdk().terminals.create`
+in the thread, environment, or host directory you want, then call
+`useBbNavigate().experimental_openTerminal({ terminalId })`. It resolves
+whether the current surface selected the terminal's tab; thread surfaces accept
+only their own thread's terminals. The harness records the call and accepts an
+`openTerminal` behavior option.
+
+Give a fixed tab (thread or nav-panel) an `experimental_target.validate` type
+guard, call `experimental_useAppPanel().openTab({ tab, target })`, and read the
+in-memory state inside the tab with `experimental_useFixedTabTarget(tab)`. The target survives tab, panel, and
 route remounts for the current app session; call `clear()` when the tab returns
 to its untargeted state. The host validates JSON before the owner's type guard,
 persists only selection, and returns false for an unavailable tab or invalid
-target. The frontend harness records accepted requests in
-`experimental_fixedTabOpenCalls`, accepts an `experimental_openFixedTab`
-behavior, and can seed `experimental_fixedTabTarget` state.
+target. The frontend harness records every controller call in
+`experimental_panelCalls`, accepts an `experimental_panel` behavior, and can
+seed `experimental_fixedTabTarget` state.
 
-Every panel-open entry point reports the same way: `openThreadPanel` and the
-`openPanel` handed to `threadPanelAction`, `experimental_newThreadPanelAction`,
-and `messageAction` `run` callbacks all return `boolean` — true when the host
-accepted the open, false when it declined (non-JSON `params`, an unavailable
-action id, or a surface with no side panel). A decline is a return value, never
+Every controller call reports the same way: `true` when the host accepted it,
+`false` when it declined (non-JSON `target` or `params`, a tab the plugin did
+not register for the surface, or a surface with no side panel). A decline is a return value, never
 a thrown error, so a plugin registering several kinds of action can share one
 open routine and branch on the result.
 
@@ -89,7 +85,7 @@ app-wide floating React UI. BB mounts the component once per app window through
 the normal plugin slot boundary, so SDK hooks and plugin CSS work and React
 context survives portals. This app-level boundary includes the sidebar thread
 data and action hooks. Hooks whose contract requires a particular surface,
-including `useComposer` and `useComposerView`, remain limited to that surface.
+including `useComposer`, remain limited to that surface.
 The plugin owns the overlay's chrome, positioning, visibility, focus, and
 responsive behavior; a crashing overlay is hidden without affecting siblings.
 Use a content script for app-wide DOM behavior that does not need React context.
@@ -129,7 +125,7 @@ with the test stack used by your plugin (the peer dependencies are optional so
 headless plugins do not install a browser harness):
 
 ```sh
-npm install --save-dev @get-bb/plugin-sdk vitest better-sqlite3 zod cron-parser hono
+npm install --save-dev @get-bb/plugin-sdk vitest better-sqlite3 cron-parser hono
 npm install --save-dev react react-dom @testing-library/react jsdom # frontend tests
 ```
 
@@ -156,7 +152,8 @@ await host.harness.lifecycle.dispose();
 ```
 
 `makePluginAgentConfigurationContext`, `makeMessageDispatchHookContext`,
-`makeThreadResponse`, `makeQueueEntry`, and `makeTurnFailedEvent` return
+`makeHostResponse`, `makeThreadResponse`, `makeQueueEntry`, and
+`makeTurnFailedEvent` return
 complete deterministic SDK objects. Pass partial overrides so a behavioral
 test shows only the values relevant to its scenario. Nested context
 members merge partial overrides against complete defaults, so required contract
@@ -196,13 +193,15 @@ slot.lifecycle.unmount();
 await scripts.lifecycle.dispose();
 ```
 
-`loadPluginApp` installs the runtime before a thunk import and validates all
-registrations. `mountPluginContentScripts` mirrors the host's ordered mount,
+`loadPluginApp` installs the runtime and validates all registrations; pass the
+imported module or a thunk. `@get-bb/plugin-sdk/app` exports look the runtime
+up when they are called or rendered, so a static import of `app.tsx` or of
+components works too. `mountPluginContentScripts` mirrors the host's ordered mount,
 rollback, independent per-window signal, and exact-once disposal. `renderSlot` supplies
 RPC, realtime, settings, navigation, context, and scoped composer behavior,
 then returns Testing Library queries plus the same behavior/inspection/lifecycle
-split. Use a setup-file `installTestPluginRuntime()` only when a static app
-import is unavoidable.
+split; it installs the runtime too. Call `installTestPluginRuntime()` yourself
+only when a test renders plugin components without `renderSlot`.
 
 ## Fidelity boundaries
 
@@ -228,8 +227,9 @@ multi-plugin arbitration; use a live BB test for those boundaries.
 The complete root declaration flattens the unpublished BB workspace contracts.
 The testing declarations reuse that public `@get-bb/plugin-sdk` root instead of
 embedding a second copy, and no declaration depends on unpublished `@bb/*`
-packages. Genuine npm types (`hono`, `better-sqlite3`, `zod`, React, and Testing
-Library) remain peer imports. Scaffolded plugins depend on this package —
+packages. Genuine npm types (`hono`, `better-sqlite3`, React, and Testing
+Library) remain peer imports. Zod is a runtime dependency of the SDK, so
+plugins only declare it when their own source imports it. Scaffolded plugins depend on this package —
 `bb plugin new` pins it exactly in `devDependencies` — and read the root/app
 declarations straight from `node_modules/@get-bb/plugin-sdk/bundled-types/`,
 the same files the testing subpaths reuse. Plugins scaffolded before that

@@ -1,3 +1,4 @@
+import { invalidateTags, pluginTagScope } from "@bb/query-tags";
 import type { QueryClient } from "@tanstack/react-query";
 import { assertNever } from "@bb/core-ui";
 import {
@@ -11,9 +12,11 @@ import {
   type ThreadChangeMetadata,
   type ThreadChangeKind,
 } from "@bb/domain";
+import type { RealtimeSubscriptionTarget } from "@bb/server-contract";
 import {
   invalidateRealtimeQueriesAfterServerReconnect,
   invalidateRealtimeQueriesFetchedBeforeInitialConnect,
+  refetchActiveRealtimeQueriesOnResume,
   refetchErroredRealtimeQueriesOnInitialConnect,
 } from "./cache-owners/system-cache-effects";
 import { createBufferedEnvironmentInvalidator } from "./buffered-environment-invalidator";
@@ -22,10 +25,12 @@ import {
   subscribeToDocumentVisibility,
 } from "@/lib/document-visibility";
 import {
+  applyRealtimeThreadPatches,
   collectCachedThreadIdsForEnvironment,
   createFlushOncePredicate,
   disposeTrailingActiveRefetches,
   executeRealtimeDirtyHandlers,
+  getCachedThreadEnvironmentId,
   REALTIME_ENVIRONMENT_CHANGE_REGISTRY,
   REALTIME_HOST_CHANGE_REGISTRY,
   REALTIME_PROJECT_CHANGE_REGISTRY,
@@ -61,6 +66,10 @@ const {
 } = resolveThreadInvalidationDebounce(detectCoarsePointer());
 const ENVIRONMENT_INVALIDATION_DEBOUNCE_MS = 250;
 const ENVIRONMENT_INVALIDATION_MAX_WAIT_MS = 500;
+const WATCHED_ENVIRONMENT_CHANGE_KINDS: EnvironmentChangeKind[] = [
+  "work-status-changed",
+  "thread-storage-changed",
+];
 
 type RealtimeConnectedEvent =
   | { reconnected: false }
@@ -70,6 +79,9 @@ interface RealtimeCacheEffects {
   dispose: () => void;
   handleChanged: (message: ChangedMessage) => void;
   handleConnected: (event: RealtimeConnectedEvent) => void;
+  handleResumed: (
+    releasedTargets: readonly RealtimeSubscriptionTarget[],
+  ) => void;
 }
 
 export interface RealtimeCacheEffectsVisibility {
@@ -144,6 +156,12 @@ function mergeThreadChangeMetadata({
     ? next.statusChange
     : (next.statusChange ?? current?.statusChange);
   const metadata: ThreadChangeMetadata = {};
+  const sequences = [current?.timelineSequence, next.timelineSequence].filter(
+    (sequence): sequence is number => sequence !== undefined,
+  );
+  if (sequences.length > 0) {
+    metadata.timelineSequence = Math.max(...sequences);
+  }
   if (eventTypes) {
     metadata.eventTypes = eventTypes;
   }
@@ -201,6 +219,7 @@ function flushThreadInvalidations(
       context: {
         backgroundActivityChanged: undefined,
         eventTypes: undefined,
+        timelineSequence: undefined,
         flushOnce,
         hasPendingInteraction: undefined,
         projectId: undefined,
@@ -219,6 +238,7 @@ function flushThreadInvalidations(
         context: {
           backgroundActivityChanged: metadata?.backgroundActivityChanged,
           eventTypes: metadata?.eventTypes,
+          timelineSequence: metadata?.timelineSequence,
           flushOnce,
           hasPendingInteraction: metadata?.hasPendingInteraction,
           projectId: metadata?.projectId,
@@ -260,6 +280,7 @@ function applyImmediateThreadChanges({
       context: {
         backgroundActivityChanged: merged?.backgroundActivityChanged,
         eventTypes: merged?.eventTypes,
+        timelineSequence: merged?.timelineSequence,
         flushOnce,
         hasPendingInteraction: merged?.hasPendingInteraction,
         projectId: merged?.projectId,
@@ -410,10 +431,13 @@ export function createRealtimeCacheEffects({
     maxWaitMs: ENVIRONMENT_INVALIDATION_MAX_WAIT_MS,
   });
 
-  const applyHostChanges = (changeKinds: Iterable<HostChangeKind>): void => {
+  const applyHostChanges = (
+    hostId: string | undefined,
+    changeKinds: Iterable<HostChangeKind>,
+  ): void => {
     for (const changeKind of changeKinds) {
       executeRealtimeDirtyHandlers({
-        context: { queryClient },
+        context: { hostId, queryClient },
         handlers: REALTIME_HOST_CHANGE_REGISTRY[changeKind].dirty,
       });
     }
@@ -443,8 +467,72 @@ export function createRealtimeCacheEffects({
       });
     }
   };
+  const applyOrDeferSystemChanges = (
+    changeKinds: readonly SystemChangeKind[],
+  ): void => {
+    if (!visibility.isDocumentVisible()) {
+      addAll(deferredNonThreadChanges.systemKinds, changeKinds);
+      return;
+    }
+    applySystemChanges(changeKinds);
+  };
 
+  const deferredTags = new Map<string, Set<string> | null>();
+  const applyTags = (scope: string, tags: readonly string[] | null): void => {
+    if (visibility.isDocumentVisible()) {
+      void invalidateTags(queryClient, scope, tags);
+      return;
+    }
+    const previous = deferredTags.get(scope);
+    deferredTags.set(
+      scope,
+      previous === null || tags === null
+        ? null
+        : new Set([...(previous ?? []), ...tags]),
+    );
+  };
+  const catchUpReleasedWatch = (target: RealtimeSubscriptionTarget): void => {
+    switch (target.kind) {
+      case "environment-detail":
+        environmentInvalidator.markChanged(
+          target.environmentId,
+          WATCHED_ENVIRONMENT_CHANGE_KINDS,
+        );
+        return;
+      case "thread-detail": {
+        const environmentId = getCachedThreadEnvironmentId({
+          queryClient,
+          threadId: target.threadId,
+        });
+        if (environmentId) {
+          environmentInvalidator.markChanged(
+            environmentId,
+            WATCHED_ENVIRONMENT_CHANGE_KINDS,
+          );
+        }
+        return;
+      }
+      case "plugin-read":
+        applyTags(pluginTagScope(target.pluginId), null);
+        return;
+      case "thread-timeline":
+      case "thread-list":
+      case "project-list":
+      case "project-detail":
+      case "environment-list":
+      case "host-list":
+      case "host-detail":
+      case "system":
+      case "plugin":
+        return;
+      default:
+        assertNever(target);
+    }
+  };
   const flushDeferredChanges = (): void => {
+    for (const [scope, tags] of deferredTags)
+      void invalidateTags(queryClient, scope, tags === null ? null : [...tags]);
+    deferredTags.clear();
     if (hasDeferredNonThreadChanges(deferredNonThreadChanges)) {
       const { environmentKindsById, hostKinds, projectKindsById, systemKinds } =
         deferredNonThreadChanges;
@@ -454,7 +542,7 @@ export function createRealtimeCacheEffects({
           Array.from(changeKinds),
         );
       }
-      applyHostChanges(hostKinds);
+      applyHostChanges(undefined, hostKinds);
       for (const [projectId, changeKinds] of projectKindsById) {
         applyProjectChanges(projectId, changeKinds);
       }
@@ -487,6 +575,14 @@ export function createRealtimeCacheEffects({
       const documentVisible = visibility.isDocumentVisible();
       switch (message.entity) {
         case "thread": {
+          if (message.id) {
+            applyRealtimeThreadPatches(message.changes, {
+              hasPendingInteraction: message.metadata?.hasPendingInteraction,
+              queryClient,
+              statusChange: message.metadata?.statusChange,
+              threadId: message.id,
+            });
+          }
           if (!documentVisible) {
             recordThreadChange(threadChangeState, message);
             hasDeferredThreadChanges = true;
@@ -535,7 +631,7 @@ export function createRealtimeCacheEffects({
             addAll(deferredNonThreadChanges.hostKinds, message.changes);
             break;
           }
-          applyHostChanges(message.changes);
+          applyHostChanges(message.id, message.changes);
           break;
         case "project":
           if (!documentVisible) {
@@ -548,19 +644,29 @@ export function createRealtimeCacheEffects({
           }
           applyProjectChanges(message.id, message.changes);
           break;
+        case "plugin":
+          applyTags(pluginTagScope(message.pluginId), message.tags);
+          break;
         case "system":
-          if (!documentVisible) {
-            addAll(deferredNonThreadChanges.systemKinds, message.changes);
-            break;
-          }
-          applySystemChanges(message.changes);
+          applyOrDeferSystemChanges(message.changes);
           break;
         default:
           assertNever(message);
       }
     },
     handleConnected: (event) => {
+      applySystemChanges(["plugins-changed"]);
       if (event.reconnected) {
+        const pluginIds = new Set(
+          queryClient
+            .getQueryCache()
+            .findAll({ queryKey: ["plugin-rpc"] })
+            .map((query) => query.queryKey[1]),
+        );
+        for (const pluginId of pluginIds)
+          if (typeof pluginId === "string")
+            applyTags(pluginTagScope(pluginId), null);
+        applyOrDeferSystemChanges(["ui-preferences-changed"]);
         invalidateRealtimeQueriesAfterServerReconnect({
           disconnectedAt: event.disconnectedAt,
           queryClient,
@@ -572,6 +678,15 @@ export function createRealtimeCacheEffects({
         connectedAt: Date.now(),
         queryClient,
       });
+    },
+    handleResumed: (releasedTargets) => {
+      if (!visibility.isDocumentVisible()) {
+        return;
+      }
+      refetchActiveRealtimeQueriesOnResume({ queryClient });
+      for (const target of releasedTargets) {
+        catchUpReleasedWatch(target);
+      }
     },
   };
 }

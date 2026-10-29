@@ -1,4 +1,8 @@
-import { execFile } from "node:child_process";
+import {
+  execHostFile,
+  hostToolchain,
+  omitNpmScriptPolicyEnv,
+} from "@bb/process-utils";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -6,6 +10,7 @@ import {
   cp,
   mkdir,
   mkdtemp,
+  readdir,
   readFile,
   rename,
   rm,
@@ -14,12 +19,12 @@ import {
 } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = execHostFile;
 const HOST_DEPENDENCIES = [
   "@parcel/watcher",
+  "fs-native-extensions",
   "node-pty",
   "pino",
   "pino-pretty",
@@ -27,6 +32,7 @@ const HOST_DEPENDENCIES = [
 ] as const;
 const HOST_DAEMON_FILES = [
   "bb",
+  "bb.cmd",
   "bb-parcel-watcher-child.mjs",
   "bb-plugin-host-worker.mjs",
   "bb-provider-bridge-worker.mjs",
@@ -52,7 +58,7 @@ interface CreateBbAppArtifactServiceOptions {
   dataDir: string;
   commandRunner?: BbAppArtifactCommandRunner;
   protocolVersion?: number;
-  serverEntryUrl?: string;
+  serverEntryUrl: string;
 }
 
 interface BbAppPackageJson {
@@ -63,15 +69,21 @@ interface BbAppPackageJson {
   version: string;
 }
 
-async function defaultCommandRunner(
+export async function defaultCommandRunner(
   command: string,
   args: readonly string[],
   cwd: string,
 ): Promise<string> {
-  const result = await execFileAsync(command, [...args], {
-    cwd,
-    maxBuffer: 10 * 1024 * 1024,
-  });
+  const npmCliPath = command === "npm" ? hostToolchain.bundledNpmCli() : null;
+  const result = await execFileAsync(
+    npmCliPath === null ? command : process.execPath,
+    npmCliPath === null ? [...args] : [npmCliPath, ...args],
+    {
+      cwd,
+      env: omitNpmScriptPolicyEnv(process.env),
+      maxBuffer: 10 * 1024 * 1024,
+    },
+  );
   return result.stdout;
 }
 
@@ -163,7 +175,7 @@ function hostPackageJson(packageJson: BbAppPackageJson): object {
     version: packageJson.version,
     description: "bb enrolled host runtime",
     type: "module",
-    os: packageJson.os,
+    os: [...new Set([...packageJson.os, "win32"])],
     bin: {
       bb: "dist/bb.js",
       "bb-app": "dist/bb-app.js",
@@ -173,6 +185,15 @@ function hostPackageJson(packageJson: BbAppPackageJson): object {
     engines: packageJson.engines,
     dependencies,
   };
+}
+
+async function makeDirectoriesOwnerWritable(directory: string): Promise<void> {
+  await chmod(directory, (await stat(directory)).mode | 0o700);
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      await makeDirectoriesOwnerWritable(join(directory, entry.name));
+    }
+  }
 }
 
 async function materializePackagedHostPackage(
@@ -205,10 +226,19 @@ async function materializePackagedHostPackage(
     join(hostDaemonTarget, "bb-chunks"),
     { recursive: true },
   );
-  await copyFile(
-    join(packageRoot, "README.md"),
-    join(hostPackageRoot, "README.md"),
-  );
+  await makeDirectoriesOwnerWritable(join(hostDaemonTarget, "bb-chunks"));
+  try {
+    await copyFile(
+      join(packageRoot, "README.md"),
+      join(hostPackageRoot, "README.md"),
+    );
+  } catch (error) {
+    if (
+      !(error instanceof Error && "code" in error && error.code === "ENOENT")
+    ) {
+      throw error;
+    }
+  }
   await writeFile(
     join(hostPackageRoot, "package.json"),
     `${JSON.stringify(hostPackageJson(packageJson), null, 2)}\n`,
@@ -224,7 +254,6 @@ export function createBbAppArtifactService(
   options: CreateBbAppArtifactServiceOptions,
 ): BbAppArtifactService {
   const commandRunner = options.commandRunner ?? defaultCommandRunner;
-  const serverEntryUrl = options.serverEntryUrl ?? import.meta.url;
   const cacheDir = join(options.dataDir, "install-cache");
   const protocolVersion =
     options.protocolVersion ?? HOST_DAEMON_PROTOCOL_VERSION;
@@ -232,7 +261,7 @@ export function createBbAppArtifactService(
   let artifactPromise: Promise<BbAppArtifact> | undefined;
 
   function getResolvedPackage(): Promise<ResolvedBbAppPackage> {
-    resolvedPackagePromise ??= resolveBbAppPackage(serverEntryUrl);
+    resolvedPackagePromise ??= resolveBbAppPackage(options.serverEntryUrl);
     return resolvedPackagePromise;
   }
 

@@ -2,8 +2,12 @@ import { mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve, sep } from "node:path";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import type { Attachment, TasksStore } from "../db";
-
-export const MAX_ATTACHMENT_SIZE_BYTES = 25 * 1024 * 1024;
+import {
+  attachmentDownloadUrl,
+  MAX_ATTACHMENT_SIZE_BYTES,
+} from "../shared/attachments";
+import { errorMessage } from "../shared/errors";
+import { attachmentsChangedTags } from "../shared/tags";
 
 const INLINE_RASTER_MIMES = new Set([
   "image/png",
@@ -83,7 +87,7 @@ function removeAttachmentDescriptionReferences(
   markdown: string,
   attachmentId: string,
 ): string {
-  const url = escapeRegExp(buildAttachmentUrl(attachmentId));
+  const url = escapeRegExp(attachmentDownloadUrl(attachmentId));
   return markdown.replace(new RegExp(`!\\[[^\\]]*\\]\\(${url}\\)`, "g"), "");
 }
 
@@ -137,10 +141,7 @@ export async function removeAttachmentBlobs(
   const failures = removals.flatMap((result, index) => {
     if (result.status === "fulfilled") return [];
     const attachment = attachments[index];
-    const message =
-      result.reason instanceof Error
-        ? result.reason.message
-        : String(result.reason);
+    const message = errorMessage(result.reason);
     bb.log.warn(
       `failed to remove attachment blob ${attachment?.id ?? "unknown"}: ${message}`,
     );
@@ -376,10 +377,6 @@ async function persistAttachment(
   }
 }
 
-export function buildAttachmentUrl(attachmentId: string): string {
-  return `/api/v1/plugins/tasks/http${DOWNLOAD_PATH}?attachmentId=${encodeURIComponent(attachmentId)}`;
-}
-
 export async function saveAttachmentFromBytes(
   store: TasksStore,
   bytes: Uint8Array,
@@ -437,7 +434,7 @@ export async function deleteAttachmentById(
       : undefined);
   const ownerTask = taskId ? store.getTask(taskId) : undefined;
   let nextDescription: string | undefined;
-  if (ownerTask?.description.includes(buildAttachmentUrl(attachment.id))) {
+  if (ownerTask?.description.includes(attachmentDownloadUrl(attachment.id))) {
     if (!options.removeDescriptionReferences) {
       throw new AttachmentReferencedError(attachment);
     }
@@ -461,11 +458,11 @@ export async function deleteAttachmentById(
     store.updateTask(ownerTask.id, { description: nextDescription });
   }
   if (!store.deleteAttachment(attachment.id)) return null;
-  publishAttachmentChanged(bb, store, attachment);
+  invalidateAttachmentChanged(bb, store, attachment);
   return attachment;
 }
 
-export function publishAttachmentChanged(
+export function invalidateAttachmentChanged(
   bb: BbPluginApi,
   store: TasksStore,
   attachment: Attachment,
@@ -477,13 +474,12 @@ export function publishAttachmentChanged(
       : undefined);
   const task = taskId ? store.getTask(taskId) : undefined;
   if (!task) {
-    bb.log.warn(`failed to publish attachment change ${attachment.id}`);
+    bb.log.warn(`failed to invalidate attachment change ${attachment.id}`);
     return;
   }
-  bb.realtime.publish("tasks:changed", {
-    taskId: task.id,
-    projectId: task.projectId,
-  });
+  bb.rpc.experimental_invalidate(
+    attachmentsChangedTags(task.id, attachment.commentId),
+  );
 }
 
 export function registerAttachments(
@@ -511,11 +507,11 @@ export function registerAttachments(
           body.byteLength,
           (destinationPath) => writeFile(destinationPath, body),
         );
-        publishAttachmentChanged(bb, store, attachment);
+        invalidateAttachmentChanged(bb, store, attachment);
         return context.json(
           {
             attachmentId: attachment.id,
-            url: buildAttachmentUrl(attachment.id),
+            url: attachmentDownloadUrl(attachment.id),
           },
           201,
         );

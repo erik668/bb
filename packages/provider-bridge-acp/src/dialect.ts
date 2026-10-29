@@ -1,3 +1,4 @@
+import type { AvailableModel } from "@bb/domain";
 import type { DeltaItemShape } from "@bb/provider-bridge-protocol";
 import { basename } from "node:path";
 import { z } from "zod";
@@ -6,9 +7,10 @@ import {
   type AcpMaintenanceDialect,
 } from "./bridge/provider-maintenance.js";
 import { delegationPresentation } from "./presentation.js";
-import type {
-  AcpClassifiedToolCall,
-  AcpCommandResult,
+import {
+  commandRawOutputSchema,
+  type AcpClassifiedToolCall,
+  type AcpCommandResult,
 } from "./tool-classification.js";
 import {
   acpToolKindSchema,
@@ -41,11 +43,13 @@ export interface AcpDialect {
   ): AcpClassifiedToolCall | undefined;
   commandResult?(event: AcpToolCallUpdateEvent): AcpCommandResult | undefined;
   normalizeCommandEvent?(event: AcpToolCallUpdateEvent): AcpToolCallUpdateEvent;
+  readonly clientRequestMethods?: readonly string[];
   handleClientRequest?(
     method: string,
     params: unknown,
   ): AcpClientRequestOutcome | undefined;
   maintenance?: AcpMaintenanceDialect;
+  presentModel?(model: AvailableModel): AvailableModel;
 }
 
 export interface AcpClientRequestOutcome {
@@ -125,6 +129,85 @@ export const GROK_ACP_DIALECT: AcpDialect = {
   classifyToolCall: grokClassifyToolCall,
 };
 
+const grokModelMetaSchema = z
+  .object({
+    totalContextTokens: z.number().int().positive(),
+  })
+  .passthrough();
+
+const grokPromptMetaSchema = z
+  .object({
+    inputTokens: z.number().int().nonnegative().optional(),
+    totalTokens: z.number().int().nonnegative().optional(),
+    usage: z
+      .object({
+        inputTokens: z.number().int().nonnegative().optional(),
+        totalTokens: z.number().int().nonnegative().optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+const grokPromptResultSchema = z
+  .object({
+    _meta: grokPromptMetaSchema.optional(),
+  })
+  .passthrough();
+
+const grokSessionModelSchema = z
+  .object({
+    modelId: z.string(),
+    _meta: grokModelMetaSchema.optional(),
+  })
+  .passthrough();
+
+const grokSessionModelsSchema = z
+  .object({
+    currentModelId: z.string().optional(),
+    availableModels: z.array(grokSessionModelSchema).optional(),
+  })
+  .passthrough();
+
+export function grokContextWindowSizeFromSessionModels(
+  models: unknown,
+): number | undefined {
+  const parsed = grokSessionModelsSchema.safeParse(models);
+  if (!parsed.success) {
+    return undefined;
+  }
+  const available = parsed.data.availableModels ?? [];
+  const currentId = parsed.data.currentModelId;
+  const ordered = [
+    ...(currentId === undefined
+      ? []
+      : available.filter((model) => model.modelId === currentId)),
+    ...available,
+  ];
+  for (const model of ordered) {
+    if (model._meta !== undefined) {
+      return model._meta.totalContextTokens;
+    }
+  }
+  return undefined;
+}
+
+export function grokContextUsageFromPromptResult(
+  result: unknown,
+): { used: number } | undefined {
+  const parsed = grokPromptResultSchema.safeParse(result);
+  if (!parsed.success) {
+    return undefined;
+  }
+  const meta = parsed.data._meta;
+  const used =
+    meta?.usage?.inputTokens ??
+    meta?.inputTokens ??
+    meta?.usage?.totalTokens ??
+    meta?.totalTokens;
+  return used === undefined ? undefined : { used };
+}
+
 const CURSOR_TASK_TOOL = "task";
 const cursorTaskRawInputSchema = z
   .object({ _toolName: z.string().optional() })
@@ -191,6 +274,7 @@ function cursorHandleClientRequest(
 export const CURSOR_ACP_DIALECT: AcpDialect = {
   id: "cursor",
   classifyToolCall: cursorClassifyToolCall,
+  clientRequestMethods: [CURSOR_TASK_METHOD],
   handleClientRequest: cursorHandleClientRequest,
   maintenance: CURSOR_ACP_MAINTENANCE,
 };
@@ -202,34 +286,25 @@ const ompBashRawInputSchema = z
   })
   .passthrough();
 
-const ompBashRawOutputSchema = z
-  .object({
-    content: z.array(
-      z
-        .object({
-          type: z.literal("text"),
-          text: z.string(),
-        })
-        .passthrough(),
-    ),
-    details: z
+const ompBashRawOutputSchema = commandRawOutputSchema.extend({
+  content: z.array(
+    z
       .object({
-        exitCode: z.number().int().optional(),
-        wallTimeMs: z.number().nonnegative().optional(),
-        timedOut: z.boolean().optional(),
-        signal: z.unknown().optional(),
-        async: z.unknown().optional(),
+        type: z.literal("text"),
+        text: z.string(),
       })
       .passthrough(),
-    exitCode: z.number().int().nullable().optional(),
-    exit_code: z.number().int().nullable().optional(),
-    stdout: z.string().optional(),
-    stderr: z.string().optional(),
-    output_for_prompt: z.string().optional(),
-    signal: z.string().nullable().optional(),
-    timed_out: z.boolean().optional(),
-  })
-  .passthrough();
+  ),
+  details: z
+    .object({
+      exitCode: z.number().int().optional(),
+      wallTimeMs: z.number().nonnegative().optional(),
+      timedOut: z.boolean().optional(),
+      signal: z.unknown().optional(),
+      async: z.unknown().optional(),
+    })
+    .passthrough(),
+});
 
 function stripOmpTrailingNotice(text: string, notice: string): string {
   const suffix = `\n\n${notice}`;
@@ -318,9 +393,26 @@ export function compactionOutcomeForEndTurn(
     : { status: "failed", error: text };
 }
 
+function presentProviderPrefixedModel(model: AvailableModel): AvailableModel {
+  const separator = model.id.indexOf("/");
+  if (separator <= 0) {
+    return model;
+  }
+  const routeProviderId = model.id.slice(0, separator);
+  const prefix = `${routeProviderId}/`;
+  return {
+    ...model,
+    displayName: model.displayName.startsWith(prefix)
+      ? model.displayName.slice(prefix.length)
+      : model.displayName,
+    routeProviderId,
+  };
+}
+
 export const OMP_ACP_DIALECT: AcpDialect = {
   id: "omp",
   commandResult: ompCommandResult,
+  presentModel: presentProviderPrefixedModel,
 };
 
 const openCodeCommandRawOutputSchema = z
@@ -374,14 +466,32 @@ function normalizeOpenCodeCommandEvent(
 export const OPENCODE_ACP_DIALECT: AcpDialect = {
   id: "opencode",
   normalizeCommandEvent: normalizeOpenCodeCommandEvent,
+  presentModel: presentProviderPrefixedModel,
 };
 
-const DIALECTS_BY_ID: ReadonlyMap<string, AcpDialect> = new Map([
-  [CURSOR_ACP_DIALECT.id, CURSOR_ACP_DIALECT],
-  [GROK_ACP_DIALECT.id, GROK_ACP_DIALECT],
-  [OMP_ACP_DIALECT.id, OMP_ACP_DIALECT],
-  [OPENCODE_ACP_DIALECT.id, OPENCODE_ACP_DIALECT],
-]);
+const BUILT_IN_DIALECTS: readonly AcpDialect[] = [
+  GENERIC_ACP_DIALECT,
+  CURSOR_ACP_DIALECT,
+  GROK_ACP_DIALECT,
+  OMP_ACP_DIALECT,
+  OPENCODE_ACP_DIALECT,
+];
+
+const DIALECTS_BY_ID = new Map<string, AcpDialect>(
+  BUILT_IN_DIALECTS.map((dialect) => [dialect.id, dialect]),
+);
+
+export function registerAcpDialect(dialect: AcpDialect): void {
+  if (dialect.id.trim() === "") {
+    throw new Error("An ACP dialect needs a non-empty id.");
+  }
+  if (BUILT_IN_DIALECTS.some((builtIn) => builtIn.id === dialect.id)) {
+    throw new Error(
+      `ACP dialect id "${dialect.id}" is reserved by a built-in dialect.`,
+    );
+  }
+  DIALECTS_BY_ID.set(dialect.id, dialect);
+}
 
 const DIALECT_IDS_BY_COMMAND: Readonly<Record<string, string>> = {
   "cursor-agent": CURSOR_ACP_DIALECT.id,

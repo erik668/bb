@@ -9,8 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
-import type { PromptTextMention, SystemMessageKind, ThreadListEntry } from "@bb/domain";
-import type { TimelineTitleLink } from "@bb/thread-view";
+import type { PromptTextMention, ThreadListEntry } from "@bb/domain";
 import { ConversationMessageContent } from "./ConversationMessageContent";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
@@ -19,12 +18,6 @@ import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeThreadListEntry as makeThreadListEntryFixture } from "@bb/test-helpers/domain-fixtures";
 import { GENERATED_MESSAGE_COLLAPSED_PREVIEW_CHAR_CAP } from "@bb/client-core";
 import { generatedConversationCollapsedPreview } from "./GeneratedConversationMessage";
-
-function resolveThreadLink(link: TimelineTitleLink): string | null {
-  return link.kind === "thread"
-    ? `/projects/proj_demo/threads/${link.threadId}`
-    : null;
-}
 
 const MARKDOWN_BODY = [
   "# Final report",
@@ -35,7 +28,7 @@ const MARKDOWN_BODY = [
   "- `pnpm test` green",
 ].join("\n");
 
-function renderChildCompleted(text = MARKDOWN_BODY, kind: SystemMessageKind = "child-completed") {
+function renderChildCompleted(text = MARKDOWN_BODY) {
   const token = "@thread:thr_child";
   const start = text.indexOf(token);
   const mentions: readonly PromptTextMention[] =
@@ -59,11 +52,9 @@ function renderChildCompleted(text = MARKDOWN_BODY, kind: SystemMessageKind = "c
         <ConversationMessageContent
           role="user"
           initiator="system"
-          originKind={null}
           senderThreadId={null}
           senderThreadTitle={null}
-          resolveSegmentLinkHref={resolveThreadLink}
-          systemMessageKind={kind}
+          systemMessageKind="child-completed"
           systemMessageSubject={{
             kind: "thread",
             threadId: "thr_child",
@@ -72,7 +63,10 @@ function renderChildCompleted(text = MARKDOWN_BODY, kind: SystemMessageKind = "c
           attachments={null}
           mentions={mentions}
           text={text}
+          timestamp={0}
+          threadId="thr_parent"
           turnRequest={{ kind: "message", status: "accepted" }}
+          workspaceRootPath="/workspace"
           projectId="proj_demo"
         />
       </RouteNavigationProvider>
@@ -86,15 +80,16 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it.each([
-  { kind: "child-completed", verb: "finished", icon: "CircleCheck" },
-  { kind: "child-interrupted", verb: "was interrupted", icon: "AlertCircle" },
-] as const)("renders $kind with its matching header and icon", ({ kind, verb, icon }) => {
-  const { container } = renderChildCompleted("Accepted workflow result cleanup.", kind);
-  expect(screen.getByText(verb)).toBeTruthy();
-  expect(container.querySelector(`[data-icon="${icon}"]`)).not.toBeNull();
-  const otherIcon = icon === "CircleCheck" ? "AlertCircle" : "CircleCheck";
-  expect(container.querySelector(`[data-icon="${otherIcon}"]`)).toBeNull();
+describe("GeneratedConversationMessage images", () => {
+  it("routes images in generated system messages through the current thread", () => {
+    renderChildCompleted("![report](reports/result.png)");
+
+    expect(
+      screen.getByRole("img", { name: "report" }).getAttribute("src"),
+    ).toBe(
+      "/api/v1/threads/thr_parent/host-files/workspace/reports/result.png",
+    );
+  });
 });
 
 const AGENT_BODY = "# notes\nedited path:src/app.ts here";
@@ -172,17 +167,16 @@ function renderAgentMessage(
           <ConversationMessageContent
             role="user"
             initiator="agent"
-            originKind={null}
             senderThreadId="thr_agent"
             senderThreadTitle={senderThreadTitle}
             senderIsPluginSideChat={senderIsPluginSideChat}
             onTitleAction={onTitleAction}
-            resolveSegmentLinkHref={resolveThreadLink}
             systemMessageKind="unlabeled"
             systemMessageSubject={null}
             attachments={null}
             mentions={mentions}
             text={text}
+            timestamp={0}
             turnRequest={{ kind: "message", status: "accepted" }}
             projectId="proj_demo"
           />
@@ -289,9 +283,7 @@ describe("GeneratedConversationMessage markdown body", () => {
     expect(sourcePill?.querySelector('[data-icon="UserRound"]')).not.toBeNull();
     expect(sourcePill?.querySelector('[data-icon="MessageSquare"]')).toBeNull();
     expect(sourcePill?.tagName).toBe("A");
-    expect(sourcePill?.getAttribute("href")).toBe(
-      "/projects/proj_demo/threads/thr_agent",
-    );
+    expect(sourcePill?.getAttribute("href")).toBe("/threads/thr_agent");
   });
 
   it("renders agent Markdown and its offset-based path mention", () => {
@@ -575,7 +567,7 @@ describe("GeneratedConversationMessage markdown body", () => {
     expect(screen.queryByText("**Ready** to merge.")).toBeNull();
 
     const toggle = screen.getByRole("button", {
-      name: /Replying to side chat/u,
+      name: /Message from side chat/u,
     });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
 
@@ -595,7 +587,7 @@ describe("GeneratedConversationMessage markdown body", () => {
     ).not.toBeNull();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /Replying to side chat/u }),
+      screen.getByRole("button", { name: /Message from side chat/u }),
     );
 
     expect(

@@ -28,8 +28,11 @@ Workspace instructions (.bb/AGENTS.md):
   Only the plural AGENTS.md is read, only from the exact data-dir and
   workspace-root .bb/ locations above (bb does not walk parent directories), and
   an empty file is ignored. This is bb's own provider-agnostic instruction
-  injection, separate from provider-native files such as CLAUDE.md or a
-  repo-root AGENTS.md.
+  injection, separate from provider-native instruction files. Codex reads a
+  repo-root AGENTS.md. Claude Code 2.1.277 and later also reads AGENTS.md when
+  no project or ancestor CLAUDE.md or CLAUDE.local.md takes precedence. Older
+  Claude Code versions and sessions without its built-in AGENTS.md support
+  still require CLAUDE.md.
 
 Skills (.bb/skills/):
 
@@ -41,12 +44,20 @@ Skills (.bb/skills/):
 
   bb resolves skills from three sources, in increasing precedence:
 
-    builtin    Skills bundled with bb.
+    plugin     Skills from enabled plugins, including the bundled BB guide.
     user       <dataDir>/skills (e.g. ~/.bb/skills).
     project    <workspace>/.bb/skills.
 
-  A project skill overrides a user or builtin skill with the same name. Two
+  A project skill overrides a user or plugin skill with the same name. Two
   skills with the same name within one source collide and are both dropped.
+
+  User skill roots, directories, and SKILL.md entries may be symlinks. Project
+  skill and command links must stay within the workspace or repository boundary.
+  Supporting files inside injected skill trees must be ordinary files/directories.
+  Listings collapse skills that share a name and identical SKILL.md content
+  across roots; different content or a different name stays distinct. Existing IDs still address the original
+  registration. Linked registrations are read-only. Codex receives a selected
+  skill as a structured name/path input, including when steering an active turn.
 
   Use `bb skill list` to inspect installed and discovered skills and copy the
   opaque skill ID. `bb skill show|files <skill-id>` reads that exact skill;
@@ -56,7 +67,9 @@ Skills (.bb/skills/):
   commands default to `BB_PROJECT_ID`, then the personal project; pass
   `--project` or `--environment` when a different workspace is required.
 
-  Use `bb skill search` to browse skills.sh, `bb skill registry detail
+  Use `bb skill search [query]` to browse skills.sh (no query lists what is
+  trending; `--page` starts at 0 and `--per-page` defaults to 24). JSON
+  `installs` counts the `ranking` window; `lifetimeInstalls` may be null. Use `bb skill registry detail
   <registry-skill-id>` to inspect metadata and the bounded file preview, and
   `bb skill install <registry-skill-id>` to install that canonical registry
   identity into bb user skills. Registry commands are server-wide and do not
@@ -65,13 +78,29 @@ Skills (.bb/skills/):
   Use `bb skill install-cli-skills` to copy bb's built-in CLI skills into a
   machine's global agent skill roots (`~/.agents/skills` and
   `~/.claude/skills`) so agents running outside bb can drive it. It installs on
-  every connected machine unless you pass `--machine <id-or-name>`, which is
-  repeatable. Settings → Skills exposes the same action; it asks which machines
-  only when more than one is enrolled. Machines install independently, so the
-  command reports each machine's outcome and exits non-zero if any failed. The
-  install replaces a previously installed copy of the same skill and leaves
-  other skills alone. `bb skill cli-skills-status` reports whether each machine
-  is installed, out of date, missing, or unknown (disconnected or unreachable);
-  the settings row shows the same as a badge.
+  every connected persistent machine unless you pass `--machine <id-or-name>`
+  (repeatable; required for a sandbox) (Settings → Skills has the same action). Machines install
+  independently, so the command reports each machine's outcome and exits
+  non-zero if any failed. The install replaces a previously installed copy of
+  the same skill and leaves other skills alone. `bb skill cli-skills-status`
+  reports whether each machine is installed, out of date, missing, or unknown
+  (disconnected or unreachable).
 
   Use the skill-creator skill to author and iterate on skills.
+
+BB guide plugin:
+
+  The enabled-by-default BB guide plugin owns the BB introduction and the
+  bb-cli, bb-plugin-authoring, skill-creator, and submit-a-plugin skills. Settings → Installed
+  plugins → BB guide exposes introduction, a master skills switch, and one
+  switch per skill. All default to true. Use:
+
+    bb plugin config bb-guide set introduction false
+    bb plugin config bb-guide set skills false
+    bb plugin config bb-guide set bbCli false
+    bb plugin config bb-guide set pluginAuthoring false
+    bb plugin config bb-guide set skillCreator false
+    bb plugin config bb-guide set submitPlugin false
+
+  Changes apply when agent configuration is next assembled. They do not erase
+  existing conversation text or disable independently installed copies.

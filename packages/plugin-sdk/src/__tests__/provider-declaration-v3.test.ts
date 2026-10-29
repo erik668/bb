@@ -75,6 +75,27 @@ describe("provider declaration target-state fields", () => {
     expect(Object.isFrozen(normalized.serviceTiers)).toBe(true);
   });
 
+  it.each([
+    ["Zap", "Zap"],
+    ["provider-codex/ultrafast", "provider-codex/ultrafast"],
+    ["./icons/ultrafast.svg", null],
+    ["icons/ultrafast.svg", null],
+  ])("validates %s as a service tier icon", (icon, expected) => {
+    const validate = () =>
+      validatePluginProviderDeclaration(
+        declaration({
+          serviceTiers: [
+            { id: "fast", label: "Fast", experimental_icon: icon },
+          ],
+        }),
+      );
+    if (expected === null) {
+      expect(validate).toThrow(/experimental_icon must be a host glyph name/u);
+    } else {
+      expect(validate().serviceTiers?.[0]?.experimental_icon).toBe(expected);
+    }
+  });
+
   it("omits the fields entirely when a plugin does not declare them", () => {
     const normalized = validatePluginProviderDeclaration(declaration());
     expect("strings" in normalized).toBe(false);
@@ -302,6 +323,27 @@ describe("provider declaration target-state fields", () => {
   it("defaults the model catalog scope to workspace", () => {
     expect(validatePluginProviderDeclaration(declaration()).models.scope).toBe(
       "workspace",
+    );
+  });
+
+  it("defaults the finished turn display to collapse and carries flat", () => {
+    expect(
+      validatePluginProviderDeclaration(declaration()).completedTurnDisplay,
+    ).toBe("collapse");
+    expect(
+      validatePluginProviderDeclaration(
+        declaration({ completedTurnDisplay: "flat" }),
+      ).completedTurnDisplay,
+    ).toBe("flat");
+  });
+
+  it("rejects a finished turn display outside collapse and flat", () => {
+    expect(() =>
+      validatePluginProviderDeclaration(
+        declaration({ completedTurnDisplay: "expanded" as never }),
+      ),
+    ).toThrow(
+      /provider "my-agent" completedTurnDisplay must be one of collapse, flat/u,
     );
   });
 });

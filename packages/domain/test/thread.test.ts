@@ -6,6 +6,10 @@ describe("thread queued message schema", () => {
     expect(
       threadQueuedMessageSchema.parse({
         id: "qmsg_123",
+        origin: null,
+        originPluginId: null,
+        initiator: "user",
+        senderThreadId: null,
         threadId: "thread_1",
         content: [{ type: "text", text: "Queued message", mentions: [] }],
         model: "gpt-5",
@@ -14,6 +18,7 @@ describe("thread queued message schema", () => {
         serviceTier: "default",
         groupWithNext: false,
         sendAt: null,
+        state: "queued",
         waitingOn: null,
         failureReason: null,
         payload: { kind: "inline" },
@@ -29,6 +34,10 @@ describe("thread queued message schema", () => {
     expect(() =>
       threadQueuedMessageSchema.parse({
         id: "qmsg_123",
+        origin: null,
+        originPluginId: null,
+        initiator: "user",
+        senderThreadId: null,
         threadId: "thread_1",
         content: [{ type: "text", text: "Queued message", mentions: [] }],
         model: "gpt-5",
@@ -36,6 +45,7 @@ describe("thread queued message schema", () => {
         permissionMode: "accept-edits",
         serviceTier: "default",
         sendAt: null,
+        state: "queued",
         waitingOn: null,
         failureReason: null,
         payload: { kind: "inline" },

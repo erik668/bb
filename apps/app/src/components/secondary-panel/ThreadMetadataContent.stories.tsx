@@ -1,11 +1,13 @@
+import { useState } from "react";
+import type { WorkspaceFile } from "@bb/server-contract";
 import {
   ThreadMetadataContent,
   type ThreadMetadataContentProps,
 } from "./ThreadMetadataContent";
+import { useThreadStorageBrowser } from "./useThreadStorageBrowser";
 import {
   PanelStage,
   baseProps,
-  makePullRequest,
   makeThread,
 } from "./ThreadMetadataContent.fixtures";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
@@ -22,16 +24,40 @@ function render(overrides: Partial<ThreadMetadataContentProps>) {
   );
 }
 
+const STORAGE_FILES: WorkspaceFile[] = [
+  "Attachments/screenshot-before.png",
+  "Attachments/screenshot-after.png",
+  "notes/plan.md",
+  "qa-log.txt",
+].map((path) => ({ path, name: path.slice(path.lastIndexOf("/") + 1) }));
+
+function WorkInProgressPanel() {
+  const [selectedPath, setSelectedPath] = useState<string | null>(null);
+  const controller = useThreadStorageBrowser({
+    files: STORAGE_FILES,
+    onSelectPath: setSelectedPath,
+    selectedPath,
+    threadId: "thr_story",
+  });
+  return render({
+    storage: { controller, filesError: null },
+  });
+}
+
 export function Overview() {
   return (
     <StoryCard>
       <StoryRow
         label="standard"
-        hint="canonical state — parent + env + worktree path + branch + merge base + pull request + clean git status"
+        hint="canonical state — parent + env + worktree path + branch + merge base + clean git status"
       >
-        {render({
-          pullRequest: makePullRequest(),
-        })}
+        {render({})}
+      </StoryRow>
+      <StoryRow
+        label="work in progress"
+        hint="commits ahead of the merge base, uncommitted changes, and thread storage"
+      >
+        <WorkInProgressPanel />
       </StoryRow>
       <StoryRow
         label="standard, child thread"
@@ -64,7 +90,6 @@ export function Overview() {
             environmentId: null,
           }),
           environment: null,
-          workspaceStatus: undefined,
         })}
       </StoryRow>
     </StoryCard>

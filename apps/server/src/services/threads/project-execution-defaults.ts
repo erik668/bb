@@ -4,14 +4,20 @@ import {
 } from "@bb/db";
 import type {
   ProjectExecutionDefaults,
+  RecordedThreadExecutionOptions,
   ResolvedThreadExecutionOptions,
+  Thread,
 } from "@bb/domain";
 import type { AppDeps } from "../../types.js";
 import type {
   ThreadCreateServiceRequest,
   ThreadCreateServiceRequestInput,
 } from "./thread-create-request.js";
-import { resolveCreateThreadExecutionDefaults } from "./thread-default-policy.js";
+import {
+  buildProviderThreadExecutionDefaults,
+  resolveCreateThreadExecutionDefaults,
+} from "./thread-default-policy.js";
+import { getLastExecutionOptions } from "./thread-events.js";
 
 interface RememberProjectExecutionDefaultsForCreateArgs {
   execution: ResolvedThreadExecutionOptions;
@@ -21,6 +27,7 @@ interface RememberProjectExecutionDefaultsForCreateArgs {
 interface ResolveProjectExecutionDefaultsForCreateArgs {
   executionInputSources?: ThreadCreateServiceRequestInput["executionInputSources"];
   model?: ThreadCreateServiceRequestInput["model"];
+  parentThread: Pick<Thread, "id" | "providerId"> | null;
   projectId: string;
   providerId?: ThreadCreateServiceRequestInput["providerId"];
 }
@@ -28,6 +35,7 @@ interface ResolveProjectExecutionDefaultsForCreateArgs {
 interface ResolvedProjectExecutionDefaultsForCreate {
   executionDefaults: ProjectExecutionDefaults | null;
   providerId: string;
+  providerFallbackCandidates: readonly string[];
   requestedModel: string | null;
 }
 
@@ -52,6 +60,29 @@ function shouldRememberProjectExecutionDefaults(args: {
   if (args.environment.type === "reuse") return false;
   if (args.originKind !== null) return false;
   return args.origin === "app";
+}
+
+interface InheritableParentExecution {
+  execution: RecordedThreadExecutionOptions;
+  providerId: string;
+}
+
+function resolveInheritableParentExecution(
+  deps: Pick<AppDeps, "db" | "providerRegistry">,
+  parentThread: Pick<Thread, "id" | "providerId"> | null,
+): InheritableParentExecution | null {
+  if (parentThread === null) {
+    return null;
+  }
+  const { providerId } = parentThread;
+  if (
+    deps.providerRegistry.disabledProviderIds().has(providerId) ||
+    deps.providerRegistry.get(providerId)?.info.available !== true
+  ) {
+    return null;
+  }
+  const execution = getLastExecutionOptions(deps, parentThread.id);
+  return execution === null ? null : { execution, providerId };
 }
 
 function resolveRequestedCreateExecutionValue<TValue>({
@@ -91,18 +122,32 @@ export function resolveProjectExecutionDefaultsForCreate(
     sources: args.executionInputSources,
     value: args.model,
   });
+  const parent = resolveInheritableParentExecution(deps, args.parentThread);
   const resolution = resolveCreateThreadExecutionDefaults(
     deps.providerRegistry,
     {
-      requestedProviderId,
+      requestedProviderId: requestedProviderId ?? parent?.providerId,
       storedDefaults,
     },
   );
-  const { executionDefaults, providerId } = resolution;
+  const { providerId, providerFallbackCandidates } = resolution;
+  const executionDefaults =
+    parent !== null && providerId === parent.providerId
+      ? {
+          ...(resolution.executionDefaults ??
+            buildProviderThreadExecutionDefaults(deps.providerRegistry, {
+              providerId,
+              model: parent.execution.model,
+            })),
+          model: parent.execution.model,
+          reasoningLevel: parent.execution.reasoningLevel,
+        }
+      : resolution.executionDefaults;
 
   return {
     executionDefaults,
     providerId,
+    providerFallbackCandidates,
     requestedModel: requestedModel ?? null,
   };
 }

@@ -1,56 +1,64 @@
-import { BrowserWindow, ipcMain } from "electron";
-import { escapeHtmlText } from "@bb/domain";
+import { ipcMain, type BrowserWindow } from "electron";
+import { escapeHtmlText } from "@bb/text-utils";
+import {
+  createDesktopDialogWindow,
+  DESKTOP_DIALOG_BASE_CSS,
+  showDesktopDialogHtml,
+} from "./desktop-dialog-window.js";
 import {
   BB_DESKTOP_SERVER_URL_DIALOG_CANCEL_CHANNEL,
   BB_DESKTOP_SERVER_URL_DIALOG_SUBMIT_CHANNEL,
   serverUrlDialogSubmitRequestSchema,
   type ServerUrlDialogSubmitResponse,
 } from "./server-url-dialog-ipc.js";
-import { normalizeCustomServerUrl } from "./server-target.js";
+import {
+  MAX_SERVER_NAME_LENGTH,
+  normalizeCustomServerUrl,
+  normalizeServerName,
+} from "./server-target.js";
 
 type ServerUrlDialogResult =
   | { kind: "cancelled" }
   | { kind: "clear" }
-  | { kind: "set"; url: string };
+  | { kind: "set"; name: string | null; url: string };
+
+type ServerUrlDialogMode = "add" | "edit" | "rename";
 
 interface OpenServerUrlDialogArgs {
+  initialName: string | null;
   initialUrl: string | null;
+  mode: ServerUrlDialogMode;
   parentWindow: BrowserWindow | null;
   preloadPath: string;
 }
 
-function renderServerUrlDialogHtml(initialUrl: string | null): string {
+const SERVER_URL_DIALOG_TITLES: Record<ServerUrlDialogMode, string> = {
+  add: "Add Server",
+  edit: "Edit Server",
+  rename: "Edit Server",
+};
+
+const SERVER_URL_DIALOG_DESCRIPTIONS: Record<ServerUrlDialogMode, string> = {
+  add: "Save another bb server to the Server menu.",
+  edit: "Edit this saved server. Leave the URL empty to remove it.",
+  rename:
+    "Name this bb Connect server. Its address comes from your bb account.",
+};
+
+function renderServerUrlDialogHtml(
+  mode: ServerUrlDialogMode,
+  initialUrl: string | null,
+  initialName: string | null,
+): string {
+  const title = SERVER_URL_DIALOG_TITLES[mode];
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
-  <title>Set Server URL</title>
+  <title>${title}</title>
   <style>
-    :root {
-      color-scheme: light dark;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-    }
-
-    body {
-      background: Canvas;
-      color: CanvasText;
-      margin: 0;
-      padding: 20px;
-    }
-
-    h1 {
-      font-size: 14px;
-      font-weight: 600;
-      margin: 0 0 4px;
-    }
-
-    p {
-      color: color-mix(in srgb, CanvasText 70%, transparent);
-      font-size: 12px;
-      line-height: 1.45;
-      margin: 0 0 12px;
-    }
+${DESKTOP_DIALOG_BASE_CSS}
 
     input {
       background: Field;
@@ -61,6 +69,10 @@ function renderServerUrlDialogHtml(initialUrl: string | null): string {
       font-size: 13px;
       padding: 6px 8px;
       width: 100%;
+    }
+
+    input + input {
+      margin-top: 8px;
     }
 
     [data-error] {
@@ -78,15 +90,6 @@ function renderServerUrlDialogHtml(initialUrl: string | null): string {
       margin-top: 12px;
     }
 
-    button {
-      background: color-mix(in srgb, CanvasText 8%, Canvas);
-      border: 1px solid color-mix(in srgb, CanvasText 22%, transparent);
-      border-radius: 6px;
-      color: CanvasText;
-      font-size: 13px;
-      padding: 5px 14px;
-    }
-
     button[type="submit"] {
       background: AccentColor;
       border-color: AccentColor;
@@ -95,10 +98,11 @@ function renderServerUrlDialogHtml(initialUrl: string | null): string {
   </style>
 </head>
 <body>
-  <h1>Set Server URL</h1>
-  <p>Point this app at a bb server. Leave empty to use only This Mac.</p>
+  <h1>${title}</h1>
+  <p>${SERVER_URL_DIALOG_DESCRIPTIONS[mode]}</p>
   <form>
-    <input name="url" type="text" placeholder="https://example.com:38886" value="${escapeHtmlText(initialUrl ?? "")}" autocomplete="off" spellcheck="false">
+    <input name="url" type="text" placeholder="https://example.com:38886" value="${escapeHtmlText(initialUrl ?? "")}"${mode === "rename" ? " readonly" : ""} autocomplete="off" spellcheck="false">
+    <input name="name" type="text" placeholder="Name (optional)" value="${escapeHtmlText(initialName ?? "")}" maxlength="${MAX_SERVER_NAME_LENGTH}" autocomplete="off" spellcheck="false">
     <div data-error></div>
     <div class="actions">
       <button type="button" data-cancel>Cancel</button>
@@ -122,22 +126,10 @@ export function openServerUrlDialog(
     return openDialog.result;
   }
 
-  const dialogWindow = new BrowserWindow({
-    fullscreenable: false,
-    height: 208,
-    maximizable: false,
-    minimizable: false,
-    modal: args.parentWindow !== null,
-    parent: args.parentWindow ?? undefined,
-    resizable: false,
-    show: false,
-    title: "Set Server URL",
-    webPreferences: {
-      contextIsolation: true,
-      nodeIntegration: false,
-      preload: args.preloadPath,
-      sandbox: true,
-    },
+  const dialogWindow = createDesktopDialogWindow({
+    parentWindow: args.parentWindow,
+    preloadPath: args.preloadPath,
+    title: SERVER_URL_DIALOG_TITLES[args.mode],
     width: 440,
   });
 
@@ -177,7 +169,15 @@ export function openServerUrlDialog(
         if (!parsed.success) {
           return { ok: false, message: "Enter a valid http(s) URL." };
         }
-        if (parsed.data.url.trim().length === 0) {
+        if (args.mode === "rename" && args.initialUrl !== null) {
+          finish({
+            kind: "set",
+            name: normalizeServerName(parsed.data.name),
+            url: args.initialUrl,
+          });
+          return { ok: true };
+        }
+        if (parsed.data.url.trim().length === 0 && args.mode === "edit") {
           finish({ kind: "clear" });
           return { ok: true };
         }
@@ -185,7 +185,11 @@ export function openServerUrlDialog(
         if (normalized === null) {
           return { ok: false, message: "Enter a valid http(s) URL." };
         }
-        finish({ kind: "set", url: normalized });
+        finish({
+          kind: "set",
+          name: normalizeServerName(parsed.data.name),
+          url: normalized,
+        });
         return { ok: true };
       },
     );
@@ -197,13 +201,9 @@ export function openServerUrlDialog(
 
   openDialog = { result, window: dialogWindow };
 
-  dialogWindow.once("ready-to-show", () => {
-    dialogWindow.show();
-  });
-  void dialogWindow.loadURL(
-    `data:text/html;charset=utf-8,${encodeURIComponent(
-      renderServerUrlDialogHtml(args.initialUrl),
-    )}`,
+  showDesktopDialogHtml(
+    dialogWindow,
+    renderServerUrlDialogHtml(args.mode, args.initialUrl, args.initialName),
   );
 
   return result;

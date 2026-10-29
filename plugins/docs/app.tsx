@@ -4,22 +4,52 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type DragEvent as ReactDragEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
+  experimental_useAppPanel,
   definePluginApp,
   experimental_FileLink as FileLink,
+  experimental_copyToClipboard,
+  experimental_useRpcMutation as useRpcMutation,
+  experimental_useRpcQuery as useRpcQuery,
   useBbNavigate,
+  useComposer,
   useRpc,
-  useRealtime,
   type PluginFileOpenerProps,
   type PluginMessageDirectiveProps,
   type PluginNavPanelProps,
-  type PluginThreadPanelProps,
+  type ExperimentalThreadActionTabProps,
   type ExperimentalLiveFileTarget,
 } from "@get-bb/plugin-sdk/app";
-import type { docsRpcContract } from "./server.js";
-import { parseMarkdownDocument } from "./markdown-document.js";
+import {
+  DOMParser as ProseMirrorDOMParser,
+  type Node as ProseMirrorNode,
+} from "@tiptap/pm/model";
+import { createProposalDiff, proposalDiffKey } from "./proposal-diff.js";
+import {
+  documentSession,
+  useDocumentSession,
+  type DocumentSession,
+  type DocumentSnapshot,
+  type DocumentState,
+} from "./document-session.js";
+import type { Proposal } from "./proposals.js";
+import { Icon } from "@/components/ui/icon";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { docsRpcContract, errorMessage } from "./contract.js";
+import {
+  documentHeading,
+  isRecord,
+  parseMarkdownDocument,
+} from "./markdown-document.js";
 import {
   Editor,
   Extension,
@@ -38,27 +68,31 @@ import TableCell from "@tiptap/extension-table-cell";
 import TableHeader from "@tiptap/extension-table-header";
 import TableRow from "@tiptap/extension-table-row";
 import { Markdown } from "tiptap-markdown";
+import {
+  loadMarkdownBlocks,
+  saveMarkdownBlocks,
+  type MarkdownBlocks,
+} from "./markdown-blocks.js";
+import { HtmlBlock, HtmlSource } from "./raw-html.js";
 import * as ContextMenuPrimitive from "@radix-ui/react-context-menu";
 import { toast } from "sonner";
-import {
-  ArrowDown01Icon,
-  ArrowRight01Icon,
-  AlertCircleIcon,
-  ArrowUpRight01Icon,
-  Cancel01Icon,
-  Delete02Icon,
-  File01Icon,
-  FileAddIcon,
-  Folder01Icon,
-  Folder02Icon,
-  FolderAddIcon,
-  HtmlFile01Icon,
-  PlusSignIcon,
-  Search01Icon,
-} from "@hugeicons/core-free-icons";
+import ArrowDown01Icon from "@hugeicons/core-free-icons/ArrowDown01Icon";
+import ArrowRight01Icon from "@hugeicons/core-free-icons/ArrowRight01Icon";
+import AlertCircleIcon from "@hugeicons/core-free-icons/AlertCircleIcon";
+import ArrowUpRight01Icon from "@hugeicons/core-free-icons/ArrowUpRight01Icon";
+import Cancel01Icon from "@hugeicons/core-free-icons/Cancel01Icon";
+import Delete02Icon from "@hugeicons/core-free-icons/Delete02Icon";
+import File01Icon from "@hugeicons/core-free-icons/File01Icon";
+import FileAddIcon from "@hugeicons/core-free-icons/FileAddIcon";
+import Folder01Icon from "@hugeicons/core-free-icons/Folder01Icon";
+import Folder02Icon from "@hugeicons/core-free-icons/Folder02Icon";
+import FolderAddIcon from "@hugeicons/core-free-icons/FolderAddIcon";
+import HtmlFile01Icon from "@hugeicons/core-free-icons/HtmlFile01Icon";
+import PlusSignIcon from "@hugeicons/core-free-icons/PlusSignIcon";
+import Search01Icon from "@hugeicons/core-free-icons/Search01Icon";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Button } from "@bb/shared-ui/button";
-import { DelayedLoading } from "@bb/shared-ui/delayed-loading";
+import { Button } from "@/components/ui/button";
+import { DelayedLoading } from "@/components/ui/delayed-loading";
 import {
   Dialog,
   DialogContent,
@@ -66,18 +100,18 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@bb/shared-ui/dialog";
-import { Input } from "@bb/shared-ui/input";
-import { Skeleton } from "@bb/shared-ui/skeleton";
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Select,
   SelectContent,
   SelectItem,
   SelectTrigger,
   SelectValue,
-} from "@bb/shared-ui/select";
-import { cn } from "@bb/shared-ui/lib/utils";
-import { usePortalScopeProps } from "@bb/shared-ui/lib/portal-scope";
+} from "@/components/ui/select";
+import { cn } from "@/lib/utils";
+import { usePortalScopeProps } from "@/lib/portal-scope";
 
 interface Vault {
   id: string;
@@ -118,10 +152,6 @@ interface NotesData {
 interface PreviewLease {
   baseUrl: string;
   expiresAtMs: number;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function encodePath(value: string): string {
@@ -200,9 +230,13 @@ function storedMarkdown(
   );
 }
 
-interface HtmlEmbedOptions {
+interface PreviewContext {
   baseUrl: string;
   notePath: string;
+}
+
+interface HtmlEmbedOptions {
+  preview: PreviewContext;
 }
 
 const HtmlEmbed = Node.create<HtmlEmbedOptions>({
@@ -211,7 +245,7 @@ const HtmlEmbed = Node.create<HtmlEmbedOptions>({
   atom: true,
   isolating: true,
   addOptions() {
-    return { baseUrl: "", notePath: "" };
+    return { preview: { baseUrl: "", notePath: "" } };
   },
   addAttributes() {
     return {
@@ -255,8 +289,8 @@ const HtmlEmbed = Node.create<HtmlEmbedOptions>({
       iframe.setAttribute("sandbox", "allow-scripts");
       iframe.style.height = `${Math.min(1200, Math.max(120, Number(node.attrs.height) || 360))}px`;
       iframe.src = previewUrl(
-        this.options.baseUrl,
-        this.options.notePath,
+        this.options.preview.baseUrl,
+        this.options.preview.notePath,
         String(node.attrs.src),
       );
       dom.append(header, iframe);
@@ -308,6 +342,7 @@ const EDITOR_CSS = `
   font-size: 15px; line-height: 1.75; color: var(--foreground); caret-color: var(--foreground);
   overflow-wrap: break-word; -webkit-font-smoothing: antialiased;
 }
+.bb-simple-notes-editor[data-inline="true"] .tiptap { padding: 1.25rem 1.5rem; max-width: none; min-height: 8rem; font-size: inherit; }
 .bb-simple-notes-editor .tiptap > :first-child,
 .bb-simple-notes-editor .tiptap li > :first-child,
 .bb-simple-notes-editor .tiptap blockquote > :first-child { margin-top: 0; }
@@ -338,6 +373,7 @@ const EDITOR_CSS = `
 .bb-simple-notes-editor .tiptap code { background: var(--muted); border-radius: min(calc(var(--radius) * 0.6), 0.35em); padding: 0.125em 0.3em; font-size: 0.85em; font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace); }
 .bb-simple-notes-editor .tiptap pre { background: var(--muted); border-radius: var(--radius); padding: 0.75em 1em; overflow-x: auto; font-size: 0.875em; line-height: 1.5; margin: 1.43em 0 0; tab-size: 2; }
 .bb-simple-notes-editor .tiptap pre code { background: none; padding: 0; font-size: inherit; }
+.bb-simple-notes-editor .tiptap pre[data-html-block] { background: none; padding: 0; border-radius: 0; font: inherit; white-space: pre-wrap; }
 .bb-simple-notes-editor .tiptap blockquote { border-left: 2px solid var(--border); padding-left: 1em; margin: 1.25em 0 0; }
 .bb-simple-notes-editor .tiptap hr { border: none; border-top: 1px solid var(--border); margin: 3em 0 0; }
 .bb-simple-notes-editor .tiptap hr + :is(h1, h2, h3, h4) { margin-top: 1.25em; }
@@ -397,45 +433,82 @@ function fileToBase64(file: File): Promise<string> {
   });
 }
 
-function TiptapEditor({
-  initialValue,
-  previewBaseUrl,
-  notePath,
-  onUpload,
-  onFirstRender,
-  onMarkdownChange,
-}: {
-  initialValue: string;
+function TiptapEditor(props: {
   previewBaseUrl: string;
   notePath: string;
   onUpload(file: File): Promise<{ markdownPath: string }>;
-  onFirstRender(markdown: string): void;
   onMarkdownChange(markdown: string): void;
+  value: string;
+  baseMarkdown?: string | null;
+  inline?: boolean;
+  disabled?: boolean;
+  active?: boolean;
 }) {
+  const {
+    previewBaseUrl,
+    notePath,
+    value,
+    baseMarkdown = null,
+    inline = false,
+    disabled = false,
+    active = true,
+  } = props;
   const rootRef = useRef<HTMLDivElement>(null);
-  const uploadRef = useRef(onUpload);
-  uploadRef.current = onUpload;
-  const firstRef = useRef(onFirstRender);
-  firstRef.current = onFirstRender;
-  const changeRef = useRef(onMarkdownChange);
-  changeRef.current = onMarkdownChange;
+  const editorRef = useRef<Editor | null>(null);
+  const baselineRef = useRef<ProseMirrorNode | null>(null);
+  const sourceRef = useRef(value);
+  const blocksRef = useRef<MarkdownBlocks | null>(null);
+  const previewRef = useRef<PreviewContext>({
+    baseUrl: previewBaseUrl,
+    notePath,
+  });
+  const latest = useRef(props);
+  latest.current = props;
+  const serializeRef = useRef<() => string>(() => "");
+  const serializeBlockRef = useRef<(nodes: ProseMirrorNode[]) => string>(
+    () => "",
+  );
+  const display = (source: string) =>
+    displayMarkdown(
+      source,
+      previewRef.current.baseUrl,
+      previewRef.current.notePath,
+    );
+  const setBase = (editor: Editor) => {
+    if (latest.current.baseMarkdown == null) baselineRef.current = null;
+    else {
+      const body = parseMarkdownDocument(latest.current.baseMarkdown).body;
+      const root = new window.DOMParser().parseFromString(
+        editor.storage.markdown.parser.parse(display(body)),
+        "text/html",
+      ).body;
+      baselineRef.current = ProseMirrorDOMParser.fromSchema(
+        editor.schema,
+      ).parse(root);
+    }
+    editor.view.dispatch(
+      editor.state.tr.setMeta(proposalDiffKey, { refresh: true }),
+    );
+  };
 
   useEffect(() => {
     ensureEditorStyles();
     if (!rootRef.current) return;
-    const markdownDocument = parseMarkdownDocument(initialValue);
-    const bodyLeadingBreaks = markdownDocument.frontmatter
-      ? (/^(?:\r?\n)*/.exec(markdownDocument.body)?.[0] ?? "")
-      : "";
+    sourceRef.current = latest.current.value;
+    const markdownDocument = parseMarkdownDocument(sourceRef.current);
     let editor: Editor;
     const upload = async (file: File) => {
       if (!file.type.startsWith("image/")) return false;
-      const result = await uploadRef.current(file);
+      const result = await latest.current.onUpload(file);
       editor
         .chain()
         .focus()
         .setImage({
-          src: previewUrl(previewBaseUrl, notePath, result.markdownPath),
+          src: previewUrl(
+            previewRef.current.baseUrl,
+            previewRef.current.notePath,
+            result.markdownPath,
+          ),
           alt: file.name,
         })
         .run();
@@ -445,6 +518,7 @@ function TiptapEditor({
       element: rootRef.current,
       extensions: [
         StarterKit,
+        createProposalDiff({ getBaseDocument: () => baselineRef.current }),
         Link.configure({ openOnClick: false, autolink: true }),
         Image.configure({ allowBase64: false }),
         TaskList,
@@ -454,7 +528,9 @@ function TiptapEditor({
         TableHeader,
         TableCell,
         MarkdownTaskInput,
-        HtmlEmbed.configure({ baseUrl: previewBaseUrl, notePath }),
+        HtmlBlock,
+        HtmlSource,
+        HtmlEmbed.configure({ preview: previewRef.current }),
         Placeholder.configure({ placeholder: "Start writing…" }),
         Markdown.configure({
           html: true,
@@ -463,9 +539,19 @@ function TiptapEditor({
           linkify: true,
         }),
       ],
-      content: displayMarkdown(markdownDocument.body, previewBaseUrl, notePath),
-      autofocus: "end",
+      content: "",
+      editable: !latest.current.disabled,
       editorProps: {
+        attributes: {
+          role: "textbox",
+          "aria-label": "Document content",
+          "aria-multiline": "true",
+        },
+        handleKeyDown(view, event) {
+          if (!inline || event.key !== "Escape") return false;
+          view.dom.blur();
+          return true;
+        },
         handlePaste(_view, event) {
           const file = [...(event.clipboardData?.files ?? [])].find(
             (candidate) => candidate.type.startsWith("image/"),
@@ -485,178 +571,322 @@ function TiptapEditor({
         },
       },
     });
-    const getMarkdown = () =>
-      markdownDocument.frontmatter +
-      bodyLeadingBreaks +
+    editorRef.current = editor;
+    blocksRef.current = loadMarkdownBlocks(
+      editor,
+      markdownDocument.body,
+      display,
+      false,
+    );
+    setBase(editor);
+    const serializeNodes = (nodes: ProseMirrorNode[]) =>
       storedMarkdown(
-        editor.storage.markdown.getMarkdown(),
-        previewBaseUrl,
-        notePath,
+        editor.storage.markdown.serializer.serialize(
+          editor.schema.topNodeType.create(null, nodes),
+        ),
+        previewRef.current.baseUrl,
+        previewRef.current.notePath,
       );
-    firstRef.current(getMarkdown());
-    editor.on("update", () => changeRef.current(getMarkdown()));
+    const getMarkdown = () =>
+      parseMarkdownDocument(sourceRef.current).frontmatter +
+      saveMarkdownBlocks(editor, blocksRef.current!, serializeNodes);
+    serializeRef.current = getMarkdown;
+    serializeBlockRef.current = serializeNodes;
+    editor.on("update", () => latest.current.onMarkdownChange(getMarkdown()));
     return () => {
       editor.destroy();
+      editorRef.current = null;
     };
-  }, [initialValue, notePath, previewBaseUrl]);
+    // oxlint-disable-next-line react/exhaustive-deps
+  }, [inline]);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    const preview = previewRef.current;
+    const previewChanged =
+      preview.baseUrl !== previewBaseUrl ||
+      dirname(preview.notePath) !== dirname(notePath);
+    preview.baseUrl = previewBaseUrl;
+    preview.notePath = notePath;
+    if (!editor) return;
+    if (
+      previewChanged ||
+      (value !== sourceRef.current && value !== serializeRef.current())
+    ) {
+      blocksRef.current = loadMarkdownBlocks(
+        editor,
+        parseMarkdownDocument(value).body,
+        display,
+        false,
+        blocksRef.current && {
+          loaded: blocksRef.current,
+          serialize: serializeBlockRef.current,
+          refreshMedia: previewChanged,
+        },
+      );
+    }
+    sourceRef.current = value;
+    // oxlint-disable-next-line react/exhaustive-deps
+  }, [value, notePath, previewBaseUrl]);
+  useEffect(() => {
+    if (editorRef.current) setBase(editorRef.current);
+    // oxlint-disable-next-line react/exhaustive-deps
+  }, [baseMarkdown]);
+  useEffect(() => {
+    editorRef.current?.setEditable(!disabled, false);
+  }, [disabled]);
+  useEffect(() => {
+    if (active && !inline) editorRef.current?.commands.focus("end");
+  }, [active, inline]);
+
+  const focusFromWhitespace = (event: ReactMouseEvent<HTMLDivElement>) => {
+    const editor = editorRef.current;
+    if (!editor || event.button !== 0 || !editor.isEditable) return;
+    const content = editor.view.dom;
+    if (event.target instanceof window.Node && content.contains(event.target))
+      return;
+    event.preventDefault();
+    const rect = content.getBoundingClientRect();
+    if (event.clientY >= rect.bottom) {
+      editor.commands.focus("end");
+      return;
+    }
+    const position = editor.view.posAtCoords({
+      left: Math.min(Math.max(event.clientX, rect.left + 1), rect.right - 1),
+      top: Math.min(Math.max(event.clientY, rect.top + 1), rect.bottom - 1),
+    });
+    if (position) editor.chain().focus().setTextSelection(position.pos).run();
+    else editor.commands.focus("end");
+  };
 
   return (
     <div
       ref={rootRef}
-      className="bb-simple-notes-editor min-h-0 flex-1 overflow-y-auto"
+      data-inline={inline}
+      className="bb-simple-notes-editor min-h-0 flex-1 overflow-y-auto text-sm"
+      onMouseDown={focusFromWhitespace}
     />
   );
 }
 
-type DocsRpcClient = ReturnType<typeof useRpc<typeof docsRpcContract>>;
-
-interface NotebookStore {
-  consumers: Set<symbol>;
-  data: NotesData | null;
-  error: string | null;
-  inFlight: Promise<void> | null;
-  listeners: Set<() => void>;
-  owner: symbol | null;
-  pendingRefreshRpc: DocsRpcClient | null;
-  requestId: number;
-  vaultId: string | null;
-}
-
-const notebookStores = new Map<string | null, NotebookStore>();
-
-function getNotebookStore(vaultId: string | null): NotebookStore {
-  const existing = notebookStores.get(vaultId);
-  if (existing) return existing;
-  const store: NotebookStore = {
-    consumers: new Set(),
-    data: null,
-    error: null,
-    inFlight: null,
-    listeners: new Set(),
-    owner: null,
-    pendingRefreshRpc: null,
-    requestId: 0,
-    vaultId,
+const defaultVault = (() => {
+  let id: string | null = null;
+  const listeners = new Set<() => void>();
+  return {
+    get: () => id,
+    set(next: string) {
+      if (id === next) return;
+      id = next;
+      for (const listener of listeners) listener();
+    },
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
   };
-  notebookStores.set(vaultId, store);
-  return store;
-}
-
-function notifyNotebookStore(store: NotebookStore): void {
-  for (const listener of store.listeners) listener();
-}
-
-function refreshNotebookStore(
-  store: NotebookStore,
-  rpc: DocsRpcClient,
-  { queueIfInFlight = true }: { queueIfInFlight?: boolean } = {},
-): Promise<void> {
-  if (notebookStores.get(store.vaultId) !== store) return Promise.resolve();
-  if (store.inFlight) {
-    if (queueIfInFlight) store.pendingRefreshRpc = rpc;
-    return store.inFlight;
-  }
-  if (store.error !== null) {
-    store.error = null;
-    notifyNotebookStore(store);
-  }
-  const requestId = ++store.requestId;
-  const request = rpc
-    .call("listNotes", store.vaultId ? { vaultId: store.vaultId } : {})
-    .then((value) => {
-      if (
-        requestId !== store.requestId ||
-        notebookStores.get(store.vaultId) !== store
-      )
-        return;
-      store.data = value;
-      store.error = null;
-      notifyNotebookStore(store);
-    })
-    .catch((error: unknown) => {
-      if (
-        requestId !== store.requestId ||
-        notebookStores.get(store.vaultId) !== store
-      )
-        return;
-      const message = error instanceof Error ? error.message : String(error);
-      if (store.data === null) store.error = message;
-      else store.data = { ...store.data, error: message };
-      notifyNotebookStore(store);
-    })
-    .finally(() => {
-      if (store.inFlight !== request) return;
-      store.inFlight = null;
-      const pendingRefreshRpc = store.pendingRefreshRpc;
-      store.pendingRefreshRpc = null;
-      if (
-        pendingRefreshRpc !== null &&
-        store.consumers.size > 0 &&
-        notebookStores.get(store.vaultId) === store
-      ) {
-        void refreshNotebookStore(store, pendingRefreshRpc, {
-          queueIfInFlight: false,
-        });
-      }
-    });
-  store.inFlight = request;
-  return request;
-}
+})();
 
 function useNotebook(vaultId: string | null) {
-  const rpc = useRpc<typeof docsRpcContract>();
-  const rpcRef = useRef(rpc);
-  rpcRef.current = rpc;
-  const store = useMemo(() => getNotebookStore(vaultId), [vaultId]);
-  const consumerRef = useRef(Symbol("docs-notebook-consumer"));
-  const [, rerender] = useState(0);
-  const refresh = useCallback(() => {
-    void refreshNotebookStore(store, rpcRef.current);
-  }, [store]);
-
-  useEffect(() => {
-    const consumer = consumerRef.current;
-    const listener = () => rerender((version) => version + 1);
-    store.consumers.add(consumer);
-    store.listeners.add(listener);
-    store.owner ??= consumer;
-    if (store.data === null) {
-      void refreshNotebookStore(store, rpcRef.current, {
-        queueIfInFlight: false,
-      });
-    }
-    return () => {
-      store.consumers.delete(consumer);
-      store.listeners.delete(listener);
-      if (store.owner === consumer)
-        store.owner = store.consumers.values().next().value ?? null;
-      if (store.consumers.size === 0) {
-        queueMicrotask(() => {
-          if (
-            store.consumers.size !== 0 ||
-            notebookStores.get(store.vaultId) !== store
-          )
-            return;
-          store.requestId += 1;
-          store.pendingRefreshRpc = null;
-          notebookStores.delete(store.vaultId);
-        });
-      }
-    };
-  }, [store]);
-
-  useRealtime(
-    "vault-changed",
-    useCallback(() => {
-      if (store.owner === consumerRef.current) refresh();
-    }, [refresh, store]),
+  const defaultVaultId = useSyncExternalStore(
+    defaultVault.subscribe,
+    defaultVault.get,
+    defaultVault.get,
   );
-
+  const usesDefault = vaultId === null || vaultId === defaultVaultId;
+  const query = useRpcQuery({
+    contract: docsRpcContract,
+    method: "listNotes",
+    input: usesDefault ? {} : { vaultId },
+  });
+  const loadedVaultId = query.data?.vault.id ?? null;
+  useEffect(() => {
+    if (usesDefault && loadedVaultId !== null) defaultVault.set(loadedVaultId);
+  }, [usesDefault, loadedVaultId]);
   const data =
-    store.data && (vaultId === null || store.data.vault.id === vaultId)
-      ? store.data
+    query.data && (vaultId === null || query.data.vault.id === vaultId)
+      ? query.data
       : null;
-  return { data, error: store.error, refresh };
+  return {
+    data,
+    error: query.error?.message ?? null,
+    refresh: () => void query.refetch(),
+  };
+}
+
+function toSnapshot(document: {
+  path: string;
+  content: string;
+  sha256: string;
+  proposal: Proposal | null;
+  preview: PreviewLease;
+}): DocumentSnapshot {
+  return {
+    content: document.content,
+    sha256: document.sha256,
+    proposal: document.proposal,
+    previewBaseUrl: document.preview.baseUrl,
+    previewPath: document.path,
+  };
+}
+
+function vaultDocumentSession(
+  vaultId: string,
+  path: string,
+  showsProposals: boolean,
+) {
+  return documentSession(
+    (current) =>
+      JSON.stringify([showsProposals ? "card" : "page", vaultId, current]),
+    path,
+    { showsProposals, delay: showsProposals ? 500 : 700 },
+  );
+}
+
+function useVaultDocument(
+  vaultId: string,
+  path: string,
+  {
+    showsProposals,
+    vaultError = null,
+  }: { showsProposals: boolean; vaultError?: string | null },
+) {
+  const session = vaultDocumentSession(vaultId, path, showsProposals);
+  const currentPath = useSyncExternalStore(
+    session.subscribe,
+    () => session.getSnapshot().path,
+    () => session.getSnapshot().path,
+  );
+  const query = useRpcQuery({
+    contract: docsRpcContract,
+    method: "readDocument",
+    input: { vaultId, path: currentPath },
+  });
+  const save = useRpcMutation({
+    contract: docsRpcContract,
+    method: "saveDocument",
+  });
+  const update = useRpcMutation({
+    contract: docsRpcContract,
+    method: "updateProposal",
+  });
+  const resolve = useRpcMutation({
+    contract: docsRpcContract,
+    method: "resolveProposal",
+  });
+  const snapshot = useMemo(
+    () => (query.data ? toSnapshot(query.data) : undefined),
+    [query.data],
+  );
+  const state = useDocumentSession(session, {
+    snapshot,
+    error: query.error?.message ?? vaultError,
+    writer: {
+      renamesToTitle: !showsProposals,
+      save: (target, content, expectedSha256, renameToTitle) =>
+        save.mutate({
+          vaultId,
+          path: target,
+          content,
+          expectedSha256,
+          renameToTitle,
+        }),
+      updateProposal: (target, content, expectedVersion) =>
+        update.mutate({ vaultId, path: target, content, expectedVersion }),
+      resolveProposal: (target, action, expectedVersion) =>
+        resolve.mutate({ vaultId, path: target, action, expectedVersion }),
+      refetch: query.refetch,
+    },
+  });
+  return { state, session };
+}
+
+function DocumentNotices({
+  state,
+  session,
+  onSaveCopy,
+}: {
+  state: DocumentState;
+  session: DocumentSession;
+  onSaveCopy?(): void;
+}) {
+  if (state.conflict)
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2 border-b border-border bg-muted px-4 py-2 text-xs"
+        role="alert"
+      >
+        <span className="min-w-0 flex-1">
+          This document changed elsewhere while you were editing.
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => void session.keepMine()}
+        >
+          Keep mine
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => session.useTheirs()}>
+          Use theirs
+        </Button>
+      </div>
+    );
+  if (state.missing)
+    return (
+      <div
+        className="flex flex-wrap items-center gap-2 border-b border-border bg-muted px-4 py-2 text-xs"
+        role="alert"
+      >
+        <span className="min-w-0 flex-1">
+          {state.error ??
+            (state.loaded
+              ? "This document was moved or deleted elsewhere."
+              : "This document was moved or deleted.")}
+        </span>
+        {onSaveCopy && state.loaded && state.error === null ? (
+          <Button size="sm" variant="ghost" onClick={onSaveCopy}>
+            Save a copy
+          </Button>
+        ) : null}
+      </div>
+    );
+  if (state.error)
+    return (
+      <div
+        className="flex items-center gap-2 border-b border-border px-4 py-2 text-xs text-destructive"
+        role="alert"
+      >
+        <span className="min-w-0 flex-1">{state.error}</span>
+        <Button size="sm" variant="ghost" onClick={() => void session.retry()}>
+          Retry
+        </Button>
+      </div>
+    );
+  return null;
+}
+
+function useSaveCopy(vaultId: string, state: DocumentState) {
+  const createNote = useRpcMutation({
+    contract: docsRpcContract,
+    method: "createNote",
+  });
+  return async () => {
+    const name = state.path.split("/").at(-1)?.replace(/\.md$/i, "") ?? "Copy";
+    try {
+      const created = await createNote.mutate({
+        vaultId,
+        parent: dirname(state.path),
+        name: `${name} copy`,
+        content: state.draft,
+      });
+      toast.success(`Saved a copy as ${created.path}`);
+      return created.path;
+    } catch (error) {
+      toast.error(`Could not save a copy: ${errorMessage(error)}`);
+      return null;
+    }
+  };
 }
 
 function DocumentSkeleton() {
@@ -734,8 +964,302 @@ function parseDocumentRef(value: unknown): DocumentRef | null {
   return { vaultId, path, title };
 }
 
+function DocumentAction({
+  label,
+  icon,
+  disabled = false,
+  onClick,
+}: {
+  label: string;
+  icon: string;
+  disabled?: boolean;
+  onClick(): void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">
+          <button
+            type="button"
+            aria-label={label}
+            disabled={disabled}
+            onClick={onClick}
+            className="inline-flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-md text-muted-foreground hover:bg-state-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-default disabled:opacity-40"
+          >
+            <Icon name={icon} className="size-3" />
+          </button>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function InlineDocument({
+  document,
+  openInTab,
+  panel = false,
+}: {
+  document: DocumentRef;
+  openInTab?(title: string): void;
+  panel?: boolean;
+}) {
+  const { state, session } = useVaultDocument(document.vaultId, document.path, {
+    showsProposals: true,
+  });
+  const saveCopy = useSaveCopy(document.vaultId, state);
+  const title =
+    (state.loaded ? documentHeading(state.draft) : null) ?? document.title;
+  const rpc = useRpc<typeof docsRpcContract>();
+  const composer = useComposer();
+  const navigate = useBbNavigate();
+  const [asking, setAsking] = useState(false);
+  const [askError, setAskError] = useState<string | null>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [truncated, setTruncated] = useState(false);
+  useEffect(() => {
+    const content = contentRef.current;
+    if (!openInTab || !content) return;
+    const measure = () =>
+      setTruncated(content.getBoundingClientRect().height > 400);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [state.loaded, openInTab]);
+  const proposal = state.base?.proposal ?? null;
+  const sha256 = state.base?.sha256 ?? "";
+  const pending = proposal?.status === "pending" ? proposal : null;
+  const stale = pending !== null && pending.baseSha256 !== sha256;
+  const undo =
+    proposal &&
+    ((proposal.status === "accepted" && proposal.resolvedSha256 === sha256) ||
+      (proposal.status === "rejected" && proposal.baseSha256 === sha256));
+  const redo = proposal?.status === "undone" && proposal.baseSha256 === sha256;
+  const copy = async () => {
+    if (await experimental_copyToClipboard({ text: state.draft })) {
+      toast.success("Document copied");
+    } else {
+      toast.error("Could not copy the document");
+    }
+  };
+  const ask = async () => {
+    setAsking(true);
+    setAskError(null);
+    try {
+      await session.flush();
+      composer.insert(
+        [
+          "Update ",
+          {
+            provider: "note",
+            id: `${document.vaultId}:${document.path}`,
+            label: title,
+          },
+          " ",
+        ],
+        { at: "end", block: true },
+      );
+      composer.focus();
+    } catch (error) {
+      setAskError(errorMessage(error));
+    } finally {
+      setAsking(false);
+    }
+  };
+  const baseMetadata = pending
+    ? parseMarkdownDocument(pending.baseContent).frontmatter
+    : "";
+  const candidateMetadata = pending
+    ? parseMarkdownDocument(state.draft).frontmatter
+    : "";
+  return (
+    <TooltipProvider delayDuration={200}>
+      <section
+        aria-label={title}
+        className={
+          panel
+            ? "flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+            : "my-2 min-w-0 overflow-hidden rounded-lg border border-border bg-background"
+        }
+      >
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="shrink-0 font-semibold">Docs</span>
+            <span className="truncate opacity-70">{title}</span>
+          </div>
+          {(state.busy || state.saving || asking) && (
+            <span
+              role="status"
+              className="inline-flex size-5 shrink-0 items-center justify-center"
+            >
+              <Icon name="Loading" className="size-3 animate-spin" />
+              <span className="sr-only">Updating document…</span>
+            </span>
+          )}
+          <div
+            className="flex shrink-0 items-center gap-0.5"
+            role="group"
+            aria-label="Document actions"
+          >
+            {pending && (
+              <>
+                <DocumentAction
+                  label="Accept"
+                  icon="Check"
+                  disabled={state.busy || state.saving || stale}
+                  onClick={() => void session.resolve("accept")}
+                />
+                <DocumentAction
+                  label="Reject"
+                  icon="X"
+                  disabled={state.busy}
+                  onClick={() => void session.resolve("reject")}
+                />
+              </>
+            )}
+            {undo && !state.dirty && (
+              <DocumentAction
+                label="Undo"
+                icon="ArrowTurnBackward"
+                disabled={state.busy}
+                onClick={() => void session.resolve("undo")}
+              />
+            )}
+            {redo && !state.dirty && (
+              <DocumentAction
+                label="Redo"
+                icon="ArrowTurnForward"
+                disabled={state.busy}
+                onClick={() => void session.resolve("redo")}
+              />
+            )}
+            <DocumentAction
+              label="Ask for changes"
+              icon="MessageSquare"
+              disabled={!state.loaded || state.busy || asking}
+              onClick={() => void ask()}
+            />
+            <DocumentAction
+              label="Copy"
+              icon="Copy"
+              disabled={!state.loaded}
+              onClick={() => void copy()}
+            />
+            {panel && (
+              <DocumentAction
+                label="Open in Docs"
+                icon="ExternalLink"
+                onClick={() =>
+                  navigate.toPluginPanel("docs", {
+                    subPath: `${document.vaultId}/${document.path}`,
+                  })
+                }
+              />
+            )}
+            {openInTab && (
+              <>
+                <span className="mx-1 h-4 border-l border-border" />
+                <DocumentAction
+                  label="Open in tab"
+                  icon="ExternalLink"
+                  onClick={() => openInTab(title)}
+                />
+              </>
+            )}
+          </div>
+        </header>
+        <DocumentNotices
+          state={state}
+          session={session}
+          onSaveCopy={() => void saveCopy()}
+        />
+        {askError && (
+          <div
+            className="flex items-center gap-2 px-4 py-2 text-xs text-destructive"
+            role="alert"
+          >
+            <span>{askError}</span>
+          </div>
+        )}
+        {stale && (
+          <p className="px-4 py-2 text-xs text-muted-foreground">
+            This document changed. Ask for an updated proposal before accepting.
+          </p>
+        )}
+        <div
+          className={
+            panel ? "relative min-h-0 flex-1 overflow-y-auto" : "relative"
+          }
+          style={openInTab ? { maxHeight: 400, overflow: "clip" } : undefined}
+        >
+          {!state.loaded ? (
+            state.missing || state.error ? null : (
+              <DocumentSkeleton />
+            )
+          ) : (
+            <>
+              <div
+                ref={contentRef}
+                className={
+                  panel ? "flex min-h-full min-w-0 flex-col" : "min-w-0"
+                }
+              >
+                {pending && baseMetadata !== candidateMetadata && (
+                  <div className="px-6 pt-4 text-xs">
+                    <p className="mb-2 font-medium">Document metadata</p>
+                    {baseMetadata && (
+                      <pre className="whitespace-pre-wrap bg-diff-removed/10 text-diff-removed">
+                        <del>{baseMetadata}</del>
+                      </pre>
+                    )}
+                    {candidateMetadata && (
+                      <pre className="whitespace-pre-wrap bg-diff-added/10 text-diff-added">
+                        {candidateMetadata}
+                      </pre>
+                    )}
+                  </div>
+                )}
+                <TiptapEditor
+                  value={state.draft}
+                  baseMarkdown={pending?.baseContent ?? null}
+                  inline
+                  disabled={state.busy || state.missing || truncated}
+                  previewBaseUrl={state.base?.previewBaseUrl ?? ""}
+                  notePath={state.path}
+                  onMarkdownChange={session.edit}
+                  onUpload={async (file) => {
+                    const result = await rpc.call("uploadAttachment", {
+                      vaultId: document.vaultId,
+                      notePath: state.path,
+                      name: file.name,
+                      content: await fileToBase64(file),
+                    });
+                    return { markdownPath: result.markdownPath };
+                  }}
+                />
+              </div>
+              {truncated && openInTab && (
+                <button
+                  type="button"
+                  aria-label={`Open ${title} in tab`}
+                  className="absolute inset-0 cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring"
+                  onClick={() => openInTab(title)}
+                >
+                  <span className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-background via-background/95 to-transparent" />
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      </section>
+    </TooltipProvider>
+  );
+}
+
 function DocsDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
   const navigate = useBbNavigate();
+  const panel = experimental_useAppPanel();
   const document = parseDocumentRef(attributes);
   if (!document) {
     return (
@@ -748,37 +1272,40 @@ function DocsDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
     navigate.toPluginPanel("docs", {
       subPath: `${document.vaultId}/${document.path}`,
     });
-  const openPreview = () => {
-    const opened = navigate.openThreadPanel({
-      actionId: "document",
-      title: document.title,
+  const openPreview = (title = document.title) => {
+    const opened = panel.openTab({
+      tab: {
+        id: "document",
+        context: { kind: "thread" },
+        availability: "action",
+      },
+      title,
       params: {
         vaultId: document.vaultId,
         path: document.path,
-        title: document.title,
+        title,
       },
     });
     if (!opened) openInDocs();
   };
+  if (!/\.html?$/i.test(document.path))
+    return <InlineDocument document={document} openInTab={openPreview} />;
   return (
-    <div className="my-3 flex h-11 items-center gap-1 rounded-lg border border-border bg-card px-2 shadow-sm transition-colors hover:bg-state-hover">
+    <div className="relative my-3 flex h-11 select-none items-center gap-1 rounded-lg border border-border bg-card px-2 shadow-sm transition-colors hover:bg-state-hover">
       <button
         type="button"
-        className="flex min-w-0 flex-1 items-center gap-2 rounded-md px-1 py-1 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        onClick={openPreview}
+        className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1 py-1 text-left after:absolute after:inset-0 after:rounded-lg after:content-[''] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+        onClick={() => openPreview()}
       >
         <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-          <HugeiconsIcon
-            icon={/\.html?$/i.test(document.path) ? HtmlFile01Icon : File01Icon}
-            className="size-4"
-          />
+          <HugeiconsIcon icon={HtmlFile01Icon} className="size-4" />
         </span>
         <span className="min-w-0 flex-1 truncate text-sm font-medium">
           {document.title}
         </span>
       </button>
       <Button
-        className="size-8 shrink-0"
+        className="relative size-8 shrink-0"
         size="icon"
         variant="ghost"
         aria-label="Open in Docs"
@@ -790,85 +1317,147 @@ function DocsDirectiveCard({ attributes }: PluginMessageDirectiveProps) {
   );
 }
 
-function HtmlDocumentPanelBody({ document }: { document: DocumentRef }) {
-  const rpc = useRpc<typeof docsRpcContract>();
-  const [state, setState] = useState<PreviewLease | { error: string } | null>(
-    null,
-  );
-  useEffect(() => {
-    let active = true;
-    setState(null);
-    rpc
-      .call("preparePreview", {
-        vaultId: document.vaultId,
-        path: document.path,
-      })
-      .then((lease) => {
-        if (active) setState(lease);
-      })
-      .catch((error: unknown) => {
-        if (active)
-          setState({
-            error: error instanceof Error ? error.message : String(error),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [document.path, document.vaultId, rpc]);
-  if (!state) return <DocumentSkeleton />;
-  if ("error" in state)
-    return <div className="text-sm text-destructive">{state.error}</div>;
+function HtmlPreview({
+  vaultId,
+  path,
+  title,
+  panel = false,
+}: DocumentRef & { panel?: boolean }) {
+  const lease = useRpcQuery({
+    contract: docsRpcContract,
+    method: "preparePreview",
+    input: { vaultId, path },
+  });
+  if (!lease.data) {
+    if (!lease.error) return <DocumentSkeleton />;
+    return (
+      <div
+        className={`text-sm text-destructive ${panel ? "" : "min-w-0 flex-1 p-6"}`}
+      >
+        {lease.error.message}
+      </div>
+    );
+  }
   return (
     <iframe
-      className="min-h-[32rem] flex-1 border-0 bg-white"
+      className="min-h-0 flex-1 border-0 bg-white"
       sandbox="allow-scripts"
-      title={document.title}
-      src={`${state.baseUrl}/${encodePath(document.path)}`}
+      title={title}
+      src={`${lease.data.baseUrl}/${encodePath(path)}`}
     />
   );
 }
 
-function DocumentPanel({ params }: PluginThreadPanelProps) {
+function DocumentPicker() {
+  const [subPath, setSubPath] = useState("");
+  const navigate = useBbNavigate();
+  const panel = experimental_useAppPanel();
+  return (
+    <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
+      <p className="text-sm text-muted-foreground">
+        Choose a document to open.
+      </p>
+      <NotesWorkspace
+        subPath={subPath}
+        navigationOnly
+        onNavigate={(next) => {
+          const [vaultId, ...parts] = next.split("/");
+          const filePath = parts.join("/");
+          if (vaultId && filePath) {
+            const title = (filePath.split("/").pop() ?? filePath).replace(
+              /\.(md|html?)$/i,
+              "",
+            );
+            panel.openTab({
+              tab: {
+                id: "document",
+                context: { kind: "thread" },
+                availability: "action",
+              },
+              title,
+              params: { vaultId, path: filePath, title },
+            });
+          } else setSubPath(next);
+        }}
+      />
+    </div>
+  );
+}
+
+function DocumentPanel({ params }: ExperimentalThreadActionTabProps) {
   const document = parseDocumentRef(params);
   const navigate = useBbNavigate();
-  if (!document)
-    return (
-      <div className="text-sm text-muted-foreground">
-        Open a Docs card from a message to edit it here.
-      </div>
-    );
+  if (!document) return <DocumentPicker />;
+  if (!/\.html?$/i.test(document.path))
+    return <InlineDocument document={document} panel />;
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border pb-2">
-        <div className="min-w-0 flex-1 truncate text-sm font-medium">
-          {document.title}
-        </div>
-        <Button
-          className="size-8 shrink-0"
-          size="icon"
-          variant="ghost"
-          aria-label="Open in Docs"
-          onClick={() =>
-            navigate.toPluginPanel("docs", {
-              subPath: `${document.vaultId}/${document.path}`,
-            })
-          }
-        >
-          <HugeiconsIcon icon={ArrowUpRight01Icon} />
-        </Button>
+      <TooltipProvider delayDuration={200}>
+        <header className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-xs text-muted-foreground">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            <span className="shrink-0 font-semibold">Docs</span>
+            <span className="truncate opacity-70">{document.title}</span>
+          </div>
+          <DocumentAction
+            label="Open in Docs"
+            icon="ExternalLink"
+            onClick={() =>
+              navigate.toPluginPanel("docs", {
+                subPath: `${document.vaultId}/${document.path}`,
+              })
+            }
+          />
+        </header>
+      </TooltipProvider>
+      <HtmlPreview {...document} panel />
+    </div>
+  );
+}
+
+function SavedDocumentEditor({
+  state,
+  session,
+  onUpload,
+  onSaveCopy,
+  errorHint = "",
+  active = true,
+}: {
+  state: DocumentState;
+  session: DocumentSession;
+  onUpload(file: File): Promise<{ markdownPath: string }>;
+  onSaveCopy?(): void;
+  errorHint?: string;
+  active?: boolean;
+}) {
+  if (!state.loaded)
+    return state.missing ? (
+      <div className="min-w-0 flex-1">
+        <DocumentNotices state={state} session={session} />
       </div>
-      {/\.html?$/i.test(document.path) ? (
-        <HtmlDocumentPanelBody document={document} />
-      ) : (
-        <NotePane
-          vaultId={document.vaultId}
-          notePath={document.path}
-          onChanged={() => undefined}
-          onRenamed={() => undefined}
-          renameToTitle={false}
-        />
-      )}
+    ) : state.error ? (
+      <div className="min-w-0 flex-1 p-6 text-sm text-destructive">
+        {state.error}
+        {errorHint}
+      </div>
+    ) : (
+      <DocumentSkeleton />
+    );
+  return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      <DocumentNotices
+        state={state}
+        session={session}
+        onSaveCopy={onSaveCopy}
+      />
+      <TiptapEditor
+        value={state.draft}
+        active={active}
+        disabled={state.busy || state.missing}
+        previewBaseUrl={state.base?.previewBaseUrl ?? ""}
+        notePath={state.base?.previewPath ?? state.path}
+        onUpload={onUpload}
+        onMarkdownChange={session.edit}
+      />
     </div>
   );
 }
@@ -876,174 +1465,118 @@ function DocumentPanel({ params }: PluginThreadPanelProps) {
 function NotePane({
   vaultId,
   notePath,
-  onChanged,
+  vaultError,
+  active,
+  onReady,
   onRenamed,
-  renameToTitle = true,
+  onOpen,
 }: {
   vaultId: string;
   notePath: string;
-  onChanged(): void;
+  vaultError: string | null;
+  active: boolean;
+  onReady(): void;
   onRenamed(path: string): void;
-  renameToTitle?: boolean;
+  onOpen(path: string): void;
 }) {
   const rpc = useRpc<typeof docsRpcContract>();
-  const [state, setState] = useState<
-    { content: string; lease: PreviewLease } | { error: string } | null
-  >(null);
-  const [conflict, setConflict] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const markdownRef = useRef("");
-  const savedRef = useRef("");
-  const shaRef = useRef<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savingRef = useRef(false);
-  const pathRef = useRef(notePath);
-  const changedRef = useRef(onChanged);
-  changedRef.current = onChanged;
-  const renamedRef = useRef(onRenamed);
-  renamedRef.current = onRenamed;
-
+  const { state, session } = useVaultDocument(vaultId, notePath, {
+    showsProposals: false,
+    vaultError,
+  });
+  const saveCopy = useSaveCopy(vaultId, state);
+  const renamed = state.path !== notePath ? state.path : null;
+  const onRenamedRef = useRef(onRenamed);
   useEffect(() => {
-    let active = true;
-    setState(null);
-    Promise.all([
-      rpc.call("readNote", { vaultId, path: notePath }),
-      rpc.call("preparePreview", { vaultId, path: notePath }),
-    ])
-      .then(([file, lease]) => {
-        if (!active) return;
-        pathRef.current = notePath;
-        markdownRef.current = file.content;
-        savedRef.current = file.content;
-        shaRef.current = file.sha256;
-        setState({ content: file.content, lease });
-      })
-      .catch((error: unknown) => {
-        if (active)
-          setState({
-            error: error instanceof Error ? error.message : String(error),
-          });
-      });
-    return () => {
-      active = false;
-    };
-  }, [notePath, rpc, vaultId]);
-
-  const save = useCallback(
-    async (force = false) => {
-      if (
-        savingRef.current ||
-        (!force && markdownRef.current === savedRef.current)
-      )
-        return;
-      savingRef.current = true;
-      setSaveError(null);
-      const content = markdownRef.current;
-      try {
-        const value = await rpc.call("saveNote", {
-          vaultId,
-          path: pathRef.current,
-          content,
-          ...(!force && shaRef.current
-            ? { expectedSha256: shaRef.current }
-            : {}),
-        });
-        const result = value;
-        if (result.outcome === "conflict") {
-          setConflict(true);
-          return;
-        }
-        savedRef.current = content;
-        shaRef.current = result.sha256;
-        setConflict(false);
-        changedRef.current();
-        if (renameToTitle) {
-          const renamed = await rpc.call("renameToTitle", {
-            vaultId,
-            path: pathRef.current,
-          });
-          if (renamed.path !== pathRef.current) {
-            pathRef.current = renamed.path;
-            renamedRef.current(renamed.path);
-          }
-        }
-      } catch (error) {
-        setSaveError(error instanceof Error ? error.message : String(error));
-      } finally {
-        savingRef.current = false;
-      }
-    },
-    [renameToTitle, rpc, vaultId],
-  );
-
-  const scheduleSave = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => void save(), 700);
-  }, [save]);
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      void save();
-    },
-    [save],
-  );
-
-  if (!state) return <DocumentSkeleton />;
-  if ("error" in state)
-    return (
-      <div className="min-w-0 flex-1 p-6 text-sm text-destructive">
-        {state.error}
-      </div>
-    );
-
+    onRenamedRef.current = onRenamed;
+  });
+  useEffect(() => {
+    if (renamed !== null) onRenamedRef.current(renamed);
+  }, [renamed]);
+  const ready = state.loaded || state.missing || state.error !== null;
+  const onReadyRef = useRef(onReady);
+  useEffect(() => {
+    onReadyRef.current = onReady;
+  });
+  useEffect(() => {
+    if (ready) onReadyRef.current();
+  }, [ready]);
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      {conflict ? (
-        <div className="flex items-center gap-2 border-b border-border bg-muted px-4 py-2 text-xs">
-          Changed on disk.
-          <Button size="sm" variant="ghost" onClick={() => location.reload()}>
-            Reload
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => void save(true)}>
-            Overwrite
-          </Button>
-        </div>
-      ) : null}
-      {saveError ? (
-        <div className="border-b border-border px-4 py-2 text-xs text-destructive">
-          {saveError}
-        </div>
-      ) : null}
-      <TiptapEditor
-        initialValue={state.content}
-        previewBaseUrl={state.lease.baseUrl}
-        notePath={notePath}
-        onUpload={async (file) => {
-          const content = await fileToBase64(file);
-          const value = await rpc.call("uploadAttachment", {
-            vaultId,
-            notePath: pathRef.current,
-            name: file.name,
-            content,
-          });
-          return { markdownPath: value.markdownPath };
-        }}
-        onFirstRender={(markdown) => {
-          markdownRef.current = markdown;
-          savedRef.current = markdown;
-        }}
-        onMarkdownChange={(markdown) => {
-          markdownRef.current = markdown;
-          scheduleSave();
-        }}
-      />
-    </div>
+    <SavedDocumentEditor
+      state={state}
+      session={session}
+      active={active}
+      onSaveCopy={() =>
+        void saveCopy().then((created) => {
+          if (created !== null) onOpen(created);
+        })
+      }
+      onUpload={async (file) => {
+        const result = await rpc.call("uploadAttachment", {
+          vaultId,
+          notePath: state.path,
+          name: file.name,
+          content: await fileToBase64(file),
+        });
+        return { markdownPath: result.markdownPath };
+      }}
+    />
   );
 }
 
+const SWITCH_REVEAL_MS = 1_000;
+
+function NoteSwitcher({
+  vaultId,
+  notePath,
+  vaultError,
+  onRenamed,
+  onOpen,
+}: {
+  vaultId: string;
+  notePath: string;
+  vaultError: string | null;
+  onRenamed(path: string): void;
+  onOpen(path: string): void;
+}) {
+  const target = vaultDocumentSession(vaultId, notePath, false).id;
+  const [shown, setShown] = useState({ vaultId, notePath, id: target });
+  const pending = shown.id !== target;
+  const reveal = useCallback(
+    () => setShown({ vaultId, notePath, id: target }),
+    [vaultId, notePath, target],
+  );
+  useEffect(() => {
+    if (!pending) return;
+    const timeout = window.setTimeout(reveal, SWITCH_REVEAL_MS);
+    return () => window.clearTimeout(timeout);
+  }, [pending, reveal]);
+  const panes = pending
+    ? [shown, { vaultId, notePath, id: target }]
+    : [{ vaultId, notePath, id: target }];
+  return panes.map((pane) => {
+    const visible = pane.id === shown.id;
+    return (
+      <div
+        key={pane.id}
+        hidden={!visible}
+        className={visible ? "flex min-h-0 min-w-0 flex-1" : undefined}
+      >
+        <NotePane
+          vaultId={pane.vaultId}
+          notePath={pane.notePath}
+          vaultError={vaultError}
+          active={visible}
+          onReady={pane.id === target ? reveal : () => undefined}
+          onRenamed={onRenamed}
+          onOpen={onOpen}
+        />
+      </div>
+    );
+  });
+}
+
 function DocsFileOpener({ path: filePath, source }: PluginFileOpenerProps) {
-  const rpc = useRpc<typeof docsRpcContract>();
   const navigate = useBbNavigate();
   const liveFileTarget = useMemo<ExperimentalLiveFileTarget | null>(() => {
     switch (source.kind) {
@@ -1087,103 +1620,50 @@ function DocsFileOpener({ path: filePath, source }: PluginFileOpenerProps) {
       source.threadId,
     ],
   );
-  const [state, setState] = useState<
-    | { content: string; lease: PreviewLease; previewPath: string }
-    | { error: string }
-    | null
-  >(null);
-  const [conflict, setConflict] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [reloadNonce, setReloadNonce] = useState(0);
-  const markdownRef = useRef("");
-  const savedRef = useRef("");
-  const shaRef = useRef<string | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const savingRef = useRef(false);
-
-  useEffect(() => {
-    let active = true;
-    setState(null);
-    setConflict(false);
-    setSaveError(null);
-    void rpc
-      .call("openFile", { source: openerSource, path: filePath })
-      .then(({ file, preview, previewPath }) => {
-        if (!active) return;
-        markdownRef.current = file.content;
-        savedRef.current = file.content;
-        shaRef.current = file.sha256;
-        setState({ content: file.content, lease: preview, previewPath });
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setState({
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      });
-    return () => {
-      active = false;
-    };
-  }, [filePath, openerSource, reloadNonce, rpc]);
-
-  const save = useCallback(
-    async (force = false) => {
-      if (
-        savingRef.current ||
-        (!force && markdownRef.current === savedRef.current)
-      )
-        return;
-      savingRef.current = true;
-      setSaveError(null);
-      const content = markdownRef.current;
-      try {
-        const result = await rpc.call("saveOpenedFile", {
+  const session = documentSession(
+    () => JSON.stringify(["opener", openerSource, filePath]),
+    filePath,
+    { showsProposals: false, delay: 700 },
+  );
+  const query = useRpcQuery({
+    contract: docsRpcContract,
+    method: "openFile",
+    input: { source: openerSource, path: filePath },
+  });
+  const save = useRpcMutation({
+    contract: docsRpcContract,
+    method: "saveOpenedFile",
+  });
+  const snapshot = useMemo<DocumentSnapshot | undefined>(
+    () =>
+      query.data && {
+        content: query.data.file.content,
+        sha256: query.data.file.sha256,
+        proposal: null,
+        previewBaseUrl: query.data.preview.baseUrl,
+        previewPath: query.data.previewPath,
+      },
+    [query.data],
+  );
+  const state = useDocumentSession(session, {
+    snapshot,
+    error: query.error?.message ?? null,
+    writer: {
+      renamesToTitle: false,
+      save: async (target, content, expectedSha256) => {
+        const result = await save.mutate({
           source: openerSource,
-          path: filePath,
+          path: target,
           content,
-          ...(!force && shaRef.current
-            ? { expectedSha256: shaRef.current }
-            : {}),
+          expectedSha256,
         });
-        if (result.outcome === "conflict") {
-          setConflict(true);
-          return;
-        }
-        savedRef.current = content;
-        shaRef.current = result.sha256;
-        setConflict(false);
-      } catch (error) {
-        setSaveError(error instanceof Error ? error.message : String(error));
-      } finally {
-        savingRef.current = false;
-      }
+        if (result.outcome === "conflict")
+          throw new Error("This document changed elsewhere.");
+        return { path: target, sha256: result.sha256 };
+      },
+      refetch: query.refetch,
     },
-    [filePath, openerSource, rpc],
-  );
-
-  const scheduleSave = useCallback(() => {
-    if (timerRef.current) clearTimeout(timerRef.current);
-    timerRef.current = setTimeout(() => void save(), 700);
-  }, [save]);
-
-  useEffect(
-    () => () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-      void save();
-    },
-    [save],
-  );
-
-  if (!state) return <DocumentSkeleton />;
-  if ("error" in state) {
-    return (
-      <div className="min-w-0 flex-1 p-6 text-sm text-destructive">
-        {state.error} — use the tab&apos;s Open with menu to choose another
-        viewer.
-      </div>
-    );
-  }
+  });
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       {liveFileTarget === null ? null : (
@@ -1208,80 +1688,17 @@ function DocsFileOpener({ path: filePath, source }: PluginFileOpenerProps) {
           </Button>
         </div>
       )}
-      {conflict ? (
-        <div className="flex items-center gap-2 border-b border-border bg-muted px-4 py-2 text-xs">
-          Changed on disk.
-          <Button
-            size="sm"
-            variant="ghost"
-            onClick={() => setReloadNonce((value) => value + 1)}
-          >
-            Reload
-          </Button>
-          <Button size="sm" variant="ghost" onClick={() => void save(true)}>
-            Overwrite
-          </Button>
-        </div>
-      ) : null}
-      {saveError ? (
-        <div className="border-b border-border px-4 py-2 text-xs text-destructive">
-          {saveError}
-        </div>
-      ) : null}
-      <TiptapEditor
-        initialValue={state.content}
-        previewBaseUrl={state.lease.baseUrl}
-        notePath={state.previewPath}
+      <SavedDocumentEditor
+        state={state}
+        session={session}
+        errorHint=" — use the tab's Open with menu to choose another viewer."
         onUpload={async () => {
           throw new Error(
             "Add this file to a Docs vault before uploading images",
           );
         }}
-        onFirstRender={(markdown) => {
-          markdownRef.current = markdown;
-          savedRef.current = markdown;
-        }}
-        onMarkdownChange={(markdown) => {
-          markdownRef.current = markdown;
-          scheduleSave();
-        }}
       />
     </div>
-  );
-}
-
-function HtmlPane({
-  vaultId,
-  filePath,
-}: {
-  vaultId: string;
-  filePath: string;
-}) {
-  const rpc = useRpc<typeof docsRpcContract>();
-  const [lease, setLease] = useState<PreviewLease | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    setLease(null);
-    setError(null);
-    void rpc
-      .call("preparePreview", { vaultId, path: filePath })
-      .then((value) => setLease(value))
-      .catch((reason: unknown) =>
-        setError(reason instanceof Error ? reason.message : String(reason)),
-      );
-  }, [filePath, rpc, vaultId]);
-  if (error)
-    return (
-      <div className="min-w-0 flex-1 p-6 text-sm text-destructive">{error}</div>
-    );
-  if (!lease) return <DocumentSkeleton />;
-  return (
-    <iframe
-      className="min-h-0 flex-1 border-0 bg-white"
-      sandbox="allow-scripts"
-      title={filePath}
-      src={`${lease.baseUrl}/${encodePath(filePath)}`}
-    />
   );
 }
 
@@ -1376,7 +1793,7 @@ function NotesSidebarNavigation(props: NotesSidebarNavigationProps) {
               props.onSearchOpenChange(false);
             }}
           >
-            <HugeiconsIcon icon={Cancel01Icon} />
+            <HugeiconsIcon icon={Cancel01Icon} className="size-4" />
           </Button>
         </>
       ) : null}
@@ -1389,7 +1806,7 @@ function NotesSidebarNavigation(props: NotesSidebarNavigationProps) {
             aria-label="Search notes"
             onClick={() => props.onSearchOpenChange(true)}
           >
-            <HugeiconsIcon icon={Search01Icon} />
+            <HugeiconsIcon icon={Search01Icon} className="size-4" />
           </Button>
           <Button
             className="size-8"
@@ -1398,7 +1815,7 @@ function NotesSidebarNavigation(props: NotesSidebarNavigationProps) {
             aria-label="New note"
             onClick={props.onNewNote}
           >
-            <HugeiconsIcon icon={FileAddIcon} />
+            <HugeiconsIcon icon={FileAddIcon} className="size-4" />
           </Button>
           <Button
             className="size-8"
@@ -1407,7 +1824,7 @@ function NotesSidebarNavigation(props: NotesSidebarNavigationProps) {
             aria-label="New folder"
             onClick={props.onNewFolder}
           >
-            <HugeiconsIcon icon={FolderAddIcon} />
+            <HugeiconsIcon icon={FolderAddIcon} className="size-4" />
           </Button>
           <span className="min-w-0 flex-1" />
         </>
@@ -1418,6 +1835,8 @@ function NotesSidebarNavigation(props: NotesSidebarNavigationProps) {
 
 function Tree({
   data,
+  refreshError,
+  onRefresh,
   selectedPath,
   onOpen,
   onNewNote,
@@ -1429,6 +1848,8 @@ function Tree({
   onAddVault,
 }: {
   data: NotesData;
+  refreshError: string | null;
+  onRefresh(): void;
   selectedPath: string | null;
   onOpen(path: string): void;
   onNewNote(): void;
@@ -1501,18 +1922,29 @@ function Tree({
     draggingPathRef.current !== null ||
     Array.from(event.dataTransfer.types).includes("text/plain");
 
+  const clearDrag = () => {
+    draggingPathRef.current = null;
+    setDraggingPath(null);
+    setDropTarget(null);
+    setFolderDropTarget(null);
+  };
+
+  const dropEdge = (
+    event: ReactDragEvent<HTMLButtonElement>,
+  ): "before" | "after" => {
+    const targetRect = event.currentTarget.getBoundingClientRect();
+    return event.clientY < targetRect.top + targetRect.height / 2
+      ? "before"
+      : "after";
+  };
+
   const reorderAtTarget = (
     event: ReactDragEvent<HTMLButtonElement>,
     targetPath: string,
   ) => {
     if (!acceptsFileDrag(event)) return;
     event.preventDefault();
-    const targetRect = event.currentTarget.getBoundingClientRect();
-    const edge =
-      event.clientY < targetRect.top + targetRect.height / 2
-        ? "before"
-        : "after";
-    setDropTarget({ path: targetPath, edge });
+    setDropTarget({ path: targetPath, edge: dropEdge(event) });
     setFolderDropTarget(null);
     event.dataTransfer.dropEffect = "move";
   };
@@ -1529,11 +1961,7 @@ function Tree({
       return;
     }
     const parent = dirname(targetPath);
-    const targetRect = event.currentTarget.getBoundingClientRect();
-    const edge =
-      event.clientY < targetRect.top + targetRect.height / 2
-        ? "before"
-        : "after";
+    const edge = dropEdge(event);
     const siblings = orderEntries(data.entries, data.entryOrder)
       .filter(
         (entry) => entry.kind === "file" && dirname(entry.path) === parent,
@@ -1554,10 +1982,7 @@ function Tree({
     } else {
       onMoveFile(sourcePath, parent, siblings);
     }
-    draggingPathRef.current = null;
-    setDraggingPath(null);
-    setDropTarget(null);
-    setFolderDropTarget(null);
+    clearDrag();
   };
 
   const moveIntoFolder = (
@@ -1569,10 +1994,7 @@ function Tree({
       event.dataTransfer.getData("text/plain") || draggingPathRef.current;
     if (!sourcePath || dirname(sourcePath) === targetFolder) return;
     onMoveFile(sourcePath, targetFolder);
-    draggingPathRef.current = null;
-    setDraggingPath(null);
-    setDropTarget(null);
-    setFolderDropTarget(null);
+    clearDrag();
   };
 
   return (
@@ -1582,7 +2004,10 @@ function Tree({
           query={query}
           searchOpen={searchOpen}
           onQueryChange={setQuery}
-          onSearchOpenChange={setSearchOpen}
+          onSearchOpenChange={(open) => {
+            setSearchOpen(open);
+            if (open) onRefresh();
+          }}
           onNewNote={onNewNote}
           onNewFolder={onNewFolder}
         />
@@ -1612,8 +2037,16 @@ function Tree({
         aria-label="Notes"
         className="relative min-h-0 flex-1 overflow-y-auto p-1.5"
       >
-        {data.error ? (
-          <div className="p-3 text-xs text-destructive">{data.error}</div>
+        {data.error || refreshError ? (
+          <div
+            className="flex items-center gap-2 p-3 text-xs text-destructive"
+            role="alert"
+          >
+            <span className="min-w-0 flex-1">{data.error ?? refreshError}</span>
+            <Button size="sm" variant="ghost" onClick={onRefresh}>
+              Retry
+            </Button>
+          </div>
         ) : null}
         {visible.map((entry) => {
           const depth = entry.path.split("/").length - 1;
@@ -1649,12 +2082,7 @@ function Tree({
                 if (isFolder) moveIntoFolder(event, entry.path);
                 else dropAtTarget(event, entry.path);
               }}
-              onDragEnd={() => {
-                draggingPathRef.current = null;
-                setDraggingPath(null);
-                setDropTarget(null);
-                setFolderDropTarget(null);
-              }}
+              onDragEnd={clearDrag}
               onClick={() => {
                 if (isFolder)
                   setCollapsed((current) => {
@@ -1762,7 +2190,7 @@ function Tree({
             aria-label="Add vault"
             onClick={onAddVault}
           >
-            <HugeiconsIcon icon={PlusSignIcon} />
+            <HugeiconsIcon icon={PlusSignIcon} className="size-4" />
           </Button>
         </div>
         {hostUnavailable ? (
@@ -1797,9 +2225,47 @@ function parseRoute(subPath: string): {
 function NotesWorkspace({
   subPath,
   navigationOnly,
-}: PluginNavPanelProps & { navigationOnly: boolean }) {
-  const rpc = useRpc<typeof docsRpcContract>();
+  onNavigate,
+}: PluginNavPanelProps & {
+  navigationOnly: boolean;
+  onNavigate?(subPath: string, replace?: boolean): void;
+}) {
   const navigate = useBbNavigate();
+  const createNoteMutation = useRpcMutation({
+    contract: docsRpcContract,
+    method: "createNote",
+  });
+  const createFolderMutation = useRpcMutation({
+    contract: docsRpcContract,
+    method: "createFolder",
+  });
+  const createVaultMutation = useRpcMutation({
+    contract: docsRpcContract,
+    method: "createVault",
+  });
+  const deletePathMutation = useRpcMutation({
+    contract: docsRpcContract,
+    method: "deletePath",
+  });
+  const reorderFilesMutation = useRpcMutation({
+    contract: docsRpcContract,
+    method: "reorderFiles",
+  });
+  const movePathMutation = useRpcMutation({
+    contract: docsRpcContract,
+    method: "movePath",
+  });
+  const navigateTo = useCallback(
+    (next: string, replace?: boolean) => {
+      if (onNavigate) onNavigate(next, replace);
+      else
+        navigate.toPluginPanel("docs", {
+          subPath: next,
+          ...(replace === undefined ? {} : { replace }),
+        });
+    },
+    [navigate, onNavigate],
+  );
   const route = parseRoute(subPath);
   const [folderDialogOpen, setFolderDialogOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -1822,15 +2288,31 @@ function NotesWorkspace({
   const open = useCallback(
     (path: string, replace = false) => {
       if (!activeVaultId || !isCurrentVault(activeVaultId)) return;
-      navigate.toPluginPanel("docs", {
-        subPath: `${activeVaultId}/${path}`,
-        replace,
-      });
+      navigateTo(`${activeVaultId}/${path}`, replace);
     },
-    [activeVaultId, isCurrentVault, navigate],
+    [activeVaultId, isCurrentVault, navigateTo],
   );
 
+  const pane =
+    !navigationOnly && activeVaultId && filePath && /\.md$/i.test(filePath) ? (
+      <NoteSwitcher
+        vaultId={activeVaultId}
+        notePath={filePath}
+        vaultError={
+          error !== null && /unknown vault/i.test(error) ? error : null
+        }
+        onRenamed={(next) => open(next, true)}
+        onOpen={(next) => open(next)}
+      />
+    ) : null;
+
   if (!data || !activeVaultId) {
+    if (pane && route.vaultId)
+      return (
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="flex min-h-0 flex-1">{pane}</div>
+        </div>
+      );
     if (error)
       return (
         <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm">
@@ -1854,17 +2336,17 @@ function NotesWorkspace({
 
   const selectedFolder = filePath ? dirname(filePath) : "";
   const newNote = () =>
-    void rpc
-      .call("createNote", {
+    void createNoteMutation
+      .mutate({
         vaultId: activeVaultId,
         parent: selectedFolder,
         name: "Untitled",
       })
       .then((value) => {
-        if (isCurrentVault(activeVaultId)) {
-          refresh();
-          open(value.path);
-        }
+        if (isCurrentVault(activeVaultId)) open(value.path);
+      })
+      .catch((error: unknown) => {
+        toast.error(`Could not create a note: ${errorMessage(error)}`);
       });
   const createFolder = async () => {
     const name = folderName.trim();
@@ -1872,13 +2354,15 @@ function NotesWorkspace({
     setFolderError(null);
     const target = selectedFolder ? `${selectedFolder}/${name}` : name;
     try {
-      await rpc.call("createFolder", { vaultId: activeVaultId, path: target });
+      await createFolderMutation.mutate({
+        vaultId: activeVaultId,
+        path: target,
+      });
       if (!isCurrentVault(activeVaultId)) return;
       setFolderName("");
       setFolderDialogOpen(false);
-      refresh();
     } catch (error) {
-      setFolderError(error instanceof Error ? error.message : String(error));
+      setFolderError(errorMessage(error));
     }
   };
 
@@ -1888,7 +2372,7 @@ function NotesWorkspace({
     if (!name || !rootPath) return;
     setVaultError(null);
     try {
-      const value = await rpc.call("createVault", {
+      const value = await createVaultMutation.mutate({
         name,
         rootPath,
         ...(vaultHostId === "primary" ? {} : { hostId: vaultHostId }),
@@ -1898,49 +2382,37 @@ function NotesWorkspace({
       setVaultRootPath("");
       setVaultHostId("primary");
       setVaultDialogOpen(false);
-      navigate.toPluginPanel("docs", {
-        subPath: value.id,
-      });
+      navigateTo(value.id);
     } catch (error) {
-      setVaultError(error instanceof Error ? error.message : String(error));
+      setVaultError(errorMessage(error));
     }
   };
 
   const deleteFile = async (path: string) => {
     try {
-      await rpc.call("deletePath", {
+      await deletePathMutation.mutate({
         vaultId: activeVaultId,
         path,
       });
       if (!isCurrentVault(activeVaultId)) return;
-      refresh();
       if (filePath === path) {
-        navigate.toPluginPanel("docs", {
-          subPath: activeVaultId,
-          replace: true,
-        });
+        navigateTo(activeVaultId, true);
       }
       toast.success(`Deleted ${path}`);
     } catch (error) {
-      toast.error(
-        `Could not delete ${path}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      toast.error(`Could not delete ${path}: ${errorMessage(error)}`);
     }
   };
 
   const reorderFiles = async (parent: string, paths: string[]) => {
     try {
-      await rpc.call("reorderFiles", {
+      await reorderFilesMutation.mutate({
         vaultId: activeVaultId,
         parent,
         paths,
       });
-      if (!isCurrentVault(activeVaultId)) return;
-      refresh();
     } catch (error) {
-      toast.error(
-        `Could not reorder files: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      toast.error(`Could not reorder files: ${errorMessage(error)}`);
     }
   };
 
@@ -1955,14 +2427,16 @@ function NotesWorkspace({
       : fileName;
     try {
       let orderPreserved = true;
-      await rpc.call("movePath", {
+      if (filePath === sourcePath)
+        await vaultDocumentSession(activeVaultId, sourcePath, false).flush();
+      await movePathMutation.mutate({
         vaultId: activeVaultId,
         from: sourcePath,
         to: destinationPath,
       });
       if (targetOrder) {
         try {
-          await rpc.call("reorderFiles", {
+          await reorderFilesMutation.mutate({
             vaultId: activeVaultId,
             parent: targetFolder,
             paths: targetOrder,
@@ -1970,12 +2444,11 @@ function NotesWorkspace({
         } catch (error) {
           orderPreserved = false;
           toast.error(
-            `Moved ${fileName}, but could not preserve its drop position: ${error instanceof Error ? error.message : String(error)}`,
+            `Moved ${fileName}, but could not preserve its drop position: ${errorMessage(error)}`,
           );
         }
       }
       if (!isCurrentVault(activeVaultId)) return;
-      refresh();
       if (filePath === sourcePath) open(destinationPath, true);
       if (orderPreserved) {
         toast.success(
@@ -1985,9 +2458,7 @@ function NotesWorkspace({
         );
       }
     } catch (error) {
-      toast.error(
-        `Could not move ${fileName}: ${error instanceof Error ? error.message : String(error)}`,
-      );
+      toast.error(`Could not move ${fileName}: ${errorMessage(error)}`);
     }
   };
 
@@ -1997,6 +2468,8 @@ function NotesWorkspace({
         {navigationOnly ? (
           <Tree
             data={data}
+            refreshError={error}
+            onRefresh={refresh}
             selectedPath={filePath}
             onOpen={open}
             onNewNote={newNote}
@@ -2006,29 +2479,17 @@ function NotesWorkspace({
             onMoveFile={(sourcePath, targetFolder, targetOrder) =>
               void moveFile(sourcePath, targetFolder, targetOrder)
             }
-            onVaultChange={(value) => {
-              navigate.toPluginPanel("docs", {
-                subPath: value,
-              });
-            }}
+            onVaultChange={(value) => navigateTo(value)}
             onAddVault={() => setVaultDialogOpen(true)}
           />
-        ) : filePath && /\.md$/i.test(filePath) ? (
-          <NotePane
-            key={`${activeVaultId}:${filePath}`}
-            vaultId={activeVaultId}
-            notePath={filePath}
-            onChanged={refresh}
-            onRenamed={(next) => {
-              refresh();
-              open(next, true);
-            }}
-          />
+        ) : pane ? (
+          pane
         ) : filePath && /\.html?$/i.test(filePath) ? (
-          <HtmlPane
+          <HtmlPreview
             key={`${activeVaultId}:${filePath}`}
             vaultId={activeVaultId}
-            filePath={filePath}
+            path={filePath}
+            title={filePath}
           />
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
@@ -2127,7 +2588,7 @@ function NotesWorkspace({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="primary">Primary host</SelectItem>
+                    <SelectItem value="primary">Server machine</SelectItem>
                     {data.hosts.map((host) => (
                       <SelectItem key={host.id} value={host.id}>
                         {host.name} · {host.status}
@@ -2177,22 +2638,24 @@ export default definePluginApp((app) => {
     icon: "FileText",
     path: "docs",
     component: NotesPanel,
-    fixedTabs: [
-      {
-        panelId: "docs",
-        id: "navigation",
-        title: "Navigation",
-        icon: "ListView",
-        component: NotesNavigationPanel,
-        layout: "flush",
-      },
-    ],
   });
-  app.slots.threadPanelAction({
+  app.slots.experimental_tab({
+    context: { kind: "nav-panel", panelId: "docs" },
+    availability: "fixed",
+    id: "navigation",
+    title: "Navigation",
+    icon: "FileText",
+    component: NotesNavigationPanel,
+    layout: "flush",
+  });
+  app.slots.experimental_tab({
+    context: { kind: "thread" },
+    availability: "action",
     id: "document",
     title: "Document",
     icon: "FileText",
     component: DocumentPanel,
+    layout: "flush",
   });
   app.slots.fileOpener({
     id: "docs",

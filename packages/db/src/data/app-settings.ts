@@ -1,11 +1,20 @@
-import { eq, inArray } from "drizzle-orm";
 import {
+  GIT_PLUGIN_ID,
+  aiServiceSelectionSchema,
+  AI_TASKS,
   appKeybindingOverridesSchema,
   appSettingsSchema,
+  defaultAiServiceSelections,
   defaultAppSettings,
+  disabledProviderIdsSchema,
+  pluginPackageJsonSchema,
+  type AiServiceSelection,
+  type AiServiceSelections,
+  type AiTask,
   type AppKeybindingOverrides,
   type AppSettings,
 } from "@bb/domain";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
 import { appSettingsValues } from "../schema.js";
 
@@ -13,6 +22,11 @@ const appSettingsKeySchema = appSettingsSchema.keyof();
 const appSettingsKeys = appSettingsKeySchema.options;
 
 const KEYBINDING_OVERRIDES_KEY = "keybindingOverrides";
+const AI_SERVICE_SELECTIONS_KEY = "aiServiceSelections";
+const PLUGIN_SAFE_MODE_KEY = "pluginSafeMode";
+const DISABLED_PROVIDER_IDS_KEY = "disabledProviderIds";
+const LEGACY_DIAGNOSTIC_EVENTS_KEY = "showUnhandledProviderEvents";
+const INSTALL_TURN_NUMBER_KEY = "installTurnNumber";
 
 function parseStoredValue(text: string): unknown {
   try {
@@ -43,8 +57,23 @@ export function getAppSettings(db: DbConnection): AppSettings {
   const rows = db
     .select({ key: appSettingsValues.key, value: appSettingsValues.value })
     .from(appSettingsValues)
-    .where(inArray(appSettingsValues.key, [...appSettingsKeys]))
+    .where(
+      inArray(appSettingsValues.key, [
+        ...appSettingsKeys,
+        LEGACY_DIAGNOSTIC_EVENTS_KEY,
+      ]),
+    )
     .all();
+
+  const legacyDiagnosticEvents = rows.find(
+    (row) => row.key === LEGACY_DIAGNOSTIC_EVENTS_KEY,
+  );
+  if (legacyDiagnosticEvents) {
+    const parsed = appSettingsSchema.shape.showDiagnosticEvents.safeParse(
+      parseStoredValue(legacyDiagnosticEvents.value),
+    );
+    if (parsed.success) values.showDiagnosticEvents = parsed.data;
+  }
 
   for (const row of rows) {
     const key = appSettingsKeySchema.safeParse(row.key);
@@ -64,6 +93,49 @@ export function setAppSettings(db: DbConnection, settings: AppSettings): void {
     for (const key of appSettingsKeys) {
       writeValue(transaction, key, settings[key], updatedAt);
     }
+    transaction
+      .delete(appSettingsValues)
+      .where(eq(appSettingsValues.key, LEGACY_DIAGNOSTIC_EVENTS_KEY))
+      .run();
+  });
+}
+
+const RETIRED_KEYBOARD_COMMAND_IDS: ReadonlyMap<string, string> = new Map([
+  ["diff.toggle", `plugin:${GIT_PLUGIN_ID}/toggle-diff`],
+]);
+
+function overrideSlot(entry: unknown): string | null {
+  if (
+    typeof entry !== "object" ||
+    entry === null ||
+    !("command" in entry) ||
+    typeof entry.command !== "string"
+  ) {
+    return null;
+  }
+  const platform =
+    "platform" in entry && typeof entry.platform === "string"
+      ? entry.platform
+      : "all";
+  return `${entry.command}:${platform}`;
+}
+
+function migrateRetiredKeyboardCommands(stored: unknown): unknown {
+  if (!Array.isArray(stored)) return stored;
+  const explicitSlots = new Set(stored.map(overrideSlot));
+  return stored.flatMap((entry: unknown) => {
+    if (
+      typeof entry !== "object" ||
+      entry === null ||
+      !("command" in entry) ||
+      typeof entry.command !== "string"
+    ) {
+      return [entry];
+    }
+    const replacement = RETIRED_KEYBOARD_COMMAND_IDS.get(entry.command);
+    if (replacement === undefined) return [entry];
+    const migrated = { ...entry, command: replacement };
+    return explicitSlots.has(overrideSlot(migrated)) ? [] : [migrated];
   });
 }
 
@@ -79,7 +151,9 @@ export function getAppKeybindingOverrides(
   if (row === undefined) {
     return [];
   }
-  return appKeybindingOverridesSchema.parse(parseStoredValue(row.value));
+  return appKeybindingOverridesSchema.parse(
+    migrateRetiredKeyboardCommands(parseStoredValue(row.value)),
+  );
 }
 
 export function setAppKeybindingOverrides(
@@ -87,4 +161,141 @@ export function setAppKeybindingOverrides(
   overrides: AppKeybindingOverrides,
 ): void {
   writeValue(db, KEYBINDING_OVERRIDES_KEY, overrides, Date.now());
+}
+
+export function getAiServiceSelections(db: DbConnection): AiServiceSelections {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, AI_SERVICE_SELECTIONS_KEY))
+    .get();
+  const stored: unknown =
+    row === undefined ? undefined : parseStoredValue(row.value);
+  const selections: AiServiceSelections = { ...defaultAiServiceSelections };
+  if (typeof stored !== "object" || stored === null) return selections;
+  for (const task of AI_TASKS) {
+    const parsed = aiServiceSelectionSchema.safeParse(Reflect.get(stored, task));
+    if (parsed.success) selections[task] = parsed.data;
+  }
+  return selections;
+}
+
+export function setAiServiceSelection(
+  db: DbConnection,
+  task: AiTask,
+  selection: AiServiceSelection,
+): AiServiceSelections {
+  const selections = { ...getAiServiceSelections(db), [task]: selection };
+  writeValue(db, AI_SERVICE_SELECTIONS_KEY, selections, Date.now());
+  return selections;
+}
+
+export function getEarlyAdopter(db: DbConnection): boolean {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, appSettingsKeySchema.enum.earlyAdopter))
+    .get();
+  return row !== undefined && parseStoredValue(row.value) === true;
+}
+
+export function getPluginSafeMode(db: DbConnection): boolean {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, PLUGIN_SAFE_MODE_KEY))
+    .get();
+  return row !== undefined && parseStoredValue(row.value) === true;
+}
+
+export function setPluginSafeMode(db: DbConnection, enabled: boolean): void {
+  writeValue(db, PLUGIN_SAFE_MODE_KEY, enabled, Date.now());
+}
+
+export function getDisabledProviderIds(db: DbConnection): string[] {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, DISABLED_PROVIDER_IDS_KEY))
+    .get();
+  const parsed = disabledProviderIdsSchema.safeParse(
+    row === undefined ? [] : parseStoredValue(row.value),
+  );
+  return parsed.success ? parsed.data : [];
+}
+
+export function setDisabledProviderIds(
+  db: DbConnection,
+  providerIds: readonly string[],
+): void {
+  writeValue(db, DISABLED_PROVIDER_IDS_KEY, providerIds, Date.now());
+}
+
+const pluginProviderCatalogSchema =
+  pluginPackageJsonSchema.shape.bb.shape.experimental_providers
+    .unwrap()
+    .element.omit({ kind: true })
+    .array();
+
+function pluginProviderCatalogKey(pluginId: string): string {
+  return `pluginProviders:${pluginId}`;
+}
+
+export function getDisabledPluginProviderCatalog(
+  db: DbConnection,
+  pluginId: string,
+): Array<{ id: string; displayName: string }> {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, pluginProviderCatalogKey(pluginId)))
+    .get();
+  const parsed = pluginProviderCatalogSchema.safeParse(
+    row === undefined ? [] : parseStoredValue(row.value),
+  );
+  return parsed.success ? parsed.data : [];
+}
+
+export function setDisabledPluginProviderCatalog(
+  db: DbConnection,
+  pluginId: string,
+  providers: Array<{ id: string; displayName: string }>,
+): void {
+  writeValue(db, pluginProviderCatalogKey(pluginId), providers, Date.now());
+}
+
+export function forgetPluginProviders(
+  db: DbConnection,
+  pluginId: string,
+  providerIds: ReadonlySet<string>,
+): void {
+  const disabledProviderIds = getDisabledProviderIds(db);
+  db.transaction((transaction) => {
+    writeValue(
+      transaction,
+      DISABLED_PROVIDER_IDS_KEY,
+      disabledProviderIds.filter((id) => !providerIds.has(id)),
+      Date.now(),
+    );
+    transaction
+      .delete(appSettingsValues)
+      .where(eq(appSettingsValues.key, pluginProviderCatalogKey(pluginId)))
+      .run();
+  });
+}
+
+export function claimInstallTurnNumber(db: DbQueryConnection, now: number): number {
+  const row = db
+    .insert(appSettingsValues)
+    .values({ key: INSTALL_TURN_NUMBER_KEY, value: "1", updatedAt: now })
+    .onConflictDoUpdate({
+      target: appSettingsValues.key,
+      set: {
+        value: sql`CAST(CAST(${appSettingsValues.value} AS INTEGER) + 1 AS TEXT)`,
+        updatedAt: now,
+      },
+    })
+    .returning({ value: appSettingsValues.value })
+    .get();
+  return Number(row!.value);
 }
