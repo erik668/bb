@@ -1,4 +1,5 @@
 import type { PostHog } from "posthog-js";
+import { useEffect } from "react";
 import type { CtaPlacement } from "./site";
 
 type LandingEvent =
@@ -17,6 +18,17 @@ type LandingEvent =
   | {
       name: "landing_cli_command_copied";
       properties: { placement: CtaPlacement; command: string };
+    }
+  | {
+      name: "landing_send_to_computer_clicked";
+      properties: { placement: CtaPlacement };
+    }
+  | {
+      name: "guide_prompt_copied";
+      properties: {
+        guide: string;
+        placement: "hero" | "handoff" | "step";
+      };
     }
   | {
       name: "landing_email_subscribed";
@@ -64,6 +76,12 @@ export function initAnalytics(): void {
       client.capture(event.name, event.properties);
     }
   });
+}
+
+export function useInitAnalytics(): void {
+  useEffect(() => {
+    initAnalytics();
+  }, []);
 }
 
 export function trackLandingEvent(event: LandingEvent): void {

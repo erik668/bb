@@ -204,6 +204,32 @@ function useOpenTargetResolution(
   };
 }
 
+/** Returns a Finder reveal handler when the context is local and Finder is available. */
+export function getRevealInFinderHandler({
+  fileOpenTargets,
+  openContext,
+  openPathInFileTarget,
+}: {
+  fileOpenTargets: readonly WorkspaceOpenTarget[];
+  openContext: OpenInTargetContext | null;
+  openPathInFileTarget: UseLocalOpenTargetsResult["openPathInFileTarget"];
+}): ((path: string) => void) | undefined {
+  if (
+    openContext?.kind !== "local" ||
+    !fileOpenTargets.some((target) => target.id === "finder")
+  ) {
+    return undefined;
+  }
+  return (path) => {
+    void openPathInFileTarget({
+      lineNumber: null,
+      path,
+      rememberTarget: false,
+      targetId: "finder",
+    });
+  };
+}
+
 export function useLocalOpenTargets(
   args: UseLocalOpenTargetsArgs,
 ): UseLocalOpenTargetsResult {

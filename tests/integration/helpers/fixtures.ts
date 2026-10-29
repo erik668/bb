@@ -1,5 +1,8 @@
 import type { Environment, Thread } from "@bb/domain";
-import type { CreateThreadRequest } from "@bb/server-contract";
+import type {
+  CreateThreadRequest,
+  UnmanagedBranchSpec,
+} from "@bb/server-contract";
 import {
   createHostThread,
   createProject,
@@ -29,7 +32,8 @@ export interface ReadyHostThreadOptions {
   title?: string;
   workspace:
     | { type: "managed-worktree" }
-    | { path: string | null; type: "unmanaged" };
+    | { type: "personal" }
+    | { branch?: UnmanagedBranchSpec; path: string | null; type: "unmanaged" };
 }
 
 export interface ReadyReuseThreadOptions {
@@ -65,6 +69,22 @@ export async function createProjectFixture(
   return { id: project.id };
 }
 
+async function waitForReadyThread(
+  harness: IntegrationHarness,
+  thread: Thread,
+  timeoutMs: number,
+): Promise<{ environmentId: string; readyThread: Thread }> {
+  const readyThread =
+    thread.status === "idle"
+      ? thread
+      : await waitForThreadStatus(harness.api, thread.id, "idle", timeoutMs);
+  const environmentId = readyThread.environmentId ?? thread.environmentId;
+  if (!environmentId) {
+    throw new Error(`Thread ${thread.id} has no environment`);
+  }
+  return { environmentId, readyThread };
+}
+
 export async function createReadyHostThread(
   harness: IntegrationHarness,
   options: ReadyHostThreadOptions,
@@ -80,14 +100,11 @@ export async function createReadyHostThread(
     workspace: options.workspace,
   });
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const readyThread =
-    thread.status === "idle"
-      ? thread
-      : await waitForThreadStatus(harness.api, thread.id, "idle", timeoutMs);
-  const environmentId = readyThread.environmentId ?? thread.environmentId;
-  if (!environmentId) {
-    throw new Error(`Thread ${thread.id} has no environment`);
-  }
+  const { environmentId, readyThread } = await waitForReadyThread(
+    harness,
+    thread,
+    timeoutMs,
+  );
   const environment = await waitForEnvironmentStatus(
     harness.api,
     environmentId,
@@ -110,15 +127,11 @@ export async function createReadyReuseThread(
     providerId: options.providerId,
     title: options.title,
   });
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
-  const readyThread =
-    thread.status === "idle"
-      ? thread
-      : await waitForThreadStatus(harness.api, thread.id, "idle", timeoutMs);
-  const environmentId = readyThread.environmentId ?? thread.environmentId;
-  if (!environmentId) {
-    throw new Error(`Thread ${thread.id} has no environment`);
-  }
+  const { environmentId, readyThread } = await waitForReadyThread(
+    harness,
+    thread,
+    options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+  );
   const environment = await getEnvironment(harness.api, environmentId);
   if (environment.status !== "ready") {
     throw new Error(

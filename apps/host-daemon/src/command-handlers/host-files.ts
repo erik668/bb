@@ -1,6 +1,8 @@
+import { realpath as resolveSymlinksPreservingDrive } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { promisify } from "node:util";
 import type {
   DirectoryEntry,
   HostDaemonOnlineRpcResult,
@@ -16,15 +18,15 @@ import { userExecutableProcessOptions } from "../user-executable-env.js";
 import {
   finalizeListedFiles,
   finalizeListedPaths,
-  listFilesRecursively,
-  listPathsRecursively,
+  listWorkspacePaths,
 } from "./file-list.js";
 import {
   readFileForTransport,
+  readFileChunkForTransport,
   readFileFromGitRef,
-  readFileMetadataForTransport,
-  readRootRelativeFileForTransport,
+  type ReadFileContentForTransportResult,
 } from "./file-read.js";
+import { listFilesystemRoots } from "./filesystem-roots.js";
 import { resolveNonSymlinkDirectoryPath } from "./root-path.js";
 
 const SAFE_GIT_REF_REGEX = /^[A-Za-z0-9_./~^@-]+$/;
@@ -58,6 +60,7 @@ function assertAbsoluteHostDiskPathCommand(command: HostDiskPathCommand): void {
 
 export async function listHostFiles(
   command: CommandOf<"host.list_files">,
+  signal: AbortSignal,
 ): Promise<HostDaemonOnlineRpcResult<"host.list_files">> {
   if (!path.isAbsolute(command.path)) {
     throw new CommandDispatchError("invalid_path", "Path must be absolute");
@@ -66,12 +69,24 @@ export async function listHostFiles(
   try {
     const realRootPath = await resolveNonSymlinkDirectoryPath({
       description: "Path",
-      path: command.path,
+      path: command.followRootSymlink
+        ? await fs.realpath(command.path)
+        : command.path,
     });
 
-    return finalizeListedFiles({
-      filePaths: await listFilesRecursively(realRootPath, realRootPath),
+    return await finalizeListedFiles({
+      filePaths: (
+        await listWorkspacePaths({
+          root: realRootPath,
+          includeHidden: command.includeHidden,
+          excludeNames: command.excludeNames,
+          respectGitIgnore: command.respectGitIgnore,
+          includeFiles: true,
+          includeDirectories: false,
+        })
+      ).map((entry) => entry.path),
       limit: command.limit,
+      signal,
       ...(command.query ? { query: command.query } : {}),
     });
   } catch (error) {
@@ -84,6 +99,7 @@ export async function listHostFiles(
 
 export async function listHostPaths(
   command: CommandOf<"host.list_paths">,
+  signal: AbortSignal,
 ): Promise<HostDaemonOnlineRpcResult<"host.list_paths">> {
   if (!path.isAbsolute(command.path)) {
     throw new CommandDispatchError("invalid_path", "Path must be absolute");
@@ -95,16 +111,19 @@ export async function listHostPaths(
       path: command.path,
     });
 
-    return finalizeListedPaths({
-      paths: await listPathsRecursively({
-        dir: realRootPath,
+    return await finalizeListedPaths({
+      paths: await listWorkspacePaths({
         root: realRootPath,
         includeFiles: command.includeFiles,
         includeDirectories: command.includeDirectories,
+        includeHidden: command.includeHidden,
+        excludeNames: command.excludeNames,
+        respectGitIgnore: command.respectGitIgnore,
       }),
       limit: command.limit,
       includeFiles: command.includeFiles,
       includeDirectories: command.includeDirectories,
+      signal,
       ...(command.query ? { query: command.query } : {}),
     });
   } catch (error) {
@@ -116,6 +135,7 @@ export async function listHostPaths(
 }
 
 const DIRECTORY_BROWSE_SKIP_NAMES = new Set(["node_modules"]);
+const resolveBrowsedDirectory = promisify(resolveSymlinksPreservingDrive);
 
 function compareDirectoryEntries(a: DirectoryEntry, b: DirectoryEntry): number {
   if (a.kind !== b.kind) {
@@ -139,7 +159,7 @@ export async function browseHostDirectory(
       `Path "${requestedPath}" is not a directory`,
     );
   }
-  const directory = await fs.realpath(requestedPath);
+  const directory = await resolveBrowsedDirectory(requestedPath);
 
   const dirents = await fs.readdir(directory, { withFileTypes: true });
   const entries: DirectoryEntry[] = [];
@@ -173,6 +193,7 @@ export async function browseHostDirectory(
     directory,
     parent: parent === directory ? null : parent,
     entries,
+    roots: await listFilesystemRoots(),
   };
 }
 
@@ -185,6 +206,14 @@ export async function checkHostPathsExist(
   return { existence: Object.fromEntries(entries) };
 }
 
+export function readHostFile(
+  command: CommandOf<"host.read_file"> & { ifNoneMatch?: undefined },
+  options?: Pick<CommandDispatchOptions, "runtimeManager">,
+): Promise<ReadFileContentForTransportResult>;
+export function readHostFile(
+  command: CommandOf<"host.read_file">,
+  options?: Pick<CommandDispatchOptions, "runtimeManager">,
+): Promise<HostDaemonOnlineRpcResult<"host.read_file">>;
 export async function readHostFile(
   command: CommandOf<"host.read_file">,
   options?: Pick<CommandDispatchOptions, "runtimeManager">,
@@ -200,6 +229,9 @@ export async function readHostFile(
     }
     assertSafeGitRef(command.ref);
     return readFileFromGitRef({
+      ...(command.ifNoneMatch !== undefined
+        ? { ifNoneMatch: command.ifNoneMatch }
+        : {}),
       rootPath: command.rootPath,
       resolvedPath: command.path,
       resultPath: command.path,
@@ -211,30 +243,28 @@ export async function readHostFile(
   }
 
   return readFileForTransport({
+    ...(command.ifNoneMatch !== undefined
+      ? { ifNoneMatch: command.ifNoneMatch }
+      : {}),
+    followRootSymlink: command.followRootSymlink,
     resolvedPath: command.path,
     resultPath: command.path,
     ...(command.rootPath !== undefined ? { rootPath: command.rootPath } : {}),
   });
 }
 
-export async function readHostFileMetadata(
-  command: CommandOf<"host.file_metadata">,
-): Promise<HostDaemonOnlineRpcResult<"host.file_metadata">> {
+export async function readHostFileChunk(
+  command: CommandOf<"host.read_file_chunk">,
+): Promise<HostDaemonOnlineRpcResult<"host.read_file_chunk">> {
   assertAbsoluteHostDiskPathCommand(command);
-  return readFileMetadataForTransport({
+  return readFileChunkForTransport({
+    followRootSymlink: false,
     resolvedPath: command.path,
     resultPath: command.path,
-    ...(command.rootPath !== undefined ? { rootPath: command.rootPath } : {}),
-  });
-}
-
-export async function readHostRelativeFile(
-  command: CommandOf<"host.read_file_relative">,
-): Promise<HostDaemonOnlineRpcResult<"host.read_file_relative">> {
-  return readRootRelativeFileForTransport({
     rootPath: command.rootPath,
-    relativePath: command.path,
-    dotfiles: command.dotfiles,
+    offset: command.offset,
+    length: command.length,
+    revision: command.revision,
   });
 }
 

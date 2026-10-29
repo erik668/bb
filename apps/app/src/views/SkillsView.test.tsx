@@ -37,6 +37,7 @@ import {
   SkillsOverview,
 } from "../components/tools/SkillsCollection";
 import { SkillsLibrary } from "../components/tools/SkillsLibrary";
+import { focusWithKeyboard } from "@/test/keyboard-focus";
 
 afterEach(() => {
   focusManager.setFocused(undefined);
@@ -110,13 +111,10 @@ function renderLibrarySkillRoute() {
   vi.stubGlobal("fetch", fetchMock);
   const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
   renderDom(
-    <MemoryRouter initialEntries={["/extensions/skills/library/skill_missing"]}>
+    <MemoryRouter initialEntries={["/skills/library/skill_missing"]}>
       <QueryClientWrapper>
         <Routes>
-          <Route
-            path="/extensions/skills/library/:skillId"
-            element={<SkillsLibrary />}
-          />
+          <Route path="/skills/library/:skillId" element={<SkillsLibrary />} />
         </Routes>
       </QueryClientWrapper>
     </MemoryRouter>,
@@ -259,14 +257,12 @@ function renderRegistrySkillRoute() {
   const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
   return renderDom(
     <MemoryRouter
-      initialEntries={[
-        "/extensions/skills/registry/owner%2Frepo%2Fuseful-skill",
-      ]}
+      initialEntries={["/skills/registry/owner%2Frepo%2Fuseful-skill"]}
     >
       <QueryClientWrapper>
         <Routes>
           <Route
-            path="/extensions/skills/registry/:registrySkillId"
+            path="/skills/registry/:registrySkillId"
             element={<SkillsLibrary />}
           />
         </Routes>
@@ -285,7 +281,7 @@ function NavigateButton({ to, label }: { to: string; label: string }) {
 }
 
 describe("SkillsOverview", () => {
-  it("defaults to BB skills and places BB Official skills first", () => {
+  it("shows skills from every provider by default with BB Official skills first", () => {
     const markup = render({
       skills: [
         makeSkill({ name: "claude-skill", provider: "claude-code" }),
@@ -302,10 +298,9 @@ describe("SkillsOverview", () => {
         }),
       ],
     });
-    expect(markup).not.toContain("claude-skill");
+    expect(markup).toContain("claude-skill");
     expect(markup).toContain("Review the current diff.");
-    expect(markup).toContain('aria-label="Filters: Provider: bb"');
-    expect(markup).not.toContain("Provider: 1 selected");
+    expect(markup).toContain('aria-label="Filters"');
     expect(markup).toContain("Sort");
     expect(markup).not.toContain('role="tab"');
     expect(markup).toContain("BB Official");
@@ -313,6 +308,9 @@ describe("SkillsOverview", () => {
     expect(markup).not.toContain('aria-label="Open zz-official-skill"');
     expect(markup.indexOf("zz-official-skill")).toBeLessThan(
       markup.indexOf("aa-user-skill"),
+    );
+    expect(markup.indexOf("aa-user-skill")).toBeLessThan(
+      markup.indexOf("claude-skill"),
     );
   });
 
@@ -351,9 +349,9 @@ describe("SkillsOverview", () => {
     expect(screen.getByText("user-skill")).toBeTruthy();
     expect(screen.getByText("automations")).toBeTruthy();
     const typeTrigger = screen.getByRole("button", { name: /^Filters/ });
-    fireEvent.focus(typeTrigger);
+    focusWithKeyboard(typeTrigger);
     expect((await screen.findByRole("tooltip")).textContent).toBe(
-      "Provider: bb",
+      "Filters: All",
     );
     fireEvent.blur(typeTrigger);
     fireEvent.pointerDown(typeTrigger);
@@ -419,7 +417,6 @@ describe("SkillsOverview", () => {
 
     const trigger = screen.getByRole("button", { name: /^Filters/ });
     fireEvent.pointerDown(trigger);
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "bb" }));
     fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "User" }));
 
     expect(await screen.findByText("claude-authored")).toBeTruthy();
@@ -646,43 +643,10 @@ describe("SkillsOverview", () => {
       screen
         .getByRole("menuitemcheckbox", { name: "bb" })
         .getAttribute("aria-disabled"),
-    ).toBeNull();
+    ).toBe("true");
   });
 
-  it("labels the Provider filter and prefixes its logo tooltip", async () => {
-    renderDom(
-      <SkillsOverview
-        providerRoster={NO_PROVIDER_ROSTER}
-        skills={[
-          makeSkill({
-            name: "bb-skill",
-            provider: null,
-            scope: "bb-user",
-          }),
-          makeSkill({ name: "claude-skill", provider: "claude-code" }),
-        ]}
-        isLoading={false}
-        hasError={false}
-        onCreateSkill={() => {}}
-        onSelectSkill={() => {}}
-      />,
-    );
-
-    const providerTrigger = screen.getByRole("button", { name: /^Filters/ });
-    fireEvent.focus(providerTrigger);
-    expect((await screen.findByRole("tooltip")).textContent?.trim()).toBe(
-      "Provider: bb",
-    );
-    fireEvent.blur(providerTrigger);
-
-    fireEvent.pointerDown(providerTrigger);
-    expect(screen.getByText("Provider")).toBeTruthy();
-    expect(
-      screen.getByRole("menuitemcheckbox", { name: "bb" }).querySelector("img"),
-    ).not.toBeNull();
-  });
-
-  it("keeps the default BB filter selected when only provider skills exist", async () => {
+  it("shows provider skills when the library has no bb skills", async () => {
     renderDom(
       <SkillsOverview
         providerRoster={NO_PROVIDER_ROSTER}
@@ -700,19 +664,14 @@ describe("SkillsOverview", () => {
       />,
     );
 
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: /^Filters/ })).toBeTruthy();
-      expect(screen.queryByText("codex-skill")).toBeNull();
-    });
+    expect(screen.getByText("codex-skill")).toBeTruthy();
 
     fireEvent.pointerDown(screen.getByRole("button", { name: /^Filters/ }));
-    const bbFilter = screen.getByRole("menuitemcheckbox", { name: "bb" });
-    expect(bbFilter.getAttribute("aria-checked")).toBe("true");
-    expect(bbFilter.getAttribute("aria-disabled")).toBeNull();
-
-    fireEvent.click(bbFilter);
-
-    expect(await screen.findByText("codex-skill")).toBeTruthy();
+    expect(
+      screen
+        .getByRole("menuitemcheckbox", { name: "bb" })
+        .getAttribute("aria-checked"),
+    ).toBe("false");
   });
 
   it("preserves a user-selected provider filter across library refreshes", async () => {
@@ -737,7 +696,6 @@ describe("SkillsOverview", () => {
     );
 
     fireEvent.pointerDown(screen.getByRole("button", { name: /^Filters/ }));
-    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: "bb" }));
     fireEvent.click(
       screen.getByRole("menuitemcheckbox", { name: "Claude Code" }),
     );
@@ -821,20 +779,6 @@ describe("SkillsOverview", () => {
       vi.useRealTimers();
     }
   });
-
-  it("shows a loading skeleton", () => {
-    const markup = render({ skills: [], isLoading: true });
-    expect(markup).toContain('role="status"');
-    expect(markup).toContain("Loading skills");
-    expect(markup).not.toContain("Start from an example");
-  });
-
-  it("shows a recoverable error state with a retry", () => {
-    const markup = render({ skills: [], hasError: true, onRetry: () => {} });
-    expect(markup).toContain("load skills.");
-    expect(markup).toContain("Retry");
-    expect(markup).toContain('role="alert"');
-  });
 });
 
 describe("SkillsLibrary library detail routing", () => {
@@ -895,68 +839,68 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     ).toBeNull();
   });
 
-  it("opens on Browse before Library and can start a skill from the registry", async () => {
-    const registrySkill = makeRegistrySkill();
-    vi.spyOn(sdk.skills, "list").mockResolvedValue({ skills: [] });
-    const fetchMock = stubRegistryFetch(registrySkill, { list: true });
-    const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
-    renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills"]}>
-        <QueryClientWrapper>
-          <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
-            <Route path="/" element={<LocationStateProbe />} />
-          </Routes>
-          <NavigateButton
-            to="/extensions/skills?view=library"
-            label="go-library"
-          />
-          <NavigateButton to="/extensions/skills" label="go-browse" />
-        </QueryClientWrapper>
-      </MemoryRouter>,
-    );
-
-    let forkButton = await screen.findByRole("button", {
-      name: "Fork Useful skill into a new bb skill",
-    });
-    expect(screen.queryByRole("tab")).toBeNull();
-    const registryListRequests = () =>
-      fetchMock.mock.calls.filter(([input]) =>
-        requestPath(input).startsWith("/api/v1/skills-registry?"),
+  it.each(["/skills", "/skills/"])(
+    "opens %s on Browse before Library and can start a skill from the registry",
+    async (path) => {
+      const registrySkill = makeRegistrySkill();
+      vi.spyOn(sdk.skills, "list").mockResolvedValue({ skills: [] });
+      const fetchMock = stubRegistryFetch(registrySkill, { list: true });
+      const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
+      renderDom(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientWrapper>
+            <Routes>
+              <Route path="/skills" element={<SkillsLibrary />} />
+              <Route path="/" element={<LocationStateProbe />} />
+            </Routes>
+            <NavigateButton to={`${path}?view=library`} label="go-library" />
+            <NavigateButton to={path} label="go-browse" />
+          </QueryClientWrapper>
+        </MemoryRouter>,
       );
-    expect(registryListRequests()).toHaveLength(1);
 
-    focusManager.setFocused(false);
-    focusManager.setFocused(true);
-    await waitFor(() => expect(registryListRequests()).toHaveLength(1));
+      let forkButton = await screen.findByRole("button", {
+        name: "Fork Useful skill into a new bb skill",
+      });
+      expect(screen.queryByRole("tab")).toBeNull();
+      const registryListRequests = () =>
+        fetchMock.mock.calls.filter(([input]) =>
+          requestPath(input).startsWith("/api/v1/skills-registry?"),
+        );
+      expect(registryListRequests()).toHaveLength(1);
 
-    fireEvent.click(screen.getByText("go-library"));
-    expect(
-      await screen.findByRole("textbox", { name: "Search skills" }),
-    ).toBeTruthy();
-    fireEvent.click(screen.getByText("go-browse"));
-    forkButton = await screen.findByRole("button", {
-      name: "Fork Useful skill into a new bb skill",
-    });
-    expect(registryListRequests()).toHaveLength(1);
+      focusManager.setFocused(false);
+      focusManager.setFocused(true);
+      await waitFor(() => expect(registryListRequests()).toHaveLength(1));
 
-    fireEvent.click(forkButton);
+      fireEvent.click(screen.getByText("go-library"));
+      expect(
+        await screen.findByRole("textbox", { name: "Search skills" }),
+      ).toBeTruthy();
+      fireEvent.click(screen.getByText("go-browse"));
+      forkButton = await screen.findByRole("button", {
+        name: "Fork Useful skill into a new bb skill",
+      });
+      expect(registryListRequests()).toHaveLength(1);
 
-    const state = JSON.parse(
-      (await screen.findByTestId("location-state")).textContent ?? "null",
-    );
-    expect(state).toEqual({
-      focusPrompt: true,
-      initialPrompt: buildRegistrySkillReferencePrompt(registrySkill),
-      replaceInitialPrompt: true,
-      createDraftKind: "skill",
-    });
-    expect(
-      fetchMock.mock.calls.some(
-        ([input]) => requestPath(input) === "/api/v1/skills-registry/install",
-      ),
-    ).toBe(false);
-  });
+      fireEvent.click(forkButton);
+
+      const state = JSON.parse(
+        (await screen.findByTestId("location-state")).textContent ?? "null",
+      );
+      expect(state).toEqual({
+        focusPrompt: true,
+        initialPrompt: buildRegistrySkillReferencePrompt(registrySkill),
+        replaceInitialPrompt: true,
+        createDraftKind: "skill",
+      });
+      expect(
+        fetchMock.mock.calls.some(
+          ([input]) => requestPath(input) === "/api/v1/skills-registry/install",
+        ),
+      ).toBe(false);
+    },
+  );
 
   it("shows the lifetime install count, not the trending window the list ranks by", async () => {
     const trendingEntry = makeRegistrySkill({ installs: 42, summary: null });
@@ -967,10 +911,10 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     });
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,
@@ -986,10 +930,10 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     stubRegistryFetch(trendingEntry, { list: true, entryFails: true });
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,
@@ -1033,10 +977,10 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,
@@ -1093,10 +1037,10 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,
@@ -1169,10 +1113,10 @@ describe("SkillsLibrary registry detail lifecycle", () => {
     vi.stubGlobal("fetch", fetchMock);
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,
@@ -1212,21 +1156,6 @@ describe("SkillsLibrary registry detail lifecycle", () => {
 });
 
 describe("RegistrySkillsBrowsePage", () => {
-  it("uses the shared error state and retry action", () => {
-    const onRetry = vi.fn();
-    renderRegistryBrowse({
-      skills: [],
-      hasError: true,
-      onRetry,
-    });
-
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Couldn't load skills.sh.",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-    expect(onRetry).toHaveBeenCalledOnce();
-  });
-
   it("renders the authoritative page order, exposes social proof, and loads more on scroll", () => {
     const alpha = makeRegistrySkill({
       id: "owner/repo/alpha",
@@ -1292,10 +1221,10 @@ describe("RegistrySkillsBrowsePage", () => {
     });
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,
@@ -1331,10 +1260,10 @@ describe("SkillsLibrary registry browse paging", () => {
   function renderBrowse() {
     const { wrapper: QueryClientWrapper } = createQueryClientTestHarness();
     return renderDom(
-      <MemoryRouter initialEntries={["/extensions/skills?view=browse"]}>
+      <MemoryRouter initialEntries={["/skills?view=browse"]}>
         <QueryClientWrapper>
           <Routes>
-            <Route path="/extensions/skills" element={<SkillsLibrary />} />
+            <Route path="/skills" element={<SkillsLibrary />} />
           </Routes>
         </QueryClientWrapper>
       </MemoryRouter>,

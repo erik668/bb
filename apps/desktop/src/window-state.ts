@@ -1,10 +1,14 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  BB_DESKTOP_MIN_ZOOM_PERCENT,
+  BB_DESKTOP_MAX_ZOOM_PERCENT,
+} from "@bb/desktop-contract";
+import { mkdir, readFile, writeFile, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { screen } from "electron";
 import { z } from "zod";
 import {
   DEFAULT_WINDOW_STATE,
-  PRIMARY_WINDOW_STATE_KEY,
   type DisplayWorkArea,
   type PersistedWindowStateEntry,
   type PersistedWindowStateFile,
@@ -35,24 +39,28 @@ const persistedWindowStateEntrySchema = persistedWindowStateSchema.extend({
 
 const persistedWindowStateFileSchema = z.object({
   windows: z.array(persistedWindowStateEntrySchema),
+  zoomFactor: z
+    .number()
+    .min(BB_DESKTOP_MIN_ZOOM_PERCENT / 100)
+    .max(BB_DESKTOP_MAX_ZOOM_PERCENT / 100)
+    .catch(1),
 });
 
-interface ReadPersistedWindowStateArgs {
-  stateKey: WindowStateKey;
+const EMPTY_WINDOW_STATE_FILE: PersistedWindowStateFile = {
+  windows: [],
+  zoomFactor: 1,
+};
+
+interface ReadPersistedWindowStateFileArgs {
   userDataPath: string;
 }
 
-interface ReadPersistedWindowStateEntriesArgs {
-  userDataPath: string;
-}
-
-interface WritePersistedWindowStateEntriesArgs {
-  entries: PersistedWindowStateEntry[];
+interface WritePersistedWindowStateFileArgs {
+  file: PersistedWindowStateFile;
   userDataPath: string;
 }
 
 interface RestoreWindowStateArgs {
-  defaultState?: PersistedWindowState;
   displayWorkAreas: DisplayWorkArea[];
   persistedState: PersistedWindowState | null;
 }
@@ -63,36 +71,16 @@ interface HasVisibleAreaArgs {
 }
 
 export interface StatefulBrowserWindow {
-  getBounds(): WindowBounds;
+  getNormalBounds(): WindowBounds;
   isDestroyed(): boolean;
   isFullScreen(): boolean;
   isMaximized(): boolean;
 }
 
-export interface PersistBrowserWindowStateSnapshot {
-  browserWindow: StatefulBrowserWindow;
-  stateKey: WindowStateKey;
-}
-
-interface PersistBrowserWindowStatesArgs {
-  snapshots: PersistBrowserWindowStateSnapshot[];
-  userDataPath: string;
-}
-
 interface RestoreBrowserWindowStateArgs {
   displayWorkAreas: DisplayWorkArea[] | null;
   stateKey: WindowStateKey;
-  userDataPath: string;
-}
-
-interface RemovePersistedWindowStateArgs {
-  stateKey: WindowStateKey;
-  userDataPath: string;
-}
-
-interface RemovePersistedWindowStateEntryArgs {
-  entries: PersistedWindowStateEntry[];
-  stateKey: WindowStateKey;
+  windows: PersistedWindowStateEntry[];
 }
 
 interface CreatePersistedWindowStateEntryArgs {
@@ -114,23 +102,7 @@ function parsePersistedWindowStateFile(
 ): PersistedWindowStateFile | null {
   const parsedJson = JSON.parse(rawState);
   const parsedFile = persistedWindowStateFileSchema.safeParse(parsedJson);
-  if (parsedFile.success) {
-    return parsedFile.data;
-  }
-
-  const parsedLegacyState = persistedWindowStateSchema.safeParse(parsedJson);
-  if (!parsedLegacyState.success) {
-    return null;
-  }
-
-  return {
-    windows: [
-      {
-        ...parsedLegacyState.data,
-        stateKey: PRIMARY_WINDOW_STATE_KEY,
-      },
-    ],
-  };
+  return parsedFile.success ? parsedFile.data : null;
 }
 
 function intersectionArea(args: IntersectingAreaArgs): number {
@@ -149,7 +121,7 @@ function intersectionArea(args: IntersectingAreaArgs): number {
   return width * height;
 }
 
-export function hasVisibleArea(args: HasVisibleAreaArgs): boolean {
+function hasVisibleArea(args: HasVisibleAreaArgs): boolean {
   return args.displayWorkAreas.some(
     (workArea) =>
       intersectionArea({
@@ -162,9 +134,8 @@ export function hasVisibleArea(args: HasVisibleAreaArgs): boolean {
 export function restoreWindowState(
   args: RestoreWindowStateArgs,
 ): PersistedWindowState {
-  const defaultState = args.defaultState ?? DEFAULT_WINDOW_STATE;
   if (args.persistedState === null) {
-    return defaultState;
+    return DEFAULT_WINDOW_STATE;
   }
 
   if (
@@ -173,52 +144,39 @@ export function restoreWindowState(
       displayWorkAreas: args.displayWorkAreas,
     })
   ) {
-    return defaultState;
+    return DEFAULT_WINDOW_STATE;
   }
 
   return args.persistedState;
 }
 
-export async function readPersistedWindowState(
-  args: ReadPersistedWindowStateArgs,
-): Promise<PersistedWindowState | null> {
-  const entries = await readPersistedWindowStateEntries({
-    userDataPath: args.userDataPath,
-  });
-  const entry = entries.find(
-    (candidate) => candidate.stateKey === args.stateKey,
-  );
-  if (entry === undefined) {
-    return null;
-  }
-  return {
-    bounds: entry.bounds,
-    isFullScreen: entry.isFullScreen,
-    isMaximized: entry.isMaximized,
-  };
-}
-
-export async function readPersistedWindowStateEntries(
-  args: ReadPersistedWindowStateEntriesArgs,
-): Promise<PersistedWindowStateEntry[]> {
+export async function readPersistedWindowStateFile(
+  args: ReadPersistedWindowStateFileArgs,
+): Promise<PersistedWindowStateFile> {
   try {
     const rawState = await readFile(windowStatePath(args.userDataPath), "utf8");
-    const parsed = parsePersistedWindowStateFile(rawState);
-    return parsed === null ? [] : parsed.windows;
+    return parsePersistedWindowStateFile(rawState) ?? EMPTY_WINDOW_STATE_FILE;
   } catch {
-    return [];
+    return EMPTY_WINDOW_STATE_FILE;
   }
 }
 
-export async function writePersistedWindowStateEntries(
-  args: WritePersistedWindowStateEntriesArgs,
+export async function writePersistedWindowStateFile(
+  args: WritePersistedWindowStateFileArgs,
 ): Promise<void> {
   await mkdir(args.userDataPath, { recursive: true });
-  await writeFile(
-    windowStatePath(args.userDataPath),
-    `${JSON.stringify({ windows: args.entries }, null, 2)}\n`,
-    "utf8",
-  );
+  const path = windowStatePath(args.userDataPath);
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    await writeFile(
+      temporaryPath,
+      `${JSON.stringify(args.file, null, 2)}\n`,
+      "utf8",
+    );
+    await rename(temporaryPath, path);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 
 function getDisplayWorkAreas(): DisplayWorkArea[] {
@@ -228,7 +186,7 @@ function getDisplayWorkAreas(): DisplayWorkArea[] {
 function browserWindowBounds(
   browserWindow: StatefulBrowserWindow,
 ): WindowBounds {
-  const bounds = browserWindow.getBounds();
+  const bounds = browserWindow.getNormalBounds();
   return {
     height: bounds.height,
     width: bounds.width,
@@ -237,19 +195,26 @@ function browserWindowBounds(
   };
 }
 
-export async function restoreBrowserWindowState(
+export function restoreBrowserWindowState(
   args: RestoreBrowserWindowStateArgs,
-): Promise<PersistedWindowState> {
+): PersistedWindowState {
+  const entry = args.windows.find(
+    (candidate) => candidate.stateKey === args.stateKey,
+  );
   return restoreWindowState({
     displayWorkAreas: args.displayWorkAreas ?? getDisplayWorkAreas(),
-    persistedState: await readPersistedWindowState({
-      stateKey: args.stateKey,
-      userDataPath: args.userDataPath,
-    }),
+    persistedState:
+      entry === undefined
+        ? null
+        : {
+            bounds: entry.bounds,
+            isFullScreen: entry.isFullScreen,
+            isMaximized: entry.isMaximized,
+          },
   });
 }
 
-function createPersistedWindowStateEntry(
+export function createPersistedWindowStateEntry(
   args: CreatePersistedWindowStateEntryArgs,
 ): PersistedWindowStateEntry {
   return {
@@ -258,52 +223,4 @@ function createPersistedWindowStateEntry(
     isMaximized: args.browserWindow.isMaximized(),
     stateKey: args.stateKey,
   };
-}
-
-function removePersistedWindowStateEntry(
-  args: RemovePersistedWindowStateEntryArgs,
-): PersistedWindowStateEntry[] {
-  const entries: PersistedWindowStateEntry[] = [];
-  for (const entry of args.entries) {
-    if (entry.stateKey !== args.stateKey) {
-      entries.push(entry);
-    }
-  }
-  return entries;
-}
-
-export async function removePersistedWindowState(
-  args: RemovePersistedWindowStateArgs,
-): Promise<void> {
-  const entries = await readPersistedWindowStateEntries({
-    userDataPath: args.userDataPath,
-  });
-  await writePersistedWindowStateEntries({
-    entries: removePersistedWindowStateEntry({
-      entries,
-      stateKey: args.stateKey,
-    }),
-    userDataPath: args.userDataPath,
-  });
-}
-
-export async function persistBrowserWindowStates(
-  args: PersistBrowserWindowStatesArgs,
-): Promise<void> {
-  const entries: PersistedWindowStateEntry[] = [];
-  for (const snapshot of args.snapshots) {
-    if (!snapshot.browserWindow.isDestroyed()) {
-      entries.push(
-        createPersistedWindowStateEntry({
-          browserWindow: snapshot.browserWindow,
-          stateKey: snapshot.stateKey,
-        }),
-      );
-    }
-  }
-
-  await writePersistedWindowStateEntries({
-    entries,
-    userDataPath: args.userDataPath,
-  });
 }

@@ -1,7 +1,12 @@
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { notifyComposerSubmitted } from "@/lib/composer-submissions";
+import {
+  mutationOptions,
+  type QueryClient,
+  useMutation,
+  useQueryClient,
+} from "@tanstack/react-query";
 import type { ThreadQueuedMessage } from "@bb/domain";
 import type {
-  CreateQueuedMessageRequest,
   SendQueuedMessageMode,
   SendQueuedMessageResponse,
   ThreadQueuedMessageListResponse,
@@ -17,7 +22,6 @@ import type {
 } from "./mutation-request-types";
 import {
   applyCreateThreadResult,
-  applyQueuedMessageCreateResult,
   applyQueuedMessageDeleteResult,
   applyQueuedMessagesResult,
   applyQueuedMessageSendResult,
@@ -25,7 +29,6 @@ import {
   applySendThreadMessageSuccess,
   applyThreadGoalClearResult,
   applyThreadPlanCancellationResult,
-  beginCreateQueuedMessageTransaction,
   beginCreateThreadTransaction,
   beginRemoveQueuedMessageTransaction,
   beginReorderQueuedMessageTransaction,
@@ -35,14 +38,12 @@ import {
   beginStopThreadTransaction,
   beginUpdateQueuedMessageTransaction,
   prefetchThreadQueuedMessages,
-  rollbackCreateQueuedMessageTransaction,
   rollbackRemoveQueuedMessageTransaction,
   rollbackReorderQueuedMessageTransaction,
   rollbackSendThreadMessageTransaction,
   rollbackStopThreadTransaction,
   rollbackUpdateQueuedMessageTransaction,
   settleStopThreadTransaction,
-  type CreateQueuedMessageTransaction,
   type RemoveQueuedMessageTransaction,
   type ReorderQueuedMessageTransaction,
   type SendThreadMessageTransaction,
@@ -53,10 +54,6 @@ import {
   invalidateThreadBannerQueries,
   invalidateThreadHistoryRewriteQueries,
 } from "../cache-owners/mutation-cache-effects";
-
-interface CreateThreadQueuedMessageMutationRequest extends CreateQueuedMessageRequest {
-  id: string;
-}
 
 interface UpdateThreadQueuedMessageMutationRequest extends UpdateQueuedMessageRequest {
   id: string;
@@ -120,10 +117,8 @@ async function deleteThreadQueuedMessageOrConfirmMissing({
   }
 }
 
-export function useCreateThread() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+export function createThreadMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to create thread.",
       lifecycleOperation: "create_thread",
@@ -137,6 +132,10 @@ export function useCreateThread() {
       }),
     onMutate: async () => beginCreateThreadTransaction({ queryClient }),
     onSuccess: (thread, variables) => {
+      notifyComposerSubmitted({
+        kind: "new-thread",
+        projectId: variables.projectId,
+      });
       if (thread.queuedMessageCount > 0) {
         void prefetchThreadQueuedMessages({
           queryClient,
@@ -157,40 +156,20 @@ export function useCreateThread() {
   });
 }
 
-export function useSendThreadMessage() {
+export function useCreateThread() {
   const queryClient = useQueryClient();
+  return useMutation(createThreadMutationOptions(queryClient));
+}
 
-  return useMutation({
+export function sendThreadMessageMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to send message.",
       lifecycleOperation: "send_message",
       showErrorToast: false,
     },
-    mutationFn: async ({
-      id,
-      input,
-      model,
-      serviceTier,
-      reasoningLevel,
-      permissionMode,
-      mode,
-      sendAt,
-      senderThreadId,
-      executionInputSources,
-    }: SendThreadMessageMutationRequest) => {
-      return await sdk.threads.send({
-        threadId: id,
-        input,
-        model,
-        serviceTier,
-        reasoningLevel,
-        permissionMode,
-        ...(sendAt === undefined ? {} : { sendAt }),
-        executionInputSources,
-        mode,
-        ...(senderThreadId !== undefined ? { senderThreadId } : {}),
-      });
-    },
+    mutationFn: async ({ id, ...request }: SendThreadMessageMutationRequest) =>
+      await sdk.threads.send({ threadId: id, ...request }),
     onMutate: async (variables): Promise<SendThreadMessageTransaction> =>
       beginSendThreadMessageTransaction({
         queryClient,
@@ -204,6 +183,7 @@ export function useSendThreadMessage() {
       });
     },
     onSuccess: (data, variables, context) => {
+      notifyComposerSubmitted({ kind: "thread", threadId: variables.id });
       applySendThreadMessageSuccess({
         queryClient,
         realtimeConnected: wsManager.getConnectionState() === "connected",
@@ -215,9 +195,13 @@ export function useSendThreadMessage() {
   });
 }
 
-export function useEditThreadMessage() {
+export function useSendThreadMessage() {
   const queryClient = useQueryClient();
-  return useMutation({
+  return useMutation(sendThreadMessageMutationOptions(queryClient));
+}
+
+export function editThreadMessageMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to edit the message.",
       lifecycleOperation: "edit_message",
@@ -237,56 +221,9 @@ export function useEditThreadMessage() {
   });
 }
 
-export function useCreateThreadQueuedMessage() {
+export function useEditThreadMessage() {
   const queryClient = useQueryClient();
-
-  return useMutation({
-    meta: {
-      errorMessage: "Failed to queue message.",
-      lifecycleOperation: "queue_message",
-      showErrorToast: false,
-    },
-    mutationFn: ({
-      id,
-      input,
-      model,
-      serviceTier,
-      reasoningLevel,
-      permissionMode,
-      senderThreadId,
-      executionInputSources,
-    }: CreateThreadQueuedMessageMutationRequest): Promise<ThreadQueuedMessage> =>
-      sdk.threads.queuedMessages.create({
-        threadId: id,
-        input,
-        model,
-        serviceTier,
-        reasoningLevel,
-        permissionMode,
-        executionInputSources,
-        ...(senderThreadId !== undefined ? { senderThreadId } : {}),
-      }),
-    onMutate: async (variables): Promise<CreateQueuedMessageTransaction> =>
-      beginCreateQueuedMessageTransaction({
-        queryClient,
-        request: variables,
-      }),
-    onError: (_error, variables, context) => {
-      rollbackCreateQueuedMessageTransaction({
-        queryClient,
-        request: variables,
-        transaction: context,
-      });
-    },
-    onSuccess: (queuedMessage, variables, context) => {
-      applyQueuedMessageCreateResult({
-        queryClient,
-        queuedMessage,
-        threadId: variables.id,
-        transaction: context,
-      });
-    },
-  });
+  return useMutation(editThreadMessageMutationOptions(queryClient));
 }
 
 export function useUpdateThreadQueuedMessage() {
@@ -332,10 +269,10 @@ export function useUpdateThreadQueuedMessage() {
   });
 }
 
-export function useSendThreadQueuedMessage() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+export function sendThreadQueuedMessageMutationOptions(
+  queryClient: QueryClient,
+) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to send queued message.",
       lifecycleOperation: "send_queued_message",
@@ -368,6 +305,11 @@ export function useSendThreadQueuedMessage() {
       });
     },
   });
+}
+
+export function useSendThreadQueuedMessage() {
+  const queryClient = useQueryClient();
+  return useMutation(sendThreadQueuedMessageMutationOptions(queryClient));
 }
 
 export function useReorderThreadQueuedMessage() {
@@ -415,10 +357,10 @@ export function useReorderThreadQueuedMessage() {
   });
 }
 
-export function useSetThreadQueuedMessageGroupBoundary() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+export function setThreadQueuedMessageGroupBoundaryMutationOptions(
+  queryClient: QueryClient,
+) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to group queued messages.",
       lifecycleOperation: "set_queued_message_group_boundary",
@@ -461,10 +403,17 @@ export function useSetThreadQueuedMessageGroupBoundary() {
   });
 }
 
-export function useDeleteThreadQueuedMessage() {
+export function useSetThreadQueuedMessageGroupBoundary() {
   const queryClient = useQueryClient();
+  return useMutation(
+    setThreadQueuedMessageGroupBoundaryMutationOptions(queryClient),
+  );
+}
 
-  return useMutation({
+export function deleteThreadQueuedMessageMutationOptions(
+  queryClient: QueryClient,
+) {
+  return mutationOptions({
     meta: {
       errorMessage: "Failed to delete queued message.",
       showErrorToast: false,
@@ -491,6 +440,11 @@ export function useDeleteThreadQueuedMessage() {
   });
 }
 
+export function useDeleteThreadQueuedMessage() {
+  const queryClient = useQueryClient();
+  return useMutation(deleteThreadQueuedMessageMutationOptions(queryClient));
+}
+
 export function useStopThread() {
   const queryClient = useQueryClient();
 
@@ -515,16 +469,14 @@ export function useStopThread() {
         transaction: context,
       });
     },
-    onSettled: (_data, _error, threadId) => {
-      settleStopThreadTransaction({ queryClient, threadId });
+    onSettled: (_data, _error, _threadId, context) => {
+      settleStopThreadTransaction({ queryClient, transaction: context });
     },
   });
 }
 
-export function useCancelThreadPlan() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
+export function cancelThreadPlanMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: { errorMessage: "Failed to exit Plan mode." },
     mutationFn: async (threadId: string) => {
       await sdk.threads.cancelPlan({ threadId });
@@ -536,10 +488,13 @@ export function useCancelThreadPlan() {
   });
 }
 
-export function useClearThreadGoal() {
+export function useCancelThreadPlan() {
   const queryClient = useQueryClient();
+  return useMutation(cancelThreadPlanMutationOptions(queryClient));
+}
 
-  return useMutation({
+export function clearThreadGoalMutationOptions(queryClient: QueryClient) {
+  return mutationOptions({
     meta: { errorMessage: "Failed to clear Goal." },
     mutationFn: async (threadId: string) => {
       await sdk.threads.clearGoal({ threadId });
@@ -549,4 +504,9 @@ export function useClearThreadGoal() {
       invalidateThreadBannerQueries({ queryClient, threadId });
     },
   });
+}
+
+export function useClearThreadGoal() {
+  const queryClient = useQueryClient();
+  return useMutation(clearThreadGoalMutationOptions(queryClient));
 }

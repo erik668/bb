@@ -3,15 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import {
-  createConnection,
   createProject,
   getLatestThreadSequence,
   getThread,
-  migrate,
   noopNotifier,
   threads,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { DbConnection } from "@bb/db";
 import { defaultFeatureFlags } from "@bb/domain";
 import type { Thread } from "@bb/domain";
@@ -28,11 +27,13 @@ import {
 import type { ThreadTimelinePageRequest } from "../../src/services/threads/timeline-pagination.js";
 import { resolveProviderPlanCommand } from "../../src/services/providers/provider-plan-command.js";
 import type { ProviderRegistryService } from "../../src/services/providers/provider-registry.js";
-import { previewTimelineResponseOutputs } from "../../src/services/threads/timeline-output-preview.js";
+import { clearStoredEventDecodeCache } from "../../src/services/threads/stored-event-decode-cache.js";
+import { clearTimelineSelectionMemo } from "../../src/services/threads/timeline-selection-memo.js";
 import {
   DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-  truncateTimelineResponseOutputs,
-} from "../../src/services/threads/timeline-output-truncation.js";
+  shortenTimelineResponseOutputs,
+} from "../../src/services/threads/timeline-output-shortening.js";
+import { timelineWindowTag } from "../../src/services/threads/timeline-window-tag.js";
 
 export const SNAPSHOT_MODE_ENV = "BB_PROVIDER_CORPUS_SNAPSHOT";
 
@@ -75,12 +76,11 @@ export interface LoadedCorpusThread {
 
 export function loadCorpusThreadIntoDb(
   corpusThread: CorpusThread,
+  connection?: DbConnection,
 ): LoadedCorpusThread {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = connection ?? createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "provider-corpus-host",
-    type: "persistent",
   });
   const { project } = createProject(db, noopNotifier, {
     name: "provider-corpus",
@@ -152,6 +152,9 @@ export interface BuiltTimelinePage {
 
 export interface BuildRouteTimelinePageArgs {
   db: DbConnection;
+  eventBudget?: number;
+  includeDiagnosticOperations?: boolean;
+  maxSeq?: number;
   page: ThreadTimelinePageRequest;
   registry: ProviderRegistryService;
   thread: Thread;
@@ -162,18 +165,22 @@ export function buildRouteTimelinePage(
   args: BuildRouteTimelinePageArgs,
 ): BuiltTimelinePage {
   const includeNestedRows = args.variant === "nested";
-  const maxSeq = getLatestThreadSequence(args.db, {
-    threadId: args.thread.id,
-  });
   const { profile, response } = buildThreadTimelineWithProfile(
     args.db,
     args.thread,
     {
-      eventBudget: defaultFeatureFlags.timelineWindowEventBudget,
-      includeProviderUnhandledOperations: true,
+      completedTurnDisplay: "collapse",
+      eventBudget:
+        args.eventBudget ?? defaultFeatureFlags.timelineWindowEventBudget,
+      includeClearedContextHistory: false,
+      includeDiagnosticOperations: args.includeDiagnosticOperations ?? true,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows,
       maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
-      maxSeq,
+      maxSeq:
+        args.maxSeq ??
+        getLatestThreadSequence(args.db, { threadId: args.thread.id }),
       page: args.page,
       providerDisplayName: args.registry.get(args.thread.providerId)?.info
         .displayName,
@@ -184,16 +191,27 @@ export function buildRouteTimelinePage(
       summaryOnly: false,
     },
   );
-  const truncated = truncateTimelineResponseOutputs(
-    response,
-    DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+  const window = shortenTimelineResponseOutputs(response, {
+    maxInlineOutputChars: DEFAULT_MAX_INLINE_OUTPUT_CHARS,
+    preview: !includeNestedRows,
+  });
+  return { profile, response: { ...window, tag: timelineWindowTag(window) } };
+}
+
+export function clearCrossBuildTimelineCaches(db: DbConnection): void {
+  clearStoredEventDecodeCache(db);
+  clearTimelineSelectionMemo(db);
+}
+
+export function selectionWasReused(
+  profile: ThreadTimelineBuildProfile,
+): boolean {
+  const stages = new Set(profile.stageTimings.map((timing) => timing.stage));
+  return (
+    stages.has("selection-memo-lookup") &&
+    !stages.has("group-context-query") &&
+    !stages.has("ordering-context-query")
   );
-  return {
-    profile,
-    response: includeNestedRows
-      ? truncated
-      : previewTimelineResponseOutputs(truncated),
-  };
 }
 
 export function latestTimelinePage(): ThreadTimelinePageRequest {
@@ -212,8 +230,8 @@ export function buildAllRouteTimelinePages(
   for (;;) {
     const built = buildRouteTimelinePage({ ...args, page });
     pages.push(built);
-    const { hasOlderRows, olderCursor } = built.response.timelinePage;
-    if (!hasOlderRows || olderCursor === null) {
+    const { olderCursor } = built.response.timelinePage;
+    if (olderCursor === null) {
       return pages;
     }
     const cursorKey = `${olderCursor.anchorId}\0${olderCursor.anchorSeq}`;

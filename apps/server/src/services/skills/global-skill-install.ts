@@ -11,7 +11,10 @@ import type {
 import { COMMAND_TIMEOUT_MS } from "../../constants.js";
 import { ApiError } from "../../errors.js";
 import type { AppDeps } from "../../types.js";
-import { callHostOnlineRpc } from "../hosts/online-rpc.js";
+import {
+  callHostOnlineRpc,
+  callHostOnlineRpcForWork,
+} from "../hosts/online-rpc.js";
 import { resolveServerOwnedSkillCatalogEntries } from "./injected-skills.js";
 
 const GLOBAL_CLI_SKILL_NAMES: readonly string[] = ["bb-cli"];
@@ -21,7 +24,9 @@ const STATUS_TIMEOUT_MS = 5_000;
 export function listInstallableMachineIds(
   deps: GlobalSkillInstallDeps,
 ): string[] {
-  return listHosts(deps.db).map((host) => host.id);
+  return listHosts(deps.db)
+    .filter((host) => host.type !== "ephemeral")
+    .map((host) => host.id);
 }
 
 type InstallGlobalCliSkillsResult = SystemInstallCliSkillsResponse;
@@ -45,15 +50,17 @@ interface InstallGlobalCliSkillsArgs {
   hostIds: readonly string[];
 }
 
-function resolveGlobalCliSkills(
+async function resolveGlobalCliSkills(
   deps: GlobalSkillInstallDeps,
-): HostInstallGlobalSkill[] {
-  return resolveServerOwnedSkillCatalogEntries({
-    builtinSkillsRootPath: deps.config.builtinSkillsRootPath,
-    dataDir: deps.config.dataDir,
-    logger: deps.logger,
-    skillTreeRegistry: deps.skillTreeRegistry,
-  }).flatMap(({ provenance, runtimeSource }) =>
+): Promise<HostInstallGlobalSkill[]> {
+  return (
+    await resolveServerOwnedSkillCatalogEntries({
+      builtinSkillsRootPath: deps.config.builtinSkillsRootPath,
+      dataDir: deps.config.dataDir,
+      logger: deps.logger,
+      skillTreeRegistry: deps.skillTreeRegistry,
+    })
+  ).flatMap(({ provenance, runtimeSource }) =>
     provenance.kind === "builtin" &&
     runtimeSource.kind === "tree" &&
     GLOBAL_CLI_SKILL_NAMES.includes(runtimeSource.name)
@@ -93,7 +100,7 @@ export async function readGlobalCliSkillStatus(
   args: InstallGlobalCliSkillsArgs,
 ): Promise<SystemCliSkillsStatusResponse> {
   const hosts = listNonDestroyedHostsByIds(deps.db, args.hostIds);
-  const skills = resolveGlobalCliSkills(deps);
+  const skills = await resolveGlobalCliSkills(deps);
   const machines = await Promise.all(
     hosts.map(async (host) => {
       const base = { hostId: host.id, hostName: host.name };
@@ -149,7 +156,7 @@ export async function installGlobalCliSkills(
       `Machine ${missingHostId} was not found`,
     );
   }
-  const skills = resolveGlobalCliSkills(deps);
+  const skills = await resolveGlobalCliSkills(deps);
   if (skills.length === 0) {
     throw new ApiError(
       500,
@@ -161,7 +168,7 @@ export async function installGlobalCliSkills(
   const results = await Promise.all(
     hosts.map(async (host) => {
       try {
-        const result = await callHostOnlineRpc(deps, {
+        const result = await callHostOnlineRpcForWork(deps, {
           hostId: host.id,
           timeoutMs: COMMAND_TIMEOUT_MS,
           command: { type: "host.install_global_skills", skills },

@@ -1,5 +1,5 @@
 import type { ThreadEvent } from "@bb/domain";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createBridgeProtocolAdapter } from "./bridge-protocol-adapter.js";
 import type { ProviderExecutionContext } from "./provider-adapter.js";
 
@@ -10,7 +10,6 @@ function makeAdapter(staticProviderOptions?: Record<string, unknown>) {
       supportsThreadArchive: false,
       supportsThreadRename: false,
       supportsServiceTier: false,
-      supportsNativeUserQuestion: false,
       fork: "checkpoint",
       permissionModes: ["full"],
     },
@@ -162,6 +161,7 @@ describe("handshake gating", () => {
     expect(
       adapter.buildCommandPlan({
         type: "provider/installation/status",
+        checkUpdates: false,
         cwd: "/workspace",
         requirement: "thread_rewind",
       }),
@@ -172,6 +172,7 @@ describe("handshake gating", () => {
         providerId: "fake-bridge",
         cwd: "/workspace",
         requirement: "thread_rewind",
+        checkUpdates: false,
       },
     });
     expect(
@@ -293,7 +294,20 @@ describe("options mapping", () => {
     const options = (plan as { params: { options: Record<string, unknown> } })
       .params.options;
     expect(options).not.toHaveProperty("memoryEnabled");
-    expect(options).not.toHaveProperty("skillRoots");
+  });
+});
+
+describe("commands/list", () => {
+  it("is a noop until the handshake declares commands.list", () => {
+    const adapter = makeAdapter();
+    const command = { type: "commands/list" as const, cwd: "/workspace" };
+    expect(adapter.buildCommandPlan(command)).toMatchObject({ kind: "noop" });
+    completeHandshake(adapter, { commands: { list: true } });
+    expect(adapter.buildCommandPlan(command)).toMatchObject({
+      kind: "request",
+      method: "commands/list",
+      params: { cwd: "/workspace" },
+    });
   });
 });
 
@@ -345,24 +359,6 @@ describe("skills/configure", () => {
 });
 
 describe("translateEvent", () => {
-  const validEvent: ThreadEvent = {
-    type: "turn/started",
-    threadId: "thr_1",
-    providerThreadId: "p_1",
-    scope: { kind: "turn", turnId: "bturn_1" },
-  };
-
-  it("ignores the retired thread/event notification", () => {
-    const adapter = makeAdapter();
-    expect(
-      adapter.translateEvent({
-        jsonrpc: "2.0",
-        method: "thread/event",
-        params: { threadId: "thr_1", event: validEvent },
-      }),
-    ).toStrictEqual([]);
-  });
-
   it("ignores an unknown bridge notification without emitting a timeline event", () => {
     const adapter = makeAdapter();
     expect(
@@ -603,7 +599,7 @@ describe("provider-native id translation", () => {
     });
   });
 
-  it("maps providerNativeIds interaction requests onto assembler-minted ids", () => {
+  it("maps interaction request ids onto assembler-minted ids", () => {
     const adapter = makeAdapter();
     const events = feedDeltas(adapter, "t_1", [
       { kind: "turn.open", providerTurnId: "codex-turn-1" },
@@ -625,7 +621,6 @@ describe("provider-native id translation", () => {
       providerThreadId: "p_1",
       threadId: "t_1",
       turnId: "codex-turn-1",
-      providerNativeIds: true,
       payload: {
         kind: "approval",
         subject: {
@@ -650,18 +645,25 @@ describe("provider-native id translation", () => {
       payload: { subject: { itemId: bbItemId } },
     });
 
-    const unmarked = adapter.decodeInteractiveRequest?.({
+    const unknown = adapter.decodeInteractiveRequest?.({
       id: 12,
       method: "interaction/request",
-      params: { ...params, providerNativeIds: undefined },
+      params: {
+        ...params,
+        turnId: "unmapped-turn",
+        payload: {
+          ...params.payload,
+          subject: { ...params.payload.subject, itemId: "acp-permission" },
+        },
+      },
     });
-    expect(unmarked).toMatchObject({
-      turnId: "codex-turn-1",
-      payload: { subject: { itemId: "cmd-1" } },
+    expect(unknown).toMatchObject({
+      turnId: "unmapped-turn",
+      payload: { subject: { itemId: "acp-permission" } },
     });
   });
 
-  it("maps providerNativeIds tool-call requests onto assembler-minted ids", () => {
+  it("maps tool-call request ids onto assembler-minted ids", () => {
     const adapter = makeAdapter();
     const events = feedDeltas(adapter, "t_1", [
       { kind: "turn.open", providerTurnId: "codex-turn-1" },
@@ -689,9 +691,48 @@ describe("provider-native id translation", () => {
         callId: "dyn-1",
         tool: "bb_test_ping",
         arguments: {},
-        providerNativeIds: true,
       },
     });
     expect(decoded).toMatchObject({ turnId: bbTurnId, callId: bbItemId });
+  });
+});
+
+describe("deferred text flush", () => {
+  it("hands a quiet stream's buffered text to the deferred listener", () => {
+    vi.useFakeTimers();
+    try {
+      const adapter = makeAdapter();
+      const deferred: Array<[string, ThreadEvent[]]> = [];
+      adapter.onDeferredEvents((threadId, events) => {
+        deferred.push([threadId, events]);
+      });
+      const opened = feedDeltas(adapter, "t_1", [
+        { kind: "turn.open" },
+        {
+          kind: "item.textDelta",
+          key: { channel: "assistant" },
+          channel: "agentMessage",
+          text: "Hi",
+        },
+      ]);
+      expect(opened.map((event) => event.type)).toEqual([
+        "turn/started",
+        "item/started",
+      ]);
+      vi.advanceTimersByTime(60);
+      expect(deferred).toEqual([
+        [
+          "t_1",
+          [
+            expect.objectContaining({
+              type: "item/agentMessage/delta",
+              delta: "Hi",
+            }),
+          ],
+        ],
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

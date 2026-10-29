@@ -2,9 +2,13 @@
 import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadPluginApp, renderSlot } from "@get-bb/plugin-sdk/testing/app";
-import { COMPACT_VIEWPORT_QUERY } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { COMPACT_VIEWPORT_QUERY } from "@/components/ui/hooks/use-compact-viewport";
 import type { Task } from "../../shared/contract.js";
-import { makeTask } from "../../test-fixtures.js";
+import {
+  makeTask,
+  labelsByProject,
+  matchingTasks,
+} from "../../test-fixtures.js";
 
 window.matchMedia = (query: string) => ({
   matches: query === COMPACT_VIEWPORT_QUERY,
@@ -81,7 +85,9 @@ function renderList() {
         listPresets: () => ({ presets: [] }),
         sidebarSummary: () => ({ projects: [] }),
         listLabels: () => ({ labels: [] }),
-        listTasks: () => ({ tasks }),
+        labelsByProject: labelsByProject([]),
+        listAllTasks: (raw: unknown) => ({ tasks: matchingTasks(tasks, raw) }),
+        listTaskCardMeta: () => ({ cards: [] }),
         listTaskThreads: () => ({ taskThreads: [] }),
         listComments: () => ({ comments: [] }),
         listAttachments: () => ({ attachments: [] }),

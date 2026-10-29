@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnHostProcess as spawn, hostToolchain } from "@bb/process-utils";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -6,6 +6,7 @@ import path from "node:path";
 import { resolveDataDirSkillsRootPath } from "@bb/config/skill-storage-paths";
 import matter from "gray-matter";
 import { ApiError } from "../../errors.js";
+import { REGISTRY_SKILL_NAME_PATTERN } from "./registry-parse.js";
 import {
   REGISTRY_SKILL_PROVENANCE_FILE_NAME,
   writeRegistrySkillProvenance,
@@ -16,11 +17,8 @@ const SKILLS_INSTALL_TIMEOUT_MS = 120_000;
 const MAX_INSTALL_OUTPUT_BYTES = 1_000_000;
 const MAX_SKILL_FILES = 1_000;
 const MAX_SKILL_DIRECTORIES = 1_000;
-const MAX_SKILL_BYTES = 10 * 1024 * 1024;
 const MAX_SKILL_DEPTH = 24;
 const REGISTRY_SKILLS_CLI_VERSION = "1.5.19";
-const REGISTRY_SKILL_NAME_PATTERN =
-  /^(?!.*--)[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 
 interface InstallCommandResult {
   ok: boolean;
@@ -57,16 +55,18 @@ function registrySkillsCliInvocation(args: {
           "USERPROFILE",
           "APPDATA",
           "LOCALAPPDATA",
+          "ELECTRON_RUN_AS_NODE",
         ]
-      : ["PATH", "HOME", "TMPDIR"];
+      : ["PATH", "HOME", "TMPDIR", "ELECTRON_RUN_AS_NODE"];
   const env: NodeJS.ProcessEnv = { DISABLE_TELEMETRY: "1" };
   for (const key of allowedKeys) {
     const value = process.env[key];
     if (value !== undefined) env[key] = value;
   }
   return {
-    command: process.platform === "win32" ? "npx.cmd" : "npx",
+    command: process.execPath,
     args: [
+      hostToolchain.bundledNpmCli("npx"),
       "-y",
       `skills@${REGISTRY_SKILLS_CLI_VERSION}`,
       "add",
@@ -199,7 +199,6 @@ async function collectBoundedSkillTree(
   const entries: SkillTreeEntry[] = [];
   let fileCount = 0;
   let directoryCount = 0;
-  let totalBytes = 0;
 
   async function walk(currentPath: string, depth: number): Promise<void> {
     if (depth > MAX_SKILL_DEPTH) {
@@ -227,8 +226,7 @@ async function collectBoundedSkillTree(
         throw new Error("Skill tree contains a special file");
       }
       fileCount += 1;
-      totalBytes += stat.size;
-      if (fileCount > MAX_SKILL_FILES || totalBytes > MAX_SKILL_BYTES) {
+      if (fileCount > MAX_SKILL_FILES) {
         throw new Error("Skill tree exceeds installation limits");
       }
       entries.push({

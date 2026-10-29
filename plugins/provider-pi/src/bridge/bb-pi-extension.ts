@@ -2,7 +2,13 @@ export const BB_PI_EXTENSION_SOURCE = String.raw`
 import { readFileSync, renameSync, writeSync } from "node:fs";
 import { Socket } from "node:net";
 import { StringDecoder } from "node:string_decoder";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
+import * as PiRuntime from "@earendil-works/pi-coding-agent";
+const { SessionManager } = PiRuntime;
+
+function supportsAgentSettlement(version) {
+  const match = typeof version === "string" && /^(\d+)\.(\d+)\.(\d+)(?:\+[^\s]+)?$/.exec(version);
+  return !!match && (Number(match[1]) >= 1 || Number(match[2]) >= 84);
+}
 import { Type } from "typebox";
 
 const CHILD_TO_BRIDGE_FD = 3;
@@ -171,13 +177,10 @@ export default function bbExtension(pi) {
   const pendingToolCalls = new Map();
   let nextId = 0;
   let sessionContext = null;
+  let runId = 0;
+  let lastSettlement = null;
 
-  // Non-blocking: libuv polls the pipe, so pi's process.exit is never held
-  // up by an outstanding read; EOF (the bridge ended its writer) closes it.
-  const bridgeIn = new Socket({ fd: BRIDGE_TO_CHILD_FD, readable: true, writable: false });
-  bridgeIn.on("error", () => undefined);
-  bridgeIn.unref();
-  readLines(bridgeIn, (line) => {
+  const onBridgeLine = (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
     let message;
@@ -200,7 +203,42 @@ export default function bbExtension(pi) {
     if (message.kind === "request") {
       void handleBridgeRequest(message);
     }
-  });
+  };
+  if (typeof Bun !== "undefined") {
+    // pi ships as a Bun-compiled binary, and Bun's net.Socket cannot attach
+    // to a borrowed stdio fd (the handle stays null and nothing is ever
+    // read), so the bridge channel is read through Bun's file stream instead.
+    void (async () => {
+      const decoder = new StringDecoder("utf8");
+      let pending = "";
+      try {
+        for await (const chunk of Bun.file(BRIDGE_TO_CHILD_FD).stream()) {
+          const text = typeof chunk === "string" ? chunk : decoder.write(chunk);
+          let start = 0;
+          for (;;) {
+            const index = text.indexOf("\n", start);
+            if (index === -1) {
+              pending += text.slice(start);
+              break;
+            }
+            const line = pending + text.slice(start, index);
+            pending = "";
+            start = index + 1;
+            onBridgeLine(line.endsWith("\r") ? line.slice(0, -1) : line);
+          }
+        }
+      } catch {
+        // The bridge is gone; nothing to report to.
+      }
+    })();
+  } else {
+    // Non-blocking: libuv polls the pipe, so pi's process.exit is never held
+    // up by an outstanding read; EOF (the bridge ended its writer) closes it.
+    const bridgeIn = new Socket({ fd: BRIDGE_TO_CHILD_FD, readable: true, writable: false });
+    bridgeIn.on("error", () => undefined);
+    bridgeIn.unref();
+    readLines(bridgeIn, onBridgeLine);
+  }
 
   async function handleBridgeRequest(message) {
     try {
@@ -247,6 +285,8 @@ export default function bbExtension(pi) {
         return { leafId: currentLeafId() };
       case "model-scope":
         return currentModelScope();
+      case "refresh-models":
+        return refreshModels();
       default:
         throw new Error("unknown bridge request " + String(message.method));
     }
@@ -265,6 +305,15 @@ export default function bbExtension(pi) {
         ? sessionContext.model.provider + "/" + sessionContext.model.id
         : null,
     };
+  }
+
+  async function refreshModels() {
+    const registry = sessionContext?.modelRegistry;
+    if (typeof registry?.refresh !== "function") {
+      return { refreshed: false, reason: "unsupported" };
+    }
+    await registry.refresh({ allowNetwork: false });
+    return { refreshed: true };
   }
 
   for (const tool of tools) {
@@ -321,15 +370,27 @@ export default function bbExtension(pi) {
       }
       if (missing) pi.setActiveTools([...active]);
     }
-    writeLine(CHILD_TO_BRIDGE_FD, { kind: "ready" });
+    writeLine(CHILD_TO_BRIDGE_FD, { kind: "ready", agentSettled: supportsAgentSettlement(PiRuntime.VERSION) });
   });
 
-  // The run's checkpoint, read in-process the moment the run ends: pi emits
-  // this to extensions before it writes its own agent_end to stdout, and
-  // before any continuation or compaction can move the leaf.
+  pi.on("agent_start", (_event, ctx) => {
+    sessionContext = ctx ?? sessionContext;
+    runId += 1;
+    writeLine(CHILD_TO_BRIDGE_FD, { kind: "agent-start", runId, previousSettlement: lastSettlement });
+  });
   pi.on("agent_end", async (_event, ctx) => {
     sessionContext = ctx ?? sessionContext;
     writeLine(CHILD_TO_BRIDGE_FD, { kind: "agent-end-leaf", leafId: currentLeafId() });
+  });
+  pi.on("agent_settled", async (_event, ctx) => {
+    sessionContext = ctx ?? sessionContext;
+    lastSettlement = {
+      runId,
+      leafId: currentLeafId(),
+      event: { ..._event },
+      ...(ctx?.isIdle?.() === false ? { error: "Pi settlement handler ran after another extension started a new run" } : {}),
+    };
+    writeLine(CHILD_TO_BRIDGE_FD, { kind: "agent-settled-leaf", ...lastSettlement });
   });
 }
 

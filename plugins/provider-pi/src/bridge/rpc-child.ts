@@ -1,12 +1,16 @@
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { PassThrough, Writable, type Readable } from "node:stream";
 import {
   experimental_isProviderBridgeRecording,
+  experimental_killPortableProcess,
   experimental_readBoundedLines,
   experimental_recordProviderChildIo,
+  experimental_spawnPortableProcess,
   sanitizeInheritedChildProcessEnv,
   withoutBridgeRuntimeEnv,
 } from "@get-bb/plugin-sdk/provider-bridge";
+
+import { resolveWindowsPiProcessLaunch } from "./windows-pi-launch.js";
 
 export const PI_BRIDGE_COMMAND_ENV = "BB_PI_BRIDGE_COMMAND";
 export const PI_BRIDGE_ARGS_ENV = "BB_PI_BRIDGE_ARGS";
@@ -23,7 +27,6 @@ export interface PiRpcChildExitInfo {
   code: number | null;
   signal: NodeJS.Signals | null;
   stderrTail: string;
-  beforeFirstResponse: boolean;
 }
 
 export interface PiRpcResponse {
@@ -43,11 +46,10 @@ export interface SpawnPiRpcChildArgs {
   onChannelMessage: (message: Record<string, unknown>) => void;
   onExit: (info: PiRpcChildExitInfo) => void;
   recordThreadId: string | null;
+  onExtensionUiRequest?: (request: Record<string, unknown>) => void;
 }
 
 export class PiRpcChildExitedError extends Error {
-  readonly info: PiRpcChildExitInfo;
-
   constructor(info: PiRpcChildExitInfo) {
     super(
       `pi exited (code ${info.code ?? "null"}, signal ${info.signal ?? "null"})${
@@ -55,7 +57,6 @@ export class PiRpcChildExitedError extends Error {
       }`,
     );
     this.name = "PiRpcChildExitedError";
-    this.info = info;
   }
 }
 
@@ -87,13 +88,24 @@ export function resolvePiLaunch(env: NodeJS.ProcessEnv): {
   return { command, args: parsed };
 }
 
+export function resolvePiProcessLaunch(
+  configEnv: NodeJS.ProcessEnv,
+  childEnv: NodeJS.ProcessEnv = configEnv,
+  cwd = process.cwd(),
+): { command: string; args: string[] } {
+  const launch = resolvePiLaunch(configEnv);
+  return resolveWindowsPiProcessLaunch(launch, childEnv, cwd);
+}
+
 export function buildPiChildEnv(
   overrides: Record<string, string>,
 ): NodeJS.ProcessEnv {
+  const inheritedEnv = withoutBridgeRuntimeEnv(
+    sanitizeInheritedChildProcessEnv({ env: process.env }),
+  );
+  delete inheritedEnv.PI_BB_TOOLS_FILE;
   return {
-    ...withoutBridgeRuntimeEnv(
-      sanitizeInheritedChildProcessEnv({ env: process.env }),
-    ),
+    ...inheritedEnv,
     ...overrides,
   };
 }
@@ -103,7 +115,6 @@ export class PiRpcChild {
   private readonly pending = new Map<string, PendingRequest>();
   private nextRequestId = 0;
   private stderrTail = "";
-  private sawResponse = false;
   private exitInfo: PiRpcChildExitInfo | null = null;
   private readonly settledExit: Promise<PiRpcChildExitInfo>;
   private readonly channelWriter: Writable | null;
@@ -118,8 +129,10 @@ export class PiRpcChild {
     this.settledExit = new Promise((resolve) => {
       resolveSettledExit = resolve;
     });
-    const launch = resolvePiLaunch(process.env);
-    this.child = spawn(launch.command, [...launch.args, ...args.args], {
+    const launch = resolvePiProcessLaunch(process.env, args.env, args.cwd);
+    this.child = experimental_spawnPortableProcess({
+      command: launch.command,
+      args: [...launch.args, ...args.args],
       cwd: args.cwd,
       env: args.env,
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
@@ -175,7 +188,6 @@ export class PiRpcChild {
         code,
         signal,
         stderrTail: this.stderrTail,
-        beforeFirstResponse: !this.sawResponse,
       };
       this.exitInfo = info;
       resolveSettledExit(info);
@@ -195,10 +207,6 @@ export class PiRpcChild {
 
   get exited(): boolean {
     return this.exitInfo !== null;
-  }
-
-  get pid(): number | undefined {
-    return this.child.pid;
   }
 
   waitForExit(): Promise<PiRpcChildExitInfo> {
@@ -272,12 +280,21 @@ export class PiRpcChild {
       this.killEscalation = setTimeout(() => {
         this.killEscalation = null;
         if (this.exitInfo === null) {
-          this.child.kill("SIGKILL");
+          experimental_killPortableProcess(this.child, "SIGKILL");
         }
       }, SIGKILL_ESCALATION_MS);
       this.killEscalation.unref?.();
     }
-    this.child.kill("SIGTERM");
+    experimental_killPortableProcess(this.child, "SIGTERM");
+  }
+
+  respondToExtensionUi(
+    id: string | number,
+    fields: Record<string, unknown>,
+  ): void {
+    this.writeStdin(
+      `${JSON.stringify({ type: "extension_ui_response", id, ...fields })}\n`,
+    );
   }
 
   private endWriters(): void {
@@ -334,7 +351,6 @@ export class PiRpcChild {
     }
     const message = parsed as Record<string, unknown>;
     if (message.type === "response") {
-      this.sawResponse = true;
       const id = typeof message.id === "string" ? message.id : undefined;
       const pending = id === undefined ? undefined : this.pending.get(id);
       if (pending && id !== undefined) {
@@ -345,13 +361,17 @@ export class PiRpcChild {
       return;
     }
     if (message.type === "extension_ui_request") {
-      this.writeStdin(
-        `${JSON.stringify({
-          type: "extension_ui_response",
-          id: message.id,
-          cancelled: true,
-        })}\n`,
-      );
+      if (this.args.onExtensionUiRequest) {
+        this.args.onExtensionUiRequest(message);
+      } else {
+        this.writeStdin(
+          `${JSON.stringify({
+            type: "extension_ui_response",
+            id: message.id,
+            cancelled: true,
+          })}\n`,
+        );
+      }
       return;
     }
     if (typeof message.type === "string") {

@@ -35,3 +35,27 @@ export {
   type ExperimentalVendorPluginRoots,
   type ExperimentalVendorPluginRootsArgs,
 } from "./vendor-plugin-roots.js";
+
+export { experimental_killProcessesWithCwdUnder } from "./kill-processes.js";
+
+export {
+  experimental_readProcessIdentity,
+  type ExperimentalProcessIdentity,
+} from "./process-identity.js";
+
+/**
+ * Spawns output-only child processes with a sanitized inherited environment
+ * for host-local plugin operations such as git.
+ * Experimental: see docs/api_to_audit.md.
+ */
+export {
+  sanitizeInheritedChildProcessEnv as experimental_sanitizeInheritedChildProcessEnv,
+  spawnPortableOutputProcess as experimental_spawnPortableOutputProcess,
+} from "@bb/process-utils";
+export type { SanitizeInheritedChildProcessEnvArgs as ExperimentalSanitizeInheritedChildProcessEnvArgs } from "@bb/process-utils";
+
+export { runVcsProcess as experimental_runVcsProcess } from "@bb/process-utils";
+export type {
+  VcsProcessOptions as ExperimentalVcsProcessOptions,
+  VcsProcessPriority as ExperimentalVcsProcessPriority,
+} from "@bb/process-utils";

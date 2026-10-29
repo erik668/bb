@@ -1,19 +1,23 @@
 import {
   FilePreview as FilePreviewSurface,
   type FilePreviewFile,
+  type FilePreviewState,
   type TextFilePreviewKind,
 } from "./FilePreview";
+import { useEffect } from "react";
+import { BbSourceCodeSplit } from "@/components/code/BbSourceCodeSplit";
 import { hashSourceContents } from "@/components/code/source-code-budget";
+import { useRequestPierreWorkerPool } from "@/lib/pierre-worker-pool-gate";
 import type { MarkdownLinkRouting } from "@/components/ui/markdown-link-routing.js";
-import { HttpError } from "@/lib/api";
-import { buildThreadStorageRawContentUrl } from "@/lib/file-content-urls";
+import { asHttpError, getHttpErrorMessage } from "@/lib/http-error";
+import { extractErrorMessage } from "@bb/core-ui";
 import type {
   FilePreview,
   FilePreviewLineRange,
   TextFilePreview,
-  WorkspaceFilePreviewStatusLabel,
 } from "@bb/client-core";
 import {
+  FILE_PREVIEW_HTML_MAX_BYTES,
   isCsvFilePreview,
   isHtmlFilePreviewPath,
   isMarkdownFilePreview,
@@ -21,11 +25,12 @@ import {
 
 const GENERIC_HTML_IFRAME_SANDBOX = "allow-scripts";
 
-interface FilePreviewBaseProps {
+interface SecondaryPanelFilePreviewProps {
   activePath: string;
   copyPath?: string | null;
   error?: Error | null;
   filePreview: FilePreview | undefined;
+  htmlPreviewUrl?: string | null;
   isLoading: boolean;
   isRefreshing?: boolean;
   lineRange?: FilePreviewLineRange | null;
@@ -34,15 +39,7 @@ interface FilePreviewBaseProps {
   onOpenInEditor?: (path: string) => void;
   onRevealInFinder?: (path: string) => void;
   onRefresh?: () => void;
-}
-
-interface ThreadStorageFilePreviewProps extends FilePreviewBaseProps {
-  threadId: string;
-}
-
-interface SecondaryPanelFilePreviewProps extends FilePreviewBaseProps {
-  htmlPreviewUrl?: string | null;
-  statusLabel?: WorkspaceFilePreviewStatusLabel | null;
+  statusLabel?: string | null;
 }
 
 interface BuildTextPreviewFileArgs {
@@ -87,6 +84,94 @@ function getTextPreviewKind(
   return null;
 }
 
+function resolveFilePreviewErrorMessage(error: Error): string | null {
+  const httpError = asHttpError(error);
+  return httpError === null
+    ? extractErrorMessage(error.message)
+    : getHttpErrorMessage(httpError);
+}
+
+interface ResolveSecondaryPanelFilePreviewStateArgs {
+  activePath: string;
+  error: Error | null | undefined;
+  filePreview: FilePreview | undefined;
+  htmlPreviewUrl: string | null;
+  isLoading: boolean;
+  lineRange: FilePreviewLineRange | null;
+}
+
+function resolveSecondaryPanelFilePreviewState({
+  activePath,
+  error,
+  filePreview,
+  htmlPreviewUrl,
+  isLoading,
+  lineRange,
+}: ResolveSecondaryPanelFilePreviewStateArgs): FilePreviewState {
+  const hasCurrentPreview = filePreview?.path === activePath;
+  if (asHttpError(error)?.status === 404) {
+    return { kind: "not-found" };
+  }
+  if (error && !hasCurrentPreview) {
+    const message = resolveFilePreviewErrorMessage(error);
+    return message === null ? { kind: "error" } : { kind: "error", message };
+  }
+
+  if (isLoading || !filePreview || !hasCurrentPreview) {
+    return { kind: "loading" };
+  }
+
+  if (
+    htmlPreviewUrl !== null &&
+    isHtmlFilePreviewPath(activePath) &&
+    filePreview.kind === "text" &&
+    new TextEncoder().encode(filePreview.content).byteLength <=
+      FILE_PREVIEW_HTML_MAX_BYTES
+  ) {
+    return {
+      kind: "html",
+      file: buildTextPreviewFile({ activePath, filePreview }),
+      iframe: {
+        sandbox: GENERIC_HTML_IFRAME_SANDBOX,
+        title: activePath,
+        url: htmlPreviewUrl,
+      },
+      lineRange,
+    };
+  }
+
+  if (filePreview.kind === "text") {
+    if (filePreview.content.length === 0) {
+      return { kind: "empty" };
+    }
+    return {
+      kind: "ready",
+      lineRange,
+      textPreviewKind: getTextPreviewKind(filePreview),
+      file: buildTextPreviewFile({ activePath, filePreview }),
+    };
+  }
+
+  if (filePreview.kind === "image") {
+    return { kind: "image", url: filePreview.url };
+  }
+
+  if (filePreview.kind === "video") {
+    return { kind: "video", url: filePreview.url };
+  }
+
+  return {
+    kind: "unsupported",
+    file: {
+      mimeType: filePreview.mimeType,
+      name: filePreview.name ?? activePath.split("/").at(-1) ?? activePath,
+      reason: filePreview.reason,
+      sizeBytes: filePreview.sizeBytes,
+      url: filePreview.url,
+    },
+  };
+}
+
 export function SecondaryPanelFilePreview({
   activePath,
   copyPath = null,
@@ -103,202 +188,46 @@ export function SecondaryPanelFilePreview({
   onRefresh,
   statusLabel = null,
 }: SecondaryPanelFilePreviewProps) {
-  if (error) {
-    const isNotFound = error instanceof HttpError && error.status === 404;
-    return (
-      <FilePreviewSurface
-        path={activePath}
-        copyPath={copyPath}
-        onSelectionAddToChat={onSelectionAddToChat}
-        onOpenInEditor={onOpenInEditor}
-        onRevealInFinder={onRevealInFinder}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        statusLabel={statusLabel}
-        state={{ kind: isNotFound ? "not-found" : "error" }}
-      />
-    );
-  }
-
-  if (isLoading || !filePreview || filePreview.path !== activePath) {
-    return (
-      <FilePreviewSurface
-        path={activePath}
-        copyPath={copyPath}
-        onSelectionAddToChat={onSelectionAddToChat}
-        onOpenInEditor={onOpenInEditor}
-        onRevealInFinder={onRevealInFinder}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        statusLabel={statusLabel}
-        state={{ kind: "loading" }}
-      />
-    );
-  }
-
-  if (htmlPreviewUrl !== null && isHtmlFilePreviewPath(activePath)) {
-    if (filePreview.kind !== "text") {
-      return (
-        <FilePreviewSurface
-          path={activePath}
-          copyPath={copyPath}
-          onSelectionAddToChat={onSelectionAddToChat}
-          onOpenInEditor={onOpenInEditor}
-          onRevealInFinder={onRevealInFinder}
-          onRefresh={onRefresh}
-          isRefreshing={isRefreshing}
-          statusLabel={statusLabel}
-          state={{
-            kind: "iframe",
-            sandbox: GENERIC_HTML_IFRAME_SANDBOX,
-            title: activePath,
-            url: htmlPreviewUrl,
-          }}
-        />
-      );
-    }
-
-    return (
-      <FilePreviewSurface
-        path={activePath}
-        copyPath={copyPath}
-        onSelectionAddToChat={onSelectionAddToChat}
-        onOpenInEditor={onOpenInEditor}
-        onRevealInFinder={onRevealInFinder}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        statusLabel={statusLabel}
-        state={{
-          kind: "html",
-          file: buildTextPreviewFile({ activePath, filePreview }),
-          iframe: {
-            sandbox: GENERIC_HTML_IFRAME_SANDBOX,
-            title: activePath,
-            url: htmlPreviewUrl,
-          },
-          lineRange,
-        }}
-      />
-    );
-  }
-
-  if (filePreview.kind === "text") {
-    if (filePreview.content.length === 0) {
-      return (
-        <FilePreviewSurface
-          path={activePath}
-          copyPath={copyPath}
-          onSelectionAddToChat={onSelectionAddToChat}
-          onOpenInEditor={onOpenInEditor}
-          onRevealInFinder={onRevealInFinder}
-          onRefresh={onRefresh}
-          isRefreshing={isRefreshing}
-          statusLabel={statusLabel}
-          state={{ kind: "empty" }}
-        />
-      );
-    }
-    return (
-      <FilePreviewSurface
-        path={activePath}
-        copyPath={copyPath}
-        onSelectionAddToChat={onSelectionAddToChat}
-        onOpenInEditor={onOpenInEditor}
-        onRevealInFinder={onRevealInFinder}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        markdownLinkRouting={markdownLinkRouting}
-        statusLabel={statusLabel}
-        state={{
-          kind: "ready",
-          lineRange,
-          textPreviewKind: getTextPreviewKind(filePreview),
-          file: buildTextPreviewFile({ activePath, filePreview }),
-        }}
-      />
-    );
-  }
-
-  if (filePreview.kind === "image") {
-    return (
-      <FilePreviewSurface
-        path={activePath}
-        copyPath={copyPath}
-        onSelectionAddToChat={onSelectionAddToChat}
-        onOpenInEditor={onOpenInEditor}
-        onRevealInFinder={onRevealInFinder}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        statusLabel={statusLabel}
-        state={{ kind: "image", url: filePreview.url }}
-      />
-    );
-  }
-
-  if (filePreview.kind === "video") {
-    return (
-      <FilePreviewSurface
-        path={activePath}
-        copyPath={copyPath}
-        onSelectionAddToChat={onSelectionAddToChat}
-        onOpenInEditor={onOpenInEditor}
-        onRevealInFinder={onRevealInFinder}
-        onRefresh={onRefresh}
-        isRefreshing={isRefreshing}
-        statusLabel={statusLabel}
-        state={{ kind: "video", url: filePreview.url }}
-      />
-    );
-  }
-
+  const requestCodeWorkers = useRequestPierreWorkerPool();
+  useEffect(() => {
+    void BbSourceCodeSplit.preload();
+    requestCodeWorkers();
+  }, [requestCodeWorkers]);
+  const state = resolveSecondaryPanelFilePreviewState({
+    activePath,
+    error,
+    filePreview,
+    htmlPreviewUrl,
+    isLoading,
+    lineRange,
+  });
   return (
     <FilePreviewSurface
       path={activePath}
+      download={
+        filePreview &&
+        state.kind !== "loading" &&
+        state.kind !== "not-found" &&
+        state.kind !== "error"
+          ? {
+              url: filePreview.url,
+              fileName:
+                (filePreview.name ?? activePath).split(/[\\/]/).at(-1) ??
+                activePath,
+            }
+          : null
+      }
       copyPath={copyPath}
       onSelectionAddToChat={onSelectionAddToChat}
       onOpenInEditor={onOpenInEditor}
       onRevealInFinder={onRevealInFinder}
       onRefresh={onRefresh}
       isRefreshing={isRefreshing}
+      markdownLinkRouting={
+        state.kind === "ready" ? markdownLinkRouting : undefined
+      }
       statusLabel={statusLabel}
-      state={{
-        kind: "error",
-        message: `Preview not available for ${filePreview.mimeType}.`,
-      }}
-    />
-  );
-}
-
-export function ThreadStorageFilePreview({
-  activePath,
-  copyPath,
-  error,
-  filePreview,
-  isLoading,
-  isRefreshing,
-  lineRange,
-  markdownLinkRouting,
-  onSelectionAddToChat,
-  onOpenInEditor,
-  onRevealInFinder,
-  onRefresh,
-  threadId,
-}: ThreadStorageFilePreviewProps) {
-  return (
-    <SecondaryPanelFilePreview
-      activePath={activePath}
-      copyPath={copyPath}
-      error={error}
-      filePreview={filePreview}
-      htmlPreviewUrl={buildThreadStorageRawContentUrl(threadId, activePath)}
-      isLoading={isLoading}
-      isRefreshing={isRefreshing}
-      lineRange={lineRange}
-      markdownLinkRouting={markdownLinkRouting}
-      onSelectionAddToChat={onSelectionAddToChat}
-      onOpenInEditor={onOpenInEditor}
-      onRevealInFinder={onRevealInFinder}
-      onRefresh={onRefresh}
+      state={state}
     />
   );
 }

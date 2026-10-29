@@ -2,12 +2,11 @@ import {
   compareBridgeVersions,
   isBridgeUsable,
   NATIVE_BRIDGE_GLOBAL,
+  parseBridgeServers,
   parseNativeShellHandshake,
   parseShellToPageEvent,
   safeAreaInsetsSchema,
-  shareResultSchema,
-  type BridgeHapticKind,
-  type BridgeSharePayload,
+  type BridgeServer,
   type NativeScreen,
   type NativeCapability,
   type NativeShellHandshake,
@@ -18,16 +17,22 @@ import {
 interface NativeBridgeGlobal {
   post(message: unknown): void;
   request(kind: string, payload: unknown): Promise<unknown>;
+  copyTextAndImage?(text: string, imageUrl: string): Promise<unknown>;
+  copyRichText?(text: string, html: string): Promise<unknown>;
   subscribe(listener: (event: unknown) => void): () => void;
   safeArea?: unknown;
+  servers?: unknown;
 }
 
 export interface NativeShell {
   handshake: NativeShellHandshake;
   safeArea(): SafeAreaInsets;
+  servers(): readonly BridgeServer[] | null;
   has(capability: NativeCapability): boolean;
   post(message: unknown): void;
   request(kind: string, payload: unknown): Promise<unknown>;
+  copyTextAndImage?(text: string, imageUrl: string): Promise<unknown>;
+  copyRichText?(text: string, html: string): Promise<unknown>;
   subscribe(listener: (event: ShellToPageEvent) => void): () => void;
 }
 
@@ -55,11 +60,13 @@ function pickHandshakeFields(bridge: NativeBridgeGlobal): unknown {
   return {
     bridgeVersion: source.bridgeVersion,
     appVersion: source.appVersion,
+    androidVersionCode: source.androidVersionCode,
     platform: source.platform,
     profileMode: source.profileMode,
     secureContext: source.secureContext,
     safeArea: source.safeArea,
     capabilities: source.capabilities,
+    nativeDownloads: source.nativeDownloads,
   };
 }
 
@@ -78,9 +85,18 @@ function buildNativeShell(): NativeShell | null {
       const live = safeAreaInsetsSchema.safeParse(bridge.safeArea);
       return live.success ? live.data : handshake.safeArea;
     },
+    servers: () => parseBridgeServers(bridge.servers),
     has: (capability) => capabilities.has(capability),
     post: (message) => bridge.post(message),
     request: (kind, payload) => bridge.request(kind, payload),
+    copyRichText:
+      typeof bridge.copyRichText === "function"
+        ? bridge.copyRichText.bind(bridge)
+        : undefined,
+    copyTextAndImage:
+      typeof bridge.copyTextAndImage === "function"
+        ? bridge.copyTextAndImage.bind(bridge)
+        : undefined,
     subscribe: (listener) =>
       bridge.subscribe((event) => {
         const parsed = parseShellToPageEvent(event);
@@ -104,62 +120,11 @@ export function isInsideNativeShell(): boolean {
   return getNativeShell() !== null;
 }
 
-export function shellHaptic(kind: BridgeHapticKind): void {
-  const shell = getNativeShell();
-  if (shell === null || !shell.has("haptic")) return;
-  shell.post({ type: "haptic", kind });
-}
-
-export function shellSetBadge(count: number): void {
-  const normalized = Math.max(0, Math.trunc(count));
-  const shell = getNativeShell();
-  if (shell !== null && shell.has("badge")) {
-    shell.post({ type: "badge", count: normalized });
-    return;
-  }
-  if (typeof navigator === "undefined") return;
-  const badging = navigator as Navigator & {
-    setAppBadge?: (count?: number) => Promise<void>;
-    clearAppBadge?: () => Promise<void>;
-  };
-  const update =
-    normalized === 0
-      ? badging.clearAppBadge?.()
-      : badging.setAppBadge?.(normalized);
-  void update?.catch(() => undefined);
-}
-
 export function shellOpenExternal(url: string): boolean {
   const shell = getNativeShell();
   if (shell === null || !shell.has("open-external")) return false;
   shell.post({ type: "open-external", url });
   return true;
-}
-
-export async function shellShare(
-  payload: BridgeSharePayload,
-): Promise<boolean | null> {
-  const shell = getNativeShell();
-  if (shell !== null && shell.has("share")) {
-    try {
-      const result = await shell.request("share", payload);
-      return shareResultSchema.parse(result).shared;
-    } catch {
-      return null;
-    }
-  }
-  if (typeof navigator === "undefined" || navigator.share === undefined) {
-    return null;
-  }
-  try {
-    await navigator.share(payload);
-    return true;
-  } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      return false;
-    }
-    return null;
-  }
 }
 
 export function shellOpenNative(screen: NativeScreen): boolean {

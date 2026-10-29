@@ -1,7 +1,55 @@
+import { jsonValueSchema } from "@bb/domain";
 import { z } from "zod";
+import {
+  desktopBrowserImportSelectionSchema,
+  type DesktopBrowserImportOutcome,
+  type DesktopBrowserImportSource,
+} from "@bb/host-daemon-contract";
 
 export const BB_DESKTOP_BROWSER_MAX_URL_LENGTH = 4096;
 export const BB_DESKTOP_BROWSER_MAX_TITLE_LENGTH = 1024;
+
+export const bbDesktopBrowserTargetSchema = z
+  .object({
+    hostId: z.string().min(1),
+    instanceId: z.string().min(1),
+    generation: z.string().min(1),
+  })
+  .strict();
+export type BbDesktopBrowserTarget = z.infer<
+  typeof bbDesktopBrowserTargetSchema
+>;
+
+export const bbDesktopBrowserControlSchema = z
+  .object({
+    leaseId: z.string().min(1),
+    controllerLabel: z.string().min(1),
+    expiresAt: z.number().int().positive(),
+  })
+  .strict();
+export type BbDesktopBrowserControl = z.infer<
+  typeof bbDesktopBrowserControlSchema
+>;
+export const bbDesktopBrowserControlStateSchema = z
+  .object({
+    tabId: z.string().min(1),
+    threadId: z.string().min(1),
+    control: bbDesktopBrowserControlSchema.nullable(),
+  })
+  .strict();
+export type BbDesktopBrowserControlState = z.infer<
+  typeof bbDesktopBrowserControlStateSchema
+>;
+export const bbDesktopBrowserRevealRequestSchema = z
+  .object({
+    tabId: z.string().min(1),
+    threadId: z.string().min(1),
+    desktopTarget: bbDesktopBrowserTargetSchema,
+  })
+  .strict();
+export type BbDesktopBrowserRevealRequest = z.infer<
+  typeof bbDesktopBrowserRevealRequestSchema
+>;
 
 const bbDesktopBrowserViewBoundsSchema = z
   .object({
@@ -72,7 +120,9 @@ export function clampBbDesktopBrowserViewBounds(
 export const bbDesktopBrowserAttachRequestSchema = z
   .object({
     tabId: z.string().min(1),
+    threadId: z.string().min(1),
     url: z.string().max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH),
+    existingOnly: z.literal(true).optional(),
     bounds: bbDesktopBrowserViewBoundsSchema,
     visible: z.boolean(),
   })
@@ -120,11 +170,30 @@ export type BbDesktopBrowserTabRef = z.infer<
   typeof bbDesktopBrowserTabRefSchema
 >;
 
+export const bbDesktopBrowserSetThreadDiscardedRequestSchema = z
+  .object({
+    threadId: z.string().min(1),
+    discarded: z.boolean(),
+  })
+  .strict();
+export type BbDesktopBrowserSetThreadDiscardedRequest = z.infer<
+  typeof bbDesktopBrowserSetThreadDiscardedRequestSchema
+>;
+
 export const bbDesktopBrowserStateSchema = z
   .object({
     tabId: z.string().min(1),
     url: z.string().max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH),
     title: z.string().max(BB_DESKTOP_BROWSER_MAX_TITLE_LENGTH).nullable(),
+    faviconUrl: z
+      .string()
+      .max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH)
+      .nullable()
+      .optional(),
+    faviconUrls: z
+      .array(z.string().max(BB_DESKTOP_BROWSER_MAX_URL_LENGTH))
+      .max(8)
+      .optional(),
     isLoading: z.boolean(),
     canGoBack: z.boolean(),
     canGoForward: z.boolean(),
@@ -204,6 +273,48 @@ export type BbDesktopBrowserFindResult = z.infer<
   typeof bbDesktopBrowserFindResultSchema
 >;
 
+export const BB_DESKTOP_BROWSER_MAX_PAGE_EXPRESSION_LENGTH = 4_000_000;
+export const BB_DESKTOP_BROWSER_MAX_PAGE_CHANNEL_LENGTH = 256;
+
+export const bbDesktopBrowserPageWorldSchema = z.enum(["main", "isolated"]);
+
+export const bbDesktopBrowserEvaluateRequestSchema = z
+  .object({
+    tabId: z.string().min(1),
+    expression: z
+      .string()
+      .min(1)
+      .max(BB_DESKTOP_BROWSER_MAX_PAGE_EXPRESSION_LENGTH),
+    world: bbDesktopBrowserPageWorldSchema,
+    channel: z.string().min(1).max(BB_DESKTOP_BROWSER_MAX_PAGE_CHANNEL_LENGTH),
+  })
+  .strict();
+export type BbDesktopBrowserEvaluateRequest = z.infer<
+  typeof bbDesktopBrowserEvaluateRequestSchema
+>;
+
+export const bbDesktopBrowserEvaluateResultSchema = z.discriminatedUnion("ok", [
+  z.object({ ok: z.literal(true), value: jsonValueSchema }).strict(),
+  z.object({ ok: z.literal(false), error: z.string() }).strict(),
+]);
+export type BbDesktopBrowserEvaluateResult = z.infer<
+  typeof bbDesktopBrowserEvaluateResultSchema
+>;
+
+export const bbDesktopBrowserPageMessageSchema = z
+  .object({
+    tabId: z.string().min(1),
+    channel: z.string().min(1).max(BB_DESKTOP_BROWSER_MAX_PAGE_CHANNEL_LENGTH),
+    data: jsonValueSchema,
+  })
+  .strict();
+export type BbDesktopBrowserPageMessage = z.infer<
+  typeof bbDesktopBrowserPageMessageSchema
+>;
+export type BbDesktopBrowserPageMessageHandler = (
+  message: BbDesktopBrowserPageMessage,
+) => void;
+
 export type BbDesktopBrowserStateHandler = (
   state: BbDesktopBrowserState,
 ) => void;
@@ -222,9 +333,35 @@ export type BbDesktopBrowserFindResultHandler = (
 ) => void;
 export type BbDesktopBrowserUnsubscribe = () => void;
 
+export const bbDesktopBrowserImportCookiesRequestSchema =
+  desktopBrowserImportSelectionSchema;
+export type BbDesktopBrowserImportCookiesRequest = z.infer<
+  typeof bbDesktopBrowserImportCookiesRequestSchema
+>;
+export type BbDesktopBrowserImportSourcesResult = {
+  sources: DesktopBrowserImportSource[];
+};
+export type BbDesktopBrowserImportCookiesResult = DesktopBrowserImportOutcome;
+
 export interface BbDesktopBrowserApi {
+  listImportSources?(): Promise<BbDesktopBrowserImportSourcesResult>;
+  importCookies?(
+    request: BbDesktopBrowserImportCookiesRequest,
+  ): Promise<BbDesktopBrowserImportCookiesResult>;
+  openFullDiskAccessSettings?(): void;
+  getTarget?(): Promise<BbDesktopBrowserTarget | null>;
+  getControl?(tabId: string): Promise<BbDesktopBrowserControlState | null>;
+  releaseControl?(tabId: string): void;
+  onControl?(
+    listener: (state: BbDesktopBrowserControlState) => void,
+  ): BbDesktopBrowserUnsubscribe;
+  onReveal?(
+    listener: (request: BbDesktopBrowserRevealRequest) => void,
+  ): BbDesktopBrowserUnsubscribe;
   attach(request: BbDesktopBrowserAttachRequest): void;
   detach(tabId: string): void;
+  setThreadDiscarded?(request: BbDesktopBrowserSetThreadDiscardedRequest): void;
+  listThreadIdsWithTabs?(): Promise<string[]>;
   navigate(request: BbDesktopBrowserNavigateRequest): void;
   goBack(tabId: string): void;
   goForward(tabId: string): void;
@@ -249,5 +386,11 @@ export interface BbDesktopBrowserApi {
   stopFindInPage?(request: BbDesktopBrowserStopFindInPageRequest): void;
   onFindResult?(
     listener: BbDesktopBrowserFindResultHandler,
+  ): BbDesktopBrowserUnsubscribe;
+  evaluate?(
+    request: BbDesktopBrowserEvaluateRequest,
+  ): Promise<BbDesktopBrowserEvaluateResult>;
+  onPageMessage?(
+    listener: BbDesktopBrowserPageMessageHandler,
   ): BbDesktopBrowserUnsubscribe;
 }

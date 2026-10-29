@@ -1,10 +1,11 @@
-import { defineWorkspaceTestConfig } from "../../vitest.shared.js";
+import { defineConfig } from "vitest/config";
 
-export default defineWorkspaceTestConfig({
+export default defineConfig({
+  resolve: { tsconfigPaths: true },
   test: {
     silent: "passed-only",
-    name: "bb-plugin-provider-usage",
+    name: "bb-plugin-bb--provider-usage",
     include: ["**/*.test.{ts,tsx}"],
-    exclude: ["dist/**", "node_modules/**"],
+    exclude: ["node_modules/**"],
   },
 });

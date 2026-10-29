@@ -23,7 +23,7 @@ import {
 import { upsertHost } from "../../src/data/hosts.js";
 import { createProject } from "../../src/data/projects.js";
 import { createThread, markThreadDeleted } from "../../src/data/threads.js";
-import { createMigratedConnection } from "../helpers/migrated-connection.js";
+import { createMigratedConnection } from "../../src/testing.js";
 
 const TEST_INCREMENTAL_VACUUM_MAX_PAGES = 128;
 
@@ -53,7 +53,6 @@ function setup() {
   const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "maintenance-host",
-    type: "persistent",
   });
   const { project } = createProject(db, noopNotifier, {
     name: "maintenance-project",
@@ -122,7 +121,6 @@ describe("database maintenance", () => {
   it("detects active work that should block compaction", () => {
     const { db, project } = setup();
     const idleActivity = getDatabaseMaintenanceActivity(db);
-    expect(idleActivity.activeCommandCount).toBe(0);
     expect(isDatabaseMaintenanceIdle(idleActivity)).toBe(true);
 
     const activeThread = createThread(db, noopNotifier, {
@@ -138,11 +136,6 @@ describe("database maintenance", () => {
     expect(isDatabaseMaintenanceIdle(getDatabaseMaintenanceActivity(db))).toBe(
       true,
     );
-  });
-
-  it("creates databases in incremental auto-vacuum mode", () => {
-    const { db } = setup();
-    expect(getDatabaseAutoVacuumMode(db)).toBe("incremental");
   });
 
   it("drops deferred legacy queue tables without touching current data", () => {

@@ -4,37 +4,7 @@ import {
   hostStatusSchema,
   pluginIdSchema,
   threadStatusSchema,
-  sourcePinSchema,
-  sourceInspectionSchema,
 } from "@bb/domain";
-
-export const sourceIdentityMismatchErrorDetailsSchema = z
-  .object({
-    reason: z.string(),
-    source: sourcePinSchema.nullable(),
-    target: z
-      .union([
-        sourceInspectionSchema.extend({
-          projectId: z.string(),
-          hostId: z.string(),
-        }),
-        z
-          .object({
-            projectId: z.string(),
-            hostId: z.string(),
-            repositoryPath: z.string(),
-          })
-          .strict(),
-      ])
-      .nullable(),
-    targetPath: z.string(),
-    requestedRef: z.string().nullable(),
-    action: z.string(),
-  })
-  .strict();
-export type SourceIdentityMismatchErrorDetails = z.infer<
-  typeof sourceIdentityMismatchErrorDetailsSchema
->;
 
 export const apiErrorSchema = z.object({
   code: z.string().min(1),
@@ -78,7 +48,6 @@ export type ThreadNotWritableErrorDetails = z.infer<
 export const threadEnvironmentUnavailableReasonSchema = z.enum([
   "never_attached",
   "destroyed",
-  "destroying",
   "provisioning",
   "errored",
 ]);
@@ -151,9 +120,6 @@ export type ParentThreadInvalidErrorDetails = z.infer<
 export const dispatchHookErrorDetailsSchema = z.object({
   pluginId: pluginIdSchema,
 });
-export type DispatchHookErrorDetails = z.infer<
-  typeof dispatchHookErrorDetailsSchema
->;
 
 export const environmentNotReadyApiErrorSchema = apiErrorSchema.extend({
   code: z.literal("environment_not_ready"),

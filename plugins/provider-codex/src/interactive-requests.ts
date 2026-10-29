@@ -1,6 +1,10 @@
+import { z } from "zod";
 import {
   ProviderRequestDecodeError as ProviderRequestDecodeErrorValue,
   ProviderResponseEncodeError,
+  isApprovalInteractionOutcome,
+  providerInteractionOutcomeSchema,
+  userQuestionInteractionOutcomeSchema,
   type ApprovalInteractionOutcome,
   type DecodedInteractiveRequest,
   type ProviderInboundRequest,
@@ -8,6 +12,9 @@ import {
   type PendingInteractionGrantablePermissionProfile,
   type PendingInteractionGrantedPermissionProfile,
   type PendingInteractionRequestedPermissionProfile,
+  type ProviderInteractionOutcome,
+  type UserQuestionInteractionOutcome,
+  type UserQuestionPendingInteractionPayload,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import type { CodexMacOsPermissionItem } from "./extension-kinds.js";
 import { normalizePendingInteractionRequestedPermissionProfile } from "./pending-interaction-normalization.js";
@@ -15,9 +22,20 @@ import type { CommandExecutionRequestApprovalResponse } from "./generated/codex-
 import type { FileChangeRequestApprovalResponse } from "./generated/codex-app-server/schema/v2/FileChangeRequestApprovalResponse.js";
 import type { PermissionsRequestApprovalResponse } from "./generated/codex-app-server/schema/v2/PermissionsRequestApprovalResponse.js";
 import {
+  CODEX_MCP_ELICITATION_CANCEL_RESPONSE,
+  CODEX_MCP_ELICITATION_KIND,
+  normalizeCodexMcpElicitation,
+  codexMcpElicitationSchema,
+  codexMcpElicitationResponseSchema,
+  buildCodexMcpElicitationResponse,
+  type CodexNativeMcpElicitationResponse,
+} from "./mcp-elicitation.js";
+import { codexMcpElicitationTitle } from "./mcp-elicitation-title.js";
+import {
   codexCommandExecutionRequestApprovalParamsSchema,
   codexFileChangeRequestApprovalParamsSchema,
   codexPermissionsRequestApprovalParamsSchema,
+  codexToolRequestUserInputParamsSchema,
 } from "./schemas.js";
 import type {
   CodexAdditionalPermissions,
@@ -29,7 +47,9 @@ import type {
 type CodexInteractiveResponse =
   | CommandExecutionRequestApprovalResponse
   | FileChangeRequestApprovalResponse
-  | PermissionsRequestApprovalResponse;
+  | PermissionsRequestApprovalResponse
+  | { answers: Record<string, { answers: string[] }> }
+  | CodexNativeMcpElicitationResponse;
 
 function assertNever(value: never): never {
   throw new ProviderResponseEncodeError(`Unexpected value: ${String(value)}`);
@@ -79,6 +99,77 @@ function filterSessionDecisionWithoutGrant(
   return filtered;
 }
 
+function buildCodexUserQuestionId(
+  questionId: string,
+  optionIndex: number,
+): string {
+  return `${questionId}:option-${optionIndex + 1}`;
+}
+
+function buildCodexUserQuestionPayload(params: {
+  questions: Array<{
+    id: string;
+    header: string;
+    question: string;
+    isSecret: boolean;
+    options: Array<{ label: string; description: string }> | null;
+  }>;
+}): UserQuestionPendingInteractionPayload {
+  const payload = userQuestionInteractionOutcomeSchema.shape.payload.safeParse({
+    kind: "user_question",
+    questions: params.questions.map((question) => ({
+      id: question.id,
+      prompt: question.question,
+      shortLabel: question.header,
+      multiSelect: false,
+      options: question.options?.map((option, optionIndex) => ({
+        value: buildCodexUserQuestionId(question.id, optionIndex),
+        label: option.label,
+        description: option.description,
+      })),
+      allowFreeText: true,
+      required: true,
+    })),
+  });
+  if (!payload.success) {
+    throw new ProviderRequestDecodeErrorValue(payload.error.message);
+  }
+  return payload.data;
+}
+
+function buildCodexUserQuestionResponse(args: UserQuestionInteractionOutcome): {
+  answers: Record<string, { answers: string[] }>;
+} {
+  const answers: Record<string, { answers: string[] }> = {};
+  for (const question of args.payload.questions) {
+    const answer = args.resolution.answers[question.id];
+    if (!answer) {
+      throw new ProviderResponseEncodeError(
+        `Missing answer for user question '${question.id}'`,
+      );
+    }
+    const selected = answer.selected.map((value) => {
+      const option = question.options?.find(
+        (candidate) => candidate.value === value,
+      );
+      if (!option) {
+        throw new ProviderResponseEncodeError(
+          `Unknown selected option '${value}' for user question '${question.id}'`,
+        );
+      }
+      return option.label;
+    });
+    const values = answer.freeText ? [...selected, answer.freeText] : selected;
+    if (values.length === 0) {
+      throw new ProviderResponseEncodeError(
+        `Answer for user question '${question.id}' is empty`,
+      );
+    }
+    answers[question.id] = { answers: values };
+  }
+  return { answers };
+}
+
 export function decodeCodexInteractiveRequest(
   request: ProviderInboundRequest,
 ): DecodedInteractiveRequest | null {
@@ -87,6 +178,28 @@ export function decodeCodexInteractiveRequest(
   }
 
   switch (request.method) {
+    case "mcpServer/elicitation/request": {
+      try {
+        const { threadId, turnId, elicitation } = normalizeCodexMcpElicitation(
+          request.params,
+        );
+        return {
+          requestId: request.id,
+          method: request.method,
+          providerThreadId: threadId,
+          turnId,
+          payload: {
+            kind: CODEX_MCP_ELICITATION_KIND,
+            title: codexMcpElicitationTitle(elicitation),
+            data: elicitation,
+          },
+        };
+      } catch (error) {
+        throw new ProviderRequestDecodeErrorValue(
+          `Invalid Codex MCP elicitation envelope: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
     case "item/commandExecution/requestApproval": {
       const parsed = codexCommandExecutionRequestApprovalParamsSchema.safeParse(
         request.params,
@@ -198,14 +311,89 @@ export function decodeCodexInteractiveRequest(
         },
       };
     }
+    case "item/tool/requestUserInput": {
+      const parsed = codexToolRequestUserInputParamsSchema.safeParse(
+        request.params,
+      );
+      if (!parsed.success) {
+        return null;
+      }
+      if (parsed.data.questions.some((question) => question.isSecret)) {
+        throw new ProviderRequestDecodeErrorValue(
+          "Codex secret user input is not supported by the BB question form",
+        );
+      }
+      return {
+        requestId: request.id,
+        method: request.method,
+        providerThreadId: parsed.data.threadId,
+        turnId: parsed.data.turnId,
+        payload: buildCodexUserQuestionPayload(parsed.data),
+      };
+    }
     default:
       return null;
   }
 }
 
-export function buildCodexInteractiveResponse(
-  args: ApprovalInteractionOutcome,
+const requestAnswerResolutionSchema = z.object({
+  kind: z.literal("request_answer"),
+});
+
+export function buildCodexInteractiveResult(
+  payload: DecodedInteractiveRequest["payload"],
+  runtimeResult: PromiseSettledResult<unknown>,
 ): CodexInteractiveResponse {
+  if (
+    payload.kind === CODEX_MCP_ELICITATION_KIND &&
+    (runtimeResult.status === "rejected" ||
+      !requestAnswerResolutionSchema.safeParse(runtimeResult.value).success)
+  ) {
+    return CODEX_MCP_ELICITATION_CANCEL_RESPONSE;
+  }
+  if (runtimeResult.status === "rejected") {
+    throw runtimeResult.reason;
+  }
+  return buildCodexInteractiveResponse(
+    providerInteractionOutcomeSchema.parse({
+      payload,
+      resolution: runtimeResult.value,
+    }),
+  );
+}
+
+export function buildCodexInteractiveResponse(
+  args: ProviderInteractionOutcome,
+): CodexInteractiveResponse {
+  if (args.payload.kind === "user_question") {
+    return buildCodexUserQuestionResponse(
+      userQuestionInteractionOutcomeSchema.parse(args),
+    );
+  }
+  if (!isApprovalInteractionOutcome(args)) {
+    if (args.payload.kind !== CODEX_MCP_ELICITATION_KIND) {
+      throw new ProviderResponseEncodeError(
+        `Unsupported Codex interaction outcome: ${args.payload.kind}`,
+      );
+    }
+    if (
+      !("kind" in args.resolution) ||
+      args.resolution.kind !== "request_answer"
+    ) {
+      return CODEX_MCP_ELICITATION_CANCEL_RESPONSE;
+    }
+    try {
+      const elicitation = codexMcpElicitationSchema.parse(args.payload.data);
+      const response = codexMcpElicitationResponseSchema.parse(
+        args.resolution.value,
+      );
+      return buildCodexMcpElicitationResponse(elicitation, response);
+    } catch (error) {
+      throw new ProviderResponseEncodeError(
+        `Invalid Codex MCP elicitation response: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   switch (args.payload.subject.kind) {
     case "command": {
       const response: CommandExecutionRequestApprovalResponse = {

@@ -127,6 +127,16 @@ describe("acp model catalog", () => {
     ).toBe("gpt-5.3-codex-high");
   });
 
+  it("reports the fast tier only for families that list a -fast variant", () => {
+    const catalog = catalogFromSample();
+    const tiersByModel = Object.fromEntries(
+      catalog.models.map((model) => [model.id, model.supportedServiceTiers]),
+    );
+    expect(tiersByModel["gpt-5.3-codex"]).toEqual([{ id: "fast" }]);
+    expect(tiersByModel["gpt-5.5-medium"]).toEqual([]);
+    expect(tiersByModel["auto"]).toEqual([]);
+  });
+
   it("resolves fast at the default effort when no reasoning level is given", () => {
     const catalog = buildAgentModelCatalog(
       parseAgentModelLines(
@@ -350,22 +360,25 @@ describe("acp configOptions model catalog", () => {
   });
 
   it("maps model configOptions values, names, and currentValue into picker models", () => {
-    const reasoningByModel = new Map([
+    const supportByModel = new Map([
       [
         "opencode/deepseek-v4-flash-free",
-        buildAcpNativeReasoningSupport({
-          id: "effort",
-          category: "thought_level",
-          type: "select",
-          currentValue: "high",
-          options: [
-            { value: "none" },
-            { value: "low" },
-            { value: "medium" },
-            { value: "high" },
-            { value: "xhigh" },
-          ],
-        }),
+        {
+          supportedServiceTiers: [],
+          ...buildAcpNativeReasoningSupport({
+            id: "effort",
+            category: "thought_level",
+            type: "select",
+            currentValue: "high",
+            options: [
+              { value: "none" },
+              { value: "low" },
+              { value: "medium" },
+              { value: "high" },
+              { value: "xhigh" },
+            ],
+          }),
+        },
       ],
     ]);
     const models = buildModelCatalogFromConfigOptions(
@@ -386,7 +399,7 @@ describe("acp configOptions model catalog", () => {
           },
         ],
       },
-      reasoningByModel,
+      supportByModel,
     );
 
     expect(models).toMatchObject([
@@ -432,6 +445,9 @@ describe("acp configOptions model catalog", () => {
     expect(
       acpNativeReasoningLevelToValue("high", thoughtLevel),
     ).toBeUndefined();
+    expect(
+      acpNativeReasoningLevelToValue("think-hard", thoughtLevel),
+    ).toBeUndefined();
   });
 
   it("preserves an explicit empty thought_level option as no reasoning control", () => {
@@ -443,24 +459,43 @@ describe("acp configOptions model catalog", () => {
         options: [],
       }),
     ).toEqual({
+      reasoningDiscovery: "known",
       supportedReasoningEfforts: [],
       defaultReasoningEffort: "medium",
     });
   });
 
-  it("returns no reasoning control for declared values that bb cannot map", () => {
-    expect(
-      buildAcpNativeReasoningSupport({
-        id: "mode",
-        category: "thought_level",
-        type: "select",
-        currentValue: "smart",
-        options: [{ value: "smart" }, { value: "fast" }],
-      }),
-    ).toEqual({
-      supportedReasoningEfforts: [],
-      defaultReasoningEffort: "medium",
+  it("offers the agent's own thought levels under the ids and names the agent gave them", () => {
+    const thoughtLevel = {
+      id: "mode",
+      category: "thought_level",
+      type: "select",
+      currentValue: "smart",
+      options: [
+        { value: "fast", name: "Fast", description: "Answer quickly" },
+        { value: "smart", name: "Smart" },
+        { value: "smart", name: "Duplicate" },
+        { value: "deep" },
+      ],
+    };
+
+    expect(buildAcpNativeReasoningSupport(thoughtLevel)).toEqual({
+      reasoningDiscovery: "known",
+      supportedReasoningEfforts: [
+        {
+          reasoningEffort: "fast",
+          label: "Fast",
+          description: "Answer quickly",
+        },
+        { reasoningEffort: "smart", label: "Smart", description: "Smart" },
+        { reasoningEffort: "deep", description: "deep" },
+      ],
+      defaultReasoningEffort: "smart",
     });
+    expect(acpNativeReasoningLevelToValue("smart", thoughtLevel)).toBe("smart");
+    expect(
+      acpNativeReasoningLevelToValue("medium", thoughtLevel),
+    ).toBeUndefined();
   });
 
   it("maps Hermes-style ACP reasoning values", () => {
@@ -489,17 +524,21 @@ describe("acp configOptions model catalog", () => {
       ]),
     ).toEqual([
       ["none", "none"],
+      ["minimal", "Minimal"],
       ["low", "Low"],
       ["medium", "medium"],
       ["high", "high"],
       ["xhigh", "xhigh"],
       ["max", "max"],
     ]);
+    expect(acpNativeReasoningLevelToValue("minimal", thoughtLevel)).toBe(
+      "minimal",
+    );
     expect(acpNativeReasoningLevelToValue("low", thoughtLevel)).toBe("low");
     expect(acpNativeReasoningLevelToValue("max", thoughtLevel)).toBe("max");
   });
 
-  it("uses Hermes minimal as bb low when ACP does not advertise low", () => {
+  it("still sends Hermes minimal for a stored low when ACP does not advertise low", () => {
     const thoughtLevel = {
       id: "reasoning_effort",
       category: "thought_level",
@@ -513,7 +552,7 @@ describe("acp configOptions model catalog", () => {
     };
 
     const support = buildAcpNativeReasoningSupport(thoughtLevel);
-    expect(support.defaultReasoningEffort).toBe("low");
+    expect(support.defaultReasoningEffort).toBe("minimal");
     expect(acpNativeReasoningLevelToValue("low", thoughtLevel)).toBe("minimal");
   });
 

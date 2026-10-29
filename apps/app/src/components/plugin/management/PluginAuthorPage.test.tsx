@@ -7,11 +7,12 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter, useLocation } from "react-router-dom";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PluginCatalogSearchEntry } from "@/hooks/queries/plugin-catalog-queries";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { PluginAuthorPage } from "./PluginAuthorPage";
+import { LocationProbe } from "@/test/location-probe";
 
 function catalogEntry(
   pluginId: string,
@@ -43,6 +44,8 @@ function catalogEntry(
       url: "https://github.com/patlee",
     },
     installed: false,
+    conflictingInstallSource: null,
+    installedByDefault: false,
     installs: 10,
     compatible: true,
     incompatibleReason: null,
@@ -79,13 +82,6 @@ const GAMMA = catalogEntry("Gamma", {
 const OTHER = catalogEntry("Other", {
   author: { name: "Pat Lee", github: null, url: null },
 });
-
-function LocationProbe() {
-  const location = useLocation();
-  return (
-    <output data-testid="location">{`${location.pathname}${location.search}`}</output>
-  );
-}
 
 function cardOrder(): string[] {
   return [
@@ -152,31 +148,6 @@ afterEach(() => {
 });
 
 describe("PluginAuthorPage", () => {
-  it("aligns the author header with the toolbar and card grid", async () => {
-    renderPage(
-      "/extensions/plugins?author=12%3Abb-community%3Agithub%3Apatlee",
-    );
-
-    await screen.findByRole("heading", { name: /^Pat Lee/u });
-    const headerContainer = screen
-      .getByRole("link", { name: "Browse plugins" })
-      .closest(".max-w-3xl");
-    const toolbarContainer = screen
-      .getByRole("textbox", { name: "Search plugins" })
-      .closest(".max-w-3xl");
-    const gridContainer = screen
-      .getByRole("button", { name: "Open Alpha details" })
-      .closest(".max-w-3xl");
-    for (const container of [
-      headerContainer,
-      toolbarContainer,
-      gridContainer,
-    ]) {
-      expect(container?.classList.contains("mx-auto")).toBe(true);
-      expect(container?.classList.contains("w-full")).toBe(true);
-    }
-  });
-
   it.each([
     {
       rule: "frequency before length",
@@ -197,7 +168,7 @@ describe("PluginAuthorPage", () => {
     },
   ])("selects an author name by $rule", async ({ entries, expected }) => {
     renderPage(
-      "/extensions/plugins?author=12%3Abb-community%3Agithub%3Apatlee",
+      "/plugins?author=12%3Abb-community%3Agithub%3Apatlee",
       vi.fn(),
       entries,
     );
@@ -208,7 +179,7 @@ describe("PluginAuthorPage", () => {
 
   it("restores the URL and shows only the selected author's plugins", async () => {
     renderPage(
-      "/extensions/plugins?author=12%3Abb-community%3Agithub%3Apatlee&sort=recently-added&direction=asc",
+      "/plugins?author=12%3Abb-community%3Agithub%3Apatlee&sort=recently-added&direction=asc",
     );
 
     expect(
@@ -233,7 +204,7 @@ describe("PluginAuthorPage", () => {
 
   it("applies search, multiple categories, and both optional-value sorts", async () => {
     const onOpenPlugin = renderPage(
-      "/extensions/plugins?author=12%3Abb-community%3Agithub%3Apatlee&sort=most-installed",
+      "/plugins?author=12%3Abb-community%3Agithub%3Apatlee&sort=most-installed",
     );
 
     await screen.findByRole("heading", { name: /^Pat Lee/u });
@@ -243,12 +214,10 @@ describe("PluginAuthorPage", () => {
       "Open Alpha details",
     ]);
     const sort = screen.getByRole("button", {
-      name: "Sort: Most installed, descending",
+      name: "Sort: Installs, descending",
     });
     fireEvent.pointerDown(sort);
-    fireEvent.click(
-      screen.getByRole("menuitemradio", { name: "Most installed" }),
-    );
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "Installs" }));
     expect(cardOrder()).toEqual([
       "Open Beta details",
       "Open Gamma details",
@@ -283,7 +252,7 @@ describe("PluginAuthorPage", () => {
 
   it("uses the catalog search result for a tag-only query", async () => {
     renderPage(
-      "/extensions/plugins?author=12%3Abb-community%3Agithub%3Apatlee&query=agent-interaction",
+      "/plugins?author=12%3Abb-community%3Agithub%3Apatlee&query=agent-interaction",
     );
 
     expect(

@@ -1,4 +1,4 @@
-Give your agents a memory that survives across threads, projects, and providers. The agent reads a short catalog of past learning at the start of each turn. It saves new learning when that helps future work.
+Give your agents a memory that survives across threads, projects, and providers. The agent reads a short catalog of past learning at the start of each turn. It proposes new learning for owner review when that helps future work.
 
 ## What you get
 
@@ -10,9 +10,9 @@ Give your agents a memory that survives across threads, projects, and providers.
 
 ## How it works
 
-The agent uses the `bb memory` CLI. `bb memory search` finds summaries with keyword search. `bb memory get` reads one complete record. `bb memory add`, `bb memory update`, and `bb memory forget` change the store with version checks. `bb memory catalog` and `bb memory history` list summaries and past versions.
+The agent uses the `bb memory` CLI. `bb memory search` finds summaries with keyword search. `bb memory get` reads one complete record. `bb memory propose` (alias `add`) files an evidence-backed candidate and `bb memory challenge` attaches counterevidence; only Settings → Memory approves, edits, or deletes active memories. `bb memory catalog` and `bb memory history` list summaries and past versions.
 
-Project writes use the project of the current thread. Global writes must pass `--scope global`. The bundled `memory` skill teaches the agent when to search and what to save. The plugin rejects text that looks like a secret or a prompt injection.
+Project proposals use the project of the current thread. Global proposals must pass `--scope global`. The bundled `memory` skill teaches the agent when to search and what to propose. The plugin rejects text that looks like a secret or a prompt injection.
 
 ## Requirements
 

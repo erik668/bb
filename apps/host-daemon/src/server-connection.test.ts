@@ -8,6 +8,8 @@ import { ServerConnection } from "./server-connection.js";
 import type {
   CreateReconnectingWebSocket,
   ReconnectingWebSocketLike,
+  ServerConnectionOptions,
+  ServerMovedNotice,
 } from "./server-connection-support.js";
 
 interface CreateServerClientFixtureArgs {
@@ -22,11 +24,17 @@ interface CreateWebSocketFixtureArgs {
 }
 
 interface ConnectionFixtureArgs extends CreateServerClientFixtureArgs {
+  onIdleProviderSessionTimeout?: (minutes: number) => void;
   autoReconnect?: boolean;
-  connectMachineId?: string;
-  machineCredential?: string;
+  serverHeaders?: Record<string, string>;
   protocolSelfUpdater?: ProtocolSelfUpdater;
   onSelfUpdateInstalled?: () => void | Promise<void>;
+  onMachineShutdown?: () => void | Promise<void>;
+  onServerMoved?: (notice: ServerMovedNotice) => Promise<void>;
+  onMachineEnvironment?: (
+    environment: HostDaemonSessionOpenResponse["machineEnvironment"],
+  ) => void;
+  onHostRpcCancel?: ServerConnectionOptions["onHostRpcCancel"];
   startupTimeoutMs?: number;
 }
 
@@ -48,9 +56,12 @@ function createLogger() {
 function createSession(args: CreateSessionArgs): HostDaemonSessionOpenResponse {
   return {
     heartbeatIntervalMs: args.heartbeatIntervalMs,
+    machineEnvironment: { revision: 0, entries: [] },
+    idleProviderSessionTimeoutMinutes: 30,
     leaseTimeoutMs: args.leaseTimeoutMs,
     retiredEnvironmentIds: [],
     connectShares: { generation: 0, ports: [] },
+    connectNext: { generation: 0, config: null },
     pluginHostGenerations: [],
     sessionId: args.sessionId,
     watchSet: {
@@ -85,7 +96,8 @@ function createServerClientFixture(args: CreateServerClientFixtureArgs = {}) {
   const serverClient = {
     openSession,
     fetchProjectAttachment: unused,
-    fetchSkillTree: unused,
+    fetchSkillTreeManifest: unused,
+    fetchSkillTreeContent: unused,
     fetchPluginHostArtifact: unused,
     postEvents: unused,
     callTool: unused,
@@ -170,20 +182,21 @@ function createConnectionFixture(args: ConnectionFixtureArgs = {}) {
     hostId: "host-server-connection-test",
     hostKey: "host-key-server-connection-test",
     hostName: "Server Connection Test Host",
-    hostType: "persistent",
     instanceId: "instance-server-connection-test",
     localApiPort: 38_887,
     logger,
-    ...(args.machineCredential !== undefined
-      ? { machineCredential: args.machineCredential }
-      : {}),
-    ...(args.connectMachineId !== undefined
-      ? { connectMachineId: args.connectMachineId }
+    ...(args.serverHeaders !== undefined
+      ? { serverHeaders: args.serverHeaders }
       : {}),
     serverClient: serverClient.serverClient,
     serverUrl: "http://127.0.0.1:3334",
     protocolSelfUpdater: args.protocolSelfUpdater,
     onSelfUpdateInstalled: args.onSelfUpdateInstalled,
+    onMachineShutdown: args.onMachineShutdown,
+    onServerMoved: args.onServerMoved,
+    onMachineEnvironment: args.onMachineEnvironment,
+    onIdleProviderSessionTimeout: args.onIdleProviderSessionTimeout,
+    onHostRpcCancel: args.onHostRpcCancel,
     startupTimeoutMs: args.startupTimeoutMs,
     setSession,
     createWebSocket: webSocket.createWebSocket,
@@ -204,6 +217,188 @@ afterEach(() => {
 });
 
 describe("ServerConnection", () => {
+  it("applies the idle timeout on connection, live changes and reconnect", async () => {
+    const onIdleProviderSessionTimeout = vi.fn();
+    const { connection, webSocket } = createConnectionFixture({
+      onIdleProviderSessionTimeout,
+      sessionIds: ["first", "second"],
+    });
+    try {
+      await connection.start();
+      expect(onIdleProviderSessionTimeout).toHaveBeenLastCalledWith(30);
+      const socket = webSocket.sockets[0];
+      if (!socket) throw new Error("Expected test socket");
+      for (const minutes of [5, 0, 60]) {
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "provider-session-policy.replace",
+            idleProviderSessionTimeoutMinutes: minutes,
+          }),
+        });
+        expect(onIdleProviderSessionTimeout).toHaveBeenLastCalledWith(minutes);
+      }
+      socket.reconnect();
+      await vi.waitFor(() => expect(connection.sessionId).toBe("second"));
+      expect(onIdleProviderSessionTimeout).toHaveBeenLastCalledWith(30);
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("applies initial and replacement machine environments, ignores stale updates and resets revisions after reconnect", async () => {
+    const onMachineEnvironment = vi.fn();
+    const { connection, webSocket } = createConnectionFixture({
+      onMachineEnvironment,
+      sessionIds: ["first", "second"],
+    });
+    try {
+      await connection.start();
+      expect(onMachineEnvironment).toHaveBeenLastCalledWith({
+        revision: 0,
+        entries: [],
+      });
+      const socket = webSocket.sockets[0];
+      if (!socket) throw new Error("Expected test socket");
+      const send = (revision: number) =>
+        socket.onmessage?.({
+          data: JSON.stringify({
+            type: "machine-environment.replace",
+            environment: { revision, entries: [] },
+          }),
+        });
+      send(3);
+      send(2);
+      expect(onMachineEnvironment).toHaveBeenCalledTimes(2);
+      expect(onMachineEnvironment).toHaveBeenLastCalledWith({
+        revision: 3,
+        entries: [],
+      });
+      socket.reconnect();
+      await vi.waitFor(() => expect(connection.sessionId).toBe("second"));
+      send(1);
+      expect(onMachineEnvironment).toHaveBeenLastCalledWith({
+        revision: 1,
+        entries: [],
+      });
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("dispatches the machine shutdown command", async () => {
+    const onMachineShutdown = vi.fn(async () => undefined);
+    const { connection, webSocket } = createConnectionFixture({
+      onMachineShutdown,
+    });
+    await connection.start();
+    const socket = webSocket.sockets[0];
+    if (!socket) throw new Error("Expected test socket");
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "machine.shutdown",
+      }),
+    });
+
+    await vi.waitFor(() => {
+      expect(onMachineShutdown).toHaveBeenCalledOnce();
+    });
+    await connection.shutdown();
+  });
+
+  it("hands a server.moved message to the move handler", async () => {
+    const onServerMoved = vi.fn(async () => undefined);
+    const { connection, webSocket } = createConnectionFixture({
+      onServerMoved,
+    });
+    await connection.start();
+    const socket = webSocket.sockets[0];
+    if (!socket) throw new Error("Expected test socket");
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: "server.moved",
+        serverUrl: "https://new-server.example.test",
+        headers: { "x-bb-connect-machine": "bbcm_new" },
+      }),
+    });
+
+    await vi.waitFor(() => {
+      expect(onServerMoved).toHaveBeenCalledWith({
+        serverUrl: "https://new-server.example.test",
+        headers: { "x-bb-connect-machine": "bbcm_new" },
+        source: "message",
+      });
+    });
+    await connection.shutdown();
+  });
+
+  it("switches servers instead of failing startup when session open answers 410 server_moved", async () => {
+    const onServerMoved = vi.fn(async () => undefined);
+    const movedError = new ServerResponseError({
+      action: "open session",
+      bodyMessage: "This bb server moved to studio",
+      code: "server_moved",
+      retryable: false,
+      serverMoved: {
+        serverUrl: "http://studio.local:38886",
+        toHostName: "studio",
+        movedAt: 1_700_000_000_000,
+      },
+      status: 410,
+      statusText: "Gone",
+    });
+    const { connection, logger, webSocket } = createConnectionFixture({
+      onServerMoved,
+      openSessionError: movedError,
+    });
+
+    const started = connection.start();
+    started.catch(() => undefined);
+    await vi.waitFor(() => {
+      expect(onServerMoved).toHaveBeenCalledWith({
+        source: "session-open",
+        serverUrl: "http://studio.local:38886",
+        headers: null,
+        toHostName: "studio",
+        movedAt: 1_700_000_000_000,
+      });
+      expect(logger.info).toHaveBeenCalledWith(
+        { serverUrl: "http://127.0.0.1:3334" },
+        "Waiting for server...",
+      );
+    });
+
+    expect(webSocket.sockets[0]?.close).not.toHaveBeenCalled();
+    await connection.shutdown();
+  });
+
+  it("fails startup on 410 server_moved when switching servers fails", async () => {
+    const onServerMoved = vi.fn(async () => {
+      throw new Error("config.json is invalid");
+    });
+    const movedError = new ServerResponseError({
+      action: "open session",
+      bodyMessage: "This bb server moved to studio",
+      code: "server_moved",
+      retryable: false,
+      serverMoved: {
+        serverUrl: "http://studio.local:38886",
+        toHostName: "studio",
+        movedAt: 1_700_000_000_000,
+      },
+      status: 410,
+      statusText: "Gone",
+    });
+    const { connection } = createConnectionFixture({
+      onServerMoved,
+      openSessionError: movedError,
+    });
+
+    await expect(connection.start()).rejects.toBe(movedError);
+    expect(onServerMoved).toHaveBeenCalledOnce();
+  });
+
   it("runs protocol self-update handling only for protocol mismatch rejection", async () => {
     const handleProtocolMismatch = vi.fn(async () => "updated" as const);
     const onSelfUpdateInstalled = vi.fn();
@@ -280,7 +475,10 @@ describe("ServerConnection", () => {
 
   it("adds the machine credential to WS dial headers only when configured", async () => {
     const configured = createConnectionFixture({
-      machineCredential: "bbcm_machine",
+      serverHeaders: {
+        "x-bb-connect-machine": "bbcm_machine",
+        "x-test-access": "opaque",
+      },
     });
     const plain = createConnectionFixture();
     try {
@@ -289,6 +487,7 @@ describe("ServerConnection", () => {
       expect(configured.webSocket.headers[0]).toEqual({
         authorization: "Bearer host-key-server-connection-test",
         "x-bb-connect-machine": "bbcm_machine",
+        "x-test-access": "opaque",
       });
       expect(plain.webSocket.headers[0]).toEqual({
         authorization: "Bearer host-key-server-connection-test",
@@ -296,23 +495,6 @@ describe("ServerConnection", () => {
     } finally {
       await configured.connection.shutdown();
       await plain.connection.shutdown();
-    }
-  });
-
-  it("reports the connect machine id when opening a session", async () => {
-    const fixture = createConnectionFixture({
-      connectMachineId: "machine-cloud-1",
-    });
-    try {
-      await fixture.connection.start();
-      expect(fixture.openSession).toHaveBeenCalledWith(
-        expect.objectContaining({
-          connectMachineId: "machine-cloud-1",
-          localApiPort: 38_887,
-        }),
-      );
-    } finally {
-      await fixture.connection.shutdown();
     }
   });
 
@@ -490,6 +672,36 @@ describe("ServerConnection", () => {
     }
   });
 
+  it("delivers a terminal exit that happened while disconnected once the socket reopens", async () => {
+    const { connection, webSocket } = createConnectionFixture({
+      sessionIds: ["first", "second"],
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+      const exited = {
+        type: "terminal.exited" as const,
+        terminalId: "term-1",
+        exitCode: 0,
+        closeReason: "process-exit" as const,
+      };
+
+      socket.reconnect();
+      expect(connection.sendMessage(exited)).toBe(false);
+      expect(socket.send).not.toHaveBeenCalled();
+
+      await vi.waitFor(() => expect(connection.sessionId).toBe("second"));
+      await vi.waitFor(() =>
+        expect(socket.send).toHaveBeenCalledWith(JSON.stringify(exited)),
+      );
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
   it("closes the connection when a terminal websocket send throws", async () => {
     const { connection, webSocket } = createConnectionFixture();
     try {
@@ -513,6 +725,34 @@ describe("ServerConnection", () => {
         }),
       ).toBe(false);
       expect(socket.close).toHaveBeenCalledWith(1013, "send-failed");
+    } finally {
+      await connection.shutdown();
+    }
+  });
+
+  it("forwards host RPC cancellations to the cancel handler", async () => {
+    const onHostRpcCancel = vi.fn();
+    const { connection, webSocket } = createConnectionFixture({
+      onHostRpcCancel,
+    });
+    try {
+      await connection.start();
+      const socket = webSocket.sockets[0];
+      if (!socket) {
+        throw new Error("Expected test socket");
+      }
+
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "host-rpc.cancel",
+          requestId: "rpc-cancelled",
+        }),
+      });
+
+      expect(onHostRpcCancel).toHaveBeenCalledWith({
+        type: "host-rpc.cancel",
+        requestId: "rpc-cancelled",
+      });
     } finally {
       await connection.shutdown();
     }

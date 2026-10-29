@@ -14,17 +14,13 @@ import {
   deriveConnectBaseUrl,
   type ConnectCredential,
 } from "@bb/connect-client";
+import {
+  nextMachineSharePublicUrl,
+  nextSharePublicUrl,
+} from "./next-address.js";
+import type { ShareListing } from "./types.js";
 
 export const SHARES_KV_KEY = "shares";
-
-export interface ShareListing {
-  hostId: string;
-  hostName: string;
-  port: number;
-  createdAt: number;
-  url: string;
-  unavailableReason?: string;
-}
 
 const persistedShareSchema = z
   .object({
@@ -69,13 +65,12 @@ export function parseSharePort(raw: unknown): number {
   return asNumber;
 }
 
-export function sharePublicUrl(
-  credential: Pick<ConnectCredential, "serverUrl" | "handle">,
-  port: number,
-): string {
-  const base = deriveConnectBaseUrl(credential.serverUrl);
+export type ShareIdentity = Pick<ConnectCredential, "serverUrl" | "handle">;
+
+export function sharePublicUrl(identity: ShareIdentity, port: number): string {
+  const base = deriveConnectBaseUrl(identity.serverUrl);
   const url = new URL(base);
-  return `${url.protocol}//${credential.handle}--${port}.${url.host}`;
+  return `${url.protocol}//${identity.handle}--${port}.${url.host}`;
 }
 
 export function machineSharePublicUrl(
@@ -104,9 +99,10 @@ interface ShareRegistryOptions {
   hosts: Pick<PluginHosts, "declareSharedPorts" | "ensureSharedPortTunnel">;
   hostResolver: ShareHostResolver;
   getLoopbackBaseUrl: () => string;
-  getCredential: () => ConnectCredential | null;
+  getIdentity: () => ShareIdentity | null;
   log: Pick<PluginLogger, "warn">;
   onChange?: () => void;
+  nextOrigin?: () => Promise<string | null>;
 }
 
 function shareKey(hostId: string, port: number): string {
@@ -232,8 +228,11 @@ export class ShareRegistry {
 
   async list(hostId?: string): Promise<ShareListing[]> {
     await this.load();
+    const nextOrigin = await this.readNextOrigin();
     const listings = await Promise.all(
-      [...this.shares.values()].map((share) => this.resolveListing(share)),
+      [...this.shares.values()].map((share) =>
+        this.resolveListing(share, nextOrigin),
+      ),
     );
     listings.sort(compareListings);
     this.lastListings = listings;
@@ -244,6 +243,19 @@ export class ShareRegistry {
 
   snapshot(): ShareListing[] {
     return this.lastListings;
+  }
+
+  async serverPorts(): Promise<number[]> {
+    await this.load();
+    const serverHostId = await this.options.hostResolver.primaryHostId();
+    if (serverHostId !== null) this.serverHostId = serverHostId;
+    const ports = new Set<number>();
+    for (const share of this.shares.values()) {
+      if (share.hostId === null || share.hostId === serverHostId) {
+        ports.add(share.port);
+      }
+    }
+    return [...ports].sort((a, b) => a - b);
   }
 
   async add(port: number, host: ShareHost): Promise<ShareListing> {
@@ -257,25 +269,25 @@ export class ShareRegistry {
         `Cannot share port ${validated}: that is the bb server's own port — the bare handle URL already serves bb`,
       );
     }
-    const credential = this.options.getCredential();
-    if (credential === null) {
+    if (this.options.getIdentity() === null) {
       throw new SharePortError(
-        "this bb is not connected to getbb.app — run `bb connect` for how to pair",
+        "this bb isn't signed in to a bb account — run `bb account login`, then share again",
       );
     }
     if (host.isServer) this.serverHostId = host.id;
+    const nextOrigin = await this.readNextOrigin();
     const existing = [...this.shares.values()].find(
       (share) =>
         share.port === validated &&
         (share.hostId === host.id || (share.hostId === null && host.isServer)),
     );
     if (existing) {
-      const listing = await this.resolveListing(existing, host);
+      const listing = await this.resolveListing(existing, nextOrigin, host);
       this.updateSnapshot(listing, existing.hostId === null);
       return listing;
     }
 
-    const url = await this.urlFor(host, validated);
+    const { url, machineLabel } = await this.urlFor(host, validated);
     const key = shareKey(host.id, validated);
     const share: RestoredShare = {
       hostId: host.id,
@@ -297,6 +309,7 @@ export class ShareRegistry {
       port: validated,
       createdAt: share.createdAt,
       url,
+      ...this.nextUrlFor(host, validated, url, nextOrigin, machineLabel),
     };
     this.updateSnapshot(listing, false);
     this.options.onChange?.();
@@ -371,7 +384,7 @@ export class ShareRegistry {
   async declareMachineShares(
     isActivationCurrent: () => boolean,
   ): Promise<void> {
-    if (!isActivationCurrent() || this.options.getCredential() === null) return;
+    if (!isActivationCurrent() || this.options.getIdentity() === null) return;
     const serverHostId = await this.options.hostResolver.serverHostId();
     if (!isActivationCurrent()) return;
     this.serverHostId = serverHostId;
@@ -382,6 +395,10 @@ export class ShareRegistry {
       try {
         this.declare(hostId);
       } catch (error) {
+        if (await this.isRemovedHost(hostId)) {
+          await this.pruneHost(hostId);
+          continue;
+        }
         firstError ??= error;
         this.options.log.warn(
           `failed to declare shared ports for host ${hostId}: ${errorMessage(error)}`,
@@ -389,6 +406,37 @@ export class ShareRegistry {
       }
     }
     if (firstError !== undefined) throw firstError;
+  }
+
+  async pruneHost(hostId: string): Promise<void> {
+    await this.load();
+    const removedShares = [...this.shares].filter(
+      ([, share]) => share.hostId === hostId,
+    );
+    if (removedShares.length === 0) return;
+    for (const [key] of removedShares) this.shares.delete(key);
+    try {
+      await this.persist();
+    } catch (error) {
+      for (const [key, share] of removedShares) {
+        if (!this.shares.has(key)) this.shares.set(key, share);
+      }
+      throw error;
+    }
+    this.declaredMachineHostIds.delete(hostId);
+    this.lastListings = this.lastListings.filter(
+      (entry) => entry.hostId !== hostId,
+    );
+    this.options.onChange?.();
+  }
+
+  private async isRemovedHost(hostId: string): Promise<boolean> {
+    try {
+      await this.options.hostResolver.byId(hostId);
+      return false;
+    } catch (error) {
+      return error instanceof ShareHostNotFoundError;
+    }
   }
 
   private async normalizeLegacyShares(serverHostId: string): Promise<void> {
@@ -431,20 +479,42 @@ export class ShareRegistry {
     this.lastListings = next;
   }
 
+  private async readNextOrigin(): Promise<string | null> {
+    return (await this.options.nextOrigin?.()) ?? null;
+  }
+
+  private nextUrlFor(
+    host: ShareHost,
+    port: number,
+    url: string,
+    nextOrigin: string | null,
+    machineLabel: string | null,
+  ): Pick<ShareListing, "nextUrl"> {
+    if (nextOrigin === null) return {};
+    if (!host.isServer && machineLabel === null) return {};
+    const nextUrl = host.isServer
+      ? nextSharePublicUrl(nextOrigin, port)
+      : nextMachineSharePublicUrl(nextOrigin, machineLabel ?? "", port);
+    return nextUrl === url ? {} : { nextUrl };
+  }
+
   private async resolveListing(
     share: RestoredShare,
+    nextOrigin: string | null,
     knownHost?: ShareHost,
   ): Promise<ShareListing> {
     let host = knownHost;
     try {
       host ??= await this.resolveHost(share);
       if (host.isServer) this.serverHostId = host.id;
+      const { url, machineLabel } = await this.urlFor(host, share.port);
       return {
         hostId: host.id,
         hostName: host.name,
         port: share.port,
         createdAt: share.createdAt,
-        url: await this.urlFor(host, share.port),
+        url,
+        ...this.nextUrlFor(host, share.port, url, nextOrigin, machineLabel),
       };
     } catch (error) {
       return this.unavailableListing(share, error, host);
@@ -489,11 +559,19 @@ export class ShareRegistry {
       : `Share URL unavailable: ${errorMessage(error)}`;
   }
 
-  private async urlFor(host: ShareHost, port: number): Promise<string> {
-    if (host.isServer) return this.serverUrl(port);
+  private async urlFor(
+    host: ShareHost,
+    port: number,
+  ): Promise<{ url: string; machineLabel: string | null }> {
+    if (host.isServer) {
+      return { url: this.serverUrl(port), machineLabel: null };
+    }
     try {
       const identity = await this.options.hosts.ensureSharedPortTunnel(host.id);
-      return machineSharePublicUrl(identity, port);
+      return {
+        url: machineSharePublicUrl(identity, port),
+        machineLabel: identity.label,
+      };
     } catch (error) {
       const prefix = `Cannot share port ${port} from host "${host.name}" (${host.id})`;
       const code = sharedPortErrorCode(error);
@@ -512,9 +590,9 @@ export class ShareRegistry {
   }
 
   private serverUrl(port: number): string {
-    const credential = this.options.getCredential();
-    return credential
-      ? sharePublicUrl(credential, port)
+    const identity = this.options.getIdentity();
+    return identity
+      ? sharePublicUrl(identity, port)
       : `http://127.0.0.1:${port}`;
   }
 
@@ -608,9 +686,5 @@ export class ShareRegistry {
       };
     }
     await this.options.kv.set(SHARES_KV_KEY, map);
-  }
-
-  get isLoaded(): boolean {
-    return this.loaded;
   }
 }

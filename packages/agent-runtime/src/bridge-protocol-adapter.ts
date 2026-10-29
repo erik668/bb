@@ -5,25 +5,27 @@ import type {
   ThreadEvent,
 } from "@bb/domain";
 import { PROVIDER_FORK_VALUES } from "@bb/domain";
-import { pendingInteractionPayloadSchema } from "@bb/domain";
 import {
   BRIDGE_INBOUND_REQUEST_METHODS,
   BRIDGE_NOTIFICATION_METHODS,
   BRIDGE_REQUEST_METHODS,
   bridgeCapabilitiesSchema,
+  errorNotificationSchema,
   initializeResultSchema,
+  interactionRequestParamsSchema,
   negotiateGrammarVersion,
   PROVIDER_BRIDGE_PROTOCOL_VERSION,
   THREAD_DELTA_NOTIFICATION_METHOD,
   providerRecoveryNotificationSchema,
+  sessionReplacedNotificationSchema,
   threadDeltaNotificationParamsSchema,
+  threadIdentityNotificationSchema,
   type BridgeCapabilities,
 } from "@bb/provider-bridge-protocol";
 import {
   ASSEMBLER_GRAMMAR_VERSIONS,
   createDeltaAssembler,
 } from "@bb/provider-bridge-protocol/assembler";
-import { z } from "zod";
 import type {
   AdapterCommand,
   ProviderExecutionContext,
@@ -47,6 +49,11 @@ export type ProviderRecoveryHint = Omit<
   "providerId"
 >;
 
+export type DeferredThreadEventsListener = (
+  sourceThreadId: string,
+  events: ThreadEvent[],
+) => void;
+
 export interface BridgeProtocolAdapter {
   id: string;
   capabilities: BridgeEnforcedCapabilities;
@@ -59,6 +66,7 @@ export interface BridgeProtocolAdapter {
     selectedOnlyModels: AvailableModel[];
   };
   translateEvent(event: ProviderRuntimeEvent): ThreadEvent[];
+  onDeferredEvents(listener: DeferredThreadEventsListener): void;
   decodeRecoveryHint(event: ProviderRuntimeEvent): ProviderRecoveryHint | null;
   decodeToolCallRequest(
     request: ProviderInboundRequest,
@@ -71,17 +79,21 @@ export interface BridgeProtocolAdapter {
   ): ProviderInteractiveResponse;
 }
 
-export type BridgeEnforcedCapabilities = Omit<
+export type BridgeEnforcedCapabilities = Pick<
   ProviderCapabilities,
-  "modelCatalogScope"
+  | "supportsServiceTier"
+  | "permissionModes"
+  | "supportsFork"
+  | "supportsThreadArchive"
+  | "supportsThreadRename"
 >;
 
-interface BridgeAdapterCapabilities extends Omit<
+type BridgeAdapterCapabilities = Omit<
   BridgeEnforcedCapabilities,
-  "supportsFork" | "supportsSessionRewind"
-> {
+  "supportsFork"
+> & {
   fork: ProviderFork;
-}
+};
 
 interface BridgeProtocolAdapterOptions {
   id: string;
@@ -89,44 +101,6 @@ interface BridgeProtocolAdapterOptions {
   process: { command: string; args: string[]; env?: Record<string, string> };
   staticProviderOptions?: Record<string, unknown>;
 }
-
-const threadIdentityNotificationParamsSchema = z
-  .object({
-    threadId: z.string().min(1),
-    providerThreadId: z.string().min(1),
-    sessionRestorable: z.boolean().optional(),
-  })
-  .passthrough();
-
-const sessionReplacedNotificationParamsSchema = z
-  .object({
-    threadId: z.string().min(1),
-    providerThreadId: z.string().min(1).nullable(),
-    reason: z.string().min(1),
-    contextLost: z.boolean().default(false),
-    showRuntimeNote: z.boolean().default(false),
-  })
-  .passthrough();
-
-const errorNotificationParamsSchema = z
-  .object({
-    threadId: z.string().min(1).optional(),
-    providerThreadId: z.string().min(1).optional(),
-    message: z.string().min(1),
-  })
-  .passthrough();
-
-const interactionRequestParamsSchema = z.object({
-  providerThreadId: z.string().min(1),
-  threadId: z.string().min(1).optional(),
-  turnId: z.union([z.string().min(1), z.null()]),
-  payload: pendingInteractionPayloadSchema,
-  providerNativeIds: z.boolean().optional(),
-});
-
-const providerNativeIdsParamsSchema = z
-  .object({ providerNativeIds: z.boolean().optional() })
-  .passthrough();
 
 function toBridgeWireOptions(
   options: ProviderExecutionContext,
@@ -137,6 +111,7 @@ function toBridgeWireOptions(
     serviceTier,
     reasoningLevel,
     promptMode,
+    sessionOptions,
     instructions,
     envVars,
     permissionMode,
@@ -153,6 +128,7 @@ function toBridgeWireOptions(
     ...(serviceTier !== undefined ? { serviceTier } : {}),
     ...(reasoningLevel !== undefined ? { reasoningLevel } : {}),
     ...(promptMode !== undefined ? { promptMode } : {}),
+    ...(sessionOptions !== undefined ? { sessionOptions } : {}),
     ...(instructions !== undefined ? { instructions } : {}),
     ...(envVars !== undefined ? { envVars } : {}),
     permissionMode,
@@ -171,7 +147,6 @@ export function createBridgeProtocolAdapter(
   const capabilities: BridgeEnforcedCapabilities = {
     ...declaredCapabilities,
     supportsFork: declaredFork !== "none",
-    supportsSessionRewind: declaredFork === "checkpoint",
   };
   function effectiveFork(): ProviderFork {
     return PROVIDER_FORK_VALUES.indexOf(handshake.fork) <
@@ -179,7 +154,13 @@ export function createBridgeProtocolAdapter(
       ? handshake.fork
       : declaredFork;
   }
-  const deltaAssembler = createDeltaAssembler({ providerId: options.id });
+  let deferredEventsListener: DeferredThreadEventsListener | null = null;
+  const deltaAssembler = createDeltaAssembler({
+    providerId: options.id,
+    onDeferredEvents: (threadId, events) => {
+      deferredEventsListener?.(threadId, events);
+    },
+  });
 
   function gate(
     capability: keyof BridgeCapabilities & string,
@@ -189,6 +170,33 @@ export function createBridgeProtocolAdapter(
       return plan;
     }
     return { kind: "noop", reason: `${capability} not advertised` };
+  }
+
+  function cwdAndStaticProviderOptions(cwd: string | undefined) {
+    return {
+      ...(cwd !== undefined ? { cwd } : {}),
+      ...(options.staticProviderOptions !== undefined
+        ? { providerOptions: options.staticProviderOptions }
+        : {}),
+    };
+  }
+
+  function sessionConstructionParams(
+    command: Extract<
+      AdapterCommand,
+      { type: "thread/start" | "thread/resume" | "thread/fork" }
+    >,
+  ) {
+    return {
+      options: toBridgeWireOptions(
+        command.options,
+        options.staticProviderOptions,
+      ),
+      ...(command.dynamicTools !== undefined
+        ? { dynamicTools: command.dynamicTools }
+        : {}),
+      instructionMode: command.instructionMode,
+    };
   }
 
   const adapter: BridgeProtocolAdapter = {
@@ -206,11 +214,21 @@ export function createBridgeProtocolAdapter(
             kind: "request",
             method: BRIDGE_REQUEST_METHODS.modelList,
             params: {
-              ...(command.cwd !== undefined ? { cwd: command.cwd } : {}),
-              ...(options.staticProviderOptions !== undefined
-                ? { providerOptions: options.staticProviderOptions }
-                : {}),
+              ...cwdAndStaticProviderOptions(command.cwd),
+              envVars: command.envVars,
+              ...(command.selectedModel === undefined
+                ? {}
+                : { selectedModel: command.selectedModel }),
             },
+          };
+        case "commands/list":
+          if (!handshake.commands.list) {
+            return { kind: "noop", reason: "commands.list not advertised" };
+          }
+          return {
+            kind: "request",
+            method: BRIDGE_REQUEST_METHODS.commandList,
+            params: cwdAndStaticProviderOptions(command.cwd),
           };
         case "provider/health":
           return {
@@ -218,10 +236,7 @@ export function createBridgeProtocolAdapter(
             method: BRIDGE_REQUEST_METHODS.providerHealth,
             params: {
               providerId: options.id,
-              ...(command.cwd !== undefined ? { cwd: command.cwd } : {}),
-              ...(options.staticProviderOptions !== undefined
-                ? { providerOptions: options.staticProviderOptions }
-                : {}),
+              ...cwdAndStaticProviderOptions(command.cwd),
             },
           };
         case "provider/usage":
@@ -230,10 +245,7 @@ export function createBridgeProtocolAdapter(
             method: BRIDGE_REQUEST_METHODS.providerUsage,
             params: {
               providerId: options.id,
-              ...(command.cwd !== undefined ? { cwd: command.cwd } : {}),
-              ...(options.staticProviderOptions !== undefined
-                ? { providerOptions: options.staticProviderOptions }
-                : {}),
+              ...cwdAndStaticProviderOptions(command.cwd),
             },
           };
         case "provider/installation/status":
@@ -242,13 +254,11 @@ export function createBridgeProtocolAdapter(
             method: BRIDGE_REQUEST_METHODS.providerInstallationStatus,
             params: {
               providerId: options.id,
+              checkUpdates: command.checkUpdates,
               ...(command.requirement !== undefined
                 ? { requirement: command.requirement }
                 : {}),
-              ...(command.cwd !== undefined ? { cwd: command.cwd } : {}),
-              ...(options.staticProviderOptions !== undefined
-                ? { providerOptions: options.staticProviderOptions }
-                : {}),
+              ...cwdAndStaticProviderOptions(command.cwd),
             },
           };
         case "provider/installation/run":
@@ -258,10 +268,7 @@ export function createBridgeProtocolAdapter(
             params: {
               providerId: options.id,
               action: command.action,
-              ...(command.cwd !== undefined ? { cwd: command.cwd } : {}),
-              ...(options.staticProviderOptions !== undefined
-                ? { providerOptions: options.staticProviderOptions }
-                : {}),
+              ...cwdAndStaticProviderOptions(command.cwd),
             },
           };
         case "skills/configure":
@@ -280,17 +287,7 @@ export function createBridgeProtocolAdapter(
             params: {
               threadId: command.threadId,
               cwd: command.cwd,
-              options: toBridgeWireOptions(
-                command.options,
-                options.staticProviderOptions,
-              ),
-              ...(command.dynamicTools !== undefined
-                ? { dynamicTools: command.dynamicTools }
-                : {}),
-              ...(command.disallowedTools !== undefined
-                ? { disallowedTools: command.disallowedTools }
-                : {}),
-              instructionMode: command.instructionMode,
+              ...sessionConstructionParams(command),
             },
           };
         case "thread/resume":
@@ -301,17 +298,7 @@ export function createBridgeProtocolAdapter(
               threadId: command.threadId,
               cwd: command.cwd,
               providerThreadId: command.providerThreadId,
-              options: toBridgeWireOptions(
-                command.options,
-                options.staticProviderOptions,
-              ),
-              ...(command.dynamicTools !== undefined
-                ? { dynamicTools: command.dynamicTools }
-                : {}),
-              ...(command.disallowedTools !== undefined
-                ? { disallowedTools: command.disallowedTools }
-                : {}),
-              instructionMode: command.instructionMode,
+              ...sessionConstructionParams(command),
             },
           };
         case "thread/fork": {
@@ -342,17 +329,7 @@ export function createBridgeProtocolAdapter(
                       command.sourceProviderCheckpointId,
                   }
                 : {}),
-              options: toBridgeWireOptions(
-                command.options,
-                options.staticProviderOptions,
-              ),
-              ...(command.dynamicTools !== undefined
-                ? { dynamicTools: command.dynamicTools }
-                : {}),
-              ...(command.disallowedTools !== undefined
-                ? { disallowedTools: command.disallowedTools }
-                : {}),
-              instructionMode: command.instructionMode,
+              ...sessionConstructionParams(command),
             },
           };
         }
@@ -391,24 +368,6 @@ export function createBridgeProtocolAdapter(
               ),
             },
           };
-        case "thread/stop-if-current-turn": {
-          const providerTurnId = deltaAssembler.getProviderTurnId(
-            command.threadId,
-            command.expectedTurnId,
-          );
-          if (providerTurnId === undefined) {
-            return { kind: "noop", reason: "Native turn identity is unproven" };
-          }
-          return gate("experimental_conditionalThreadStop", {
-            kind: "request",
-            method: BRIDGE_REQUEST_METHODS.experimental_threadStopIfCurrentTurn,
-            params: {
-              threadId: command.threadId,
-              providerThreadId: command.providerThreadId,
-              expectedTurnId: providerTurnId,
-            },
-          });
-        }
         case "thread/stop":
           return {
             kind: "request",
@@ -526,6 +485,10 @@ export function createBridgeProtocolAdapter(
 
     parseModelListResult: parseAvailableModelList,
 
+    onDeferredEvents(listener: DeferredThreadEventsListener): void {
+      deferredEventsListener = listener;
+    },
+
     translateEvent(event: ProviderRuntimeEvent): ThreadEvent[] {
       const method = event.method;
       if (method === THREAD_DELTA_NOTIFICATION_METHOD) {
@@ -541,9 +504,7 @@ export function createBridgeProtocolAdapter(
         });
       }
       if (method === BRIDGE_NOTIFICATION_METHODS.threadIdentity) {
-        const parsed = threadIdentityNotificationParamsSchema.safeParse(
-          event.params,
-        );
+        const parsed = threadIdentityNotificationSchema.safeParse(event.params);
         if (!parsed.success) {
           return [];
         }
@@ -557,7 +518,7 @@ export function createBridgeProtocolAdapter(
         ];
       }
       if (method === BRIDGE_NOTIFICATION_METHODS.sessionReplaced) {
-        const parsed = sessionReplacedNotificationParamsSchema.safeParse(
+        const parsed = sessionReplacedNotificationSchema.safeParse(
           event.params,
         );
         if (
@@ -593,7 +554,7 @@ export function createBridgeProtocolAdapter(
         ];
       }
       if (method === BRIDGE_NOTIFICATION_METHODS.error) {
-        const parsed = errorNotificationParamsSchema.safeParse(event.params);
+        const parsed = errorNotificationSchema.safeParse(event.params);
         if (
           !parsed.success ||
           parsed.data.threadId === undefined ||
@@ -646,15 +607,7 @@ export function createBridgeProtocolAdapter(
         request.method,
         request.params,
       );
-      if (decoded === null) {
-        return decoded;
-      }
-      const marker = providerNativeIdsParamsSchema.safeParse(request.params);
-      if (
-        marker.success !== true ||
-        marker.data.providerNativeIds !== true ||
-        decoded.threadId === undefined
-      ) {
+      if (decoded === null || decoded.threadId === undefined) {
         return decoded;
       }
       return {
@@ -683,10 +636,10 @@ export function createBridgeProtocolAdapter(
       if (!parsed.success) {
         return null;
       }
-      const { providerNativeIds, threadId, ...decoded } = parsed.data;
+      const { threadId, ...decoded } = parsed.data;
       let turnId = decoded.turnId;
       let payload = decoded.payload;
-      if (providerNativeIds === true && threadId !== undefined) {
+      if (threadId !== undefined) {
         turnId =
           turnId === null
             ? null

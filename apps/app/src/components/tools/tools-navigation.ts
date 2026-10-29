@@ -1,21 +1,15 @@
-import type { IconName } from "@bb/shared-ui/icon";
 import { matchPath } from "react-router-dom";
 import {
-  SETTINGS_PLUGINS_ROUTE_PATH,
   getPluginsRoutePath,
   getRegistrySkillsRoutePath,
   getSkillsRoutePath,
-  TOOLS_PLUGIN_BROWSE_ROUTE_PATH,
-  TOOLS_PLUGIN_DETAIL_ROUTE_PATH,
-  TOOLS_REGISTRY_SKILLS_ROUTE_PATH,
-  TOOLS_REGISTRY_SKILL_DETAIL_ROUTE_PATH,
-  TOOLS_SKILL_DETAIL_ROUTE_PATH,
-  LEGACY_TOOLS_SKILL_DETAIL_ROUTE_PATH,
-  AUTOMATIONS_BROWSE_ROUTE_PATH,
-  AUTOMATIONS_ROUTE_PATH,
-  AUTOMATION_DETAIL_ROUTE_PATH,
-  AUTOMATION_EDIT_ROUTE_PATH,
-  isToolsRoutePath,
+  PLUGIN_DETAIL_ROUTE_PATH,
+  REGISTRY_SKILLS_ROUTE_PATH,
+  REGISTRY_SKILL_DETAIL_ROUTE_PATH,
+  SKILL_DETAIL_ROUTE_PATH,
+  SETTINGS_PLUGINS_ROUTE_PATH,
+  isPluginsRoutePath,
+  isSkillsRoutePath,
 } from "@/lib/route-paths";
 
 export type ToolsSectionId = "skills" | "plugins";
@@ -25,7 +19,6 @@ export const TOOLS_PAGE_BAND_CLASSES = "mx-auto w-full max-w-5xl px-4 md:px-5";
 interface ToolsSectionDefinition {
   id: ToolsSectionId;
   label: string;
-  icon: IconName;
   to: string;
 }
 
@@ -33,13 +26,11 @@ const TOOLS_SECTIONS = {
   skills: {
     id: "skills",
     label: "Skills",
-    icon: "Zap",
     to: getSkillsRoutePath(),
   },
   plugins: {
     id: "plugins",
     label: "Plugins",
-    icon: "ElectricPlugs",
     to: getPluginsRoutePath(),
   },
 } satisfies Record<ToolsSectionId, ToolsSectionDefinition>;
@@ -55,11 +46,10 @@ const TOOLS_OWNED_COLLECTION_VIEW = {
 } as const satisfies Record<ToolsSectionId, string>;
 
 export function getToolsOwnedCollectionRoutePath(id: ToolsSectionId): string {
-  if (id === "plugins") return SETTINGS_PLUGINS_ROUTE_PATH;
-  return `${TOOLS_SECTIONS[id].to}?view=${TOOLS_OWNED_COLLECTION_VIEW[id]}`;
+  return id === "plugins"
+    ? SETTINGS_PLUGINS_ROUTE_PATH
+    : `${TOOLS_SECTIONS[id].to}?view=${TOOLS_OWNED_COLLECTION_VIEW[id]}`;
 }
-
-export const TOOLS_NAV_ITEMS = [TOOLS_SECTIONS.plugins, TOOLS_SECTIONS.skills];
 
 interface ToolsBreadcrumbSegment {
   label: string;
@@ -77,39 +67,9 @@ function resolvePluginCreateBreadcrumbs(
     return null;
   }
   return [
-    { label: "Extensions", to: getPluginsRoutePath() },
+    { label: "Plugins", to: getPluginsRoutePath() },
     { label: "Create a plugin" },
   ];
-}
-
-export function resolveAutomationBreadcrumbs(
-  pathname: string,
-  resourceLabel?: string | null,
-): ToolsBreadcrumbSegment[] | null {
-  const root = { label: "Automations", to: AUTOMATIONS_ROUTE_PATH };
-  if (pathname === AUTOMATIONS_BROWSE_ROUTE_PATH) {
-    return [root, { label: "Browse" }];
-  }
-  for (const pattern of [
-    AUTOMATION_DETAIL_ROUTE_PATH,
-    AUTOMATION_EDIT_ROUTE_PATH,
-  ]) {
-    const match = matchPath(pattern, pathname);
-    if (!match) continue;
-    return [
-      root,
-      { label: "Installed", to: AUTOMATIONS_ROUTE_PATH },
-      {
-        label:
-          resourceLabel ??
-          routeResourceLabel(match.params.automationId, "Automation"),
-      },
-    ];
-  }
-  if (pathname === AUTOMATIONS_ROUTE_PATH) {
-    return [root, { label: "Installed" }];
-  }
-  return null;
 }
 
 function belongsToRoute(pathname: string, route: string): boolean {
@@ -146,7 +106,7 @@ function collectionCrumb(
 
 const DETAIL_ROUTES = [
   {
-    pattern: TOOLS_REGISTRY_SKILL_DETAIL_ROUTE_PATH,
+    pattern: REGISTRY_SKILL_DETAIL_ROUTE_PATH,
     section: "skills",
     collection: collectionCrumb(
       "skills",
@@ -157,37 +117,20 @@ const DETAIL_ROUTES = [
     fallback: "Skill",
   },
   {
-    pattern: TOOLS_SKILL_DETAIL_ROUTE_PATH,
+    pattern: SKILL_DETAIL_ROUTE_PATH,
     section: "skills",
     collection: collectionCrumb("skills"),
     param: "skillId",
     fallback: "Skill",
   },
   {
-    pattern: LEGACY_TOOLS_SKILL_DETAIL_ROUTE_PATH,
-    section: "skills",
-    collection: collectionCrumb("skills"),
-    param: "skillId",
-    fallback: "Skill",
-  },
-  {
-    pattern: TOOLS_PLUGIN_DETAIL_ROUTE_PATH,
+    pattern: PLUGIN_DETAIL_ROUTE_PATH,
     section: "plugins",
     collection: collectionCrumb("plugins"),
     param: "pluginId",
     fallback: "Plugin",
   },
 ] as const;
-
-const BROWSE_ROUTES = [
-  ["skills", TOOLS_REGISTRY_SKILLS_ROUTE_PATH],
-  ["plugins", TOOLS_PLUGIN_BROWSE_ROUTE_PATH],
-] as const;
-
-const ROOT_ROUTE_ALIASES: Record<ToolsSectionId, readonly string[]> = {
-  skills: ["/skills"],
-  plugins: [],
-};
 
 export function resolveToolsBreadcrumbs(
   pathname: string,
@@ -202,13 +145,21 @@ export function resolveToolsBreadcrumbs(
   if (pluginCreateBreadcrumbs !== null) {
     return pluginCreateBreadcrumbs;
   }
-  for (const [section, browseRoute] of BROWSE_ROUTES) {
-    if (
-      pathname === browseRoute ||
-      (pathname === TOOLS_SECTIONS[section].to &&
-        view !== TOOLS_OWNED_COLLECTION_VIEW[section])
-    ) {
-      return [sectionCrumb(section), { label: "Browse" }];
+  if (pathname === REGISTRY_SKILLS_ROUTE_PATH) {
+    return [sectionCrumb("skills"), { label: "Browse" }];
+  }
+
+  for (const section of [TOOLS_SECTIONS.plugins, TOOLS_SECTIONS.skills]) {
+    if (pathname === section.to) {
+      return [
+        sectionCrumb(section.id),
+        {
+          label:
+            view === TOOLS_OWNED_COLLECTION_VIEW[section.id]
+              ? TOOLS_OWNED_COLLECTION_LABEL[section.id]
+              : "Browse",
+        },
+      ];
     }
   }
 
@@ -231,54 +182,41 @@ export function resolveToolsBreadcrumbs(
     ];
   }
 
-  for (const section of TOOLS_NAV_ITEMS) {
-    if (
-      pathname === section.to ||
-      ROOT_ROUTE_ALIASES[section.id].includes(pathname)
-    ) {
-      if (
-        pathname === section.to &&
-        view !== TOOLS_OWNED_COLLECTION_VIEW[section.id]
-      ) {
-        continue;
-      }
-      return [
-        sectionCrumb(section.id),
-        { label: TOOLS_OWNED_COLLECTION_LABEL[section.id] },
-      ];
-    }
-  }
   return null;
 }
 
-interface ToolsPageDefinition {
-  id: "plugins-browse" | "skills-browse" | "skills-library";
-  section: ToolsSectionId;
+interface ResourcePageDefinition {
+  id:
+    | "plugins-browse"
+    | "plugins-installed"
+    | "skills-browse"
+    | "skills-library";
   label: string;
-  icon: IconName;
   to: string;
 }
 
-export const TOOLS_PAGES: readonly ToolsPageDefinition[] = [
+export const PLUGIN_PAGES: readonly ResourcePageDefinition[] = [
   {
     id: "plugins-browse",
-    section: "plugins",
-    label: `Browse ${TOOLS_SECTIONS.plugins.label.toLowerCase()}`,
-    icon: TOOLS_SECTIONS.plugins.icon,
+    label: "Browse plugins",
     to: TOOLS_SECTIONS.plugins.to,
   },
   {
+    id: "plugins-installed",
+    label: "Installed plugins",
+    to: `${TOOLS_SECTIONS.plugins.to}?view=installed`,
+  },
+];
+
+export const SKILL_PAGES: readonly ResourcePageDefinition[] = [
+  {
     id: "skills-browse",
-    section: "skills",
-    label: `Browse ${TOOLS_SECTIONS.skills.label.toLowerCase()}`,
-    icon: TOOLS_SECTIONS.skills.icon,
+    label: "Browse skills",
     to: TOOLS_SECTIONS.skills.to,
   },
   {
     id: "skills-library",
-    section: "skills",
     label: TOOLS_OWNED_COLLECTION_LABEL.skills,
-    icon: "FolderOpen",
     to: getToolsOwnedCollectionRoutePath("skills"),
   },
 ];
@@ -286,12 +224,14 @@ export const TOOLS_PAGES: readonly ToolsPageDefinition[] = [
 export function resolveToolsActivePage(
   pathname: string,
   search = "",
-): ToolsPageDefinition["id"] {
+): ResourcePageDefinition["id"] {
   const view = new URLSearchParams(search).get("view");
   for (const detail of DETAIL_ROUTES) {
     if (matchPath(detail.pattern, pathname) === null) continue;
     if (detail.section === "plugins") {
-      return "plugins-browse";
+      return view === TOOLS_OWNED_COLLECTION_VIEW.plugins
+        ? "plugins-installed"
+        : "plugins-browse";
     }
     return detail.collection.label === TOOLS_OWNED_COLLECTION_LABEL.skills
       ? "skills-library"
@@ -299,37 +239,37 @@ export function resolveToolsActivePage(
   }
   const section = resolveToolsSection(pathname);
   if (section === "plugins") {
-    return "plugins-browse";
+    return view === TOOLS_OWNED_COLLECTION_VIEW.plugins
+      ? "plugins-installed"
+      : "plugins-browse";
   }
   return view === TOOLS_OWNED_COLLECTION_VIEW.skills
     ? "skills-library"
     : "skills-browse";
 }
 
-export function resolveToolsAreaHeaderMeta(
+type ResourceWorkspaceHeaderMeta =
+  | { kind: "section-title"; title: string }
+  | { kind: "breadcrumbs"; breadcrumbs: ToolsBreadcrumbSegment[] };
+
+export function resolvePluginsWorkspaceHeaderMeta(
   pathname: string,
-  resourceLabel?: string | null,
   search = "",
-):
-  | { kind: "extensions-title"; title: string }
-  | { kind: "breadcrumbs"; breadcrumbs: ToolsBreadcrumbSegment[] }
-  | null {
-  if (isToolsRoutePath(pathname)) {
-    const pluginCreateBreadcrumbs = resolvePluginCreateBreadcrumbs(
-      pathname,
-      search,
-    );
-    if (pluginCreateBreadcrumbs !== null) {
-      return { kind: "breadcrumbs", breadcrumbs: pluginCreateBreadcrumbs };
-    }
-    return { kind: "extensions-title", title: "Extensions" };
-  }
-  const automationBreadcrumbs = resolveAutomationBreadcrumbs(
+): ResourceWorkspaceHeaderMeta | null {
+  if (!isPluginsRoutePath(pathname)) return null;
+  const pluginCreateBreadcrumbs = resolvePluginCreateBreadcrumbs(
     pathname,
-    resourceLabel,
+    search,
   );
-  if (automationBreadcrumbs !== null) {
-    return { kind: "breadcrumbs", breadcrumbs: automationBreadcrumbs };
+  if (pluginCreateBreadcrumbs !== null) {
+    return { kind: "breadcrumbs", breadcrumbs: pluginCreateBreadcrumbs };
   }
-  return null;
+  return { kind: "section-title", title: "Plugins" };
+}
+
+export function resolveSkillsWorkspaceHeaderMeta(
+  pathname: string,
+): ResourceWorkspaceHeaderMeta | null {
+  if (!isSkillsRoutePath(pathname)) return null;
+  return { kind: "section-title", title: "Skills" };
 }

@@ -3,6 +3,7 @@ import type {
   TimelineRow,
   TimelineRowStatus,
 } from "@bb/server-contract";
+import { displayWidth } from "@bb/text-utils";
 import { assertNever } from "./assert-never.js";
 import {
   buildTimelineWorkSummaryLabel,
@@ -83,7 +84,7 @@ function cyan(text: string, color: boolean): string {
 }
 
 function separator(label: string, color: boolean): string {
-  const pad = Math.max(0, 60 - label.length - 4);
+  const pad = Math.max(0, 60 - displayWidth(label) - 4);
   const suffix = "─".repeat(pad);
   return dim(
     suffix.length > 0 ? `── ${label} ${suffix}` : `── ${label}`,
@@ -212,6 +213,9 @@ function formatWorkBody(
       if (row.approvalStatus !== null) {
         lines.push(`  ${workStatusLabel(row, context.color)}`);
       }
+      if (context.verbose && row.stderr?.trim()) {
+        lines.push(red(indentBlock(row.stderr.trimEnd(), "  "), context.color));
+      }
       if (context.verbose && row.change.diff) {
         lines.push(
           dim(indentBlock(row.change.diff.trimEnd(), "  "), context.color),
@@ -221,6 +225,8 @@ function formatWorkBody(
     case "web-search":
       return lines;
     case "web-fetch":
+      return lines;
+    case "image-generation":
       return lines;
     case "image-view":
       return lines;
@@ -251,10 +257,11 @@ function formatWorkBody(
       return lines;
     case "approval":
     case "question":
+    case "form":
     case "workflow":
       return lines;
     case "delegation":
-      if (row.childRows.length > 0) {
+      if (row.childRows !== null && row.childRows.length > 0) {
         lines.push(
           indentBlock(
             formatRows(row.childRows, nestedContext(context, row.childRows)),
@@ -310,6 +317,10 @@ function formatWorkSummaryDetails(
   const lines: string[] = [];
   const childContext = nestedContext(context, null);
   for (const child of row.children) {
+    if (child.kind === "system") {
+      lines.push(formatRow(child, childContext));
+      continue;
+    }
     if (
       (child.workKind === "command" ||
         child.workKind === "file-read" ||

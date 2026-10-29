@@ -157,7 +157,7 @@ describe("local host daemon access atoms", () => {
         await store.get(localHostDaemonAccessStateAtom);
         expect(mocks.fetchSdkSystemConfig).not.toHaveBeenCalled();
         mocks.fetchSdkSystemConfig.mockImplementation(
-          ({ signal } = {}) =>
+          ({ signal }: { signal?: AbortSignal } = {}) =>
             new Promise((resolve) => {
               requests.push({ resolve });
               signal?.addEventListener(
@@ -332,6 +332,66 @@ describe("local host daemon access atoms", () => {
       expect(mocks.fetchHostStatus).toHaveBeenCalledTimes(4);
     });
     unsubscribe();
+  });
+
+  it("refreshes config and status discovery only for host connection changes", async () => {
+    vi.stubGlobal("navigator", {
+      permissions: {
+        query: vi.fn(async () => ({ state: "granted" })),
+      },
+      userAgent: "test",
+    });
+    mocks.fetchHostStatus.mockResolvedValue({
+      connected: true,
+      hostId: "host-local",
+      serverUrl: "https://remote.getbb.app",
+    });
+    const store = createStore();
+    const unsubscribe = store.sub(localHostStatusAtom, () => {});
+    const configRequestCount = () =>
+      mocks.fetchSdkSystemConfig.mock.calls.length +
+      mocks.fetchSystemConfig.mock.calls.length;
+    const notifyChanged = (message: ChangedMessage) => {
+      for (const [listener] of mocks.onChanged.mock.calls) {
+        listener(message);
+      }
+    };
+
+    try {
+      await expect(store.get(localHostStatusAtom)).resolves.toMatchObject({
+        hostId: "host-local",
+      });
+      const hostStatusRequests = mocks.fetchHostStatus.mock.calls.length;
+      const configRequests = configRequestCount();
+
+      notifyChanged({
+        type: "changed",
+        entity: "host",
+        id: "h1",
+        changes: ["provider-model-catalog-changed"],
+      });
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await expect(store.get(localHostStatusAtom)).resolves.toMatchObject({
+        hostId: "host-local",
+      });
+      expect(mocks.fetchHostStatus).toHaveBeenCalledTimes(hostStatusRequests);
+      expect(configRequestCount()).toBe(configRequests);
+
+      notifyChanged({
+        type: "changed",
+        entity: "host",
+        id: "h1",
+        changes: ["host-connected"],
+      });
+      await vi.waitFor(() => {
+        expect(mocks.fetchHostStatus.mock.calls.length).toBeGreaterThan(
+          hostStatusRequests,
+        );
+        expect(configRequestCount()).toBeGreaterThan(configRequests);
+      });
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("does not probe loopback while a remote page is in prompt state", async () => {

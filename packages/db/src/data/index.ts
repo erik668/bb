@@ -1,4 +1,3 @@
-export * from "./thread-supervision.js";
 export {
   createProject,
   ensurePersonalProject,
@@ -6,7 +5,6 @@ export {
   getPersonalProject,
   getProject,
   getPublicProjectByLocalPathSource,
-  listProjects,
   listPublicProjects,
   markProjectDeleted,
   reorderProject,
@@ -14,18 +12,12 @@ export {
   updateProject,
   deleteProject,
 } from "./projects.js";
-export type {
-  CreateProjectInput,
-  ProjectRow,
-  ReorderProjectResult,
-  UpdateProjectInput,
-} from "./projects.js";
+export type { ReorderProjectResult } from "./projects.js";
 
 export {
   getThreadConversationOutlineRecord,
   upsertThreadConversationOutlineRecord,
 } from "./thread-conversation-outlines.js";
-export type { ThreadConversationOutlineRecord } from "./thread-conversation-outlines.js";
 
 export {
   createThreadSection,
@@ -37,10 +29,15 @@ export {
 } from "./thread-sections.js";
 export {
   createPromptHistoryEntry,
+  listPromptHistoryPage,
   listStoredProjectPromptHistoryRows,
   listStoredThreadPromptHistoryRows,
 } from "./prompt-history.js";
-export type { StoredPromptHistoryEntryRow } from "./prompt-history.js";
+export type {
+  ListPromptHistoryPageArgs,
+  PromptHistoryPosition,
+  StoredPromptHistoryEntryRow,
+} from "./prompt-history.js";
 
 export {
   getProjectExecutionDefaults,
@@ -52,12 +49,24 @@ export {
   countProjectSources,
   getProjectSourceForProject,
   listProjectSourcesByProjectIds,
+  listProjectSourcesByHost,
   getProjectSourceByHost,
+  getProjectSourceOnPersistentHost,
+  projectSourceOwnsPath,
   updateProjectSource,
   deleteProjectSource,
 } from "./project-sources.js";
 export {
+  getThreadPluginMetadata,
+  insertThreadPluginMetadata,
+  listPluginThreadMetadata,
+  listThreadPluginMetadataRows,
+  patchThreadPluginMetadata,
+} from "./thread-plugin-metadata.js";
+
+export {
   createThread,
+  InvalidLifecycleOwnerError,
   countLiveThreadsInEnvironment,
   countThreads,
   countNonDeletedAssignedChildThreads,
@@ -65,11 +74,9 @@ export {
   getThreadExecutionOverride,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
-  getThreadPendingStartContext,
-  setThreadPendingStartContext,
-  hasLiveThreadAtHostPath,
-  hasPendingThreadShutdownInEnvironment,
-  hasRevivableArchivedThreadInEnvironment,
+  getThreadStartupContext,
+  setThreadStartupContext,
+  listExistingThreadIds,
   listHostThreadIds,
   listActiveHostThreads,
   listActiveVisiblePinnedThreadRootsWithPendingInteractionState,
@@ -78,9 +85,12 @@ export {
   listNonDeletedChildThreads,
   listThreadEnvironmentAssignmentsOnHost,
   listUnarchivedAssignedChildThreads,
-  listUnarchivedHiddenSourceThreads,
+  listNonDeletedHiddenSourceThreads,
+  deletionThreadTreeIdsForProject,
+  listThreadDeletionTree,
+  listLifecycleThreadDependents,
+  listArchivedThreadsPendingTeardown,
   listRunningThreads,
-  listThreads,
   listThreadsWithPendingInteractionState,
   listThreadsWithPendingInteractionStateForProjects,
   pinThread,
@@ -89,11 +99,14 @@ export {
   deleteThread,
   archiveThread,
   markThreadDeleted,
+  markThreadStorageDeleted,
   unpinThread,
   unarchiveThread,
   applyThreadLifecycleEvent,
   applyThreadLifecycleEventInTransaction,
   requireThreadLifecycleEventApplied,
+  listThreadAncestors,
+  listThreadDescendants,
   searchThreadsWithPendingInteractionState,
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
@@ -101,15 +114,8 @@ export {
 export type {
   ApplyThreadLifecycleEventArgs,
   ApplyThreadLifecycleEventOutcome,
-  CountThreadsGroupBy,
-  CountThreadsOptions,
-  CountThreadsResult,
   ReorderPinnedThreadResult,
   RunningThreadRow,
-  ThreadSearchHighlightRange,
-  ThreadSearchMatch,
-  ThreadSearchResult,
-  ThreadCountGroupRow,
   ThreadSearchResultGroup,
   ThreadWithPendingInteractionState,
   ThreadExecutionOverride,
@@ -117,12 +123,30 @@ export type {
 } from "./threads.js";
 
 export {
+  forgetPluginProviders,
+  getAiServiceSelections,
   getAppKeybindingOverrides,
+  claimInstallTurnNumber,
   getAppSettings,
+  getDisabledPluginProviderCatalog,
+  getDisabledProviderIds,
+  getPluginSafeMode,
+  setAiServiceSelection,
   setAppKeybindingOverrides,
   setAppSettings,
+  setDisabledPluginProviderCatalog,
+  setDisabledProviderIds,
+  setPluginSafeMode,
 } from "./app-settings.js";
 export { getStoredThreadTabs, replaceStoredThreadTabs } from "./thread-tabs.js";
+export {
+  getStoredUiPreferenceDefault,
+  listStoredUiPreferenceDefaults,
+  listStoredUiPreferences,
+  overwriteStoredUiPreference,
+  replaceStoredUiPreference,
+  type StoredUiPreference,
+} from "./ui-preferences.js";
 export { getExperiments, setExperiments } from "./experiments.js";
 export {
   deleteInstalledPlugin,
@@ -133,6 +157,7 @@ export {
   listUnnormalizedPluginRegistrations,
   markInstalledPluginRemoved,
   normalizeInstalledPluginRegistration,
+  restoreRemovedInstalledPlugin,
   setInstalledPluginDirectProvenance,
   setInstalledPluginEnabled,
   setInstalledPluginUpdateState,
@@ -146,7 +171,6 @@ export {
   type PluginGitSelector,
   type PluginProvenance,
   type PluginSourceIntent,
-  type PluginUpdateState,
 } from "./plugins.js";
 export {
   createPluginArtifact,
@@ -154,6 +178,7 @@ export {
   getPluginArtifactByResolution,
   getPluginArtifact,
   listPluginArtifacts,
+  listInstalledPluginIdsOverlappingPath,
   listPluginArtifactsAtOrUnderPath,
   listPluginArtifactsInGitCheckout,
   listPluginArtifactsUnderPath,
@@ -179,6 +204,7 @@ export {
 } from "./plugin-marketplaces.js";
 export {
   deleteAllPluginSettings,
+  deleteAllPluginKvValues,
   deletePluginKvValue,
   getPluginKvValue,
   getPluginSettingsValues,
@@ -218,26 +244,50 @@ export {
 } from "./app-theme.js";
 
 export {
+  getPreparingEnvironment,
+  reserveEnvironment,
+  updatePreparingEnvironment,
+  listProviderLifecycleEnvironments,
+  environmentHasLiveThreads,
+  releaseFinishedEnvironmentPreparationOwners,
+  claimEnvironmentPath,
+  findEnvironmentPathClaim,
+  bindEnvironmentPath,
   createEnvironment,
   getEnvironment,
   findProjectEnvironmentByHostPath,
   listEnvironments,
   findForeignManagedEnvironmentAtHostPath,
+  findProviderEnvironmentContainingPath,
   listRetiredLoadedEnvironmentIdsOnHost,
+  markHostEnvironmentsDestroyed,
+  recordEnvironmentCurrentBranch,
   updateEnvironmentMetadata,
 } from "./environments.js";
-export type { CreateEnvironmentInput } from "./environments.js";
+export type { EnvironmentRow } from "./environments.js";
 
 export {
   upsertHost,
   getHost,
   getNonDestroyedHost,
+  getNonDestroyedHostByLaunchKey,
   listHosts,
+  listHostsByIds,
   listNonDestroyedHostsByIds,
   listPublicHosts,
   updateHost,
-  deleteHost,
 } from "./hosts.js";
+export type { HostRow } from "./hosts.js";
+
+export {
+  deleteStoredProviderModelCatalogsForHost,
+  getStoredProviderModelCatalog,
+  replaceStoredProviderModelCatalog,
+} from "./provider-model-catalogs.js";
+export type {
+  ProviderModelCatalogRowKey,
+  StoredProviderModelCatalog,
+} from "./provider-model-catalogs.js";
 
 export {
   appendDaemonEventsInTransaction,
@@ -250,9 +300,16 @@ export {
   getHighWaterMarks,
   findStoredEventRow,
   getActiveStoredTurnId,
+  isStoredTurnMainRunIdle,
+  isStoredTurnProviderCompactionRunning,
   hasRootStoredTurnStarted,
+  hasStoredSpawnAgentToolCall,
+  hasStoredTerminalClientTurnRequestEvent,
   hasStoredTurnStarted,
+  classifyStoredProviderThreadClaim,
+  wouldRemoveSharedProviderSessionClaim,
   getLastStoredProviderThreadId,
+  getStoredProviderSession,
   getLastStoredTurnRequestEvent,
   getStoredTurnRequestEventForTurn,
   getLatestThreadOutputEventRow,
@@ -263,39 +320,43 @@ export {
   insertEvents,
   listActiveBackgroundTaskCountsByThreadIds,
   listContextWindowUsageRows,
-  listCompletedTurnsByThreadIds,
+  getLatestTokenUsageRow,
   listEvents,
-  listRecentStoredEventRows,
   listStoredConversationOutlineEventRows,
-  listTimelineSegmentAnchorsDescending,
+  listStoredRootConversationOutlineEventRows,
+  getStoredConversationOutlineProjectionState,
+  listTimelineWindowHintsDescending,
+  getFirstParentedTimelineBoundarySequence,
+  getTimelineGroupingContextChangesInRange,
+  listStoredEventRowsInSequenceRange,
+  listTimelineOrderingContext,
+  listTimelineInterruptionRows,
   findTimelineWindowBudgetFloorSequence,
   findStoredTimelineWindowByteBudgetFloor,
-  getStoredEventRowsByParentToolCallIdsDataBytes,
-  findUnfinishedTurnCoveringSequence,
-  hasParentedEventCrossingSequence,
-  getTimelineSegmentAnchorAtSequence,
+  isTimelineCursorSequencePresent,
   listStoredClientTurnRequestIdsInRange,
   listStoredClientTurnRequestRowsByKeys,
   listStoredEventRowsByParentToolCallIds,
   listStoredEventRows,
-  isTimelineCursorSequencePresent,
   listItemEventSpansByItems,
   listStoredBufferedTextDeltaRowsByItems,
+  getStoredItemLifecycleSequenceRange,
   listStoredItemLifecycleRowsByItems,
   scopedItemRefKey,
-  listStoredThreadProvisioningRowsByProvisioningId,
   listStoredTimelineWindowEventRows,
+  listStoredTimelineTurnEventRows,
+  listStoredTimelineThreadWindowEventRows,
+  listTimelineRootWindowTurnIds,
   listStoredDelegatingItemRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnRejectedRowsByClientRequestIds,
   listStoredTurnCompletedRowsByTurnIds,
+  listStoredTurnCompletedKeys,
   listStoredTurnStartedKeys,
   listStoredTurnStartedRowsByTurnIdsUpToSequence,
-  getLatestThreadInterruptedEventData,
   getLatestThreadInterruptedReason,
-  getLatestStoredRateLimitsEventForProvider,
+  getLatestStoredRateLimitsEvent,
   getLatestStoredThreadEventOfTypes,
-  getStoredTurnRequestEventByRequestId,
   listLatestThreadStateEventRowsByThreadIds,
   listLatestBackgroundTaskStateRowsByItemIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
@@ -303,15 +364,28 @@ export {
   listOpenTurnInputAcceptedRowsByThreadIds,
   listOpenBackgroundTaskItemRowsForHost,
   listOpenBackgroundTaskItemRowsForThread,
+  listThreadEventSuffixBackgroundSettlementRows,
+  listThreadIdsStoppedSinceLastTurnStart,
   listThreadIdsWithLatestHostDaemonRestartInterruption,
   listThreadTurnInterruptionEventStates,
   MissingStoredTurnStartedError,
-  pruneBackgroundTaskProgressEvents,
-  pruneContextWindowUsageEventsBeforeSequence,
-  pruneTokenUsageEventsBeforeSequence,
-  pruneResolvedItemDeltas,
-  pruneThreadEventsBeforeSequence,
 } from "./events.js";
+export {
+  getDatabaseDataVersion,
+  getThreadEventRewriteGeneration,
+} from "./event-rewrite-generation.js";
+export {
+  canHydrateRetainedEventOutputRowsWithinDataByteLimit,
+  deleteExpiredRetainedEventOutputs,
+  hydrateRetainedEventOutputRows,
+  hydrateRetainedEventOutputRowsWithinDataByteLimit,
+  prepareCompletedEventOutputData,
+  insertPreparedRetainedEventOutput,
+} from "./retained-event-outputs.js";
+export {
+  COMPLETED_EVENT_OUTPUT_RETENTION_MS,
+  RETAINED_EVENT_OUTPUT_TARGETS,
+} from "../retained-event-output.js";
 export type {
   AcceptedDaemonEvent,
   AppendDaemonEventInput,
@@ -322,12 +396,13 @@ export type {
   ScopedItemRef,
   StoredEventRow,
   StoredThreadEventDataRow,
-  StandardTimelineSegmentAnchorRow,
+  TimelineWindowHint,
   ThreadClientTurnRequestKey,
   StoredTurnRequestEventRow,
 } from "./events.js";
 
 export {
+  countTerminalSessions,
   createTerminalSession,
   getTerminalSession,
   listTerminalSessions,
@@ -342,6 +417,7 @@ export type {
 export {
   createPendingInteraction,
   getActivePendingInteractionForThread,
+  hasTurnBoundActivePendingInteractionForThread,
   getPendingInteraction,
   getPendingInteractionByProviderRequest,
   interruptPendingInteractionsForThreadIds,
@@ -361,22 +437,24 @@ export {
   getLatestSessionForHost,
   getSessionById,
   heartbeatSession,
-  listLatestSessionsForHosts,
+  listLatestClosedSessionsForHosts,
 } from "./sessions.js";
 export type { HostDaemonSessionRow } from "./sessions.js";
 
 export {
-  claimQueuedThreadMessage,
   claimQueuedThreadMessageGroup,
   claimNextQueuedThreadMessageGroup,
   clearQueuedThreadMessageWaitingOn,
   createQueuedThreadMessage,
   createQueuedThreadMessageInTransaction,
+  deleteQueuedRetriesForThreadEventSuffixInTransaction,
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   deleteQueuedThreadMessage,
   getQueuedThreadMessage,
+  getQueuedThreadStartMessage,
   hasQueuedRetryOfTurnRequest,
-  hasQueuedThreadMessages,
+  hasClaimedQueuedThreadMessages,
+  holdQueuedThreadMessageForEdit,
   isOrdinaryTurnEndQueuedMessage,
   isThreadQueueAutoSendPaused,
   listDueScheduledQueuedThreadMessages,
@@ -387,8 +465,10 @@ export {
   listQueuedThreadMessagesForApi,
   listQueuedThreadMessagesByWaitHolder,
   listQueuedThreadMessagesWaitingOnKind,
+  listRetryableFailedQueuedThreadMessages,
   listThreadIdsWithHostOfflineQueueWaits,
   releaseQueuedMessageClaim,
+  releaseQueuedThreadMessageEditHold,
   requeueClaimedQueuedThreadMessages,
   setQueuedThreadMessageFailureReason,
   setQueuedThreadMessageWaitingOn,
@@ -399,31 +479,21 @@ export {
 } from "./queued-thread-messages.js";
 export type {
   ClaimedQueuedThreadMessageRow,
-  ClearQueuedThreadMessageWaitingOnArgs,
-  ListQueuedThreadMessagesForApiArgs,
-  ListQueuedThreadMessagesWaitingOnKindArgs,
   QueuedThreadMessageGroupClaimPolicy,
   QueuedThreadMessageGroupEligibility,
-  QueuedThreadMessagePluginWaitRef,
   QueuedThreadMessageRow,
   ReorderQueuedThreadMessageResult,
-  SetQueuedThreadMessageGroupBoundaryArgs,
   SetQueuedThreadMessageGroupBoundaryResult,
-  SetQueuedThreadMessageWaitingOnArgs,
 } from "./queued-thread-messages.js";
 
 export {
   CLOSED_SESSION_ROW_RETENTION_MS,
-  COMPLETED_EVENT_OUTPUT_RETENTION_MS,
   DEFAULT_CLOSED_SESSION_PRUNE_BATCH_SIZE,
-  DEFAULT_COMPLETED_EVENT_OUTPUT_TRUNCATION_BATCH_SIZE,
-  DEFAULT_DESTROYED_ENVIRONMENT_EVENT_DETACH_BATCH_SIZE,
-  DEFAULT_DESTROYED_ENVIRONMENT_PRUNE_BATCH_SIZE,
-  DESTROYED_ENVIRONMENT_TTL_MS,
+  DEFAULT_COMPLETED_EVENT_OUTPUT_MIGRATION_SCAN_LIMIT,
+  DEFAULT_LEGACY_IMAGE_GENERATION_MIGRATION_SCAN_LIMIT,
+  migrateNextCompletedEventItemOutput,
+  migrateNextLegacyImageGenerationOutput,
   pruneClosedSessions,
-  pruneDestroyedEnvironments,
-  truncateCompletedEventItemOutputs,
-  sweepManagedEnvironments,
 } from "./sweeps.js";
 export {
   compactDatabase,
@@ -443,3 +513,29 @@ export {
   shouldCompactDatabase,
   shouldRunIncrementalVacuum,
 } from "./maintenance.js";
+export * from "./machines.js";
+export {
+  advanceThreadPruning,
+  getNextThreadPruningPolicy,
+  THREAD_PRUNING_POLICIES,
+} from "./thread-pruning.js";
+export {
+  listPathInstalledPluginSources,
+  rerootServerOwnedPluginPaths,
+  swapServerHostRoles,
+  type RerootServerOwnedPathsResult,
+  type SwapServerHostRolesResult,
+} from "./server-move.js";
+
+export * from "./project-attachments.js";
+
+export * from "./project-attachment-backfill.js";
+export {
+  clearDiffViewedFiles,
+  listDiffViewedFiles,
+  markDiffViewedFile,
+} from "./diff-viewed-files.js";
+export type {
+  DiffViewedFileRecord,
+  DiffViewedFileScope,
+} from "./diff-viewed-files.js";

@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  createAttachmentFilePreviewFixedPanelTab,
   createBrowserFixedPanelTab,
   createEmptyFixedPanelTabsState,
   createGitDiffFixedPanelTab,
   createHostFilePreviewFixedPanelTab,
   createNewTabFixedPanelTab,
+  createPluginFixedPanelTab,
   createPluginPageFixedPanelTab,
+  createPluginPanelFixedPanelTab,
+  parseFixedPanelTabsState,
+  serializeFixedPanelTabsState,
   createTerminalFixedPanelTab,
   createThreadInfoFixedPanelTab,
   createThreadStorageFilePreviewFixedPanelTab,
@@ -17,6 +22,8 @@ import {
   closeSecondaryPanelTabInState,
   openSecondaryPanelTabInState,
   reconcileFixedPanelViewTabsInState,
+  updateSecondaryPanelTabInState,
+  reorderSecondaryPanelFileTabInState,
   replaceNewTabWithSecondaryPanelTabInState,
 } from "@bb/client-core";
 
@@ -74,7 +81,7 @@ describe("secondaryPanelTabState", () => {
     expect(state.secondary.activeTabId).toBe(workspaceTab.id);
 
     state = closeSecondaryPanelTabInState(state, workspaceTab.id);
-    expect(state.secondary.activeTabId).toBe(hostTab.id);
+    expect(state.secondary.activeTabId).toBe(tabs.at(-1)?.id);
     expect(state.secondary.tabs.some((tab) => tab.id === workspaceTab.id)).toBe(
       false,
     );
@@ -142,6 +149,47 @@ describe("secondaryPanelTabState", () => {
     expect(nextState.secondary.isOpen).toBe(true);
   });
 
+  it("restores pinned plugin tabs and their order after visibility and registration changes", () => {
+    const info = createThreadInfoFixedPanelTab();
+    const first = createPluginFixedPanelTab({
+      pluginId: "example",
+      tabId: "status",
+    });
+    const second = createPluginFixedPanelTab({
+      pluginId: "other",
+      tabId: "status",
+    });
+    const original = createEmptyFixedPanelTabsState({
+      secondary: {
+        tabs: [second, info, first],
+        activeTabId: first.id,
+        isOpen: true,
+      },
+    });
+    const restored = parseFixedPanelTabsState({
+      storedValue: serializeFixedPanelTabsState({ state: original }),
+      initialValue: createEmptyFixedPanelTabsState(),
+      now: original.lastUsedAt,
+    });
+    const hidden = reconcileFixedPanelViewTabsInState({
+      state: restored,
+      fixedTabs: [info, second],
+    });
+    expect(hidden.secondary.tabs).toEqual([second, info, first]);
+    expect(hidden.secondary.activeTabId).toBe(info.id);
+    const reloaded = reconcileFixedPanelViewTabsInState({
+      state: hidden,
+      fixedTabs: [info, first, second],
+    });
+    expect(reloaded.secondary.tabs).toEqual([second, info, first]);
+    expect(
+      buildOrderedSecondaryPanelFileTabs({
+        tabs: reloaded.secondary.tabs,
+        resolvedEnvironmentId: undefined,
+      }),
+    ).toEqual([]);
+  });
+
   it("reconciles every surface's fixed tabs ahead of closable content", () => {
     const infoTab = createThreadInfoFixedPanelTab();
     const diffTab = createGitDiffFixedPanelTab();
@@ -197,7 +245,7 @@ describe("secondaryPanelTabState", () => {
     ).toBe(hidden);
   });
 
-  it("falls back through the shared fixed-tab order when one disappears", () => {
+  it("falls back while retaining a hidden fixed tab’s saved position", () => {
     const firstTab = createPluginPageFixedPanelTab({
       fixedTabId: "navigation",
       pageId: "docs",
@@ -224,8 +272,15 @@ describe("secondaryPanelTabState", () => {
     expect(nextState.secondary).toEqual({
       activeTabId: secondTab.id,
       isOpen: true,
-      tabs: [secondTab],
+      tabs: [firstTab, secondTab],
+      previousActiveTabId: firstTab.id,
     });
+    expect(
+      reconcileFixedPanelViewTabsInState({
+        fixedTabs: [firstTab, secondTab],
+        state: nextState,
+      }).secondary.tabs,
+    ).toEqual([firstTab, secondTab]);
   });
 
   it("retains an active Diff tab until eligibility is authoritative", () => {
@@ -252,7 +307,8 @@ describe("secondaryPanelTabState", () => {
     expect(onceIneligible.secondary).toEqual({
       activeTabId: infoTab.id,
       isOpen: true,
-      tabs: [infoTab],
+      tabs: [infoTab, diffTab],
+      previousActiveTabId: diffTab.id,
     });
   });
 
@@ -270,39 +326,6 @@ describe("secondaryPanelTabState", () => {
       isOpen: false,
       tabs: [],
     });
-  });
-
-  it("keeps the active tab when closing an inactive file tab", () => {
-    const activeTab = createHostFilePreviewFixedPanelTab({
-      environmentId: "env-1",
-      tab: {
-        lineRange: null,
-        path: "/tmp/active.txt",
-      },
-      threadId: "thr-1",
-    });
-    const inactiveTab = createHostFilePreviewFixedPanelTab({
-      environmentId: "env-1",
-      tab: {
-        lineRange: null,
-        path: "/tmp/inactive.txt",
-      },
-      threadId: "thr-1",
-    });
-    const state = createEmptyFixedPanelTabsState({
-      secondary: {
-        activeTabId: activeTab.id,
-        isOpen: true,
-        tabs: [activeTab, inactiveTab],
-      },
-    });
-
-    const nextState = closeSecondaryPanelTabInState(state, inactiveTab.id);
-
-    expect(nextState.secondary.activeTabId).toBe(activeTab.id);
-    expect(nextState.secondary.tabs.map((tab) => tab.id)).toEqual([
-      activeTab.id,
-    ]);
   });
 
   it("does not collide workspace tabs for the same path in different environments", () => {
@@ -330,6 +353,26 @@ describe("secondaryPanelTabState", () => {
     ).toEqual([firstTab.id, secondTab.id]);
   });
 
+  it("shows an opened attachment preview among the panel's file tabs", () => {
+    const attachmentTab = createAttachmentFilePreviewFixedPanelTab({
+      name: "Pasted text.txt",
+      path: "Pasted-text-1791431248908-krajcq.txt",
+      projectId: "proj_app",
+    });
+    const state = openSecondaryPanelTabInState({
+      state: createEmptyFixedPanelTabsState(),
+      tab: attachmentTab,
+    });
+
+    expect(state.secondary.activeTabId).toBe(attachmentTab.id);
+    expect(
+      buildOrderedSecondaryPanelFileTabs({
+        resolvedEnvironmentId: "env-1",
+        tabs: state.secondary.tabs,
+      }),
+    ).toEqual([attachmentTab]);
+  });
+
   it("replaces the transient new tab when selecting another tab", () => {
     const newTab = createNewTabFixedPanelTab();
     const workspaceTab = makeWorkspaceTab("env-1");
@@ -346,22 +389,183 @@ describe("secondaryPanelTabState", () => {
       workspaceTab.id,
     ]);
   });
+});
 
-  it("replaces the transient new tab when opening a browser tab", () => {
-    const newTab = createNewTabFixedPanelTab();
-    const browserTab = createBrowserFixedPanelTab({
-      environmentId: null,
+describe("secondary panel close activation", () => {
+  const source = createHostFilePreviewFixedPanelTab({
+    environmentId: "env-1",
+    threadId: "thr-1",
+    tab: { path: "/tmp/source.txt", lineRange: null },
+  });
+  const neighbor = createHostFilePreviewFixedPanelTab({
+    environmentId: "env-1",
+    threadId: "thr-1",
+    tab: { path: "/tmp/neighbor.txt", lineRange: null },
+  });
+  const detour = createHostFilePreviewFixedPanelTab({
+    environmentId: "env-1",
+    threadId: "thr-1",
+    tab: { path: "/tmp/detour.txt", lineRange: null },
+  });
+  const initial = () =>
+    createEmptyFixedPanelTabsState({
+      lastUsedAt: 1000,
+      secondary: {
+        tabs: [source, neighbor],
+        activeTabId: source.id,
+        isOpen: true,
+      },
+    });
+
+  it.each([
+    detour,
+    createBrowserFixedPanelTab({
+      environmentId: "env-1",
       url: "https://example.com",
-    });
-    let state = createEmptyFixedPanelTabsState();
+    }),
+    createPluginPanelFixedPanelTab({
+      pluginId: "side-chat",
+      actionId: "side-chat",
+      paramsJson: "{}",
+      title: "Side chat",
+    }),
+  ])("returns from a nonadjacent $kind detour", (tab) => {
+    const opened = openSecondaryPanelTabInState({ state: initial(), tab });
+    expect(
+      closeSecondaryPanelTabInState(opened, tab.id).secondary.activeTabId,
+    ).toBe(source.id);
+  });
 
-    state = openSecondaryPanelTabInState({ state, tab: newTab });
-    state = replaceNewTabWithSecondaryPanelTabInState({
+  it("returns to the last activation after visiting an intermediate tab", () => {
+    let state = openSecondaryPanelTabInState({ state: initial(), tab: detour });
+    state = activateSecondaryPanelTabInState(state, neighbor.id);
+    state = activateSecondaryPanelTabInState(state, detour.id);
+    expect(
+      closeSecondaryPanelTabInState(state, detour.id).secondary.activeTabId,
+    ).toBe(neighbor.id);
+  });
+
+  it("keeps the active tab when closing an inactive tab and forgets a closed source", () => {
+    let state = openSecondaryPanelTabInState({ state: initial(), tab: detour });
+    state = closeSecondaryPanelTabInState(state, source.id);
+    expect(state.secondary.activeTabId).toBe(detour.id);
+    expect(
+      closeSecondaryPanelTabInState(state, detour.id).secondary.activeTabId,
+    ).toBe(neighbor.id);
+  });
+
+  it("preserves the return target through updates, reordering, and inactive close", () => {
+    let state = openSecondaryPanelTabInState({ state: initial(), tab: detour });
+    state = activateSecondaryPanelTabInState(state, detour.id);
+    state = updateSecondaryPanelTabInState({
       state,
-      tab: browserTab,
+      tab: { ...detour, lineRange: { startLineNumber: 2, endLineNumber: 3 } },
     });
+    state = reorderSecondaryPanelFileTabInState({
+      state,
+      activeTabId: neighbor.id,
+      overTabId: source.id,
+    });
+    state = closeSecondaryPanelTabInState(state, neighbor.id);
+    expect(
+      closeSecondaryPanelTabInState(state, detour.id).secondary.activeTabId,
+    ).toBe(source.id);
+  });
 
-    expect(state.secondary.activeTabId).toBe(browserTab.id);
-    expect(state.secondary.tabs.map((tab) => tab.id)).toEqual([browserTab.id]);
+  it("handles sequential detours without retaining a full activation stack", () => {
+    let state = initial();
+    for (let i = 0; i < 3; i++) {
+      state = openSecondaryPanelTabInState({ state, tab: detour });
+      state = closeSecondaryPanelTabInState(state, detour.id);
+      expect(state.secondary.activeTabId).toBe(source.id);
+    }
+    state = openSecondaryPanelTabInState({ state, tab: detour });
+    state = activateSecondaryPanelTabInState(state, source.id);
+    state = activateSecondaryPanelTabInState(state, detour.id);
+    state = activateSecondaryPanelTabInState(state, neighbor.id);
+    state = closeSecondaryPanelTabInState(state, neighbor.id);
+    expect(state.secondary.activeTabId).toBe(detour.id);
+    expect(state.secondary.previousActiveTabId).toBeUndefined();
+  });
+
+  it.each([true, false])(
+    "returns to a fixed source with other content tabs: %s",
+    (hasNeighbor) => {
+      const fixed = createGitDiffFixedPanelTab();
+      let state = createEmptyFixedPanelTabsState({
+        secondary: {
+          tabs: [
+            createThreadInfoFixedPanelTab(),
+            fixed,
+            ...(hasNeighbor ? [neighbor] : []),
+          ],
+          activeTabId: fixed.id,
+          isOpen: true,
+        },
+      });
+      state = openSecondaryPanelTabInState({ state, tab: detour });
+      expect(
+        closeSecondaryPanelTabInState(state, detour.id).secondary.activeTabId,
+      ).toBe(fixed.id);
+    },
+  );
+
+  it("preserves the source when New Tab is replaced by content", () => {
+    let state = openSecondaryPanelTabInState({
+      state: initial(),
+      tab: createNewTabFixedPanelTab(),
+    });
+    state = replaceNewTabWithSecondaryPanelTabInState({ state, tab: detour });
+    expect(
+      closeSecondaryPanelTabInState(state, detour.id).secondary.activeTabId,
+    ).toBe(source.id);
+  });
+
+  it("preserves the source when New Tab selects existing content", () => {
+    const state = openSecondaryPanelTabInState({
+      state: initial(),
+      tab: createNewTabFixedPanelTab(),
+    });
+    const replaced = replaceNewTabWithSecondaryPanelTabInState({
+      state,
+      tab: neighbor,
+    });
+    expect(
+      closeSecondaryPanelTabInState(replaced, neighbor.id).secondary
+        .activeTabId,
+    ).toBe(source.id);
+  });
+
+  it("does not revive a removed prior activation when the same tab is reopened in the background", () => {
+    let state = openSecondaryPanelTabInState({ state: initial(), tab: detour });
+    state = closeSecondaryPanelTabInState(state, source.id);
+    expect(state.secondary.previousActiveTabId).toBeUndefined();
+    state = updateSecondaryPanelTabInState({ state, tab: source });
+    expect(state.secondary.previousActiveTabId).toBeUndefined();
+  });
+
+  it("strips activation history on serialization and reload without mutating live state", () => {
+    const state = openSecondaryPanelTabInState({
+      state: initial(),
+      tab: detour,
+    });
+    const serialized = serializeFixedPanelTabsState({ state });
+    expect(serialized).not.toContain("previousActiveTabId");
+    expect(
+      closeSecondaryPanelTabInState(state, detour.id).secondary.activeTabId,
+    ).toBe(source.id);
+    const restored = parseFixedPanelTabsState({
+      initialValue: initial(),
+      now: 1000,
+      storedValue: serialized,
+    });
+    expect(restored.secondary.previousActiveTabId).toBeUndefined();
+    expect(
+      closeSecondaryPanelTabInState(restored, detour.id).secondary.activeTabId,
+    ).toBe(neighbor.id);
+    const normalized = createEmptyFixedPanelTabsState({
+      secondary: state.secondary,
+    });
+    expect(normalized.secondary.previousActiveTabId).toBeUndefined();
   });
 });

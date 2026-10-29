@@ -1,32 +1,46 @@
+import { QueryClient, useQuery } from "@tanstack/react-query";
+import { composerCustomization, CREATE_AUTOMATION_PROMPT } from "./composer";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
-import { buildAutomationEditThreadPrompt } from "@bb/shared-ui/resource-edit-prompt";
 import {
   definePluginApp,
+  experimental_InfoList as InfoList,
+  experimental_InfoListRow as InfoListRow,
+  experimental_InfoSection as InfoSection,
+  experimental_THREAD_INFO_SECTION_GROUPS,
   useBbNavigate,
   useRealtime,
   useRpc,
+  type ExperimentalThreadInfoProps,
   type PluginNavPanelProps,
 } from "@get-bb/plugin-sdk/app";
 import type { automationRpcContract } from "./src/rpc.js";
 import { toast } from "sonner";
 import type {
+  AutomationDetailReadResult,
+  AutomationDetailResponse,
   AutomationResponse,
-  AutomationReadResult,
   AgentExecutionUpdate,
+  AutomationReadResult,
   AutomationRunListResponse,
   AutomationRunResponse,
   AutomationsOverviewResponse,
-} from "@/src/rpc-types";
-import { AutomationDetailView } from "./detail-view";
+} from "./src/rpc-types";
+import { AutomationDetailView, automationIconName } from "./detail-view";
 import {
   AutomationOverviewView,
+  automationProblemLabel,
   automationProjectLabel,
-  CREATE_AUTOMATION_PROMPT,
   type AutomationCollectionMode,
 } from "./overview-view";
-import { Button } from "@bb/shared-ui/button";
-import { DelayedLoading } from "@bb/shared-ui/delayed-loading";
+import {
+  formatScheduleStatusLabel,
+  PERSONAL_PROJECT_ID,
+} from "./lib/format-schedule";
+import { Icon } from "@/components/ui/icon";
+import { buildAutomationEditThreadPrompt } from "./lib/edit-prompt";
+import { Button } from "@/components/ui/button";
+import { DelayedLoading } from "@/components/ui/delayed-loading";
 import {
   Dialog,
   DialogContent,
@@ -34,12 +48,11 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-} from "@bb/shared-ui/dialog";
-import { ResourceListState } from "@bb/shared-ui/resource-list";
-import { cn } from "@bb/shared-ui/lib/utils";
+} from "@/components/ui/dialog";
+import { ResourceListState } from "@/components/ui/resource-list";
+import { cn } from "@/lib/utils";
 
 const PANEL_PATH = "automations";
-const PERSONAL_PROJECT_ID = "proj_personal";
 type OverviewEntry = AutomationsOverviewResponse["automations"][number];
 
 function errorText(error: unknown): string {
@@ -49,6 +62,11 @@ function errorText(error: unknown): string {
 interface DetailRoute {
   projectId: string;
   automationId: string;
+}
+
+interface DeleteTarget {
+  route: DetailRoute;
+  name: string;
 }
 
 interface ParsedDetailRoute {
@@ -163,53 +181,151 @@ function useOverview(): {
   return { ...state, refetch };
 }
 
-function useAutomation(route: DetailRoute): {
-  automation: AutomationReadResult | null;
+const automationQueryClient = new QueryClient();
+
+function useAutomation(route: DetailRoute | null): {
+  automation: AutomationDetailReadResult | null;
   error: string | null;
-  missing: boolean;
   refetch: () => void;
 } {
   const rpc = useRpc<typeof automationRpcContract>();
-  const { projectId, automationId } = route;
-  const [state, setState] = useState<{
-    automation: AutomationReadResult | null;
-    error: string | null;
-    missing: boolean;
-  }>({ automation: null, error: null, missing: false });
-  const requestRef = useRef(0);
-
-  const refetch = useCallback(() => {
-    const requestId = ++requestRef.current;
-    setState((current) => ({ ...current, error: null, missing: false }));
-    rpc.call("automations_get", { projectId, automationId }).then(
-      (result) => {
-        if (requestRef.current !== requestId) return;
-        const automation = result as AutomationReadResult | null;
-        setState({
-          automation: automation ?? null,
-          error: null,
-          missing: automation === null,
-        });
+  const queryKey = [
+    "automation",
+    route?.projectId ?? null,
+    route?.automationId ?? null,
+  ];
+  const query = useQuery(
+    {
+      queryKey,
+      queryFn: () => {
+        if (!route) throw new Error("Automation route required");
+        return rpc.call("automations_get", route);
       },
-      (error: unknown) => {
-        if (requestRef.current !== requestId) return;
-        setState({ automation: null, error: errorText(error), missing: false });
-      },
-    );
-  }, [rpc, projectId, automationId]);
-
-  useEffect(() => {
-    setState({ automation: null, error: null, missing: false });
-    refetch();
-    return () => {
-      requestRef.current += 1;
-    };
-  }, [refetch]);
+      enabled: route !== null,
+      staleTime: 30_000,
+      retry: false,
+    },
+    automationQueryClient,
+  );
   useRealtime("automations", (payload) => {
     const signal = asSignal(payload);
-    if (signal !== null && signal.projectId === projectId) refetch();
+    if (route && signal?.projectId === route.projectId) {
+      void automationQueryClient.invalidateQueries(
+        { queryKey },
+        { cancelRefetch: false },
+      );
+    }
   });
-  return { ...state, refetch };
+  return {
+    automation: query.data ?? null,
+    error: query.error ? errorText(query.error) : null,
+    refetch: () => {
+      void query.refetch();
+    },
+  };
+}
+
+const THREAD_INFO_AUTOMATION_LIMIT = 3;
+
+function useTargetThreadAutomations(
+  threadId: string,
+): readonly AutomationReadResult[] {
+  const rpc = useRpc<typeof automationRpcContract>();
+  const queryKey = ["automations-targeting-thread", threadId];
+  const query = useQuery(
+    {
+      queryKey,
+      queryFn: () => rpc.call("automations_list", { targetThreadId: threadId }),
+      staleTime: 30_000,
+      retry: false,
+    },
+    automationQueryClient,
+  );
+  useRealtime("automations", (payload) => {
+    if (asSignal(payload)?.kind === "automations-changed") {
+      void automationQueryClient.invalidateQueries(
+        { queryKey },
+        { cancelRefetch: false },
+      );
+    }
+  });
+  return query.data ?? [];
+}
+
+function AutomationThreadInfoRow({
+  automation,
+}: {
+  automation: AutomationReadResult;
+}) {
+  const navigate = useBbNavigate();
+  const problem = "problem" in automation;
+  const repairable = problem && automation.problem === "missing-agent-prompt";
+  const status = problem
+    ? automationProblemLabel(automation)
+    : formatScheduleStatusLabel(automation);
+  return (
+    <InfoListRow
+      leading={
+        <Icon
+          name={
+            problem
+              ? repairable
+                ? "AlertCircle"
+                : "CircleX"
+              : automationIconName(automation)
+          }
+          className="size-3 text-subtle-foreground"
+          aria-hidden
+        />
+      }
+      name={automation.name}
+      title={automation.name}
+      trailing={
+        <span className="shrink-0 text-2xs text-subtle-foreground tabular-nums">
+          {status}
+        </span>
+      }
+      onSelect={() =>
+        navigate.toPluginPanel(PANEL_PATH, {
+          subPath: `${automation.projectId}/${automation.id}${
+            repairable ? "/edit" : ""
+          }`,
+        })
+      }
+    />
+  );
+}
+
+function AutomationsThreadInfoSection({
+  threadId,
+}: ExperimentalThreadInfoProps) {
+  const automations = useTargetThreadAutomations(threadId);
+  if (automations.length === 0) return null;
+  return (
+    <InfoSection label="Automations" count={automations.length}>
+      <InfoList
+        items={automations}
+        getKey={(automation) => automation.id}
+        limit={THREAD_INFO_AUTOMATION_LIMIT}
+        renderItem={(automation) => (
+          <AutomationThreadInfoRow automation={automation} />
+        )}
+      />
+    </InfoSection>
+  );
+}
+
+function useAutomationsPageTitle({ subPath }: PluginNavPanelProps) {
+  const parsed = parseSubPath(subPath);
+  const { automation } = useAutomation(parsed?.route ?? null);
+  return parsed
+    ? {
+        breadcrumbs: [
+          { label: "Installed", to: "/plugins/automations/automations" },
+          { label: automation?.name ?? parsed.route.automationId },
+        ],
+      }
+    : { title: subPath === "browse" ? "Browse" : "Installed" };
 }
 
 interface RunsState {
@@ -400,6 +516,8 @@ function OverviewView({
   const navigate = useBbNavigate();
   const { entries, error, refetch } = useOverview();
   const mutations = useMutations();
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   const changeEnabled = useCallback(
     async (enabled: boolean, route: DetailRoute) => {
@@ -413,6 +531,43 @@ function OverviewView({
     [mutations],
   );
 
+  const runNow = useCallback(
+    async (route: DetailRoute) => {
+      try {
+        await mutations.run(route);
+        toast.success("Run started");
+      } catch (rpcError: unknown) {
+        toast.error(`Failed to run automation: ${errorText(rpcError)}`);
+      }
+    },
+    [mutations],
+  );
+
+  const requestDelete = useCallback((route: DetailRoute, name: string) => {
+    setDeleteTarget({ route, name });
+  }, []);
+
+  const closeDelete = useCallback(() => {
+    if (!deleting) setDeleteTarget(null);
+  }, [deleting]);
+
+  const confirmDelete = useCallback(() => {
+    if (deleteTarget === null) return;
+    setDeleting(true);
+    mutations
+      .delete(deleteTarget.route)
+      .then(
+        () => {
+          toast.success("Automation deleted");
+          setDeleteTarget(null);
+          refetch();
+        },
+        (rpcError: unknown) =>
+          toast.error(`Failed to delete automation: ${errorText(rpcError)}`),
+      )
+      .finally(() => setDeleting(false));
+  }, [deleteTarget, mutations, refetch]);
+
   const createViaChat = useCallback(
     (prompt?: string) => {
       navigate.toCompose({
@@ -424,16 +579,30 @@ function OverviewView({
   );
 
   return (
-    <AutomationOverviewView
-      entries={entries}
-      error={error}
-      onRetry={refetch}
-      onOpenDetail={onOpenDetail}
-      onEnabledChange={changeEnabled}
-      onCreateViaChat={createViaChat}
-      activeMode={activeMode}
-      onModeChange={onModeChange}
-    />
+    <>
+      <AutomationOverviewView
+        entries={entries}
+        error={error}
+        onRetry={refetch}
+        onOpenDetail={onOpenDetail}
+        onEnabledChange={changeEnabled}
+        onRunNow={runNow}
+        onDelete={requestDelete}
+        onCreateViaChat={createViaChat}
+        activeMode={activeMode}
+        onModeChange={onModeChange}
+      />
+      <DeleteAutomationDialog
+        open={deleteTarget !== null}
+        onOpenChange={(open) => {
+          if (!open) closeDelete();
+        }}
+        name={deleteTarget?.name ?? ""}
+        pending={deleting}
+        onConfirm={confirmDelete}
+        onCancel={closeDelete}
+      />
+    </>
   );
 }
 
@@ -447,7 +616,7 @@ function DetailView({
   onBack: () => void;
 }) {
   const navigate = useBbNavigate();
-  const { automation, error, missing, refetch } = useAutomation(route);
+  const { automation, error, refetch } = useAutomation(route);
   const [editingRequested, setEditingRequested] = useState(initialEditing);
   const overviewState = useOverview();
   const runsState = useRuns(route);
@@ -536,15 +705,11 @@ function DetailView({
       .finally(() => setDeleting(false));
   }, [mutations, route, onBack]);
 
-  if (error !== null || missing) {
+  if (error !== null) {
     return (
       <ResourceListState
         state="error"
-        message={
-          missing
-            ? "Automation not found."
-            : `Couldn't load automation: ${error}`
-        }
+        message={`Couldn't load automation: ${error}`}
         layout="detail"
         onRetry={refetch}
       />
@@ -603,7 +768,7 @@ function DetailView({
 
   const requiresPrompt =
     automation.execution.mode === "agent" && automation.execution.prompt === "";
-  const readableAutomation: AutomationResponse = automation;
+  const readableAutomation: AutomationDetailResponse = automation;
 
   const overviewEntry = overviewState.entries?.find(
     (entry) =>
@@ -614,7 +779,7 @@ function DetailView({
     overviewEntry !== undefined
       ? automationProjectLabel(overviewEntry.project)
       : route.projectId === PERSONAL_PROJECT_ID
-        ? "Local"
+        ? "Personal"
         : route.projectId;
 
   return (
@@ -706,11 +871,19 @@ function AutomationsPanel({ subPath }: PluginNavPanelProps) {
 }
 
 export default definePluginApp((app) => {
+  app.composer.customize(composerCustomization);
   app.slots.navPanel({
     id: "automations",
     title: "Automations",
-    icon: "TimeSchedule",
+    icon: "Repeat",
     path: PANEL_PATH,
     component: AutomationsPanel,
+    experimental_usePageTitle: useAutomationsPageTitle,
+  });
+  app.slots.experimental_threadInfoSection({
+    id: "automations",
+    group: experimental_THREAD_INFO_SECTION_GROUPS.related,
+    order: 0,
+    component: AutomationsThreadInfoSection,
   });
 });

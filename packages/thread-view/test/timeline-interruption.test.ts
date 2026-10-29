@@ -3,33 +3,12 @@ import type { ThreadEventRow } from "@bb/domain";
 import type { TimelineRow } from "@bb/server-contract";
 import {
   createTimelineEventFactory,
+  flattenTimelineRows,
   renderTimelineFixture,
 } from "./timeline-test-harness.js";
 
 type TimelineWorkRow = Extract<TimelineRow, { kind: "work" }>;
 type TimelineSystemRow = Extract<TimelineRow, { kind: "system" }>;
-
-function getNestedRows(row: TimelineRow): readonly TimelineRow[] {
-  if (row.kind === "turn") {
-    return row.children ?? [];
-  }
-  if (row.kind === "work" && row.workKind === "delegation") {
-    return row.childRows;
-  }
-  return [];
-}
-
-function flattenTimelineRows(rows: readonly TimelineRow[]): TimelineRow[] {
-  const flattenedRows: TimelineRow[] = [];
-  const visitRows = (currentRows: readonly TimelineRow[]): void => {
-    for (const row of currentRows) {
-      flattenedRows.push(row);
-      visitRows(getNestedRows(row));
-    }
-  };
-  visitRows(rows);
-  return flattenedRows;
-}
 
 function getOnlyWorkRowByCallId(
   rows: readonly TimelineRow[],
@@ -64,6 +43,61 @@ function renderIdleTimeline(events: ThreadEventRow[]) {
 }
 
 describe("timeline interruption projection", () => {
+  it("renders a completed reply after Stop without accepting late deltas", () => {
+    const event = createTimelineEventFactory({ threadId: "thread-1" });
+    const stoppedEvents = [
+      event.turnStarted({ createdAt: 0 }),
+      event.systemThreadInterrupted({ createdAt: 1_000 }),
+      event.assistantDelta({
+        itemId: "reply-after-stop",
+        delta: "Discard this unfinished text.",
+        createdAt: 2_000,
+      }),
+    ];
+
+    expect(
+      renderIdleTimeline(stoppedEvents).messages.filter(
+        (message) => message.kind === "assistant-text",
+      ),
+    ).toEqual([]);
+
+    const timeline = renderIdleTimeline([
+      ...stoppedEvents,
+      event.assistantCompleted({
+        itemId: "reply-after-stop",
+        text: "Persisted reply.",
+        createdAt: 3_000,
+      }),
+      event.assistantDelta({
+        itemId: "another-late-reply",
+        delta: "This must not reopen the stopped turn.",
+        createdAt: 4_000,
+      }),
+      event.assistantCompleted({
+        itemId: "reply-after-stop",
+        text: "Duplicate completion must not replace the reply.",
+        createdAt: 5_000,
+      }),
+      event.turnCompleted({ status: "interrupted", createdAt: 6_000 }),
+    ]);
+
+    expect(
+      timeline.messages.filter((message) => message.kind === "assistant-text"),
+    ).toEqual([
+      expect.objectContaining({
+        text: "Persisted reply.",
+        status: "completed",
+      }),
+    ]);
+    expect(flattenTimelineRows(timeline.rows)).toContainEqual(
+      expect.objectContaining({
+        kind: "conversation",
+        role: "assistant",
+        text: "Persisted reply.",
+      }),
+    );
+  });
+
   it("keeps post-turn automatic compaction pending while the thread is idle", () => {
     const event = createTimelineEventFactory({ threadId: "thread-1" });
     const events = [

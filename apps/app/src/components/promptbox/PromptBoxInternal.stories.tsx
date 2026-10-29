@@ -1,35 +1,49 @@
-import { useState } from "react";
+import "../../../.ladle/composer-plugin";
+import { useState, type ReactNode } from "react";
 import type { PromptMentionResource, PromptTextMention } from "@bb/domain";
 import type { UploadedPromptAttachment } from "@bb/server-contract";
+import { CompactBeforeSendChip } from "@/components/promptbox/CompactBeforeSendChip";
 import { ExecutionControls } from "@/components/promptbox/ExecutionControls";
 import type {
   PromptMentionSuggestion,
   ProviderCommandSuggestion,
 } from "@bb/client-core";
 import {
-  PromptBoxInternal,
+  ComposerBox,
   type HistoryConfig,
   type PromptBoxAction,
   type PromptBoxSubmissionConfig,
   type PromptVoiceConfig,
-} from "@/components/promptbox/PromptBoxInternal";
-import {
-  AUTOMATION_PROMPT_ACTION,
-  CREATE_PLUGIN_PROMPT_ACTION,
-} from "@/components/promptbox/PromptBoxActionsMenu";
+} from "@/components/promptbox/ComposerBox";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
 import {
   makeAttachmentsConfig as makeAttachments,
   makeExecutionControlsProps,
   makeTypeaheadConfig as makeTypeahead,
 } from "../../../.ladle/story-fixtures";
+import {
+  composerMentionGroupsFromOrdered,
+  groupCommandSuggestions,
+  orderCommandSuggestions,
+} from "@bb/client-core";
 import { orderPromptMentionSuggestions } from "@/hooks/promptMentionCandidates";
+import type { ExperimentalComposerCommandSearch } from "@get-bb/plugin-sdk";
+import { StoryComposerSearchProvider } from "../../../.ladle/composer-search-story";
 
 export default {
   title: "promptbox/Prompt Box Internal",
 };
 
 const noop = () => {};
+
+const IDLE_STORY_COMMAND_SEARCH: Omit<
+  ExperimentalComposerCommandSearch,
+  "search"
+> = {
+  status: "idle",
+  refreshing: false,
+  groups: [],
+};
 
 const mockExecution = makeExecutionControlsProps();
 const promptActions: readonly PromptBoxAction[] = [
@@ -44,16 +58,21 @@ const promptActions: readonly PromptBoxAction[] = [
     command: { trigger: "/", name: "goal", trailingText: " " },
     text: "/goal ",
   },
-  AUTOMATION_PROMPT_ACTION,
-  CREATE_PLUGIN_PROMPT_ACTION,
 ];
 
 const idleVoice: PromptVoiceConfig = {
   state: "idle",
+  delivery: "insert",
+  microphoneWarning: null,
   isSupported: true,
   stream: null,
+  failedRecordings: [],
   start: noop,
   stop: noop,
+  send: noop,
+  retry: noop,
+  discard: noop,
+  download: noop,
   cancel: noop,
 };
 
@@ -149,6 +168,7 @@ const liveMentionThreads: PromptMentionSuggestion[] = [
     projectId: "proj_promptbox",
     threadId: "thr_qfk8ksbxkk",
     title: "Wire up promptbox stories",
+    relation: null,
   },
   {
     kind: "thread",
@@ -157,6 +177,7 @@ const liveMentionThreads: PromptMentionSuggestion[] = [
     projectId: "proj_promptbox",
     threadId: "thr_mgr_kj4n2x",
     title: "Parent: app/timeline cleanup sprint",
+    relation: null,
   },
   {
     kind: "thread",
@@ -165,11 +186,12 @@ const liveMentionThreads: PromptMentionSuggestion[] = [
     projectId: "proj_promptbox",
     threadId: "thr_4hge9xn14m",
     title: "Review flow cleanup",
+    relation: null,
   },
 ];
 
 const liveMentionPaths: PromptMentionSuggestion[] = [
-  workspaceFile("apps/app/src/components/promptbox/PromptBoxInternal.tsx"),
+  workspaceFile("plugins/composer/src/PromptBoxInternal.tsx"),
   workspaceFile("apps/app/src/components/promptbox/FollowUpPromptBox.tsx"),
   workspaceFile("apps/app/src/components/promptbox/NewThreadPromptBox.tsx"),
   workspaceFile("apps/app/src/hooks/usePromptMentions.ts"),
@@ -328,7 +350,8 @@ function PromptBoxStoryInstance({
     fixture.mentions,
   );
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -340,7 +363,7 @@ function PromptBoxStoryInstance({
       history={baseHistory}
       submission={makeSubmission()}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -358,7 +381,7 @@ function makeSubmission(
 
 const mixedPromptPillsFixture = buildPromptPillsFixture(
   [
-    "Use @apps/app/src/components/promptbox/PromptBoxInternal.tsx with",
+    "Use @apps/app/src/components/promptbox/ComposerBox.tsx with",
     "@apps/app/src/components/promptbox/mentions/ and @thread-storage:notes/status.md;",
     "then ask @thread:thr_prompt_pills before running /github:gh-fix-ci or /frontend:component.",
   ].join(" "),
@@ -615,7 +638,8 @@ const planGoalCommandPillsFixture = buildPromptPillsFixture(
 function DefaultRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -626,7 +650,7 @@ function DefaultRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -636,7 +660,8 @@ function WithAttachmentsRow() {
     "Take a look at this screenshot and the diff.",
   );
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -647,7 +672,7 @@ function WithAttachmentsRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -657,7 +682,8 @@ function WithBlockquoteRow() {
     "> First we backfill the new column with a default value at the server\n> boundary, then flip reads once every row is populated.\nWhich phase is safe to deploy on a Friday?",
   );
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -668,14 +694,14 @@ function WithBlockquoteRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
 
 function WithMentionsRow() {
   const initialValue =
-    "Ask @thread:thr_parent to inspect @apps/app/src/components/promptbox/PromptBoxInternal.tsx.";
+    "Ask @thread:thr_parent to inspect @apps/app/src/components/promptbox/ComposerBox.tsx.";
   const { value, mentionRanges, onChange } = useControlledValue(initialValue, [
     storyMention({
       text: initialValue,
@@ -699,7 +725,8 @@ function WithMentionsRow() {
     }),
   ]);
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -710,7 +737,7 @@ function WithMentionsRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -734,7 +761,8 @@ function WithSkillPillRow() {
     }),
   ]);
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -745,50 +773,50 @@ function WithSkillPillRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
 
 function WithLiveSkillsRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
-  const [query, setQuery] = useState<string | null>(null);
-  const suggestions =
-    query === null ? [] : filterLiveCommands(query).slice(0, 4);
   return (
-    <PromptBoxInternal
-      value={value}
-      mentionRanges={mentionRanges}
-      onChange={onChange}
-      onSubmit={noop}
-      placeholder="Type / to insert a skill or command"
-      typeahead={makeTypeahead(
-        {},
-        {
-          trigger: "/",
-          suggestions,
-          isLoading: false,
-          isError: false,
-          hasMore: query !== null && filterLiveCommands(query).length > 4,
-          isLoadingMore: false,
-          loadMore: noop,
-          onQueryChange: setQuery,
-        },
-      )}
-      mentionMenuPlacement="bottom"
-      attachments={makeAttachments()}
-      history={baseHistory}
-      submission={makeSubmission()}
-      voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
-    />
+    <StoryComposerSearchProvider
+      command={(query) => {
+        if (query === null) return IDLE_STORY_COMMAND_SEARCH;
+        return {
+          ...IDLE_STORY_COMMAND_SEARCH,
+          status: "ready",
+          groups: groupCommandSuggestions(
+            orderCommandSuggestions(filterLiveCommands(query.text), query.text),
+          ),
+        };
+      }}
+    >
+      <ComposerBox
+        surface="thread"
+        value={value}
+        mentionRanges={mentionRanges}
+        onChange={onChange}
+        onSubmit={noop}
+        placeholder="Type / to insert a skill or command"
+        typeahead={makeTypeahead({ commandTriggers: ["/"] })}
+        mentionMenuPlacement="bottom"
+        attachments={makeAttachments()}
+        history={baseHistory}
+        submission={makeSubmission()}
+        voice={idleVoice}
+        executionControls={<ExecutionControls {...mockExecution} />}
+      />
+    </StoryComposerSearchProvider>
   );
 }
 
 function WithPromptActionsRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -801,36 +829,45 @@ function WithPromptActionsRow() {
       submission={makeSubmission()}
       voice={idleVoice}
       promptActions={promptActions}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
 
 function WithLiveMentionsRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
-  const [query, setQuery] = useState<string | null>(null);
-  const suggestions = filterLiveMentions(query ?? "");
   return (
-    <PromptBoxInternal
-      value={value}
-      mentionRanges={mentionRanges}
-      onChange={onChange}
-      onSubmit={noop}
-      placeholder="Type @ to mention a file, folder, section, or thread"
-      typeahead={makeTypeahead({
-        results: orderPromptMentionSuggestions({
-          query: query ?? "",
-          suggestions,
-        }),
-        onQueryChange: setQuery,
+    <StoryComposerSearchProvider
+      mention={(query) => ({
+        status: query === null ? "idle" : "ready",
+        refreshing: false,
+        groups:
+          query === null
+            ? []
+            : composerMentionGroupsFromOrdered(
+                orderPromptMentionSuggestions({
+                  query: query.text,
+                  suggestions: filterLiveMentions(query.text),
+                }),
+              ),
       })}
-      mentionMenuPlacement="bottom"
-      attachments={makeAttachments()}
-      history={baseHistory}
-      submission={makeSubmission()}
-      voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
-    />
+    >
+      <ComposerBox
+        surface="thread"
+        value={value}
+        mentionRanges={mentionRanges}
+        onChange={onChange}
+        onSubmit={noop}
+        placeholder="Type @ to mention a file, folder, section, or thread"
+        typeahead={makeTypeahead()}
+        mentionMenuPlacement="bottom"
+        attachments={makeAttachments()}
+        history={baseHistory}
+        submission={makeSubmission()}
+        voice={idleVoice}
+        executionControls={<ExecutionControls {...mockExecution} />}
+      />
+    </StoryComposerSearchProvider>
   );
 }
 
@@ -839,7 +876,8 @@ function SubmittingRow() {
     "Review thread workspace.",
   );
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -854,7 +892,7 @@ function SubmittingRow() {
         title: "Submitting...",
       })}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -862,7 +900,8 @@ function SubmittingRow() {
 function RunningWithStopRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -878,7 +917,7 @@ function RunningWithStopRow() {
         title: "Queue follow-up (Enter)",
       })}
       voice={idleVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -886,7 +925,8 @@ function RunningWithStopRow() {
 function RecordingActiveRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -897,7 +937,7 @@ function RecordingActiveRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={recordingVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -907,7 +947,8 @@ function RecordingWithExistingDraftRow() {
     "Keep this existing prompt visible while I dictate the rest of the request.",
   );
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -918,7 +959,7 @@ function RecordingWithExistingDraftRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={recordingVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -926,7 +967,8 @@ function RecordingWithExistingDraftRow() {
 function RecordingProcessingRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
   return (
-    <PromptBoxInternal
+    <ComposerBox
+      surface="thread"
       value={value}
       mentionRanges={mentionRanges}
       onChange={onChange}
@@ -937,7 +979,7 @@ function RecordingProcessingRow() {
       history={baseHistory}
       submission={makeSubmission()}
       voice={transcribingVoice}
-      footerStart={<ExecutionControls {...mockExecution} />}
+      executionControls={<ExecutionControls {...mockExecution} />}
     />
   );
 }
@@ -1090,6 +1132,90 @@ export function Overview() {
         hint="voice.state === 'transcribing' → spinner + cancel"
       >
         <RecordingProcessingRow />
+      </StoryRow>
+    </StoryCard>
+  );
+}
+
+function CompactVoiceComparisonRow({
+  compact = true,
+  initialValue = "",
+  running = false,
+  attachmentItems = [],
+  compactBeforeSend = null,
+}: {
+  compact?: boolean;
+  initialValue?: string;
+  running?: boolean;
+  attachmentItems?: UploadedPromptAttachment[];
+  compactBeforeSend?: ReactNode;
+}) {
+  const { value, mentionRanges, onChange } = useControlledValue(initialValue);
+  const [state, setState] = useState<PromptVoiceConfig["state"]>("idle");
+  return (
+    <ComposerBox
+      surface="thread"
+      value={value}
+      mentionRanges={mentionRanges}
+      onChange={onChange}
+      onSubmit={noop}
+      placeholder="Ask for a follow-up"
+      compact={
+        compact
+          ? { when: "always", placeholder: "Ask for a follow-up" }
+          : undefined
+      }
+      typeahead={makeTypeahead()}
+      mentionMenuPlacement="bottom"
+      attachments={makeAttachments({ items: attachmentItems })}
+      history={baseHistory}
+      submission={makeSubmission({ isRunning: running, onStop: noop })}
+      compactBeforeSend={compactBeforeSend}
+      voice={{
+        ...idleVoice,
+        state,
+        start: () => setState("recording"),
+        stop: () => setState("transcribing"),
+        cancel: () => setState("idle"),
+      }}
+      executionControls={<ExecutionControls {...mockExecution} />}
+    />
+  );
+}
+
+export function CompactVoiceComparison() {
+  return (
+    <StoryCard>
+      <StoryRow label="Expanded reference">
+        <CompactVoiceComparisonRow compact={false} />
+      </StoryRow>
+      <StoryRow label="Compact empty input">
+        <CompactVoiceComparisonRow />
+      </StoryRow>
+      <StoryRow label="Compact submit">
+        <CompactVoiceComparisonRow initialValue="Review the changes" />
+      </StoryRow>
+      <StoryRow label="Compact stop">
+        <CompactVoiceComparisonRow running />
+      </StoryRow>
+      <StoryRow label="Compact long text with attachments">
+        <CompactVoiceComparisonRow
+          initialValue="Take a look at this screenshot and the diff, then explain why the compact composer clips its text"
+          attachmentItems={mockAttachments}
+        />
+      </StoryRow>
+      <StoryRow label="Compact long text with attachments and accessory">
+        <CompactVoiceComparisonRow
+          initialValue="Take a look at this screenshot and the diff, then explain why the compact composer clips its text"
+          attachmentItems={mockAttachments}
+          compactBeforeSend={
+            <CompactBeforeSendChip
+              compactFirst
+              tokens={331_000}
+              onCompactFirstChange={noop}
+            />
+          }
+        />
       </StoryRow>
     </StoryCard>
   );

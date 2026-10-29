@@ -1,5 +1,4 @@
 import {
-  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -14,6 +13,7 @@ import {
   CLAUDE_SKILL_PLUGIN_NAME,
   createClaudeSkillPluginsRoot,
   ensureClaudeSkillPlugin,
+  filterClaudeSkillRoots,
 } from "../skill-plugins.js";
 
 describe("claude skill plugins", () => {
@@ -37,25 +37,29 @@ describe("claude skill plugins", () => {
     return root;
   }
 
-  it("assembles a plugin whose skills directory links to the generic root", () => {
-    const pluginsRoot = createClaudeSkillPluginsRoot(baseDir);
-    const skillsPath = stageSkills("a");
-    const pluginPath = ensureClaudeSkillPlugin({
-      pluginsRoot,
-      root: { id: "global-skills:abc123", path: skillsPath },
-    });
-
-    expect(pluginPath.startsWith(pluginsRoot)).toBe(true);
-    const manifest = JSON.parse(
-      readFileSync(join(pluginPath, ".claude-plugin", "plugin.json"), "utf8"),
-    ) as { name: string; skills: string };
-    expect(manifest.skills).toBe("./skills");
-    expect(manifest.name).toBe(CLAUDE_SKILL_PLUGIN_NAME);
-    expect(lstatSync(join(pluginPath, "skills")).isSymbolicLink()).toBe(true);
-    expect(readlinkSync(join(pluginPath, "skills"))).toBe(skillsPath);
-    expect(
-      readFileSync(join(pluginPath, "skills", "demo", "SKILL.md"), "utf8"),
-    ).toContain("name: demo");
+  it("omits identical native skills per workspace without hiding different content with the same name", async () => {
+    const cwd = join(baseDir, "workspace");
+    const claudeDir = join(baseDir, "home", ".claude");
+    const native = join(cwd, ".claude", "skills", "demo");
+    mkdirSync(native, { recursive: true });
+    mkdirSync(join(cwd, ".git"));
+    const staged = stageSkills("native-overlap");
+    writeFileSync(
+      join(native, "SKILL.md"),
+      readFileSync(join(staged, "demo", "SKILL.md")),
+    );
+    const args = {
+      roots: [{ id: "r", path: staged }],
+      cwd,
+      claudeDir,
+      pluginsRoot: createClaudeSkillPluginsRoot(baseDir),
+    };
+    expect(await filterClaudeSkillRoots(args)).toEqual([]);
+    writeFileSync(
+      join(native, "SKILL.md"),
+      "---\nname: demo\ndescription: Different instructions\n---\n",
+    );
+    expect(await filterClaudeSkillRoots(args)).toEqual(args.roots);
   });
 
   it("is idempotent for a root and re-points the link when the root moves", () => {
@@ -66,6 +70,7 @@ describe("claude skill plugins", () => {
       pluginsRoot,
       root: { id: "r", path: first },
     });
+    expect(pluginPath.startsWith(pluginsRoot)).toBe(true);
     expect(
       ensureClaudeSkillPlugin({ pluginsRoot, root: { id: "r", path: first } }),
     ).toBe(pluginPath);

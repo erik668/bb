@@ -3,53 +3,11 @@ import type { TimelineWorkflowWorkRow } from "@bb/server-contract";
 import { ThreadBackgroundCommandsCard } from "./ThreadBackgroundCommandsCard";
 import { backgroundCommandRow } from "@/test/fixtures/thread-timeline-rows";
 import { StoryCard, StoryRow } from "../../../../.ladle/story-card";
+import { FauxComposer, ResponsiveStage } from "./banner-story-stages";
 
 export default {
   title: "promptbox/banner/Background Commands Card",
 };
-
-type StageSize = "desktop" | "mobile";
-
-function Stage({
-  children,
-  size,
-}: {
-  children: React.ReactNode;
-  size: StageSize;
-}) {
-  return (
-    <div
-      data-promptbox-shell=""
-      className={size === "desktop" ? "min-w-0 flex-1" : "w-[20rem] shrink-0"}
-    >
-      {children}
-    </div>
-  );
-}
-
-function ResponsiveStage({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="flex w-full min-w-0 items-start gap-3 overflow-x-auto">
-      <Stage size="desktop">{children}</Stage>
-      <Stage size="mobile">{children}</Stage>
-    </div>
-  );
-}
-
-function FauxComposer() {
-  return (
-    <div className="rounded-lg border border-border bg-popover p-3">
-      <div className="pb-3 text-sm text-subtle-foreground">
-        Reply to the agent…
-      </div>
-      <div className="flex items-center gap-2">
-        <span className="rounded-full border border-border px-2.5 py-1 text-xs text-muted-foreground">
-          opus
-        </span>
-      </div>
-    </div>
-  );
-}
 
 const runningCommand = (
   args: Parameters<typeof backgroundCommandRow>[0],
@@ -87,6 +45,15 @@ const many: TimelineWorkflowWorkRow[] = [
   }),
 ];
 
+const longCommand: TimelineWorkflowWorkRow[] = [
+  runningCommand({
+    id: "thr_fixture:bg:ladle",
+    description:
+      "cd /Users/fixture/.bb/plugins/environment-git-worktree/host-data/worktrees/thr_fixture-1/bb/apps/app && (pnpm exec ladle serve --port 61234 > $TMPDIR/ladle.log 2>&1 &) ; for i in $(seq 1 40); do curl -s localhost:61234/meta.json >/dev/null && break; sleep 2; done",
+    startedAt: Date.now() - 74_000,
+  }),
+];
+
 function ExpandableCard({
   commands,
   startExpanded = false,
@@ -120,7 +87,7 @@ export function Overview() {
       </StoryRow>
       <StoryRow
         label="multiple (collapsed)"
-        hint='most recent command + "+N more"; click to expand'
+        hint="most recent command + total count; click to expand"
       >
         <ResponsiveStage>
           <ExpandableCard commands={many} />
@@ -132,6 +99,14 @@ export function Overview() {
       >
         <ResponsiveStage>
           <ExpandableCard commands={many} startExpanded />
+        </ResponsiveStage>
+      </StoryRow>
+      <StoryRow
+        label="long command (expanded)"
+        hint="compact rows clamp the command to two lines"
+      >
+        <ResponsiveStage>
+          <ExpandableCard commands={longCommand} startExpanded />
         </ResponsiveStage>
       </StoryRow>
     </StoryCard>

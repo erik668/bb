@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import type { AgentRuntime } from "@bb/agent-runtime";
 import type {
@@ -8,8 +7,8 @@ import type {
   ProviderCliStatus,
 } from "@bb/host-daemon-contract";
 import type { HostWorkspace } from "@bb/host-workspace";
-import { createDeferredPromise } from "@bb/test-helpers";
-import { afterEach, describe, expect, it, vi, type Mock } from "vitest";
+import { createDeferredPromise, makeTempDir } from "@bb/test-helpers";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import {
   dispatchCommand,
   dispatchOnlineRpcCommand,
@@ -23,7 +22,9 @@ import {
   unexpectedProviderMaintenance,
 } from "../test/command/dispatch-helpers.js";
 import type { CommandOf } from "./command-dispatch-support.js";
+import { PROVIDER_INSTALLATION_GATE_TTL_MS } from "./provider-installation-gate.js";
 import { RuntimeManager } from "./runtime-manager.js";
+import { stageInjectedSkillSources } from "./injected-skills.js";
 
 const WORKSPACE_PATH = "/tmp/bb-command-dispatch-test";
 
@@ -40,22 +41,6 @@ interface BusySkillCatalogFixture {
   runtime: FakeDispatchRuntime;
   source: HostDaemonInjectedSkillSource;
 }
-
-const tempDirs: string[] = [];
-
-async function makeTempDir(prefix: string): Promise<string> {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
-  tempDirs.push(dir);
-  return dir;
-}
-
-afterEach(async () => {
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map((dir) => fs.rm(dir, { recursive: true, force: true })),
-  );
-});
 
 async function writeInjectedSkillSource(
   args: WriteInjectedSkillSourceArgs,
@@ -76,8 +61,8 @@ async function writeInjectedSkillSource(
     "utf8",
   );
   return {
-    kind: "workspace-path",
-    sourceType: "project",
+    kind: "host-path",
+    sourceType: "shared-user",
     name: "release-notes",
     description: "Use release-notes when command dispatch tests run.",
     sourceRootPath,
@@ -124,25 +109,15 @@ async function unexpectedWorkspaceCall(): Promise<never> {
 function createWorkspace(workspacePath = WORKSPACE_PATH): HostWorkspace {
   return {
     path: workspacePath,
-    managed: false,
     isGitRepo: false,
     isWorktree: false,
     getDefaultBranch: unexpectedWorkspaceCall,
     getCurrentBranch: unexpectedWorkspaceCall,
     getHeadSha: unexpectedWorkspaceCall,
-    getLocalStateFingerprint: unexpectedWorkspaceCall,
-    getSharedGitRefsFingerprint: unexpectedWorkspaceCall,
+    getLocalStateSnapshot: unexpectedWorkspaceCall,
+    getSharedGitRefsSnapshot: unexpectedWorkspaceCall,
     getAdditionalWorkspaceWriteRoots: vi.fn(async () => []),
-    getStatus: unexpectedWorkspaceCall,
-    getDiff: unexpectedWorkspaceCall,
-    diffFiles: unexpectedWorkspaceCall,
-    diffPatch: unexpectedWorkspaceCall,
-    getPullRequest: unexpectedWorkspaceCall,
-    runPullRequestAction: unexpectedWorkspaceCall,
-    listFiles: unexpectedWorkspaceCall,
     commit: unexpectedWorkspaceCall,
-    reset: unexpectedWorkspaceCall,
-    destroy: vi.fn(async () => undefined),
   };
 }
 
@@ -183,6 +158,7 @@ function createRuntime(): FakeDispatchRuntime {
       models: [],
       selectedOnlyModels: [],
     })),
+    listCommands: vi.fn(async () => ({ commands: [] })),
     providerHealth: vi.fn(async () => ({ supported: false as const })),
     providerUsage: vi.fn(async () => ({ supported: false as const })),
     providerInstallationStatus: vi.fn(async () => {
@@ -240,7 +216,6 @@ function createTurnSubmitCommand(
       bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -330,7 +305,6 @@ function createInstallationGatedThreadStart(
     threadId,
     workspaceContext: {
       workspacePath: WORKSPACE_PATH,
-      workspaceProvisionType: "unmanaged",
     },
     projectId: "proj_1",
     providerId: "codex",
@@ -422,11 +396,50 @@ async function runSuccessfulClaudeCodeUpdateVerification(args: {
         createProviderCliInstallEventStream(events),
       threadStorageRootPath: "/tmp/bb-thread-storage",
     },
+    new AbortController().signal,
   );
   return { events, providerInstallationStatus, result };
 }
 
 describe("dispatchCommand", () => {
+  it("probes projectless commands in a stable empty directory and preserves selected workspaces", async () => {
+    const dataDir = await makeTempDir("bb-command-catalog-");
+    const workspace = path.join(dataDir, "workspace");
+    await fs.mkdir(workspace);
+    await fs.writeFile(path.join(workspace, "project-file"), "project");
+    const directories: string[] = [];
+    const options = makeDispatchOptions({
+      dataDir,
+      runtimeManager: new RuntimeManager({
+        createRuntime,
+        provisionWorkspace: async () => createWorkspace(),
+      }),
+      listCommands: async ({ cwd }) => {
+        directories.push(cwd);
+        const files = await fs.readdir(cwd);
+        return { commands: files.map((name) => ({ name, description: "" })) };
+      },
+    });
+    for (const cwd of [null, null, workspace]) {
+      const result = await dispatchOnlineRpcCommand(
+        {
+          type: "provider.list_commands",
+          providerId: "pi",
+          bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
+          cwd,
+        },
+        options,
+        new AbortController().signal,
+      );
+      expect(result).toEqual({
+        commands:
+          cwd === null ? [] : [{ name: "project-file", description: "" }],
+      });
+    }
+    expect(directories[0]).toBe(directories[1]);
+    expect(directories[2]).toBe(workspace);
+  });
+
   it("steers an auto submit when the active turn appears after the server snapshot", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({
@@ -461,7 +474,7 @@ describe("dispatchCommand", () => {
       },
     );
 
-    expect(result).toEqual({ appliedAs: "steer" });
+    expect(result).toEqual({ trace: { spans: [] } });
     expect(runtime.waitForActiveTurn).toHaveBeenCalledWith("thread-1", {
       timeoutMs: 5_000,
     });
@@ -505,7 +518,7 @@ describe("dispatchCommand", () => {
       },
     );
 
-    expect(result).toEqual({ appliedAs: "steer" });
+    expect(result).toEqual({ trace: { spans: [] } });
     expect(runtime.steerTurn).toHaveBeenCalledWith(
       expect.objectContaining({ expectedTurnId: "turn-new" }),
     );
@@ -539,7 +552,7 @@ describe("dispatchCommand", () => {
       },
     );
 
-    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(result).toEqual({ trace: { spans: [] } });
     expect(runtime.waitForActiveTurn).not.toHaveBeenCalled();
     expect(runtime.runTurn).toHaveBeenCalledOnce();
   });
@@ -779,7 +792,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: WORKSPACE_PATH,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj-1",
         providerId: "codex",
@@ -828,8 +840,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -858,7 +869,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: "/tmp/bb-command-dispatch-new",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
@@ -888,7 +898,7 @@ describe("dispatchCommand", () => {
       threadStorageRootPath: "/tmp/bb-thread-storage",
     });
 
-    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(result).toEqual({ trace: { spans: [] } });
     expect(oldRuntime.stopThread).toHaveBeenCalledWith({
       threadId: "thread-1",
     });
@@ -904,6 +914,7 @@ describe("dispatchCommand", () => {
         threadId: "thread-1",
       }),
     );
+    expect(newRuntime.runTurn).toHaveBeenCalledOnce();
     expect(
       (oldRuntime.stopThread as unknown as Mock).mock.invocationCallOrder[0],
     ).toBeLessThan(
@@ -1006,7 +1017,7 @@ describe("dispatchCommand", () => {
     });
   });
 
-  it("skips a release when a turn started after the server read the thread", async () => {
+  it("reports a retained turn instead of releasing a turn that started after the server read the thread", async () => {
     const runtime = createRuntime();
     const manager = new RuntimeManager({
       createRuntime: () => runtime,
@@ -1017,6 +1028,18 @@ describe("dispatchCommand", () => {
       workspacePath: "/tmp/bb-release-race",
     });
     runtime.setActiveTurn("thread-1", "turn-new");
+    const options = {
+      dataDir: "/tmp/bb-data",
+      logger: silentLogger,
+      eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
+      fetchProjectAttachment: async () => {
+        throw new Error("Unexpected project attachment fetch");
+      },
+      fetchPluginHostArtifact: fetchDispatchTestArtifact,
+      ...unexpectedProviderMaintenance,
+      runtimeManager: manager,
+      threadStorageRootPath: "/tmp/bb-thread-storage",
+    };
 
     const result = await dispatchCommand(
       {
@@ -1025,23 +1048,29 @@ describe("dispatchCommand", () => {
         environmentId: "env-release-race",
         threadId: "thread-1",
       },
-      {
-        dataDir: "/tmp/bb-data",
-        logger: silentLogger,
-        eventSink: { emit: vi.fn(), flush: vi.fn(async () => undefined) },
-        fetchProjectAttachment: async () => {
-          throw new Error("Unexpected project attachment fetch");
-        },
-        fetchPluginHostArtifact: fetchDispatchTestArtifact,
-        ...unexpectedProviderMaintenance,
-        runtimeManager: manager,
-        threadStorageRootPath: "/tmp/bb-thread-storage",
-      },
+      options,
     );
 
     expect(runtime.stopThread).not.toHaveBeenCalled();
     expect(runtime.getActiveTurnId("thread-1")).toBe("turn-new");
-    expect(result).toEqual({ providerCheckpointId: null });
+    expect(result).toEqual({
+      providerCheckpointId: null,
+      activeTurnRetained: true,
+    });
+
+    const interrupted = await dispatchCommand(
+      {
+        type: "thread.stop",
+        intent: "interrupt",
+        environmentId: "env-release-race",
+        threadId: "thread-1",
+      },
+      options,
+    );
+
+    expect(runtime.stopThread).toHaveBeenCalledWith({ threadId: "thread-1" });
+    expect(runtime.getActiveTurnId("thread-1")).toBeNull();
+    expect(interrupted).toEqual({ providerCheckpointId: null });
   });
 
   it("treats thread.stop as successful when no runtime holds the thread", async () => {
@@ -1155,8 +1184,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -1206,8 +1234,7 @@ describe("dispatchCommand", () => {
       .mockReturnValueOnce(newRuntime);
     const manager = new RuntimeManager({
       createRuntime: createRuntimeSpy,
-      provisionWorkspace: async (args) =>
-        createWorkspace("path" in args ? args.path : args.targetPath),
+      provisionWorkspace: async (args) => createWorkspace(args.path),
     });
     await manager.ensureEnvironment({
       environmentId: "env-old",
@@ -1234,7 +1261,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: "/tmp/bb-goal-new",
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
@@ -1317,7 +1343,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "example-agent",
@@ -1397,7 +1422,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -1464,7 +1488,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -1523,7 +1546,10 @@ describe("dispatchCommand", () => {
       }),
     ).resolves.toEqual({ providerThreadId: "provider-thread-rewind-1" });
     expect(providerInstallationStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ requirement: "thread_rewind" }),
+      expect.objectContaining({
+        requirement: "thread_rewind",
+        checkUpdates: false,
+      }),
     );
     expect(runtime.prepareThreadRewind).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -1616,36 +1642,9 @@ describe("dispatchCommand", () => {
 
     expect(providerInstallationStatus).toHaveBeenCalledOnce();
     expect(runtime.startThread).toHaveBeenCalledTimes(2);
-  });
-
-  it("shares one in-flight probe between concurrent thread starts", async () => {
-    const runtime = createRuntime();
-    const manager = new RuntimeManager({
-      createRuntime: () => runtime,
-      provisionWorkspace: async () => createWorkspace(),
-    });
-    const probe = createDeferredPromise<ProviderCliStatus>();
-    const providerInstallationStatus = vi.fn(() => probe.promise);
-    const options = makeDispatchOptions({
-      runtimeManager: manager,
-      providerInstallationStatus,
-    });
-
-    const starts = Promise.all([
-      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
-      dispatchCommand(createInstallationGatedThreadStart("thread-2"), options),
-    ]);
-    await vi.waitFor(() =>
-      expect(providerInstallationStatus).toHaveBeenCalledOnce(),
+    expect(providerInstallationStatus).toHaveBeenCalledWith(
+      expect.objectContaining({ checkUpdates: false }),
     );
-    probe.resolve(supportedCodexInstallationStatus());
-
-    await expect(starts).resolves.toEqual([
-      { providerThreadId: "provider-thread-1" },
-      { providerThreadId: "provider-thread-1" },
-    ]);
-    expect(providerInstallationStatus).toHaveBeenCalledOnce();
-    expect(runtime.startThread).toHaveBeenCalledTimes(2);
   });
 
   it("retries concurrent thread starts when a shell env refresh interrupts their shared probe", async () => {
@@ -1682,37 +1681,6 @@ describe("dispatchCommand", () => {
     ]);
     expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
     expect(runtime.startThread).toHaveBeenCalledTimes(2);
-  });
-
-  it("does not remember an unsupported installation", async () => {
-    const runtime = createRuntime();
-    const manager = new RuntimeManager({
-      createRuntime: () => runtime,
-      provisionWorkspace: async () => createWorkspace(),
-    });
-    const providerInstallationStatus = vi
-      .fn<() => Promise<ProviderCliStatus>>()
-      .mockResolvedValueOnce({
-        ...supportedCodexInstallationStatus(),
-        currentVersion: "0.135.0",
-        npmGlobalPackageVersion: "0.135.0",
-        versionUnsupported: true,
-      })
-      .mockResolvedValue(supportedCodexInstallationStatus());
-    const options = makeDispatchOptions({
-      runtimeManager: manager,
-      providerInstallationStatus,
-    });
-
-    await expect(
-      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
-    ).rejects.toMatchObject({ code: "provider_cli_unsupported_version" });
-    await expect(
-      dispatchCommand(createInstallationGatedThreadStart("thread-1"), options),
-    ).resolves.toEqual({ providerThreadId: "provider-thread-1" });
-
-    expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
-    expect(runtime.startThread).toHaveBeenCalledOnce();
   });
 
   it("keys the rewind requirement separately from thread start", async () => {
@@ -1883,13 +1851,12 @@ describe("dispatchCommand", () => {
   });
 
   it("expires the remembered probe after the gate TTL", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
+    const now = vi.spyOn(Date, "now").mockReturnValue(0);
     try {
       const runtime = createRuntime();
       const manager = new RuntimeManager({
         createRuntime: () => runtime,
         provisionWorkspace: async () => createWorkspace(),
-        providerInstallationGateTtlMs: 100,
       });
       const providerInstallationStatus = vi.fn(async () =>
         supportedCodexInstallationStatus(),
@@ -1899,20 +1866,27 @@ describe("dispatchCommand", () => {
         providerInstallationStatus,
       });
 
-      const probedAt = Date.now();
       await dispatchCommand(
         createInstallationGatedThreadStart("thread-1"),
         options,
       );
-      vi.setSystemTime(probedAt + 101);
+      now.mockReturnValue(PROVIDER_INSTALLATION_GATE_TTL_MS - 1);
       await dispatchCommand(
         createInstallationGatedThreadStart("thread-2"),
         options,
       );
+      expect(providerInstallationStatus).toHaveBeenCalledOnce();
 
-      expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
+      now.mockReturnValue(PROVIDER_INSTALLATION_GATE_TTL_MS);
+      await dispatchCommand(
+        createInstallationGatedThreadStart("thread-3"),
+        options,
+      );
+      await vi.waitFor(() => {
+        expect(providerInstallationStatus).toHaveBeenCalledTimes(2);
+      });
     } finally {
-      vi.useRealTimers();
+      now.mockRestore();
     }
   });
 
@@ -1954,45 +1928,49 @@ describe("dispatchCommand", () => {
       action: "update",
     };
 
-    const result = await dispatchOnlineRpcCommand(command, {
-      dataDir,
-      logger: silentLogger,
-      eventSink: {
-        emit: vi.fn(),
-        flush: vi.fn(async () => undefined),
-      },
-      fetchProjectAttachment: async () => {
-        throw new Error("Unexpected project attachment fetch");
-      },
-      fetchPluginHostArtifact: fetchDispatchTestArtifact,
-      ...unexpectedProviderMaintenance,
-      runtimeManager: manager,
-      providerInstallationRun: async () => ({
-        available: true,
-        command: {
-          command: "codex",
-          args: ["update"],
-          displayCommand: "codex update",
+    const result = await dispatchOnlineRpcCommand(
+      command,
+      {
+        dataDir,
+        logger: silentLogger,
+        eventSink: {
+          emit: vi.fn(),
+          flush: vi.fn(async () => undefined),
         },
-        verification: { kind: "version_changed", previousVersion: "0.1.0" },
-      }),
-      providerInstallationStatus: async () => ({
-        executableName: "codex",
-        executablePath: "/usr/local/bin/codex",
-        installed: true,
-        installSource: "external",
-        currentVersion: "0.2.0",
-        latestVersion: "0.2.0",
-        minimumSupportedVersion: null,
-        npmPackageName: null,
-        npmGlobalPackageVersion: null,
-        installAction: null,
-        needsUpdate: false,
-        versionUnsupported: false,
-      }),
-      streamProviderInstallation,
-      threadStorageRootPath: "/tmp/bb-thread-storage",
-    });
+        fetchProjectAttachment: async () => {
+          throw new Error("Unexpected project attachment fetch");
+        },
+        fetchPluginHostArtifact: fetchDispatchTestArtifact,
+        ...unexpectedProviderMaintenance,
+        runtimeManager: manager,
+        providerInstallationRun: async () => ({
+          available: true,
+          command: {
+            command: "codex",
+            args: ["update"],
+            displayCommand: "codex update",
+          },
+          verification: { kind: "version_changed", previousVersion: "0.1.0" },
+        }),
+        providerInstallationStatus: async () => ({
+          executableName: "codex",
+          executablePath: "/usr/local/bin/codex",
+          installed: true,
+          installSource: "external",
+          currentVersion: "0.2.0",
+          latestVersion: "0.2.0",
+          minimumSupportedVersion: null,
+          npmPackageName: null,
+          npmGlobalPackageVersion: null,
+          installAction: null,
+          needsUpdate: false,
+          versionUnsupported: false,
+        }),
+        streamProviderInstallation,
+        threadStorageRootPath: "/tmp/bb-thread-storage",
+      },
+      new AbortController().signal,
+    );
 
     expect(result).toEqual({ events });
     expect(streamProviderInstallation).toHaveBeenCalledWith(
@@ -2081,6 +2059,7 @@ describe("dispatchCommand", () => {
           streamProviderInstallation,
           threadStorageRootPath: "/tmp/bb-thread-storage",
         },
+        new AbortController().signal,
       );
 
       expect(result).toEqual({ events: testCase.events });
@@ -2160,6 +2139,7 @@ describe("dispatchCommand", () => {
           ]),
         threadStorageRootPath: "/tmp/bb-thread-storage",
       },
+      new AbortController().signal,
     );
 
     expect(providerInstallationStatus).toHaveBeenCalledOnce();
@@ -2221,6 +2201,7 @@ describe("dispatchCommand", () => {
         streamProviderInstallation,
         threadStorageRootPath: "/tmp/bb-thread-storage",
       },
+      new AbortController().signal,
     );
 
     expect(providerInstallationStatus).not.toHaveBeenCalled();
@@ -2281,7 +2262,7 @@ describe("dispatchCommand", () => {
     ]);
   });
 
-  it("reuses a busy runtime when thread.start carries a changed skill catalog", async () => {
+  it("injects the current skill snapshot when spawning beside an active sibling", async () => {
     const fixture = await setupBusySkillCatalogEnvironment({
       activeThreadId: "sibling-thread",
     });
@@ -2292,7 +2273,6 @@ describe("dispatchCommand", () => {
       threadId: "thread-1",
       workspaceContext: {
         workspacePath: WORKSPACE_PATH,
-        workspaceProvisionType: "unmanaged",
       },
       projectId: "proj_1",
       providerId: "codex",
@@ -2335,6 +2315,25 @@ describe("dispatchCommand", () => {
 
     expect(result.providerThreadId).toBe("provider-thread-1");
     expect(fixture.runtime.startThread).toHaveBeenCalledTimes(1);
+    const currentCatalog = await stageInjectedSkillSources({
+      workspacePath: fixture.dataDir,
+      dataDir: fixture.dataDir,
+      injectedSkillSources: [fixture.source],
+    });
+    expect(currentCatalog.catalogHash).not.toBe(fixture.originalCatalogHash);
+    await expect(
+      fs.readFile(
+        path.join(
+          currentCatalog.skillRoots[0]!.path,
+          "release-notes",
+          "SKILL.md",
+        ),
+        "utf8",
+      ),
+    ).resolves.toContain("second-token");
+    expect(fixture.runtime.startThread).toHaveBeenCalledWith(
+      expect.objectContaining({ skillRoots: currentCatalog.skillRoots }),
+    );
     expect(fixture.createRuntimeSpy).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.shutdown).not.toHaveBeenCalled();
     expect(fixture.manager.get("env-1")?.skillCatalogHash).toBe(
@@ -2367,7 +2366,6 @@ describe("dispatchCommand", () => {
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         workspaceContext: {
           workspacePath: WORKSPACE_PATH,
-          workspaceProvisionType: "unmanaged",
         },
         projectId: "proj_1",
         providerId: "codex",
@@ -2397,7 +2395,7 @@ describe("dispatchCommand", () => {
       threadStorageRootPath: "/tmp/bb-thread-storage",
     });
 
-    expect(result).toEqual({ appliedAs: "new-turn" });
+    expect(result).toEqual({ trace: { spans: [] } });
     expect(fixture.runtime.runTurn).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.resumeThread).not.toHaveBeenCalled();
     expect(fixture.createRuntimeSpy).toHaveBeenCalledTimes(1);
@@ -2439,6 +2437,7 @@ describe("dispatchCommand", () => {
           cwd: "/tmp/workspace",
         },
         options,
+        new AbortController().signal,
       ),
     ).resolves.toEqual({ supported: false });
     await expect(
@@ -2449,6 +2448,7 @@ describe("dispatchCommand", () => {
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         },
         options,
+        new AbortController().signal,
       ),
     ).resolves.toEqual({ supported: false });
 

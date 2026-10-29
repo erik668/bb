@@ -1,8 +1,10 @@
-import { useMemo, type ReactNode } from "react";
-import type { OpenInTargetContext } from "@bb/host-daemon-contract";
+import type { ReactNode } from "react";
 import type { SidebarProject } from "@/hooks/queries/project-queries";
 import { findLocalPathProjectSourceForHost } from "@bb/domain";
-import type { PluginFileOpenerSource } from "@get-bb/plugin-sdk";
+import type {
+  ExperimentalLiveFileTarget,
+  PluginFileOpenerSource,
+} from "@get-bb/plugin-sdk";
 import type {
   PluginPanelFixedPanelTab,
   SecondaryFileFixedPanelTab,
@@ -11,9 +13,11 @@ import type { SecondaryPanelPaneRenderContext } from "@/components/secondary-pan
 import {
   LazyFilePreview,
   LazyHostFilePreviewTabContent,
+  LazyHostScopedFilePreviewTabContent,
   LazyNewTabPage,
   LazyProjectFilePreviewTabContent,
   LazyThreadStorageFilePreviewTabContent,
+  LazyAttachmentFilePreviewTabContent,
   LazyThreadTerminalPanel,
   LazyWorkspaceFilePreviewTabContent,
 } from "@/components/secondary-panel/lazySecondaryPanelComponents";
@@ -28,15 +32,16 @@ import {
   type FileOpenerOriginalTab,
 } from "@/components/plugin/file-opener-tabs";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
-import { useThreadStorageViewer } from "@/components/secondary-panel/useThreadStorageViewer";
-import { useHostDaemon } from "@/hooks/useHostDaemon";
-import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
+import { useThreadStorageLocation } from "@/hooks/queries/thread-panel-queries";
+import { useCanOpenFileExternally } from "@/hooks/useCanOpenFileExternally";
 import {
-  buildOpenInEditorHandler,
-  resolveEnvironmentOpenContext,
-} from "./thread-detail/threadWorkspaceOpenPath";
+  getRevealInFinderHandler,
+  useLocalOpenTargets,
+} from "@/hooks/useLocalOpenTargets";
+import { useResolvedLiveFileTarget } from "@/hooks/useResolvedLiveFileTarget";
+import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { getFilePreviewLineRangeStart } from "@bb/client-core";
-import { resolveAbsoluteFilePath } from "@/lib/absolute-file-path";
+import { resolveAbsoluteFilePath } from "@bb/shared-ui/lib/absolute-file-path";
 import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
 import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
 
@@ -56,8 +61,10 @@ interface RootComposePanelTabContentProps {
   onActivateTab: (tabId: string) => void;
   onAutoFocusNewTabHandled: () => void;
   onAutoFocusTerminalHandled: () => void;
-  onOpenBrowser: () => void;
+  onCloseTerminal: (terminalId: string) => void;
+  onOpenBrowser: (() => void) | null;
   onOpenPanelLink: MarkdownPreviewLinkHandler;
+  onRetryTerminalStart: (terminalId: string) => void;
   onSelectFileSearchResult: (selection: FileSearchSelection) => void;
   onSelectionAddToChat: (text: string) => void;
   onStartTerminal: () => void;
@@ -70,7 +77,7 @@ interface RootComposePanelTabContentProps {
   rootPanelThreadId: string | null;
   rootProjectHostId: string | null;
   shouldAutoFocusNewTab: boolean;
-  shouldAutoFocusTerminal: boolean;
+  autoFocusTerminalId: string | null;
   tab: SecondaryFileFixedPanelTab;
   terminalTarget: RootComposeTerminalTarget | null;
 }
@@ -90,20 +97,6 @@ interface RootComposeFilePreviewTabContentProps {
   rootPanelThreadId: string | null;
   rootProjectHostId: string | null;
   tab: FileOpenerOriginalTab;
-}
-
-function resolveHostOpenContext(args: {
-  hostId: string | null;
-  isLocal: boolean;
-  serverOrigin: string;
-}): OpenInTargetContext | null {
-  if (args.hostId === null) return null;
-  if (args.isLocal) return { kind: "local" };
-  return {
-    kind: "remote-ssh",
-    serverOrigin: args.serverOrigin,
-    hostId: args.hostId,
-  };
 }
 
 export function resolveRootComposeProjectFileRouting({
@@ -141,8 +134,10 @@ export function RootComposePanelTabContent({
   onActivateTab,
   onAutoFocusNewTabHandled,
   onAutoFocusTerminalHandled,
+  onCloseTerminal,
   onOpenBrowser,
   onOpenPanelLink,
+  onRetryTerminalStart,
   onSelectFileSearchResult,
   onSelectionAddToChat,
   onStartTerminal,
@@ -155,27 +150,38 @@ export function RootComposePanelTabContent({
   rootPanelThreadId,
   rootProjectHostId,
   shouldAutoFocusNewTab,
-  shouldAutoFocusTerminal,
+  autoFocusTerminalId,
   tab,
   terminalTarget,
 }: RootComposePanelTabContentProps) {
   switch (tab.kind) {
     case "browser":
       return null;
+    case "attachment-file-preview":
+      return (
+        <LazyAttachmentFilePreviewTabContent
+          isPanelOpen={isPanelOpen}
+          name={tab.name}
+          onSelectionAddToChat={onSelectionAddToChat}
+          path={tab.path}
+          projectId={tab.projectId}
+        />
+      );
     case "terminal":
       return terminalTarget === null ? null : (
         <LazyThreadTerminalPanel
           autoFocus={
-            pane.isFocused && tab.id === activeTabId && shouldAutoFocusTerminal
+            pane.isFocused &&
+            tab.id === activeTabId &&
+            tab.terminalId === autoFocusTerminalId
           }
-          canCreateTerminal={canCreateTerminal}
           isPanelOpen={isPanelOpen}
           isPanelPersistedOpen={isPanelPersistedOpen}
           onAutoFocusHandled={onAutoFocusTerminalHandled}
+          onCloseStart={() => onCloseTerminal(tab.terminalId)}
           onOpenLink={onOpenPanelLink}
+          onRetryStart={() => onRetryTerminalStart(tab.terminalId)}
           onSelectionAddToChat={onSelectionAddToChat}
-          panelStateId={ROOT_COMPOSE_FIXED_PANEL_STATE_ID}
-          syncThreadId={null}
           target={terminalTarget}
           terminalId={tab.terminalId}
         />
@@ -197,12 +203,12 @@ export function RootComposePanelTabContent({
           }}
           recentItemsThreadId={ROOT_COMPOSE_FIXED_PANEL_STATE_ID}
           onOpenBrowser={
-            rootPanelThreadId
-              ? () => {
+            onOpenBrowser === null
+              ? undefined
+              : () => {
                   onActivateTab(tab.id);
                   onOpenBrowser();
                 }
-              : undefined
           }
           onStartTerminal={
             canCreateTerminal
@@ -297,16 +303,19 @@ function RootComposeFilePreviewTabContent({
     staleTime: 5_000,
   });
   const environment = environmentQuery.data;
+  const imageThreadId = fileOpenerSource?.threadId ?? rootPanelThreadId;
   const storageThreadId =
     tab.kind === "thread-storage-file-preview"
       ? fileOpenerSource === null
         ? (tab.threadId ?? rootPanelThreadId)
         : fileOpenerSource.threadId
       : null;
-  const { threadStorageRootPath } = useThreadStorageViewer({
-    fileListEnabled: storageThreadId !== null,
-    threadId: storageThreadId ?? undefined,
-  });
+  const threadStorageLocationQuery = useThreadStorageLocation(
+    storageThreadId ?? "",
+    { enabled: storageThreadId !== null },
+  );
+  const threadStorageRootPath =
+    threadStorageLocationQuery.data?.storageRootPath ?? null;
   const projectPreviewId =
     tab.kind === "workspace-file-preview" && tab.environmentId === null
       ? fileOpenerSource?.kind === "workspace"
@@ -346,100 +355,85 @@ function RootComposeFilePreviewTabContent({
       : projectFilePreviewRouting.environmentId !== null
         ? (environment?.hostId ?? null)
         : projectSourceRoutingHostId;
-  const { isLocalDaemonHost } = useHostDaemon();
-  const serverOrigin = window.location.origin;
-  const environmentOpenContext = resolveEnvironmentOpenContext({
-    environment,
-    threadEnvironmentIsLocal: environment
-      ? isLocalDaemonHost(environment.hostId)
-      : false,
-    serverOrigin,
-  });
-  const projectOpenContext = resolveHostOpenContext({
-    hostId: projectPreviewHostId,
-    isLocal: isLocalDaemonHost(projectPreviewHostId),
-    serverOrigin,
-  });
-  const openContext =
-    tab.kind === "workspace-file-preview" && tab.environmentId === null
-      ? projectOpenContext
-      : environmentOpenContext;
-  const {
-    canOpenPreferredFileTarget,
-    fileOpenTargets,
-    openPathInFileTarget,
-    openPathInPreferredFileTarget,
-  } = useLocalOpenTargets({
-    enabled: openContext !== null,
-    ...(openContext ? { openContext } : {}),
-  });
-  const onRevealInFinder =
-    openContext?.kind === "local" &&
-    fileOpenTargets.some((target) => target.id === "finder")
-      ? (path: string) => {
-          void openPathInFileTarget({
-            lineNumber: null,
-            path,
-            rememberTarget: false,
-            targetId: "finder",
-          });
-        }
-      : undefined;
   const workspaceRootPath = environment?.path ?? null;
-  const relativeFileRootPath =
-    tab.kind === "workspace-file-preview"
-      ? tab.environmentId === null
-        ? projectPreviewRootPath
-        : workspaceRootPath
+  const projectPreviewPath = resolveAbsoluteFilePath({
+    path: tab.path,
+    rootPath: projectPreviewRootPath,
+  });
+  const externalFileTarget: ExperimentalLiveFileTarget | null =
+    tab.kind === "host-file-preview"
+      ? environment
+        ? { kind: "host", hostId: environment.hostId, path: tab.path }
+        : null
       : tab.kind === "thread-storage-file-preview"
-        ? threadStorageRootPath
-        : null;
-  const openRelativeFileInEditor = useMemo(
-    () =>
-      buildOpenInEditorHandler({
-        rootPath: relativeFileRootPath,
-        canOpenPreferredTarget: canOpenPreferredFileTarget,
-        openInPreferredTarget: openPathInPreferredFileTarget,
-      }),
-    [
-      canOpenPreferredFileTarget,
-      openPathInPreferredFileTarget,
-      relativeFileRootPath,
-    ],
-  );
+        ? storageThreadId
+          ? {
+              kind: "thread-storage",
+              threadId: storageThreadId,
+              path: tab.path,
+            }
+          : null
+        : tab.environmentId !== null
+          ? environmentId
+            ? { kind: "workspace", environmentId, path: tab.path }
+            : null
+          : projectPreviewHostId !== null && projectPreviewPath !== null
+            ? {
+                kind: "host",
+                hostId: projectPreviewHostId,
+                path: projectPreviewPath,
+              }
+            : null;
+  const canOpenFileExternally = useCanOpenFileExternally(externalFileTarget);
+  const resolvedFileTarget = useResolvedLiveFileTarget(externalFileTarget, {
+    enabled: externalFileTarget !== null,
+  });
+  const fileOpenContext =
+    resolvedFileTarget.status === "available"
+      ? resolvedFileTarget.openContext
+      : null;
+  const { fileOpenTargets, openPathInFileTarget } = useLocalOpenTargets({
+    enabled: fileOpenContext !== null,
+    ...(fileOpenContext ? { openContext: fileOpenContext } : {}),
+  });
+  const onRevealInFinder = getRevealInFinderHandler({
+    fileOpenTargets,
+    openContext: fileOpenContext,
+    openPathInFileTarget,
+  });
+  const { openFileExternally } = useAppNavigationHost();
   const hostFileLineNumber = getFilePreviewLineRangeStart({
     lineRange: tab.kind === "host-file-preview" ? tab.lineRange : null,
   });
-  const openHostFileInEditor =
-    tab.kind === "host-file-preview" && canOpenPreferredFileTarget
-      ? (path: string) => {
-          void openPathInPreferredFileTarget({
-            lineNumber: hostFileLineNumber,
-            path,
+  const onOpenInEditor =
+    externalFileTarget !== null && canOpenFileExternally
+      ? () => {
+          openFileExternally({
+            target: externalFileTarget,
+            location:
+              hostFileLineNumber === null
+                ? null
+                : { kind: "line", line: hostFileLineNumber, column: null },
           });
         }
       : undefined;
-  const onOpenInEditor =
-    tab.kind === "host-file-preview"
-      ? openHostFileInEditor
-      : openRelativeFileInEditor;
 
   useAppCommandHandler("workspace.openPreferred", () => {
     if (!isFocused || onOpenInEditor === undefined) return false;
-    onOpenInEditor(tab.path);
+    onOpenInEditor();
     return true;
   });
 
   let original: ReactNode;
   switch (tab.kind) {
     case "workspace-file-preview": {
-      const copyPath = resolveAbsoluteFilePath({
-        path: tab.path,
-        rootPath:
-          tab.environmentId === null
-            ? projectPreviewRootPath
-            : workspaceRootPath,
-      });
+      const copyPath =
+        tab.environmentId === null
+          ? projectPreviewPath
+          : resolveAbsoluteFilePath({
+              path: tab.path,
+              rootPath: workspaceRootPath,
+            });
       original =
         tab.environmentId !== null ? (
           <LazyWorkspaceFilePreviewTabContent
@@ -452,8 +446,7 @@ function RootComposeFilePreviewTabContent({
             onRevealInFinder={onRevealInFinder}
             onSelectionAddToChat={onSelectionAddToChat}
             source={tab.source}
-            statusLabel={tab.statusLabel}
-            threadId={rootPanelThreadId}
+            threadId={imageThreadId}
           />
         ) : projectPreviewId !== null ? (
           <LazyProjectFilePreviewTabContent
@@ -467,6 +460,8 @@ function RootComposeFilePreviewTabContent({
             onRevealInFinder={onRevealInFinder}
             onSelectionAddToChat={onSelectionAddToChat}
             projectId={projectPreviewId}
+            rootPath={projectPreviewRootPath}
+            threadId={imageThreadId}
           />
         ) : (
           <LazyFilePreview
@@ -485,7 +480,16 @@ function RootComposeFilePreviewTabContent({
           ? (tab.threadId ?? rootPanelThreadId)
           : fileOpenerSource.threadId;
       original =
-        threadId && environmentId ? (
+        tab.hostId !== null ? (
+          <LazyHostScopedFilePreviewTabContent
+            activePath={tab.path}
+            hostId={tab.hostId}
+            isPanelOpen={isPanelOpen}
+            lineRange={tab.lineRange}
+            onOpenInEditor={onOpenInEditor}
+            onRevealInFinder={onRevealInFinder}
+          />
+        ) : threadId && environmentId ? (
           <LazyHostFilePreviewTabContent
             activePath={tab.path}
             copyPath={tab.path}

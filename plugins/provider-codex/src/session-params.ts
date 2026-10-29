@@ -1,3 +1,4 @@
+import { experimental_selectedSkillMentions as selectedSkillMentions } from "@get-bb/plugin-sdk/provider-bridge";
 import {
   jsonValueSchema,
   type PermissionEscalation,
@@ -46,6 +47,7 @@ export interface CodexThreadPermissionSettings {
 export type BbThreadStartParams = ThreadStartParams & {
   experimentalRawEvents?: boolean;
   dynamicTools?: DynamicToolSpec[];
+  daybreakEnabled?: boolean;
 };
 
 export type BbThreadForkParams = {
@@ -476,7 +478,7 @@ export function gitWritableRootsForWorkspace(
   return [...new Set(writableRoots)];
 }
 
-export function combineWorkspaceWriteRoots(
+function combineWorkspaceWriteRoots(
   roots: readonly string[],
   additionalRoots: readonly string[],
 ): string[] {
@@ -520,39 +522,27 @@ export function toCodexThreadPermissionSettings(
 export function toCodexPermissionSettings(
   args: ToCodexPermissionSettingsArgs,
 ): CodexPermissionSettings {
-  const permissionPolicy = args.options;
-  switch (permissionPolicy.permissionScope) {
-    case "workspace":
-      return {
-        approvalPolicy: toEscalationApprovalPolicy(
-          permissionPolicy.permissionEscalation,
-        ),
-        approvalsReviewer: toCodexApprovalsReviewer(args.options),
-        sandbox: "workspace-write",
-        sandboxPolicy: toWorkspaceWriteCodexSandboxPolicy(
-          combineWorkspaceWriteRoots(
-            args.gitWritableRoots,
-            args.additionalWorkspaceWriteRoots,
-          ),
-        ),
-      };
-    case "full":
-      return {
-        approvalPolicy: "never",
-        approvalsReviewer: toCodexApprovalsReviewer(args.options),
-        sandbox: "danger-full-access",
-        sandboxPolicy: { type: "dangerFullAccess" },
-      };
-  }
+  return {
+    ...toCodexThreadPermissionSettings(args.options),
+    sandboxPolicy:
+      args.options.permissionScope === "workspace"
+        ? toWorkspaceWriteCodexSandboxPolicy(
+            combineWorkspaceWriteRoots(
+              args.gitWritableRoots,
+              args.additionalWorkspaceWriteRoots,
+            ),
+          )
+        : { type: "dangerFullAccess" },
+  };
 }
 
 export function toCodexServiceTier(
   tier: ServiceTier | undefined,
-): "fast" | undefined {
-  return tier === "fast" ? "fast" : undefined;
+): string | null | undefined {
+  return tier === "default" ? null : tier;
 }
 
-export function toCodexReasoningEffort(
+function toCodexReasoningEffort(
   reasoningLevel: ReasoningLevel,
 ): CodexReasoningEffort {
   const codexEffort = mapBbReasoningLevelToCodex(reasoningLevel);
@@ -564,8 +554,40 @@ export function toCodexReasoningEffort(
   return codexEffort;
 }
 
-export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
-  return input.map((chunk): CodexUserInput => {
+interface CodexCatalogSkill {
+  name: string;
+  path: string;
+}
+
+function codexSkillDirectoryName(skill: CodexCatalogSkill): string {
+  const directory = path.basename(path.dirname(skill.path));
+  const separator = skill.name.lastIndexOf(":");
+  return separator === -1
+    ? directory
+    : `${skill.name.slice(0, separator + 1)}${directory}`;
+}
+
+export function toCodexUserInput(
+  input: PromptInput[],
+  skills: readonly CodexCatalogSkill[] = [],
+): CodexUserInput[] {
+  const selected = new Map<string, CodexUserInput>();
+  for (const chunk of input) {
+    if (chunk.type !== "text") continue;
+    for (const mention of selectedSkillMentions(chunk)) {
+      const name = mention.resource.name;
+      const skill =
+        skills.find((entry) => entry.name === name) ??
+        skills.find((entry) => codexSkillDirectoryName(entry) === name);
+      if (skill === undefined) continue;
+      selected.set(skill.path, {
+        type: "skill",
+        name: skill.name,
+        path: skill.path,
+      });
+    }
+  }
+  const chunks = input.map((chunk): CodexUserInput => {
     switch (chunk.type) {
       case "text":
         return { type: "text", text: chunk.text, text_elements: [] };
@@ -576,11 +598,14 @@ export function toCodexUserInput(input: PromptInput[]): CodexUserInput[] {
       case "localFile":
         return {
           type: "text",
-          text: `[Attached file: ${chunk.path}]`,
+          text: chunk.name
+            ? `[Attached file "${chunk.name}": ${chunk.path}]`
+            : `[Attached file: ${chunk.path}]`,
           text_elements: [],
         };
     }
   });
+  return [...chunks, ...selected.values()];
 }
 
 function buildShellEnvironmentPolicyConfig(
@@ -614,7 +639,6 @@ export function buildCodexConfig(
       args.options.reasoningLevel,
     );
   }
-  config["features.default_mode_request_user_input"] = false;
   if (args.options?.providerSubagentsEnabled === false) {
     config["features.multi_agent"] = false;
     config["features.multi_agent_v2.max_concurrent_threads_per_session"] = 1;

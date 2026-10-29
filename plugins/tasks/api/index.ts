@@ -1,4 +1,5 @@
 import type { BbPluginApi, PluginRpcHandlers } from "@get-bb/plugin-sdk";
+import { z } from "zod";
 import {
   createTasksStore,
   type Attachment as StoredAttachment,
@@ -12,20 +13,33 @@ import {
   removeAttachmentBlobs,
 } from "../attachments";
 import { deliverCommentToLatestAgent } from "../steer";
+import { displayName } from "../shared/display-name";
+import { errorMessage } from "../shared/errors";
 import { isSideChatShapedThread } from "../shared/side-chat";
 import {
   tasksRpcContract,
   type Attachment as AttachmentMetadata,
-  type ProjectsChangedEvent,
   type SidebarProjectSummary,
   type Task,
   type TaskPullRequest,
-  type TasksChangedEvent,
   type TasksDomainError,
-  type TaskStatus,
-  type CommentsChangedEvent,
   type CommentProvider,
 } from "../shared/contract";
+import {
+  FOLDERS_TAG,
+  PRESETS_TAG,
+  PROJECTS_TAG,
+  commentsTag,
+  labelsTag,
+  projectTag,
+  projectTasksChangedTags,
+  projectTasksTag,
+  pullRequestsTag,
+  taskChangedTags,
+  threadsChangedTags,
+  ALL_TASKS_TAG,
+  TASK_META_TAG,
+} from "../shared/tags";
 
 interface TaskLabelIdRow {
   task_id: string;
@@ -47,6 +61,21 @@ interface SummaryRow {
 }
 
 const MAX_THREAD_SEARCH_RESULTS = 10;
+const ACTIVE_PULL_REQUEST_REFRESH_MS = 60_000;
+const activePullRequestTasks = new WeakMap<TasksApiStore, Set<string>>();
+
+function tasksWithActivePullRequests(store: TasksApiStore): Set<string> {
+  let tasks = activePullRequestTasks.get(store);
+  if (tasks === undefined) {
+    tasks = new Set();
+    activePullRequestTasks.set(store, tasks);
+  }
+  return tasks;
+}
+
+function isActivePullRequest(pullRequest: TaskPullRequest): boolean {
+  return pullRequest.state === "open" || pullRequest.state === "draft";
+}
 
 export interface TasksApiStore {
   readonly tasks: TasksStore;
@@ -169,44 +198,44 @@ function taskFailure(error: TasksDomainFailure) {
   return { ok: false as const, error: error.detail };
 }
 
-function statusName(status: TaskStatus): string {
-  return status
-    .split("_")
-    .map((part) => part[0]?.toUpperCase() + part.slice(1))
-    .join(" ");
+function invalidate(bb: BbPluginApi, tags: readonly string[]): void {
+  bb.rpc.experimental_invalidate([...new Set(tags)]);
 }
 
-function priorityName(priority: StoredTask["priority"]): string {
-  return priority[0]?.toUpperCase() + priority.slice(1);
-}
-
-export function publishTasksChanged(
+export function invalidateTaskChanged(
   bb: BbPluginApi,
-  taskId: string,
+  task: { id: string; projectId: string },
+): void {
+  invalidate(bb, taskChangedTags(task));
+}
+
+export function invalidateComments(bb: BbPluginApi, taskId: string): void {
+  invalidate(bb, [commentsTag(taskId)]);
+}
+
+export function invalidateThreads(bb: BbPluginApi, taskId: string): void {
+  invalidate(bb, threadsChangedTags(taskId));
+}
+
+export function invalidateProjects(bb: BbPluginApi): void {
+  invalidate(bb, [PROJECTS_TAG]);
+}
+
+export function invalidateFolders(
+  bb: BbPluginApi,
+  options: { projectsMoved: boolean },
+): void {
+  invalidate(bb, [
+    FOLDERS_TAG,
+    ...(options.projectsMoved ? [PROJECTS_TAG] : []),
+  ]);
+}
+
+export function invalidateProjectTasks(
+  bb: BbPluginApi,
   projectId: string,
 ): void {
-  const payload: TasksChangedEvent = { taskId, projectId };
-  bb.realtime.publish("tasks:changed", payload);
-}
-
-export function publishProjectsChanged(
-  bb: BbPluginApi,
-  projectId: string | null,
-): void {
-  const payload: ProjectsChangedEvent = { projectId };
-  bb.realtime.publish("projects:changed", payload);
-}
-
-export function publishCommentsChanged(
-  bb: BbPluginApi,
-  taskId: string,
-  notifiedCount?: number,
-): void {
-  const payload: CommentsChangedEvent = {
-    taskId,
-    ...(notifiedCount === undefined ? {} : { notifiedCount }),
-  };
-  bb.realtime.publish("comments:changed", payload);
+  invalidate(bb, projectTasksChangedTags(projectId));
 }
 
 function apiTask(store: TasksApiStore, task: StoredTask): Task {
@@ -325,7 +354,6 @@ function writeSystemComments(
       kind: "system",
       authorName,
       body,
-      notifiedCount: 0,
     });
   }
 }
@@ -412,6 +440,8 @@ async function resolveProviderBadges(
         id: provider.id,
         name: provider.displayName,
         logoUrl: provider.logoUrl,
+        icon: provider.icon ?? null,
+        strings: { iconTint: provider.strings?.iconTint ?? null },
       });
     }
   }
@@ -426,6 +456,7 @@ interface CreateCommentInput {
   threadId: string | null;
   body: string;
   notify: boolean;
+  awaitDelivery: boolean;
 }
 
 export async function createComment(
@@ -433,7 +464,7 @@ export async function createComment(
   store: TasksApiStore,
   input: CreateCommentInput,
 ): Promise<StoredComment> {
-  let comment = store.transaction(() =>
+  const comment = store.transaction(() =>
     store.tasks.createComment({
       taskId: input.taskId,
       kind: input.kind,
@@ -441,25 +472,32 @@ export async function createComment(
       presetName: input.presetName,
       threadId: input.threadId,
       body: input.body,
-      notifiedCount: 0,
     }),
   );
 
-  if (input.notify) {
-    const delivery = await deliverCommentToLatestAgent(bb, store.tasks, {
+  invalidateComments(bb, input.taskId);
+  if (!input.notify) return comment;
+
+  const deliver = async (): Promise<StoredComment> => {
+    const notifiedCount = await deliverCommentToLatestAgent(bb, store.tasks, {
       taskId: comment.taskId,
       commentId: comment.id,
       body: comment.body,
       authorName: comment.authorName,
     });
-    comment = store.transaction(() =>
-      store.tasks.updateComment(comment.id, {
-        notifiedCount: delivery.notifiedCount,
-      }),
+    const updated = store.transaction(() =>
+      store.tasks.updateComment(comment.id, { notifiedCount }),
     );
-  }
+    invalidateComments(bb, input.taskId);
+    return updated;
+  };
 
-  publishCommentsChanged(bb, input.taskId, comment.notifiedCount);
+  if (input.awaitDelivery) return deliver();
+  void deliver().catch((error) => {
+    bb.log.warn(
+      `failed to update comment notification ${comment.id}: ${errorMessage(error)}`,
+    );
+  });
   return comment;
 }
 
@@ -468,27 +506,57 @@ interface TaskPullRequestsResult {
   unavailableThreadIds: string[];
 }
 
-const PULL_REQUEST_LOOKUP_CONCURRENCY = 4;
+const GITHUB_PR_STATUS_PLUGIN_ID = "bb--github-pr-status";
+const PULL_REQUEST_KEYS_PER_READ = 200;
 
-async function mapWithConcurrency<T, R>(
-  items: readonly T[],
-  limit: number,
-  work: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const results = new Array<R>(items.length);
-  let nextIndex = 0;
-  const workers = Array.from(
-    { length: Math.min(limit, items.length) },
-    async () => {
-      while (nextIndex < items.length) {
-        const index = nextIndex;
-        nextIndex += 1;
-        results[index] = await work(items[index]!);
-      }
-    },
-  );
-  await Promise.all(workers);
-  return results;
+const environmentPullRequestsSchema = z.record(
+  z.string(),
+  z.discriminatedUnion("outcome", [
+    z.object({
+      outcome: z.literal("available"),
+      pullRequest: z.object({
+        url: z.string().url(),
+        number: z.number().int().positive(),
+        title: z.string(),
+        state: z.enum(["open", "draft", "merged", "closed"]),
+        updatedAt: z.string(),
+      }),
+    }),
+    z.object({ outcome: z.literal("absent") }),
+    z.object({ outcome: z.literal("unavailable"), message: z.string() }),
+  ]),
+);
+type EnvironmentPullRequests = z.infer<typeof environmentPullRequestsSchema>;
+
+async function readEnvironmentPullRequests(
+  bb: BbPluginApi,
+  environmentIds: readonly string[],
+): Promise<EnvironmentPullRequests> {
+  const rows: EnvironmentPullRequests = {};
+  for (
+    let start = 0;
+    start < environmentIds.length;
+    start += PULL_REQUEST_KEYS_PER_READ
+  ) {
+    const keys = environmentIds.slice(
+      start,
+      start + PULL_REQUEST_KEYS_PER_READ,
+    );
+    try {
+      Object.assign(
+        rows,
+        await bb.sdk.plugins.callRpc({
+          pluginId: GITHUB_PR_STATUS_PLUGIN_ID,
+          method: "pullRequests",
+          input: { keys },
+          outputSchema: environmentPullRequestsSchema,
+        }),
+      );
+    } catch (error) {
+      bb.log.debug(`pull request lookup failed: ${errorMessage(error)}`);
+    }
+  }
+  return rows;
 }
 
 async function listTaskPullRequests(
@@ -517,52 +585,29 @@ async function listTaskPullRequests(
   );
 
   const byUrl = new Map<string, TaskPullRequest>();
-  await mapWithConcurrency(
-    [...threadIdsByEnvironment.entries()],
-    PULL_REQUEST_LOOKUP_CONCURRENCY,
-    async ([environmentId, threadIds]) => {
-      let result: Awaited<
-        ReturnType<BbPluginApi["sdk"]["environments"]["pullRequest"]>
-      >;
-      try {
-        result = await bb.sdk.environments.pullRequest({ environmentId });
-      } catch {
-        for (const threadId of threadIds) unavailable.add(threadId);
-        return;
-      }
-      if (result.outcome === "unavailable") {
-        for (const threadId of threadIds) unavailable.add(threadId);
-        return;
-      }
-      if (result.outcome === "absent") return;
-      const { pullRequest } = result;
-      const existing = byUrl.get(pullRequest.url);
-      if (!existing) {
-        byUrl.set(pullRequest.url, {
-          url: pullRequest.url,
-          number: pullRequest.number,
-          title: pullRequest.title,
-          state: pullRequest.state,
-          updatedAt: pullRequest.updatedAt,
-          threadIds: [...threadIds],
-        });
-        return;
-      }
-      const threadIdUnion = [...existing.threadIds, ...threadIds];
-      if (pullRequest.updatedAt.localeCompare(existing.updatedAt) > 0) {
-        byUrl.set(pullRequest.url, {
-          url: pullRequest.url,
-          number: pullRequest.number,
-          title: pullRequest.title,
-          state: pullRequest.state,
-          updatedAt: pullRequest.updatedAt,
-          threadIds: threadIdUnion,
-        });
-      } else {
-        existing.threadIds = threadIdUnion;
-      }
-    },
-  );
+  const rows = await readEnvironmentPullRequests(bb, [
+    ...threadIdsByEnvironment.keys(),
+  ]);
+  for (const [environmentId, threadIds] of threadIdsByEnvironment) {
+    const result = rows[environmentId];
+    if (result === undefined || result.outcome === "unavailable") {
+      for (const threadId of threadIds) unavailable.add(threadId);
+      continue;
+    }
+    if (result.outcome === "absent") continue;
+    const { pullRequest } = result;
+    const existing = byUrl.get(pullRequest.url);
+    if (!existing) {
+      byUrl.set(pullRequest.url, { ...pullRequest, threadIds: [...threadIds] });
+      continue;
+    }
+    const threadIdUnion = [...existing.threadIds, ...threadIds];
+    if (pullRequest.updatedAt.localeCompare(existing.updatedAt) > 0) {
+      byUrl.set(pullRequest.url, { ...pullRequest, threadIds: threadIdUnion });
+    } else {
+      existing.threadIds = threadIdUnion;
+    }
+  }
 
   const threadOrder = new Map(
     taskThreads.map((taskThread, index) => [taskThread.threadId, index]),
@@ -593,26 +638,26 @@ export function registerHandlers(
   return {
     createFolder(input) {
       const folder = store.tasks.createFolder(input);
-      publishProjectsChanged(bb, null);
+      invalidateFolders(bb, { projectsMoved: false });
       return { folder };
     },
     renameFolder(input) {
       const folder = store.tasks.updateFolder(input.folderId, {
         name: input.name,
       });
-      publishProjectsChanged(bb, null);
+      invalidateFolders(bb, { projectsMoved: false });
       return { folder };
     },
     moveFolder(input) {
       const folder = store.tasks.updateFolder(input.folderId, {
         parentFolderId: input.parentFolderId,
       });
-      publishProjectsChanged(bb, null);
+      invalidateFolders(bb, { projectsMoved: false });
       return { folder };
     },
     deleteFolder(input) {
       const result = store.tasks.deleteFolder(input.folderId);
-      if (result.deleted) publishProjectsChanged(bb, null);
+      if (result.deleted) invalidateFolders(bb, { projectsMoved: true });
       return result;
     },
     listFolders() {
@@ -620,13 +665,13 @@ export function registerHandlers(
     },
     createProject(input) {
       const project = store.tasks.createProject(input);
-      publishProjectsChanged(bb, project.id);
+      invalidateProjects(bb);
       return { project };
     },
     updateProject(input) {
       const { projectId, ...changes } = input;
       const project = store.tasks.updateProject(projectId, changes);
-      publishProjectsChanged(bb, project.id);
+      invalidateProjects(bb);
       return { project };
     },
     renameProjectPrefix(input) {
@@ -640,7 +685,7 @@ export function registerHandlers(
         const project = store.tasks.updateProject(input.projectId, {
           prefix: input.prefix,
         });
-        publishProjectsChanged(bb, project.id);
+        invalidateProjectTasks(bb, project.id);
         return { ok: true, project };
       } catch (error) {
         if (error instanceof TasksDomainFailure) return taskFailure(error);
@@ -662,7 +707,7 @@ export function registerHandlers(
         const deleted = store.tasks.deleteProject(input.projectId);
         if (deleted) {
           await removeAttachmentBlobs(bb, store.tasks, attachments);
-          publishProjectsChanged(bb, input.projectId);
+          invalidateProjectTasks(bb, input.projectId);
         }
         return { ok: true, deleted };
       } catch (error) {
@@ -690,7 +735,7 @@ export function registerHandlers(
           replaceTaskLabels(store, created.id, input.labelIds);
           return apiTask(store, created);
         });
-        publishTasksChanged(bb, task.id, task.projectId);
+        invalidateTaskChanged(bb, task);
         return { ok: true, task };
       } catch (error) {
         if (error instanceof TasksDomainFailure) return taskFailure(error);
@@ -737,12 +782,12 @@ export function registerHandlers(
           const bodies: string[] = [];
           if (updated.status !== current.status) {
             bodies.push(
-              `Status changed to ${statusName(updated.status)} by ${input.authorName}`,
+              `Status changed to ${displayName(updated.status)} by ${input.authorName}`,
             );
           }
           if (updated.priority !== current.priority) {
             bodies.push(
-              `Priority changed to ${priorityName(updated.priority)} by ${input.authorName}`,
+              `Priority changed to ${displayName(updated.priority)} by ${input.authorName}`,
             );
           }
           if (updated.dueDate !== current.dueDate) {
@@ -762,10 +807,15 @@ export function registerHandlers(
           };
         });
 
-        publishTasksChanged(bb, result.task.id, result.task.projectId);
-        if (result.systemCommentsWritten > 0) {
-          publishCommentsChanged(bb, result.task.id);
-        }
+        invalidate(bb, [
+          ...taskChangedTags(result.task),
+          ...(result.task.parentTaskId === current.parentTaskId
+            ? []
+            : [TASK_META_TAG]),
+          ...(result.systemCommentsWritten > 0
+            ? [commentsTag(result.task.id)]
+            : []),
+        ]);
         return { ok: true, task: result.task };
       } catch (error) {
         if (error instanceof TasksDomainFailure) return taskFailure(error);
@@ -774,11 +824,16 @@ export function registerHandlers(
     },
     async deleteTask(input) {
       const task = store.tasks.getTask(input.taskId);
+      const subtasks = task ? store.tasks.listSubtasks(task.id) : [];
       const attachments = attachmentsForTasks(store.tasks, [input.taskId]);
       const deleted = store.tasks.deleteTask(input.taskId);
       if (deleted && task) {
         await removeAttachmentBlobs(bb, store.tasks, attachments);
-        publishTasksChanged(bb, task.id, task.projectId);
+        invalidate(bb, [
+          ...taskChangedTags(task),
+          ...subtasks.flatMap(taskChangedTags),
+          ...(subtasks.length > 0 ? [TASK_META_TAG] : []),
+        ]);
       }
       return { deleted };
     },
@@ -800,6 +855,23 @@ export function registerHandlers(
         nextCursor: page.nextCursor,
       };
     },
+    listAllTasks(input) {
+      return {
+        tasks: apiTasks(
+          store,
+          store.tasks.listTasks({
+            projectId: input.projectId,
+            statuses: input.statuses,
+            priorities: input.priorities,
+            labelIds: input.labelIds,
+            activeOnly: input.activeOnly,
+            parentTaskId: input.parentTaskId,
+            search: input.search,
+            sort: input.sort,
+          }),
+        ),
+      };
+    },
     boardMove(input) {
       const current = store.tasks.getTask(input.taskId);
       if (!current) throw new Error(`Task not found: ${input.taskId}`);
@@ -812,18 +884,46 @@ export function registerHandlers(
         const statusChanged = moved.status !== current.status;
         if (statusChanged) {
           writeSystemComments(store, current.id, input.authorName, [
-            `Status changed to ${statusName(moved.status)} by ${input.authorName}`,
+            `Status changed to ${displayName(moved.status)} by ${input.authorName}`,
           ]);
         }
         return { task: apiTask(store, moved), statusChanged };
       });
-      publishTasksChanged(bb, result.task.id, result.task.projectId);
-      if (result.statusChanged) publishCommentsChanged(bb, result.task.id);
+      invalidateTaskChanged(bb, result.task);
+      if (result.statusChanged) invalidateComments(bb, result.task.id);
+      return { ok: true, task: result.task };
+    },
+    moveTaskToProject(input) {
+      const current = store.tasks.getTask(input.taskId);
+      if (!current) throw new Error(`Task not found: ${input.taskId}`);
+      const result = store.transaction(() => {
+        const outcome = store.tasks.moveTaskToProject(
+          current.id,
+          input.projectId,
+        );
+        for (const { previousKey, task } of outcome.moved) {
+          writeSystemComments(store, task.id, input.authorName, [
+            `Moved from ${previousKey} to ${task.key} by ${input.authorName}`,
+          ]);
+        }
+        return { task: apiTask(store, outcome.task), moved: outcome.moved };
+      });
+      if (result.moved.length > 0) {
+        invalidate(bb, [
+          PROJECTS_TAG,
+          TASK_META_TAG,
+          ...taskChangedTags(current),
+          ...result.moved.flatMap(({ task }) => [
+            ...taskChangedTags(task),
+            commentsTag(task.id),
+          ]),
+        ]);
+      }
       return { ok: true, task: result.task };
     },
     createLabel(input) {
       const label = store.tasks.createLabel(input);
-      publishProjectsChanged(bb, label.projectId);
+      invalidate(bb, [labelsTag(label.projectId)]);
       return { label };
     },
     updateLabel(input) {
@@ -831,17 +931,32 @@ export function registerHandlers(
         name: input.name,
         color: input.color,
       });
-      publishProjectsChanged(bb, label.projectId);
+      invalidate(bb, [labelsTag(label.projectId)]);
       return { label };
     },
     deleteLabel(input) {
       const label = store.tasks.getLabel(input.labelId);
       const deleted = store.tasks.deleteLabel(input.labelId);
-      if (deleted && label) publishProjectsChanged(bb, label.projectId);
+      if (deleted && label) {
+        invalidate(bb, [
+          labelsTag(label.projectId),
+          projectTag(label.projectId),
+          ALL_TASKS_TAG,
+          projectTasksTag(label.projectId),
+        ]);
+      }
       return { deleted };
     },
     listLabels(input) {
       return { labels: store.tasks.listLabels(input.projectId) };
+    },
+    labelsByProject(input) {
+      return Object.fromEntries(
+        input.keys.map((projectId) => [
+          projectId,
+          store.tasks.listLabels(projectId),
+        ]),
+      );
     },
     async createComment(input) {
       const comment = await createComment(bb, store, {
@@ -852,6 +967,7 @@ export function registerHandlers(
         threadId: null,
         body: input.body,
         notify: input.notify,
+        awaitDelivery: false,
       });
       return { comment };
     },
@@ -875,6 +991,8 @@ export function registerHandlers(
                     id: info.providerId,
                     name: info.providerId,
                     logoUrl: null,
+                    icon: null,
+                    strings: { iconTint: null },
                   }),
           };
         }),
@@ -884,7 +1002,11 @@ export function registerHandlers(
       const attachments =
         "taskId" in input
           ? store.tasks.listAttachmentsForTask(input.taskId)
-          : store.tasks.listAttachmentsForComment(input.commentId);
+          : "commentId" in input
+            ? store.tasks.listAttachmentsForComment(input.commentId)
+            : store.tasks.listAttachmentsForTaskComments(
+                input.commentsOfTaskId,
+              );
       return {
         attachments: attachments.map(attachmentMetadata),
       };
@@ -922,12 +1044,19 @@ export function registerHandlers(
     listTaskThreads(input) {
       return { taskThreads: store.tasks.listTaskThreads(input.taskId) };
     },
+    listTaskCardMeta(input) {
+      return { cards: store.tasks.listTaskCardMeta(input.projectId ?? null) };
+    },
     async listTaskPullRequests(input) {
-      return listTaskPullRequests(bb, store, input.taskId);
+      const result = await listTaskPullRequests(bb, store, input.taskId);
+      if (result.pullRequests.some(isActivePullRequest))
+        tasksWithActivePullRequests(store).add(input.taskId);
+      else tasksWithActivePullRequests(store).delete(input.taskId);
+      return result;
     },
     createPreset(input) {
       const preset = store.tasks.createPreset({ ...input, builtin: false });
-      publishProjectsChanged(bb, null);
+      invalidate(bb, [PRESETS_TAG]);
       return { preset };
     },
     updatePreset(input) {
@@ -938,12 +1067,12 @@ export function registerHandlers(
           ? { ...changes, baseBranch: null, machineId: null }
           : changes,
       );
-      publishProjectsChanged(bb, null);
+      invalidate(bb, [PRESETS_TAG]);
       return { preset };
     },
     deletePreset(input) {
       const deleted = store.tasks.deletePreset(input.presetId);
-      if (deleted) publishProjectsChanged(bb, null);
+      if (deleted) invalidate(bb, [PRESETS_TAG]);
       return { deleted };
     },
     listPresets() {
@@ -1014,4 +1143,17 @@ export function registerHandlers(
 
 export function registerTasksApi(bb: BbPluginApi, store: TasksApiStore): void {
   bb.rpc.register(tasksRpcContract, registerHandlers(bb, store));
+  bb.rpc.experimental_whileWatched("listTaskPullRequests", (read, signal) => {
+    if (!("input" in read)) return;
+    const { taskId } = tasksRpcContract.listTaskPullRequests.input.parse(
+      read.input,
+    );
+    const timer = setInterval(() => {
+      if (tasksWithActivePullRequests(store).has(taskId))
+        invalidate(bb, [pullRequestsTag(taskId)]);
+    }, ACTIVE_PULL_REQUEST_REFRESH_MS);
+    signal.addEventListener("abort", () => clearInterval(timer), {
+      once: true,
+    });
+  });
 }

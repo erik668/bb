@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   arrangePluginNavPanelPreferences,
-  arrangePluginNavPanels,
+  BUILT_IN_SIDEBAR_NAVIGATION_KEYS,
   getPluginNavPanelKey,
-  migrateLegacyHiddenPluginNavPanelOrder,
+  seedSkillsNavigationPreference,
   togglePluginNavPanelVisibility,
 } from "./pluginNavSidebarOrder";
 
@@ -15,53 +15,50 @@ const github = panel("github", "pulls");
 const docs = panel("docs", "vault");
 const tasks = panel("tasks", "board");
 
-describe("arrangePluginNavPanels", () => {
-  it("falls back to registry order before the user has reordered anything", () => {
-    const { ordered, normalizedOrder } = arrangePluginNavPanels({
-      panels: [github, docs, tasks],
-      storedOrder: [],
+describe("seedSkillsNavigationPreference", () => {
+  it("places Skills beside the existing Plugins row and inherits its visibility", () => {
+    expect(
+      seedSkillsNavigationPreference(
+        [
+          BUILT_IN_SIDEBAR_NAVIGATION_KEYS.newThread,
+          BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions,
+          BUILT_IN_SIDEBAR_NAVIGATION_KEYS.automations,
+        ],
+        [
+          BUILT_IN_SIDEBAR_NAVIGATION_KEYS.newThread,
+          BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions,
+          BUILT_IN_SIDEBAR_NAVIGATION_KEYS.automations,
+        ],
+      ),
+    ).toEqual({
+      order: [
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.newThread,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.skills,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.automations,
+      ],
+      visibleKeys: [
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.newThread,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.skills,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.automations,
+      ],
     });
-
-    expect(ordered.map(getPluginNavPanelKey)).toEqual([
-      "github/pulls",
-      "docs/vault",
-      "tasks/board",
-    ]);
-    expect(normalizedOrder).toEqual([
-      "github/pulls",
-      "docs/vault",
-      "tasks/board",
-    ]);
   });
 
-  it("appends newly installed panels last", () => {
-    const { ordered } = arrangePluginNavPanels({
-      panels: [github, docs, tasks],
-      storedOrder: ["tasks/board", "github/pulls"],
+  it("keeps Skills hidden when the existing Plugins row was hidden", () => {
+    expect(
+      seedSkillsNavigationPreference(
+        [BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions],
+        [],
+      ),
+    ).toEqual({
+      order: [
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.extensions,
+        BUILT_IN_SIDEBAR_NAVIGATION_KEYS.skills,
+      ],
+      visibleKeys: [],
     });
-
-    expect(ordered.map(getPluginNavPanelKey)).toEqual([
-      "tasks/board",
-      "github/pulls",
-      "docs/vault",
-    ]);
-  });
-
-  it("keeps unregistered keys in the normalized order", () => {
-    const { ordered, normalizedOrder } = arrangePluginNavPanels({
-      panels: [github, docs],
-      storedOrder: ["strudel/repl", "docs/vault", "github/pulls"],
-    });
-
-    expect(ordered.map(getPluginNavPanelKey)).toEqual([
-      "docs/vault",
-      "github/pulls",
-    ]);
-    expect(normalizedOrder).toEqual([
-      "strudel/repl",
-      "docs/vault",
-      "github/pulls",
-    ]);
   });
 });
 
@@ -208,23 +205,6 @@ describe("arrangePluginNavPanelPreferences", () => {
     });
 
     expect(result.visibleKeys).toEqual(["__bb__/search-threads"]);
-  });
-});
-
-describe("legacy hidden-panel migration", () => {
-  it("moves hidden keys behind visible keys while preserving both orders", () => {
-    expect(
-      migrateLegacyHiddenPluginNavPanelOrder(
-        ["tasks/board", "docs/vault", "github/pulls", "docs/vault"],
-        ["tasks/board", "docs/vault"],
-      ),
-    ).toEqual(["github/pulls", "tasks/board", "docs/vault"]);
-  });
-
-  it("retains a hidden key missing from the stored order", () => {
-    expect(
-      migrateLegacyHiddenPluginNavPanelOrder(["github/pulls"], ["docs/vault"]),
-    ).toEqual(["github/pulls", "docs/vault"]);
   });
 });
 

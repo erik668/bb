@@ -4,22 +4,44 @@ import {
   PLUGIN_CLI_OUTPUT_MAX_BYTES,
   type BbPluginApi,
   type PluginAgentConfigurationContext,
-  type PluginAgentToolPresentation,
 } from "../../backend-contract.js";
-import { defineRpcContract } from "../../rpc-contract.js";
 import {
-  parsePluginAgentToolPresentation,
-  PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS,
-  RESERVED_BB_CLI_COMMANDS,
-} from "../../internal/host-policy.js";
+  defineRpcContract,
+  experimental_PluginRpcRefusal,
+} from "../../rpc-contract.js";
+import { RESERVED_BB_CLI_COMMANDS } from "../../internal/host-policy.js";
 import {
   createFakePluginHost,
+  makeHostResponse,
   makeMessageDispatchHookContext,
   makePluginAgentConfigurationContext,
+  makeQueueEntry,
   makeThreadResponse,
 } from "../index.js";
 
 describe("fixtures", () => {
+  it("builds complete host responses with targeted overrides", () => {
+    expect(makeHostResponse({ id: "host-target", name: "Target" })).toEqual({
+      id: "host-target",
+      name: "Target",
+      type: "persistent",
+      status: "connected",
+      machineProviderId: null,
+      lifecycle: {
+        phase: "active",
+        suspendedAt: null,
+        message: null,
+        pendingLog: "",
+        teardown: null,
+      },
+      maxPermissionMode: "full",
+      lastSeenAt: null,
+      lastRejectedProtocolVersion: null,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+  });
+
   it("derives linked dispatch identities unless explicitly overridden", () => {
     const inherited = makeMessageDispatchHookContext({
       project: { id: "project-target" },
@@ -55,15 +77,17 @@ describe("fixtures", () => {
   it("keeps queued messages on the dispatch context thread by default", () => {
     const inherited = makeMessageDispatchHookContext({
       thread: { id: "thread-target" },
-      queuedMessage: { id: "queued-target" },
+      queuedMessages: [{ id: "queued-target" }, { id: "queued-second" }],
     });
     const explicit = makeMessageDispatchHookContext({
       thread: { id: "thread-target" },
-      queuedMessage: { threadId: "thread-explicit" },
+      queuedMessages: [{ threadId: "thread-explicit" }],
     });
 
-    expect(inherited.queuedMessage?.threadId).toBe("thread-target");
-    expect(explicit.queuedMessage?.threadId).toBe("thread-explicit");
+    expect(inherited.queuedMessages.map((message) => message.threadId)).toEqual(
+      ["thread-target", "thread-target"],
+    );
+    expect(explicit.queuedMessages[0]?.threadId).toBe("thread-explicit");
   });
 });
 
@@ -78,6 +102,36 @@ describe("server", () => {
       "https://bb.example.test",
     );
     expect(unset.bb.server.experimental_appUrl).toBeNull();
+  });
+
+  it("records tunnel ingress handles, shares an audience, and closes them on dispose", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const first = await bb.server.internal_DO_NOT_USE_openTunnelIngress({
+      audience: "server:srv_1",
+    });
+    const shared = await bb.server.internal_DO_NOT_USE_openTunnelIngress({
+      audience: "server:srv_1",
+    });
+    const other = await bb.server.internal_DO_NOT_USE_openTunnelIngress({
+      audience: "server:srv_2",
+    });
+    expect(shared.baseUrl).toBe(first.baseUrl);
+    expect(other.baseUrl).not.toBe(first.baseUrl);
+    await expect(
+      bb.server.internal_DO_NOT_USE_openTunnelIngress({ audience: "" }),
+    ).rejects.toThrow(/non-empty audience/);
+
+    await first.close();
+    expect(
+      harness.internal_DO_NOT_USE_tunnelIngresses.map((entry) => entry.closed),
+    ).toEqual([true, false, false]);
+
+    await harness.dispose();
+    expect(
+      harness.internal_DO_NOT_USE_tunnelIngresses.every(
+        (entry) => entry.closed,
+      ),
+    ).toBe(true);
   });
 });
 
@@ -293,46 +347,9 @@ describe("storage", () => {
       bb.storage.migrate(db, [
         "CREATE TABLE notes (id INTEGER PRIMARY KEY)",
         "SELECT 1",
-        "CREATE TABLE ghost (id INTEGER PRIMARY KEY)",
+        "SELECT 2",
       ]),
-    ).toThrow(/migration 2 is reserved by an unidentified legacy migration/);
-    expect(
-      db
-        .prepare(
-          "SELECT 1 FROM sqlite_master WHERE type='table' AND name='ghost'",
-        )
-        .get(),
-    ).toBeUndefined();
-  });
-
-  it("releases a reserved legacy index when adoptIfApplied proves the effect is present", () => {
-    const { bb } = createFakePluginHost();
-    const db = bb.storage.database();
-    db.exec(
-      "CREATE TABLE notes (id INTEGER PRIMARY KEY, starred INTEGER); CREATE TABLE _bb_migrations (id INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL); INSERT INTO _bb_migrations VALUES (0, 1), (1, 1)",
-    );
-    bb.storage.migrate(db, ["CREATE TABLE notes (id INTEGER PRIMARY KEY)"]);
-
-    bb.storage.migrate(db, [
-      "CREATE TABLE notes (id INTEGER PRIMARY KEY)",
-      {
-        statement: "ALTER TABLE notes ADD COLUMN starred INTEGER",
-        adoptIfApplied: (database) =>
-          database
-            .prepare<[], { name: string }>("PRAGMA table_info(notes)")
-            .all()
-            .some((column) => column.name === "starred"),
-      },
-    ]);
-
-    expect(
-      db
-        .prepare("SELECT id, statement_hash FROM _bb_migrations ORDER BY id")
-        .all(),
-    ).toEqual([
-      { id: 0, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
-      { id: 1, statement_hash: expect.stringMatching(/^[a-f0-9]{64}$/) },
-    ]);
+    ).toThrow(/migration 2 does not match the recorded statement/);
   });
 
   it("database() replaces a handle the plugin closed itself, like the host", () => {
@@ -485,6 +502,18 @@ describe("settings", () => {
     ).toThrow('default for setting "broken" must be one of its options');
     expect(() =>
       bb.settings.define({
+        labelled: {
+          type: "select",
+          label: "L",
+          options: ["a"],
+          experimental_optionLabels: { a: "A", z: "Z" },
+        },
+      }),
+    ).toThrow(
+      'label for setting "labelled" names "z", which is not one of its options',
+    );
+    expect(() =>
+      bb.settings.define({
         pem: {
           type: "string",
           label: "Key",
@@ -623,6 +652,27 @@ describe("rpc", () => {
     });
     await expect(harness.callRpc("nonFinite")).rejects.toMatchObject({
       code: "non_json_result",
+    });
+  });
+
+  it("preserves typed refusals", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const contract = defineRpcContract({
+      save: { input: z.null(), output: z.null() },
+    });
+    bb.rpc.register(contract, {
+      save: () => {
+        throw new experimental_PluginRpcRefusal({
+          code: "forbidden",
+          message: "Private",
+          issues: [{ message: "Caller denied" }],
+        });
+      },
+    });
+    await expect(harness.callRpc("save")).rejects.toMatchObject({
+      code: "forbidden",
+      message: "Private",
+      issues: [{ message: "Caller denied" }],
     });
   });
 
@@ -1026,6 +1076,168 @@ describe("sdk", () => {
     ]);
   });
 
+  it("normalizes metadata-bearing spawn and fork calls with plugin attribution", async () => {
+    const seen: unknown[] = [];
+    const { bb } = createFakePluginHost({
+      pluginId: "active-plugin",
+      sdk: {
+        threads: {
+          spawn: async (args) => {
+            seen.push(args);
+            return { id: "spawned" };
+          },
+          fork: async (args) => {
+            seen.push(args);
+            return { id: "forked" };
+          },
+        },
+      },
+    });
+    const metadata = { source: "test", nested: { ok: true } };
+    await bb.sdk.threads.spawn({
+      projectId: "p1",
+      environment: { type: "reuse", environmentId: "environment-1" },
+      prompt: "hi",
+      pluginMetadata: metadata,
+    });
+    await bb.sdk.threads.fork({
+      sourceThreadId: "source",
+      input: [{ type: "text", text: "fork", mentions: [] }],
+      origin: "sdk",
+      originPluginId: "other-plugin",
+      pluginMetadata: metadata,
+    });
+    expect(seen).toEqual([
+      expect.objectContaining({
+        origin: "plugin",
+        originPluginId: "active-plugin",
+        pluginMetadata: metadata,
+      }),
+      expect.objectContaining({
+        origin: "plugin",
+        originPluginId: "active-plugin",
+        pluginMetadata: metadata,
+      }),
+    ]);
+  });
+
+  it("defaults metadata targets, preserves explicit targets, and validates set before stubs", async () => {
+    const invoked: unknown[] = [];
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "active-plugin",
+      sdk: {
+        threads: {
+          getPluginMetadata: async (args) => {
+            invoked.push(args);
+            return {};
+          },
+          updatePluginMetadata: async (args) => {
+            invoked.push(args);
+            return {};
+          },
+        },
+      },
+    });
+
+    await bb.sdk.threads.getPluginMetadata({ threadId: "thread-1" });
+    await bb.sdk.threads.updatePluginMetadata({
+      threadId: "thread-1",
+      pluginId: "other-plugin",
+      set: { nested: { ok: true } },
+    });
+
+    expect(invoked).toEqual([
+      { threadId: "thread-1", pluginId: "active-plugin" },
+      {
+        threadId: "thread-1",
+        pluginId: "other-plugin",
+        set: { nested: { ok: true } },
+      },
+    ]);
+
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    await expect(
+      bb.sdk.threads.updatePluginMetadata({
+        threadId: "thread-1",
+        set: cyclic as never,
+      }),
+    ).rejects.toThrow(/cycle/);
+    expect(invoked).toHaveLength(2);
+    expect(harness.sdk.callsTo("threads.updatePluginMetadata")).toHaveLength(1);
+  });
+
+  it("rejects invalid spawn and fork metadata seeds without recording or sending them", async () => {
+    const invoked: unknown[] = [];
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "active-plugin",
+      sdk: {
+        threads: {
+          spawn: async (args) => {
+            invoked.push(args);
+            return { id: "spawned" };
+          },
+          fork: async (args) => {
+            invoked.push(args);
+            return { id: "forked" };
+          },
+        },
+      },
+    });
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+
+    await expect(
+      bb.sdk.threads.spawn({
+        projectId: "p1",
+        environment: { type: "project-default" },
+        prompt: "hi",
+        pluginMetadata: cyclic as never,
+      }),
+    ).rejects.toThrow(/cycle/);
+    await expect(
+      bb.sdk.threads.fork({
+        sourceThreadId: "source",
+        pluginMetadata: { blob: "x".repeat(256 * 1024) },
+      }),
+    ).rejects.toThrow(/256 KiB/);
+
+    expect(invoked).toEqual([]);
+    expect(harness.sdk.calls).toEqual([]);
+  });
+
+  it("applies production fork attribution defaults when no metadata is seeded", async () => {
+    const { bb, harness } = createFakePluginHost({
+      pluginId: "active-plugin",
+      sdk: { threads: { fork: async () => ({ id: "forked" }) } },
+    });
+
+    await bb.sdk.threads.fork({ sourceThreadId: "default" });
+    await bb.sdk.threads.fork({
+      sourceThreadId: "legacy",
+      originPluginId: "legacy-plugin",
+    });
+    await bb.sdk.threads.fork({ sourceThreadId: "sdk", origin: "sdk" });
+
+    expect(harness.sdk.callsTo("threads.fork")).toEqual([
+      [
+        {
+          sourceThreadId: "default",
+          origin: "plugin",
+          originPluginId: "active-plugin",
+        },
+      ],
+      [
+        {
+          sourceThreadId: "legacy",
+          origin: "plugin",
+          originPluginId: "legacy-plugin",
+        },
+      ],
+      [{ sourceThreadId: "sdk", origin: "sdk" }],
+    ]);
+  });
+
   it("keeps nested plugin administration available through the backend SDK", async () => {
     const catalog = { pluginCount: 1 };
     const { bb, harness } = createFakePluginHost({
@@ -1145,44 +1357,6 @@ describe("agent tools", () => {
     ).not.toThrow();
   });
 
-  it("rejects a presentation with the production host's exact messages", () => {
-    const { bb } = createFakePluginHost();
-    const register = (presentation: PluginAgentToolPresentation) =>
-      bb.agents.registerTool({
-        name: "lookup_doc",
-        description: "Look up a doc",
-        presentation,
-        parameters: { type: "object" },
-        execute: () => "ok",
-      });
-    expect(() =>
-      register({
-        label: {
-          pending: "p".repeat(PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS + 1),
-          completed: "Looked up a doc",
-        },
-      }),
-    ).toThrow(
-      `tool "lookup_doc" presentation.label strings must be non-empty and at most ${PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS} characters`,
-    );
-    expect(() =>
-      register({ label: { pending: "Looking up a doc", completed: "  " } }),
-    ).toThrow(
-      `tool "lookup_doc" presentation.label strings must be non-empty and at most ${PLUGIN_AGENT_STATUS_LABEL_MAX_CHARS} characters`,
-    );
-    expect(() => register({ icon: { glyph: "" } })).toThrow(
-      'tool "lookup_doc" presentation.icon must be { glyph: string }',
-    );
-    expect(() =>
-      // @ts-expect-error — a plugin compiled against its own types can still
-      register({ icon: "Book" }),
-    ).toThrow('tool "lookup_doc" presentation.icon must be { glyph: string }');
-    expect(() =>
-      // @ts-expect-error — an array is not a presentation object.
-      register([]),
-    ).toThrow('tool "lookup_doc" presentation must be an object');
-  });
-
   it("records a valid presentation normalized the way the production host stores it", () => {
     const { bb, harness } = createFakePluginHost();
     const declared = {
@@ -1198,9 +1372,6 @@ describe("agent tools", () => {
       execute: () => "ok",
     });
     const recorded = harness.registrations.agentTools[0]?.presentation;
-    expect(recorded).toEqual(
-      parsePluginAgentToolPresentation("lookup_doc", declared),
-    );
     expect(recorded).toEqual({
       label: { pending: "Looking up a doc", completed: "Looked up a doc" },
       icon: { glyph: "Book" },
@@ -1302,6 +1473,95 @@ describe("agent tools", () => {
     expect(() =>
       bb.agents.configure(() => ({ tools: [], skills: [] })),
     ).toThrow("agent configuration is already registered");
+  });
+
+  it("hands configure a deep-frozen metadata copy without touching the caller's context", async () => {
+    type NestedMetadata = {
+      level1: { level2: { items: Array<{ count: number }> } };
+    };
+    const { bb, harness } = createFakePluginHost();
+    bb.agents.registerTool({
+      name: "metadata_tool",
+      description: "metadata_tool",
+      parameters: { type: "object" },
+      execute: () => "ok",
+    });
+    let received: PluginAgentConfigurationContext | undefined;
+    let mutationError: unknown;
+    bb.agents.configure((context) => {
+      received = context;
+      try {
+        (
+          context.pluginMetadata as NestedMetadata
+        ).level1.level2.items[0]!.count = 2;
+      } catch (error) {
+        mutationError = error;
+      }
+      return { tools: ["metadata_tool"], skills: [] };
+    });
+    const callerMetadata: NestedMetadata = {
+      level1: { level2: { items: [{ count: 1 }] } },
+    };
+    const context = makePluginAgentConfigurationContext({
+      pluginMetadata: callerMetadata,
+    });
+    const callerThread = context.thread;
+
+    const resolved = await harness.resolveAgentConfiguration(context);
+
+    expect(resolved.tools.map((tool) => tool.name)).toEqual(["metadata_tool"]);
+    expect(
+      harness.logEntries.filter((entry) =>
+        entry.message.startsWith("agent configure failed"),
+      ),
+    ).toEqual([]);
+    expect(mutationError).toBeInstanceOf(TypeError);
+    expect(received).toBeDefined();
+    const metadata = received!.pluginMetadata as NestedMetadata;
+    expect(metadata).toEqual({
+      level1: { level2: { items: [{ count: 1 }] } },
+    });
+    expect(Object.isFrozen(metadata)).toBe(true);
+    expect(Object.isFrozen(metadata.level1)).toBe(true);
+    expect(Object.isFrozen(metadata.level1.level2)).toBe(true);
+    expect(Object.isFrozen(metadata.level1.level2.items)).toBe(true);
+    expect(Object.isFrozen(metadata.level1.level2.items[0])).toBe(true);
+    expect(Object.isFrozen(received!.thread)).toBe(false);
+    expect(received).not.toBe(context);
+    expect(context.pluginMetadata).toBe(callerMetadata);
+    expect(context.thread).toBe(callerThread);
+    expect(Object.isFrozen(callerMetadata)).toBe(false);
+    expect(Object.isFrozen(callerMetadata.level1.level2.items)).toBe(false);
+    expect(callerMetadata).toEqual({
+      level1: { level2: { items: [{ count: 1 }] } },
+    });
+  });
+
+  it("rejects invalid fixture metadata before configure and defaults absent metadata to {}", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const seen: unknown[] = [];
+    bb.agents.configure((context) => {
+      seen.push(context.pluginMetadata);
+      return { tools: [], skills: [] };
+    });
+
+    await expect(
+      harness.resolveAgentConfiguration(
+        makePluginAgentConfigurationContext({
+          pluginMetadata: { count: Number.NaN },
+        }),
+      ),
+    ).rejects.toThrow();
+    expect(seen).toEqual([]);
+    expect(harness.logEntries).toEqual([]);
+
+    const { pluginMetadata: _omitted, ...legacyContext } =
+      makePluginAgentConfigurationContext();
+    await harness.resolveAgentConfiguration(
+      legacyContext as PluginAgentConfigurationContext,
+    );
+    expect(seen).toEqual([{}]);
+    expect(Object.isFrozen(seen[0])).toBe(true);
   });
 
   it("resolves conditional tools, skills, context, and capped instructions without rebuilding registrations", async () => {
@@ -1424,6 +1684,29 @@ describe("dispose", () => {
     );
     expect(oldDatabase.open).toBe(false);
     await replacement.harness.dispose();
+  });
+
+  it("runs install handlers in order and isolates a throwing one", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const order: string[] = [];
+    bb.onInstall(() => {
+      order.push("first");
+      throw new Error("install exploded");
+    });
+    bb.onInstall(async () => {
+      order.push("second");
+    });
+
+    await harness.lifecycle.install();
+
+    expect(order).toEqual(["first", "second"]);
+    expect(harness.logEntries).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        message: "install handler failed: install exploded",
+      }),
+    );
+    await harness.dispose();
   });
 
   it("aborts services, runs hooks LIFO, closes the database, and poisons the handle", async () => {
@@ -1713,7 +1996,6 @@ describe("providers.experimental_contributeEnv", () => {
           name: "PLUGIN_API_URL",
           value: { serverPath: "/plugins/auth-proxy/api" },
           reason: "Route provider traffic through the plugin",
-          secret: true,
         },
       ];
     });
@@ -1729,7 +2011,6 @@ describe("providers.experimental_contributeEnv", () => {
         name: "PLUGIN_API_URL",
         value: { serverPath: "/plugins/auth-proxy/api" },
         reason: "Route provider traffic through the plugin",
-        secret: true,
       },
     ]);
     expect(contexts).toEqual([
@@ -1782,7 +2063,6 @@ describe("providers.experimental_contributeEnv", () => {
         name: "lowercase",
         value: "hidden",
         reason: "invalid name",
-        secret: false,
       },
     ]);
     expect(() =>
@@ -1806,28 +2086,533 @@ describe("providers.experimental_contributeEnv", () => {
 });
 
 describe("experimental_aiServices.register", () => {
-  const declaration = {
-    id: "acme-ai",
-    displayName: "Acme AI",
-    kinds: ["inference" as const],
-  };
+  const complete = async (prompt: string) => `echo: ${prompt}`;
 
-  it("refuses the ids the server serves directly, like production", () => {
-    const { bb } = createFakePluginHost();
-    for (const id of ["openai", "anthropic"]) {
-      expect(() =>
-        bb.experimental_aiServices.register({ ...declaration, id }),
-      ).toThrow(/is reserved: the server serves it directly/u);
-    }
-    expect(() =>
-      bb.experimental_aiServices.register(declaration),
-    ).not.toThrow();
+  it("records the validated service and removes it on dispose", async () => {
+    const { bb, harness } = createFakePluginHost({
+      experimental_hostEntry: false,
+    });
+    const registration = bb.experimental_aiServices.register({
+      id: "acme-ai",
+      displayName: "  Acme AI  ",
+      complete,
+    });
+    expect(harness.registrations.aiServiceRegistrations).toHaveLength(1);
+    const [service] = harness.registrations.aiServiceRegistrations;
+    expect(service?.displayName).toBe("Acme AI");
+    await expect(
+      service?.complete?.("hi", { signal: new AbortController().signal }),
+    ).resolves.toBe("echo: hi");
+    registration.dispose();
+    expect(harness.registrations.aiServiceRegistrations).toEqual([]);
   });
 
-  it("refuses a plugin that declares no bb.host entry, like production", () => {
-    const { bb } = createFakePluginHost({ experimental_hostEntry: false });
-    expect(() => bb.experimental_aiServices.register(declaration)).toThrow(
-      /needs a bb\.host entry to run on: this plugin declares none/u,
+  it("refuses a second service with the same id", () => {
+    const { bb } = createFakePluginHost();
+    bb.experimental_aiServices.register({
+      id: "acme-ai",
+      displayName: "Acme AI",
+      complete,
+    });
+    expect(() =>
+      bb.experimental_aiServices.register({
+        id: "acme-ai",
+        displayName: "Acme AI again",
+        complete,
+      }),
+    ).toThrow(/already registered/u);
+  });
+});
+
+describe("environment targets", () => {
+  it("accepts legacy environment declarations without presentation fields", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_environments.register(
+      // @ts-expect-error legacy plugin declaration
+      {
+        id: "legacy-workspace",
+        displayName: "Legacy workspace",
+        create: async () => ({
+          status: "created",
+          path: "/workspace",
+          ownsPath: true,
+        }),
+        remove: async () => ({ status: "removed" }),
+      },
     );
+    bb.experimental_environments.register(
+      // @ts-expect-error legacy plugin declaration
+      {
+        id: "legacy-composition",
+        displayName: "Legacy composition",
+        machineProviderId: "cloud-machine",
+        environmentProviderId: "legacy-workspace",
+      },
+    );
+    expect(
+      harness.registrations.environmentProviders.get("legacy-workspace"),
+    ).toMatchObject({ description: null, icon: null });
+    expect(
+      harness.registrations.environmentCompositions.get("legacy-composition"),
+    ).toMatchObject({ description: null, icon: null });
+  });
+
+  it.each([
+    ["description", null],
+    ["description", ""],
+    ["description", "   "],
+    ["description", "x".repeat(201)],
+    ["icon", null],
+    ["icon", ""],
+    ["icon", "   "],
+  ])(
+    "rejects invalid %s (%j) for concrete and composed environments",
+    (field, value) => {
+      const { bb, harness } = createFakePluginHost();
+      const presentation = {
+        id: "workspace",
+        displayName: "Workspace",
+        description: "Prepare a workspace.",
+        icon: "Folder",
+      };
+      for (const declaration of [
+        {
+          ...presentation,
+          create: async () => ({
+            status: "created" as const,
+            path: "/workspace",
+            ownsPath: true,
+          }),
+          remove: async () => ({ status: "removed" as const }),
+        },
+        {
+          ...presentation,
+          machineProviderId: "cloud-machine",
+          environmentProviderId: "project-checkout",
+        },
+      ]) {
+        Reflect.set(declaration, field, value);
+        expect(() =>
+          bb.experimental_environments.register(declaration),
+        ).toThrow();
+        expect(harness.registrations.environmentProviders.size).toBe(0);
+        expect(harness.registrations.environmentCompositions.size).toBe(0);
+      }
+    },
+  );
+
+  it("keeps compositions separate from concrete lifecycle providers", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_environments.register({
+      id: "sandbox",
+      displayName: "Sandbox",
+      description: "Prepare a workspace for this thread.",
+      icon: "Cloud",
+      machineProviderId: "cloud-machine",
+      environmentProviderId: "project-checkout",
+    });
+    expect(harness.registrations.environmentProviders.has("sandbox")).toBe(
+      false,
+    );
+    expect(
+      harness.registrations.environmentCompositions.get("sandbox"),
+    ).toMatchObject({
+      machineProviderId: "cloud-machine",
+      environmentProviderId: "project-checkout",
+    });
+    expect(() =>
+      bb.experimental_environments.register({
+        id: "sandbox",
+        displayName: "Conflicting concrete provider",
+        description: "Prepare a workspace for this thread.",
+        icon: "Folder",
+        create: async () => ({
+          status: "created",
+          path: "/checkout",
+          ownsPath: false,
+        }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow("already registered as a composition");
+  });
+
+  it("normalizes a registration and exposes it to the harness", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const create = async () => ({
+      status: "failed" as const,
+      failure: "transient" as const,
+      message: "waiting",
+    });
+    const inputs = z.object({ image: z.string(), cpus: z.number().default(2) });
+    bb.experimental_environments.register({
+      id: "container",
+      displayName: "  Docker container  ",
+      description: "Prepare a workspace for this thread.",
+      icon: "Folder",
+      requires: { gitRemote: true },
+      inputs,
+      create,
+      remove: async () => ({ status: "removed" }),
+    });
+    const target = harness.registrations.environmentProviders.get("container");
+    expect(target).toMatchObject({
+      id: "container",
+      displayName: "Docker container",
+      description: "Prepare a workspace for this thread.",
+      icon: "Folder",
+      requires: {
+        projectCheckout: false,
+        gitCheckout: false,
+        gitRemote: true,
+        projectless: false,
+      },
+      inputsJsonSchema: {
+        type: "object",
+        properties: {
+          image: { type: "string" },
+          cpus: { type: "number", default: 2 },
+        },
+        required: ["image"],
+      },
+    });
+    expect(target?.inputs).toBe(inputs);
+    expect(target?.create).toBe(create);
+    await bb.experimental_environments.recheck();
+    expect(harness.recheckCount).toBe(1);
+  });
+
+  it("enforces environment icon ownership and rejects escaping asset paths", () => {
+    const { bb } = createFakePluginHost({
+      pluginId: "environment-test",
+      experimental_declaredIconNames: ["mark"],
+    });
+    const register = (icon: string) =>
+      bb.experimental_environments.register({
+        id: "env",
+        displayName: "Environment",
+        description: "Prepare a workspace for this thread.",
+        icon,
+        create: async () => ({
+          status: "failed",
+          failure: "transient",
+          message: "waiting",
+        }),
+        remove: async () => ({ status: "removed" }),
+      });
+    expect(() => register("environment-test/mark")).not.toThrow();
+    expect(() => register("other/mark")).toThrow("not an icon declared");
+    expect(() => register("environment-test/missing")).toThrow(
+      "not an icon declared",
+    );
+    expect(() => register("./../private.svg")).toThrow();
+    expect(() => register("/private.svg")).toThrow();
+  });
+
+  it("defaults every requirement to false", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_environments.register({
+      id: "plain",
+      displayName: "Plain",
+      description: "Prepare a workspace for this thread.",
+      icon: "Folder",
+      create: async () => ({
+        status: "failed",
+        failure: "transient",
+        message: "waiting",
+      }),
+      remove: async () => ({ status: "removed" }),
+    });
+    expect(
+      harness.registrations.environmentProviders.get("plain"),
+    ).toMatchObject({
+      requires: {
+        projectCheckout: false,
+        gitCheckout: false,
+        gitRemote: false,
+        projectless: false,
+      },
+      inputs: null,
+      inputsJsonSchema: null,
+      availability: null,
+    });
+  });
+
+  it("refuses inputs that are not a Standard Schema validator", () => {
+    const { bb } = createFakePluginHost();
+    expect(() =>
+      bb.experimental_environments.register({
+        id: "ok",
+        displayName: "x",
+        description: "Prepare a workspace for this thread.",
+        icon: "Folder",
+        // @ts-expect-error deliberately not a schema
+        inputs: { type: "object" },
+        create: async () => ({
+          status: "failed",
+          failure: "transient",
+          message: "waiting",
+        }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow(/inputs that is not a Standard Schema v1 validator/);
+  });
+
+  it("refuses a bad id or a declaration without create", () => {
+    const { bb } = createFakePluginHost();
+    expect(() =>
+      bb.experimental_environments.register({
+        id: "bad id!",
+        displayName: "x",
+        description: "Prepare a workspace for this thread.",
+        icon: "Folder",
+        create: async () => ({
+          status: "failed",
+          failure: "transient",
+          message: "waiting",
+        }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow(/invalid environment provider id/);
+    for (const id of ["x", "Uppercase", "under_score"]) {
+      expect(() =>
+        bb.experimental_environments.register({
+          id,
+          displayName: "x",
+          description: "Prepare a workspace for this thread.",
+          icon: "Folder",
+          create: async () => ({
+            status: "failed",
+            failure: "transient",
+            message: "waiting",
+          }),
+          remove: async () => ({ status: "removed" }),
+        }),
+      ).toThrow(/invalid environment provider id/);
+    }
+    expect(() =>
+      bb.experimental_environments.register(
+        // @ts-expect-error deliberately missing create
+        {
+          id: "ok",
+          displayName: "x",
+          description: "Prepare a workspace for this thread.",
+          icon: "Folder",
+        },
+      ),
+    ).toThrow(/create/);
+  });
+
+  it("refuses a non-boolean requirement", () => {
+    const { bb } = createFakePluginHost();
+    expect(() =>
+      bb.experimental_environments.register({
+        id: "ok",
+        displayName: "x",
+        description: "Prepare a workspace for this thread.",
+        icon: "Folder",
+        // @ts-expect-error deliberately not a boolean
+        requires: { gitRemote: "yes" },
+        create: async () => ({
+          status: "failed",
+          failure: "transient",
+          message: "waiting",
+        }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow(/requires\.gitRemote that is not a boolean/);
+  });
+
+  it("refuses projectless together with a project requirement", () => {
+    const { bb } = createFakePluginHost();
+    expect(() =>
+      bb.experimental_environments.register({
+        id: "scratch",
+        displayName: "Scratch",
+        description: "Prepare a workspace for this thread.",
+        icon: "Folder",
+        requires: { gitRemote: true, projectless: true },
+        create: async () => ({
+          status: "failed",
+          failure: "transient",
+          message: "waiting",
+        }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow(/requires\.projectless together with a project requirement/);
+  });
+
+  it("refuses projectless together with projectCheckout", () => {
+    const { bb } = createFakePluginHost();
+    expect(() =>
+      bb.experimental_environments.register({
+        id: "scratch",
+        displayName: "Scratch",
+        description: "Prepare a workspace for this thread.",
+        icon: "Folder",
+        requires: { projectCheckout: true, projectless: true },
+        create: async () => ({
+          status: "failed",
+          failure: "transient",
+          message: "waiting",
+        }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow(/requires\.projectless together with a project requirement/);
+  });
+
+  it("normalizes a checkout provider that does not need git", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_environments.register({
+      id: "syncy",
+      displayName: "Syncy",
+      description: "Prepare a workspace for this thread.",
+      icon: "Folder",
+      requires: { projectCheckout: true },
+      create: async () => ({
+        status: "failed",
+        failure: "transient",
+        message: "waiting",
+      }),
+      remove: async () => ({ status: "removed" }),
+    });
+    expect(
+      harness.registrations.environmentProviders.get("syncy"),
+    ).toMatchObject({
+      requires: {
+        projectCheckout: true,
+        gitCheckout: false,
+        gitRemote: false,
+        projectless: false,
+      },
+    });
+  });
+
+  it("normalizes a host-scoped checkout provider", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_environments.register({
+      id: "branchy",
+      displayName: "Branchy",
+      description: "Prepare a workspace for this thread.",
+      icon: "Folder",
+      requires: { gitCheckout: true },
+      create: async () => ({
+        status: "failed",
+        failure: "transient",
+        message: "waiting",
+      }),
+      remove: async () => ({ status: "removed" }),
+    });
+    expect(
+      harness.registrations.environmentProviders.get("branchy"),
+    ).toMatchObject({
+      requires: {
+        projectCheckout: true,
+        gitCheckout: true,
+        gitRemote: false,
+        projectless: false,
+      },
+    });
+  });
+
+  it("accepts a machine provider without suspend and resume", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_machines.register({
+      description: "Provision a test machine.",
+      icon: "Terminal",
+      id: "test-machine",
+      displayName: "Test machine",
+
+      reconcileCleanup: async () => ({ status: "removed" }),
+      create: async () => ({
+        status: "created",
+        name: "Test machine",
+        resource: { target: "staging" },
+      }),
+      remove: async () => ({ status: "removed" }),
+    });
+    expect(
+      harness.registrations.machineProviders.get("test-machine"),
+    ).toMatchObject({
+      icon: "Terminal",
+      ephemeral: false,
+      suspend: null,
+      resume: null,
+    });
+  });
+
+  it("normalizes ephemeral machine lifecycle policy", () => {
+    const { bb, harness } = createFakePluginHost();
+    bb.experimental_machines.register({
+      description: "Provision temporary compute.",
+      icon: "Terminal",
+      id: "temporary-machine",
+      displayName: "Temporary machine",
+      ephemeral: true,
+      reconcileCleanup: async () => ({ status: "removed" }),
+      create: async () => ({
+        status: "created",
+        name: "Temporary machine",
+        resource: {},
+      }),
+      remove: async () => ({ status: "removed" }),
+    });
+    expect(
+      harness.registrations.machineProviders.get("temporary-machine"),
+    ).toMatchObject({ ephemeral: true });
+  });
+
+  it.each([
+    { description: "", icon: "Terminal" },
+    { description: "Provision a machine.", icon: " " },
+  ])("rejects empty required machine metadata: %j", (metadata) => {
+    const { bb } = createFakePluginHost();
+    expect(() =>
+      bb.experimental_machines.register({
+        id: "invalid-metadata",
+        displayName: "Invalid metadata",
+        ...metadata,
+        create: async () => ({
+          status: "created",
+          name: "Test machine",
+          resource: {},
+        }),
+        reconcileCleanup: async () => ({ status: "removed" }),
+        remove: async () => ({ status: "removed" }),
+      }),
+    ).toThrow();
+  });
+
+  it("requires machine suspend and resume as a pair", () => {
+    const create = async () => ({
+      status: "created" as const,
+      name: "Test machine",
+      resource: {},
+    });
+    const remove = async () => ({ status: "removed" as const });
+    const lifecycle = async () => ({ resource: {} });
+    expect(() =>
+      createFakePluginHost().bb.experimental_machines.register({
+        description: "Provision a test machine.",
+        icon: "Terminal",
+        id: "half-lifecycle",
+        displayName: "Half lifecycle",
+        create,
+        reconcileCleanup: remove,
+        suspend: lifecycle,
+        remove,
+      }),
+    ).toThrow(/declare suspend and resume together/);
+  });
+
+  it("delivers message.cancelled to a listener", async () => {
+    const { bb, harness } = createFakePluginHost();
+    const seen: string[] = [];
+    bb.events.on("message.cancelled", ({ entry }) => {
+      seen.push(entry.id);
+    });
+    await harness.emitThreadEvent("message.cancelled", {
+      entry: makeQueueEntry({ id: "qm_1" }),
+    });
+    expect(seen).toEqual(["qm_1"]);
   });
 });

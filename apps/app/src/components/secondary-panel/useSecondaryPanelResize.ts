@@ -1,51 +1,80 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useAtomValue, useSetAtom } from "jotai";
-import type { ImperativePanelHandle } from "react-resizable-panels";
-import { useResizeObserver } from "usehooks-ts";
 import {
-  secondaryPanelWidthPercentAtom,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
+import { useAtomValue, useSetAtom } from "jotai";
+import { RESET } from "jotai/utils";
+import type { ImperativePanelHandle } from "react-resizable-panels";
+import {
+  SecondaryPanelWidthPercentAtomContext,
   threadSecondaryPanelResizingAtom,
 } from "./threadSecondaryPanelAtoms";
 import { usePanelResizeSnap } from "./usePanelResizeSnap";
-
-export type SecondaryPanelDraggingHandler = (isDragging: boolean) => void;
-export type SecondaryPanelWidthChangeHandler = (
-  width: number | undefined,
-) => void;
 
 type SecondaryPanelResizeHandler = (size: number) => void;
 
 interface UseSecondaryPanelResizeArgs {
   isSecondaryPanelOpen: boolean;
-  onPanelWidthChange: SecondaryPanelWidthChangeHandler;
+  panelId: string;
+  renderAsDrawer: boolean;
 }
 
 export function useSecondaryPanelResize({
   isSecondaryPanelOpen,
-  onPanelWidthChange,
+  panelId,
+  renderAsDrawer,
 }: UseSecondaryPanelResizeArgs) {
-  const [isSecondaryPanelDragging, setIsSecondaryPanelDragging] =
-    useState(false);
-  const persistedWidthPercent = useAtomValue(secondaryPanelWidthPercentAtom);
-  const setPersistedWidthPercent = useSetAtom(secondaryPanelWidthPercentAtom);
+  const widthPercentAtom = useContext(SecondaryPanelWidthPercentAtomContext);
+  const persistedWidthPercent = useAtomValue(widthPercentAtom);
+  const setPersistedWidthPercent = useSetAtom(widthPercentAtom);
   const setIsResizing = useSetAtom(threadSecondaryPanelResizingAtom);
   const secondaryPanelRef = useRef<HTMLElement>(null!);
   const secondaryResizablePanelRef = useRef<ImperativePanelHandle | null>(null);
-  const isSecondaryPanelDraggingRef = useRef(false);
   const lastSecondaryPanelSizeRef = useRef(persistedWidthPercent);
+  const didPointerResizeRef = useRef(false);
+  const isDraggingRef = useRef(false);
+  const applySwipeWidth = useCallback((size: number) => {
+    secondaryPanelRef.current?.style.setProperty(
+      "--secondary-swipe-width",
+      `${size}cqw`,
+    );
+  }, []);
   const handleSecondaryPanelPointerResize = useCallback(
     (leadingFraction: number) => {
+      didPointerResizeRef.current = true;
       secondaryResizablePanelRef.current?.resize((1 - leadingFraction) * 100);
     },
     [],
   );
-  const {
-    finish: finishSecondaryPanelResizeSnap,
-    onPointerDownCapture: handleSecondaryPanelResizePointerDownCapture,
-  } = usePanelResizeSnap({
-    axis: "x",
+  const handleSecondaryPanelDragging = useCallback(
+    (isDragging: boolean) => {
+      isDraggingRef.current = isDragging;
+      if (isDragging) {
+        setIsResizing(true);
+        didPointerResizeRef.current = false;
+        return;
+      }
+      applySwipeWidth(lastSecondaryPanelSizeRef.current);
+      setIsResizing(false);
+      if (
+        didPointerResizeRef.current &&
+        lastSecondaryPanelSizeRef.current > 0
+      ) {
+        setPersistedWidthPercent(lastSecondaryPanelSizeRef.current);
+      }
+    },
+    [applySwipeWidth, setIsResizing, setPersistedWidthPercent],
+  );
+  const handleSecondaryPanelReset = useCallback(() => {
+    setPersistedWidthPercent(RESET);
+  }, [setPersistedWidthPercent]);
+  const resizeHitTargetRef = usePanelResizeSnap({
     onResize: handleSecondaryPanelPointerResize,
-    target: { boundaryIndex: 1, childCount: 2 },
+    onDragging: handleSecondaryPanelDragging,
+    onReset: handleSecondaryPanelReset,
   });
 
   const prevOpenRef = useRef(isSecondaryPanelOpen);
@@ -62,93 +91,10 @@ export function useSecondaryPanelResize({
 
     if (isSecondaryPanelOpen) {
       panel.expand(lastSecondaryPanelSizeRef.current);
-      onPanelWidthChange(
-        secondaryPanelRef.current?.getBoundingClientRect().width,
-      );
     } else {
       panel.collapse();
     }
-  }, [isSecondaryPanelOpen, onPanelWidthChange]);
-
-  useResizeObserver({
-    ref: secondaryPanelRef,
-    onResize: ({ width }) => {
-      onPanelWidthChange(
-        width ?? secondaryPanelRef.current?.getBoundingClientRect().width,
-      );
-    },
-  });
-
-  const finishSecondaryPanelDragging = useCallback(() => {
-    isSecondaryPanelDraggingRef.current = false;
-    setIsSecondaryPanelDragging(false);
-    setIsResizing(false);
-
-    if (lastSecondaryPanelSizeRef.current > 0) {
-      setPersistedWidthPercent(lastSecondaryPanelSizeRef.current);
-    }
-  }, [setIsResizing, setPersistedWidthPercent]);
-
-  const handleSecondaryPanelDragging =
-    useCallback<SecondaryPanelDraggingHandler>(
-      (isDragging) => {
-        if (isDragging) {
-          isSecondaryPanelDraggingRef.current = true;
-          setIsSecondaryPanelDragging(true);
-          setIsResizing(true);
-          return;
-        }
-
-        finishSecondaryPanelResizeSnap();
-        finishSecondaryPanelDragging();
-      },
-      [
-        finishSecondaryPanelDragging,
-        finishSecondaryPanelResizeSnap,
-        setIsResizing,
-      ],
-    );
-
-  useEffect(
-    () => () => {
-      if (!isSecondaryPanelDraggingRef.current) {
-        return;
-      }
-      isSecondaryPanelDraggingRef.current = false;
-      setIsResizing(false);
-    },
-    [setIsResizing],
-  );
-
-  useEffect(() => {
-    if (!isSecondaryPanelDragging) {
-      return;
-    }
-
-    window.addEventListener("pointerup", finishSecondaryPanelDragging, true);
-    window.addEventListener("mouseup", finishSecondaryPanelDragging, true);
-    window.addEventListener(
-      "pointercancel",
-      finishSecondaryPanelDragging,
-      true,
-    );
-    window.addEventListener("blur", finishSecondaryPanelDragging);
-
-    return () => {
-      window.removeEventListener(
-        "pointerup",
-        finishSecondaryPanelDragging,
-        true,
-      );
-      window.removeEventListener("mouseup", finishSecondaryPanelDragging, true);
-      window.removeEventListener(
-        "pointercancel",
-        finishSecondaryPanelDragging,
-        true,
-      );
-      window.removeEventListener("blur", finishSecondaryPanelDragging);
-    };
-  }, [finishSecondaryPanelDragging, isSecondaryPanelDragging]);
+  }, [isSecondaryPanelOpen]);
 
   const handleSecondaryPanelResize = useCallback<SecondaryPanelResizeHandler>(
     (size) => {
@@ -157,18 +103,26 @@ export function useSecondaryPanelResize({
       }
 
       lastSecondaryPanelSizeRef.current = size;
-      secondaryPanelRef.current?.style.setProperty(
-        "--secondary-swipe-width",
-        `${size}cqw`,
-      );
+      if (!isDraggingRef.current) applySwipeWidth(size);
     },
-    [],
+    [applySwipeWidth],
   );
 
-  return {
-    handleSecondaryPanelDragging,
+  useLayoutEffect(() => {
+    const panel =
+      secondaryPanelRef.current?.closest<HTMLElement>("[data-panel]");
+    const size = Number.parseFloat(panel?.style.flexGrow ?? "");
+    if (Number.isFinite(size)) handleSecondaryPanelResize(size);
+  }, [
     handleSecondaryPanelResize,
-    handleSecondaryPanelResizePointerDownCapture,
+    isSecondaryPanelOpen,
+    panelId,
+    renderAsDrawer,
+  ]);
+
+  return {
+    handleSecondaryPanelResize,
+    resizeHitTargetRef,
     persistedWidthPercent,
     secondaryPanelRef,
     secondaryResizablePanelRef,

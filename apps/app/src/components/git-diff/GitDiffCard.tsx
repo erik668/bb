@@ -1,20 +1,17 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useMemo } from "react";
 import { useIntersectionObserver } from "usehooks-ts";
 import { cn } from "@bb/shared-ui/lib/utils";
-import type { DiffPresentation } from "@/components/code/code-rendering";
+import { CoreGitDiffRendererProvider } from "./CoreGitDiffRendererProvider";
+import type { DiffPresentation } from "@bb/shared-ui/git-diff/renderers";
 import {
   GitDiffCardBody,
   useGitDiffCardBody,
-  type GitDiffCardSvgDisplayMode,
-  type RequestDiffFileContents,
-} from "./GitDiffCardBody";
+} from "@bb/shared-ui/git-diff/card-body";
 import {
   GitDiffCardHeader,
-  GitDiffCardImageSizeStat,
-  GitDiffCardRawToggle,
   gitDiffCardHeaderWrapperClass,
   type GitDiffCardHeaderModel,
-} from "./GitDiffCardHeader";
+} from "@bb/shared-ui/git-diff/card-header";
 import {
   formatGitDiffFileLabel,
   getGitDiffFileChangeKind,
@@ -22,21 +19,16 @@ import {
   normalizeGitDiffPath,
   summarizeGitDiffFile,
   type ParsedGitDiffFile,
-} from "./git-diff-parsing";
+} from "@bb/shared-ui/git-diff/parsing";
 
 interface GitDiffCardProps {
   fileDiff: ParsedGitDiffFile;
   presentation: DiffPresentation;
   patchText?: string;
   filePathRoot?: string | null;
-  onOpenFileInEditor?: (path: string) => void;
-  isCollapsed?: boolean;
-  onToggleCollapsed?: () => void;
   stickyHeader?: boolean;
-  isRendering?: boolean;
   cardClassName?: string;
   showStuckHeaderEdge?: boolean;
-  onRequestFileContents?: RequestDiffFileContents;
 }
 
 function buildGitDiffCardHeaderModel(
@@ -58,14 +50,9 @@ export const GitDiffCard = memo(function GitDiffCard({
   presentation,
   patchText,
   filePathRoot,
-  onOpenFileInEditor,
-  isCollapsed,
-  onToggleCollapsed,
   stickyHeader = false,
-  isRendering = false,
   cardClassName,
   showStuckHeaderEdge = true,
-  onRequestFileContents,
 }: GitDiffCardProps) {
   const headerModel = useMemo(
     () => buildGitDiffCardHeaderModel(fileDiff),
@@ -75,24 +62,10 @@ export const GitDiffCard = memo(function GitDiffCard({
   const bodyState = useGitDiffCardBody({
     fileDiff,
     changeKind: headerModel.changeKind,
-    isRendering,
-    onRequestFileContents,
+    onRequestFileContents: undefined,
     patchText,
   });
-  const [svgDisplayMode, setSvgDisplayMode] =
-    useState<GitDiffCardSvgDisplayMode>("preview");
-  useEffect(() => {
-    setSvgDisplayMode("preview");
-  }, [fileDiff]);
-  const toggleSvgDisplayMode = () => {
-    setSvgDisplayMode((currentMode) =>
-      currentMode === "preview" ? "raw" : "preview",
-    );
-  };
-  const hasChanges = fileDiff.hunks.length > 0 || bodyState.isImageCard;
-  const supportsCollapse =
-    isCollapsed !== undefined && onToggleCollapsed !== undefined;
-  const isBodyHidden = !hasChanges || (supportsCollapse && isCollapsed);
+  const hasChanges = fileDiff.hunks.length > 0;
   const { ref: stickySentinelRef, isIntersecting } = useIntersectionObserver({
     initialIsIntersecting: true,
     threshold: 1,
@@ -100,57 +73,39 @@ export const GitDiffCard = memo(function GitDiffCard({
   const isHeaderStuck = stickyHeader && !isIntersecting;
 
   return (
-    <div
-      className={cn(
-        "rounded-lg border border-border bg-background",
-        cardClassName,
-      )}
-    >
-      {stickyHeader ? <div ref={stickySentinelRef} className="h-0" /> : null}
+    <CoreGitDiffRendererProvider>
       <div
-        className={gitDiffCardHeaderWrapperClass({
-          stickyHeader,
-          isBodyHidden,
-          isStuck: isHeaderStuck,
-          showStuckHeaderEdge,
-        })}
+        className={cn(
+          "rounded-lg border border-border bg-background",
+          cardClassName,
+        )}
       >
-        <GitDiffCardHeader
-          model={headerModel}
-          previousPath={previousPath}
-          filePathRoot={filePathRoot}
-          onOpenFileInEditor={onOpenFileInEditor}
-          isCollapsed={isCollapsed}
-          onToggleCollapsed={onToggleCollapsed}
-          hasChanges={hasChanges}
-          statSlot={
-            bodyState.isImageCard ? (
-              bodyState.imageSizeStat !== null ? (
-                <GitDiffCardImageSizeStat stat={bodyState.imageSizeStat} />
-              ) : (
-                <span />
-              )
-            ) : undefined
-          }
-          actionSlot={
-            bodyState.isSvgPreviewCard && !isBodyHidden ? (
-              <GitDiffCardRawToggle
-                fileLabel={bodyState.fileDiffLabel}
-                isRaw={svgDisplayMode === "raw"}
-                onToggle={toggleSvgDisplayMode}
-              />
-            ) : undefined
-          }
-        />
+        {stickyHeader ? <div ref={stickySentinelRef} className="h-0" /> : null}
+        <div
+          className={gitDiffCardHeaderWrapperClass({
+            stickyHeader,
+            isBodyHidden: !hasChanges,
+            isStuck: isHeaderStuck,
+            showStuckHeaderEdge,
+          })}
+        >
+          <GitDiffCardHeader
+            model={headerModel}
+            previousPath={previousPath}
+            filePathRoot={filePathRoot}
+            hasChanges={hasChanges}
+          />
+        </div>
+        {hasChanges ? (
+          <GitDiffCardBody
+            state={bodyState}
+            presentation={presentation}
+            svgDisplayMode="preview"
+            reservesCollapseGutter={false}
+            defersOffscreenRendering
+          />
+        ) : null}
       </div>
-      {!isBodyHidden ? (
-        <GitDiffCardBody
-          state={bodyState}
-          presentation={presentation}
-          svgDisplayMode={svgDisplayMode}
-          reservesCollapseGutter={supportsCollapse}
-        />
-      ) : null}
-    </div>
+    </CoreGitDiffRendererProvider>
   );
 });

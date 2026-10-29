@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   type ClientTurnRequestId,
   type PendingInteractionPayload,
@@ -22,8 +23,6 @@ import {
   threadResumeParamsSchema,
   threadStartParamsSchema,
   threadStopParamsSchema,
-  experimental_threadStopIfCurrentTurnParamsSchema,
-  type ExperimentalThreadStopIfCurrentTurnResult,
   threadUnarchiveParamsSchema,
   turnStartParamsSchema,
   turnSteerParamsSchema,
@@ -44,7 +43,6 @@ const scriptedMethodSchema = z.enum([
   "turn/start",
   "turn/steer",
   "thread/stop",
-  "thread/stop-if-current-turn",
   "thread/discard",
   "thread/archive",
   "thread/unarchive",
@@ -57,6 +55,17 @@ export const scriptedEchoOptionsSchema = z
     startDelayMs: z.number().int().nonnegative().optional(),
     turnStartResponseDelayMs: z.number().int().nonnegative().optional(),
     answerStartWithoutIdentity: z.boolean().optional(),
+    identityAfterResponse: z.boolean().optional(),
+    identityNotificationsBeforeTurn: z
+      .array(
+        z.object({
+          threadId: z.string().min(1),
+          providerThreadId: z.string().min(1),
+          asDelta: z.boolean().optional(),
+        }),
+      )
+      .optional(),
+    completionIdentity: z.string().min(1).optional(),
     archivedSession: z.boolean().optional(),
     unarchiveFails: z.boolean().optional(),
     exitAfterArchivedError: z.boolean().optional(),
@@ -84,11 +93,11 @@ export const scriptedEchoOptionsSchema = z
     goalClearReportsCleared: z.boolean().optional(),
     swallowTurnStart: z.boolean().optional(),
     sessionRestorable: z.boolean().optional(),
-    warnOnTurn: z.boolean().optional(),
     toolCallThreadIdHint: z.string().min(1).optional(),
     recoveryThreadIdHint: z.string().min(1).optional(),
     approvalEnforcedBy: z.enum(["runtime", "provider"]).optional(),
     identifyProcess: z.boolean().optional(),
+    uniqueProviderThreadIds: z.boolean().optional(),
     failStopForThreadIds: z.array(z.string().min(1)).optional(),
     emitIdentityOnSigterm: z.boolean().optional(),
   })
@@ -179,6 +188,7 @@ const openBackgroundTasks = new Map<
 >();
 let discardFailed = false;
 let providerThreadCounter = 0;
+const providerThreadNonce = randomUUID().slice(0, 8);
 let outboundRequestCounter = 0;
 
 type OutboundMessage = { jsonrpc: "2.0" } & Record<string, unknown>;
@@ -386,6 +396,7 @@ function userQuestionPayload(requestId: JsonRpcId): PendingInteractionPayload {
           },
         ],
         allowFreeText: true,
+        required: true,
       },
     ],
   };
@@ -437,6 +448,13 @@ function completeTurn(
     status,
     providerTurnId: turn.providerTurnId,
   });
+  if (session.options.completionIdentity !== undefined) {
+    session.providerThreadId = session.options.completionIdentity;
+    deltas.push({
+      kind: "thread.identity",
+      providerThreadId: session.providerThreadId,
+    });
+  }
   emitDeltas(session.threadId, deltas);
 }
 
@@ -455,6 +473,7 @@ function openBackgroundTask(session: Session, providerTurnId: string): void {
         status: "pending",
         taskStatus: "running",
         skipTranscript: false,
+        foreground: false,
       },
       providerTurnId,
     },
@@ -482,6 +501,7 @@ function settleBackgroundTasks(session: Session): void {
         status: "completed",
         taskStatus: "completed",
         skipTranscript: false,
+        foreground: false,
       },
     })),
   );
@@ -508,6 +528,22 @@ function beginTurn(args: {
   clientRequestId?: ClientTurnRequestId;
 }): void {
   const { session } = args;
+  for (const identity of session.options.identityNotificationsBeforeTurn ??
+    []) {
+    if (identity.asDelta === true) {
+      emitDeltas(identity.threadId, [
+        {
+          kind: "thread.identity",
+          providerThreadId: identity.providerThreadId,
+        },
+      ]);
+    } else {
+      notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
+        threadId: identity.threadId,
+        providerThreadId: identity.providerThreadId,
+      });
+    }
+  }
   clearActiveTurn(session);
   const plan = parseTurnPlan(promptText(args.input));
   if (plan.failure !== null && plan.failure.beforeTurn) {
@@ -541,14 +577,6 @@ function beginTurn(args: {
     });
   }
   deltas.push({ kind: "turn.open", providerTurnId });
-  if (session.options.warnOnTurn === true) {
-    deltas.push({
-      kind: "provider.warning",
-      category: "general",
-      summary: "scripted warning",
-      vouchedTurn: true,
-    });
-  }
   emitDeltas(session.threadId, deltas);
   emitRecoveryHint(session.threadId, plan.recoverNowKind);
   if (plan.backgroundTask) {
@@ -589,7 +617,6 @@ function beginTurn(args: {
           plan.approvalKind,
           `approval-${providerTurnId}`,
         ),
-        providerNativeIds: true,
       },
     );
     pendingReplies.set(requestId, {
@@ -612,7 +639,6 @@ function beginTurn(args: {
         threadId: session.threadId,
         turnId: providerTurnId,
         payload: userQuestionPayload(requestId),
-        providerNativeIds: true,
       },
     });
     pendingReplies.set(requestId, {
@@ -630,7 +656,6 @@ function beginTurn(args: {
       callId: `call-${session.turnCount}`,
       tool: plan.toolName,
       arguments: {},
-      providerNativeIds: true,
     });
     pendingReplies.set(requestId, {
       kind: "tool",
@@ -783,21 +808,30 @@ function openSession(args: {
     options: args.options,
   };
   sessions.set(args.threadId, session);
-  notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
-    threadId: args.threadId,
-    providerThreadId: args.providerThreadId,
-    ...(args.options.sessionRestorable === undefined
-      ? {}
-      : { sessionRestorable: args.options.sessionRestorable }),
-  });
+  if (args.options.identityAfterResponse !== true) {
+    notifySessionIdentity(session);
+  }
   emitDeltas(args.threadId, [{ kind: "session.reset" }]);
   return session;
 }
 
+function notifySessionIdentity(session: Session): void {
+  notify(BRIDGE_NOTIFICATION_METHODS.threadIdentity, {
+    threadId: session.threadId,
+    providerThreadId: session.providerThreadId,
+    ...(session.options.sessionRestorable === undefined
+      ? {}
+      : { sessionRestorable: session.options.sessionRestorable }),
+  });
+}
+
 function mintProviderThreadId(options: ScriptedEchoOptions): string {
   providerThreadCounter += 1;
-  return options.identifyProcess === true
-    ? `prov-${process.pid}-${providerThreadCounter}`
+  if (options.identifyProcess === true) {
+    return `prov-${process.pid}-${providerThreadCounter}`;
+  }
+  return options.uniqueProviderThreadIds === true
+    ? `prov-${providerThreadCounter}-${providerThreadNonce}`
     : `prov-${providerThreadCounter}`;
 }
 
@@ -842,6 +876,7 @@ const MODEL_LIST = {
       model: "fake-model",
       displayName: "Fake Model",
       description: "Fake model for integration and runtime tests",
+      reasoningDiscovery: "known",
       supportedReasoningEfforts: [
         { reasoningEffort: "medium", description: "Medium" },
       ],
@@ -866,10 +901,6 @@ const handlers: Record<string, RequestHandler> = {
         threadArchive: true,
         threadRename: true,
         threadGoalClear: true,
-        experimental_conditionalThreadStop:
-          !processOptions.unsupportedMethods?.includes(
-            "thread/stop-if-current-turn",
-          ),
         fork: "checkpoint",
         approvalEnforcedBy: processOptions.approvalEnforcedBy ?? "runtime",
         grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
@@ -968,6 +999,9 @@ const handlers: Record<string, RequestHandler> = {
       });
       logProcessStep(`thread/start:${process.pid}:${parsed.data.threadId}`);
       io.sendResult(id, identityResult(session));
+      if (session.options.identityAfterResponse === true) {
+        notifySessionIdentity(session);
+      }
       if (parsed.data.input !== undefined && parsed.data.input.length > 0) {
         beginTurn({ session, input: parsed.data.input });
       }
@@ -998,6 +1032,9 @@ const handlers: Record<string, RequestHandler> = {
         `thread/resume:${process.pid}:${parsed.data.threadId}:${parsed.data.providerThreadId}`,
       );
       io.sendResult(id, identityResult(session));
+      if (session.options.identityAfterResponse === true) {
+        notifySessionIdentity(session);
+      }
     });
   },
 
@@ -1018,6 +1055,9 @@ const handlers: Record<string, RequestHandler> = {
         options,
       });
       io.sendResult(id, identityResult(session));
+      if (session.options.identityAfterResponse === true) {
+        notifySessionIdentity(session);
+      }
     });
   },
 
@@ -1089,53 +1129,6 @@ const handlers: Record<string, RequestHandler> = {
       },
     ]);
     io.sendResult(id, {});
-  },
-
-  [BRIDGE_REQUEST_METHODS.experimental_threadStopIfCurrentTurn]: (
-    id,
-    params,
-  ) => {
-    const parsed =
-      experimental_threadStopIfCurrentTurnParamsSchema.safeParse(params);
-    if (!parsed.success) {
-      invalidParams(
-        id,
-        BRIDGE_REQUEST_METHODS.experimental_threadStopIfCurrentTurn,
-        parsed.error.issues,
-      );
-      return;
-    }
-    const { threadId, providerThreadId, expectedTurnId } = parsed.data;
-    const session = sessions.get(threadId);
-    const activeTurnId = session?.activeTurn?.providerTurnId ?? null;
-    const refuse = (
-      reason: Extract<
-        ExperimentalThreadStopIfCurrentTurnResult["condition"],
-        { status: "refused" }
-      >["reason"],
-    ): void => {
-      const result: ExperimentalThreadStopIfCurrentTurnResult = {
-        condition: { status: "refused", expectedTurnId, reason, activeTurnId },
-      };
-      io.sendResult(id, result);
-    };
-    if (!session || session.providerThreadId !== providerThreadId) {
-      refuse("runtime-missing");
-      return;
-    }
-    if (activeTurnId !== expectedTurnId) {
-      refuse(activeTurnId === null ? "no-active-turn" : "turn-mismatch");
-      return;
-    }
-    if (session.options.failStopForThreadIds?.includes(threadId)) {
-      refuse("unproven");
-      return;
-    }
-    completeTurn(session, "interrupted", "");
-    const result: ExperimentalThreadStopIfCurrentTurnResult = {
-      condition: { status: "stopped", expectedTurnId },
-    };
-    io.sendResult(id, result);
   },
 
   [BRIDGE_REQUEST_METHODS.threadStop]: (id, params) => {

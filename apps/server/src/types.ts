@@ -4,6 +4,8 @@ import type { FeatureFlags, ProviderNativeSkillRoots } from "@bb/domain";
 import type { Logger } from "@bb/logger";
 import type { PendingInteractionLifecycle } from "./services/interactions/pending-interactions.js";
 import type { MachineAuthService } from "./services/machine-auth.js";
+import type { AppUpdateService } from "./services/system/app-update.js";
+import type { CliCommandService } from "./services/system/cli-command.js";
 import type { AppVersionService } from "./services/system/app-version.js";
 import type { BbAppManagedConfigReloader } from "./services/system/bb-app-managed-config.js";
 import type { TelemetryService } from "./services/system/telemetry.js";
@@ -11,13 +13,13 @@ import type { TerminalSessionLifecycle } from "./services/terminals/terminal-ses
 import type { LifecycleDedupers } from "./lifecycle-dedupers.js";
 import type { NotificationHub } from "./ws/hub.js";
 import type { WatchInterestCoordinator } from "./ws/watch-interests.js";
-import type { WorkspaceReadCaches } from "./services/environments/workspace-read-cache.js";
 import type { HostSharedPortCoordinator } from "./ws/host-shared-ports.js";
 import type { SkillTreeRegistry } from "./services/skills/injected-skills.js";
 import type { ProviderRegistryService } from "./services/providers/provider-registry.js";
 import type { AiServiceRegistry } from "./services/ai/ai-service-registry.js";
 import type { PluginHostArtifactRegistry } from "./services/plugins/plugin-host-artifact-registry.js";
 import type { ProviderNativeRootsCache } from "./services/providers/native-roots.js";
+import type { ProviderLiveCommandsCache } from "./services/providers/provider-live-commands.js";
 
 export type ServerLogger = Pick<Logger, "debug" | "error" | "info" | "warn">;
 
@@ -29,15 +31,12 @@ export interface ServerRuntimeConfig {
   featureFlags: FeatureFlags;
   hostDaemonPort: number;
   inheritedSkillsRootPaths: string[];
-  inferenceFallbackModel: string;
-  inferenceModel: string;
   isDevelopment: boolean;
-  managedEnvironmentRetireGraceMs: number;
+  performanceDiagnosticsAvailable: boolean;
   marketplaceUrl: string;
-  openAiApiKey: string;
+  connectGateKeysUrl: string;
   serverPort: number;
   sharedSkillRoots: ProviderNativeSkillRoots;
-  transcriptionModel: string;
   appUrl?: string;
   devAppPort?: number;
   launchId?: string;
@@ -54,18 +53,20 @@ export interface AppDeps {
   providerRegistry: ProviderRegistryService;
   pluginHostArtifacts: PluginHostArtifactRegistry;
   providerNativeRoots: ProviderNativeRootsCache;
+  providerLiveCommands: ProviderLiveCommandsCache;
   aiServices: AiServiceRegistry;
   skillTreeRegistry: SkillTreeRegistry;
   telemetry: TelemetryService;
   terminalSessions: TerminalSessionLifecycle;
   watchInterests: WatchInterestCoordinator;
   sharedPorts: HostSharedPortCoordinator;
-  workspaceReadCaches: WorkspaceReadCaches;
 }
 
 export interface ServerAppDeps extends AppDeps {
+  appUpdate: AppUpdateService;
   appVersion: AppVersionService;
   bbAppManagedConfig: BbAppManagedConfigReloader;
+  cliCommand: CliCommandService;
 }
 
 export type WorkSessionDeps = Pick<
@@ -73,6 +74,7 @@ export type WorkSessionDeps = Pick<
   | "config"
   | "db"
   | "hub"
+  | "logger"
   | "lifecycleDedupers"
   | "machineAuth"
   | "providerRegistry"

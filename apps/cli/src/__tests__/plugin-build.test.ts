@@ -40,22 +40,6 @@ async function failingTailwindToolchain(
   return { ...real, tailwindNode: pathToFileURL(stub).href };
 }
 
-async function metafileRejectingToolchain(
-  dir: string,
-): Promise<PluginBuildToolchain> {
-  const real = await testToolchain();
-  const stub = join(dir, "esbuild-no-metafile.mjs");
-  await writeFile(
-    stub,
-    `import * as esbuild from ${JSON.stringify(real.esbuild)};\n` +
-      `export async function build(options) {\n` +
-      `  if (options.metafile) throw new Error("unexpected esbuild metafile");\n` +
-      `  return esbuild.build(options);\n` +
-      `}\n`,
-  );
-  return { ...real, esbuild: pathToFileURL(stub).href };
-}
-
 const FIXTURE_PACKAGE_JSON = JSON.stringify(
   {
     name: "bb-plugin-fixture",
@@ -157,41 +141,12 @@ describe("buildPluginApp", () => {
       artifactFormatVersion: 1,
       pluginId: "fixture",
       pluginVersion: "0.1.0",
+      runtimeSlots: ["jsxRuntime", "pluginSdkApp", "react", "reactDomClient"],
       builtWith: {
         bbVersion: TEST_BB_VERSION,
         pluginSdkVersion: PLUGIN_SDK_VERSION,
       },
     });
-  });
-
-  it("preserves authored CSS unscoped for editor decorations", async () => {
-    await writeFixture();
-    await writeFile(
-      join(root, "app.css"),
-      ".fixture-highlight { background: hotpink; }\n" +
-        "@keyframes fixture-pulse { to { opacity: 0.5; } }\n",
-    );
-    await writeFile(
-      join(root, "app.tsx"),
-      `import "./app.css";\n${FIXTURE_APP_TSX}`,
-    );
-
-    const { cssPath } = await buildPluginApp(
-      root,
-      TEST_BB_VERSION,
-      await testToolchain(),
-    );
-    const css = await readFile(cssPath, "utf8");
-
-    expect(css).toContain(".fixture-highlight{background:#ff69b4}");
-    expect(css).toContain("@keyframes fixture-pulse");
-    expect(css.indexOf(".fixture-highlight{")).toBeGreaterThan(
-      css.lastIndexOf("@layer utilities{"),
-    );
-    const scope =
-      ":where([data-bb-plugin=fixture],[data-bb-plugin-root]:not([data-bb-plugin]))";
-    expect(css).not.toContain(`${scope} .fixture-highlight`);
-    expect(css).not.toContain(`${scope}.fixture-highlight`);
   });
 
   it("throws at import time without the BB runtime and loads once slots are set", async () => {
@@ -368,13 +323,11 @@ describe("buildPluginApp", () => {
     await linkScaffoldDeps(targetDir, [
       "@radix-ui/react-checkbox",
       "@radix-ui/react-slot",
-      "@hugeicons/react",
-      "@hugeicons/core-free-icons",
     ]);
     const result = await buildPluginApp(
       targetDir,
       TEST_BB_VERSION,
-      await metafileRejectingToolchain(root),
+      await testToolchain(),
     );
     const js = await readFile(result.jsPath, "utf8");
     expect(js).toContain("globalThis.__bbPluginRuntime");
@@ -382,10 +335,9 @@ describe("buildPluginApp", () => {
     expect(css).toContain(".rounded-md");
 
     (globalThis as { __bbPluginRuntime?: unknown }).__bbPluginRuntime = {
-      react: {
-        forwardRef: (render: unknown) => render,
-        createContext: () => ({}),
-      },
+      react: createRequire(
+        new URL("../../../app/package.json", import.meta.url),
+      )("react"),
       reactDom: {},
       jsxRuntime: { jsx: () => ({}), jsxs: () => ({}), Fragment: {} },
       classVarianceAuthority: { cva: () => () => "" },

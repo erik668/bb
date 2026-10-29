@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { fstatSync, mkdirSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import pino from "pino";
 import type { Logger } from "pino";
@@ -6,13 +6,12 @@ import { loadLoggerConfig } from "@bb/config/logger";
 
 export type { Logger };
 
-type LoggerTransportMode = "stream" | "worker";
+const ROTATED_LOG_FILE_COUNT = 5;
 
 interface CreateLoggerOptions {
   component: string;
   base?: Record<string, unknown>;
   dataDir?: string;
-  transportMode?: LoggerTransportMode;
 }
 
 function sanitizeComponentName(component: string): string {
@@ -24,12 +23,39 @@ function sanitizeComponentName(component: string): string {
   return trimmed.replace(/[^a-zA-Z0-9._-]+/gu, "-");
 }
 
+function stdoutIsPlainFile(): boolean {
+  try {
+    return fstatSync(1).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function pruneRotatedLogFiles(logDir: string, component: string): void {
+  const prefix = `${component}.`;
+  const rotatedFiles = readdirSync(logDir)
+    .filter(
+      (entry) =>
+        entry.startsWith(prefix) &&
+        /^\d+\.log$/u.test(entry.slice(prefix.length)),
+    )
+    .map((entry) => {
+      const path = join(logDir, entry);
+      return { mtimeMs: statSync(path).mtimeMs, path };
+    })
+    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+  for (const { path } of rotatedFiles.slice(ROTATED_LOG_FILE_COUNT)) {
+    rmSync(path, { force: true });
+  }
+}
+
 export function createLogger(options: CreateLoggerOptions): Logger {
   const component = sanitizeComponentName(options.component);
   const loggerConfig = loadLoggerConfig({ dataDir: options.dataDir });
   const dataDir = loggerConfig.BB_DATA_DIR;
   const logDir = join(dataDir, "logs");
   mkdirSync(logDir, { recursive: true });
+  pruneRotatedLogFiles(logDir, component);
   const loggerOptions = {
     level: loggerConfig.BB_LOG_LEVEL,
     base: {
@@ -41,12 +67,6 @@ export function createLogger(options: CreateLoggerOptions): Logger {
       error: pino.stdSerializers.errWithCause,
     },
   } satisfies pino.LoggerOptions;
-  const transportMode = options.transportMode ?? "worker";
-
-  if (transportMode === "stream") {
-    const destination = pino.destination(join(logDir, `${component}.log`));
-    return pino(loggerOptions, destination);
-  }
 
   const targets: pino.TransportTargetOptions[] = [
     {
@@ -54,14 +74,14 @@ export function createLogger(options: CreateLoggerOptions): Logger {
       options: {
         file: join(logDir, `${component}.log`),
         frequency: "daily",
-        limit: { count: 5 },
+        limit: { count: ROTATED_LOG_FILE_COUNT },
         size: "10m",
       },
       level: loggerConfig.BB_LOG_LEVEL,
     },
   ];
 
-  if (!process.env.VITEST) {
+  if (!process.env.VITEST && !stdoutIsPlainFile()) {
     targets.push({
       target: "pino-pretty",
       options: {

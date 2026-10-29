@@ -1,5 +1,5 @@
-import { environments, events, threads } from "@bb/db";
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { environments, hasStoredSpawnAgentToolCall, threads } from "@bb/db";
+import { and, eq, isNull } from "drizzle-orm";
 import {
   PromptInput,
   PromptMode,
@@ -24,8 +24,12 @@ import {
   LIVE_DAEMON_COMMAND_TIMEOUT_MS,
   startLiveHostCommand,
 } from "../hosts/live-command.js";
-import { getLastProviderThreadId } from "./thread-events.js";
-import type { ThreadForkDescriptor } from "./thread-provisioning-context.js";
+import {
+  getLastProviderThreadId,
+  requireDispatchableProviderThreadId,
+} from "./thread-events.js";
+import { resolvePendingThreadSessionOptions } from "./thread-session-options.js";
+import type { ThreadForkDescriptor } from "./thread-startup-store.js";
 import {
   resolveThreadRuntimeCommandConfig,
   type ResolvedThreadRuntimeCommandConfig,
@@ -40,6 +44,7 @@ import { clampPermissionModeToHost } from "../hosts/permission-ceiling.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import { resolveProviderPlanCommand } from "../providers/provider-plan-command.js";
 import { workspaceContextFromPath } from "../environments/workspace-command-target.js";
+import { projectCheckoutPathOnHost } from "../projects/project-workspace.js";
 import {
   requireBridgeLaunchForProviderId,
   resolveBridgeLaunchForProviderId,
@@ -49,7 +54,6 @@ type ExecutionOptionsRequest = ExistingThreadExecutionInputRequest;
 
 export interface ThreadStopCommandArgs {
   environmentId: string;
-  expectedTurnId?: string;
   hostId: string;
   intent: ThreadStopIntent;
   threadId: string;
@@ -83,7 +87,11 @@ export interface ThreadStartCommandArgs {
 interface PreparedTurnSubmitCommandBuildArgs {
   deps: Pick<
     AppDeps,
-    "config" | "db" | "providerRegistry" | "pluginHostArtifacts"
+    | "config"
+    | "db"
+    | "providerRegistry"
+    | "pluginHostArtifacts"
+    | "lifecycleDedupers"
   >;
   environmentId: string;
   hostId: string;
@@ -119,7 +127,8 @@ export type PreparedTurnSubmitCommandPayload = Omit<
 >;
 
 interface RuntimeExecutionOptionsArgs {
-  deps: Pick<AppDeps, "db" | "providerRegistry">;
+  deps: Pick<AppDeps, "db" | "providerRegistry" | "lifecycleDedupers">;
+  workspacePath: string;
   execution: ResolvedThreadExecutionOptions;
   hostId: string;
   input: PromptInput[];
@@ -208,11 +217,40 @@ function toRuntimeExecutionOptions(
       permissionMode,
       ...(promptMode !== undefined ? { promptMode } : {}),
     }) ?? {};
+  const sessionOptions = resolvePendingThreadSessionOptions(
+    args.deps.db,
+    args.threadId,
+  );
+  const checkoutPath = projectCheckoutPathOnHost(
+    args.deps,
+    args.projectId,
+    args.hostId,
+  );
+  const model = args.deps.lifecycleDedupers.providerModelCatalogs.getCachedModel(
+    args.deps,
+    {
+      hostId: args.hostId,
+      providerId: args.providerId,
+      workspacePaths:
+        checkoutPath === undefined
+          ? [args.workspacePath]
+          : [args.workspacePath, checkoutPath],
+      model: args.execution.model,
+    },
+  );
+  const reasoningLevel =
+    model === null ||
+    model.supportedReasoningEfforts.some(
+      (effort) => effort.reasoningEffort === args.execution.reasoningLevel,
+    )
+      ? args.execution.reasoningLevel
+      : undefined;
   const base = {
     model: args.execution.model,
     serviceTier: args.execution.serviceTier,
-    reasoningLevel: args.execution.reasoningLevel,
+    ...(reasoningLevel === undefined ? {} : { reasoningLevel }),
     ...(promptMode !== undefined ? { promptMode } : {}),
+    ...(Object.keys(sessionOptions).length > 0 ? { sessionOptions } : {}),
     providerOptions,
   };
   if (permissionMode === "full") {
@@ -276,7 +314,6 @@ export async function buildThreadStartCommand(
     threadId: args.thread.id,
     workspaceContext: workspaceContextFromPath({
       path: runtimeContext.workspacePath,
-      workspaceProvisionType: runtimeContext.workspaceProvisionType,
     }),
     projectId: args.projectId,
     providerId: args.providerId,
@@ -290,6 +327,7 @@ export async function buildThreadStartCommand(
       ...args,
       deps,
       hostId: args.environment.hostId,
+      workspacePath: runtimeContext.workspacePath,
       input: args.input,
       threadId: args.thread.id,
     }),
@@ -324,12 +362,12 @@ function buildPreparedTurnSubmitCommandPayload(
       input: args.input,
       projectId: args.runtimeContext.projectId,
       providerId: args.runtimeContext.providerId,
+      workspacePath: args.runtimeContext.workspacePath,
     }),
     target: args.target,
     resumeContext: {
       workspaceContext: workspaceContextFromPath({
         path: args.runtimeContext.workspacePath,
-        workspaceProvisionType: args.runtimeContext.workspaceProvisionType,
       }),
       projectId: args.runtimeContext.projectId,
       providerId: args.runtimeContext.providerId,
@@ -359,7 +397,8 @@ export async function prepareTurnSubmitCommandPayload(
 ): Promise<PreparedTurnSubmitCommandPayload> {
   await deps.providerRegistry.whenRegistrationsSettled();
   const providerThreadId = requireProviderThreadId(
-    args.providerThreadId ?? getLastProviderThreadId(deps, args.thread.id),
+    args.providerThreadId ??
+      requireDispatchableProviderThreadId(deps, args.thread.id),
     args.thread.id,
   );
   const runtimeContext = await resolveThreadRuntimeCommandConfig(deps, {
@@ -411,25 +450,6 @@ function threadHasLiveChildren(
         eq(threads.parentThreadId, threadId),
         isNull(threads.archivedAt),
         isNull(threads.deletedAt),
-      ),
-    )
-    .limit(1)
-    .get();
-  return row !== undefined;
-}
-
-function threadHasCodexSpawnAgentToolCall(
-  deps: Pick<AppDeps, "db">,
-  threadId: string,
-): boolean {
-  const row = deps.db
-    .select({ id: events.id })
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, threadId),
-        eq(events.itemKind, "toolCall"),
-        sql`json_extract(${events.data}, '$.item.tool') = 'spawnAgent'`,
       ),
     )
     .limit(1)
@@ -504,7 +524,7 @@ export function dispatchArchivedThreadProviderArchiveCommand(
 
   if (
     threadHasLiveChildren(deps, thread.id) ||
-    threadHasCodexSpawnAgentToolCall(deps, thread.id)
+    hasStoredSpawnAgentToolCall(deps.db, thread.id)
   ) {
     return false;
   }
@@ -514,7 +534,6 @@ export function dispatchArchivedThreadProviderArchiveCommand(
   }
   const workspaceContext = workspaceContextFromPath({
     path: environment.path,
-    workspaceProvisionType: environment.workspaceProvisionType,
   });
 
   const bridgeLaunch = resolveBridgeLaunchForProviderId(
@@ -598,10 +617,18 @@ export function buildThreadStopCommand(
   return {
     type: "thread.stop",
     environmentId: args.environmentId,
-    ...(args.expectedTurnId !== undefined
-      ? { expectedTurnId: args.expectedTurnId }
-      : {}),
     intent: args.intent,
+    threadId: args.threadId,
+  };
+}
+
+export function buildThreadStorageDeleteCommand(args: {
+  environmentId: string;
+  threadId: string;
+}): Extract<HostDaemonCommand, { type: "thread.storage.delete" }> {
+  return {
+    type: "thread.storage.delete",
+    environmentId: args.environmentId,
     threadId: args.threadId,
   };
 }

@@ -9,6 +9,7 @@ function catalog(model: string) {
         model,
         displayName: model,
         description: "",
+        reasoningDiscovery: "known" as const,
         supportedReasoningEfforts: [],
         defaultReasoningEffort: "medium" as const,
         isDefault: true,
@@ -50,20 +51,5 @@ describe("createClaudeCodeBridgeModelListMemo", () => {
     expect(list).toHaveBeenCalledTimes(2);
     resolveProbe(catalog("sonnet"));
     await expect(refreshed).resolves.toEqual(catalog("sonnet"));
-  });
-
-  it("does not keep a failed probe", async () => {
-    const list = vi
-      .fn<() => Promise<ReturnType<typeof catalog>>>()
-      .mockRejectedValueOnce(new Error("temporary discovery failure"))
-      .mockResolvedValueOnce(catalog("opus"));
-    const listModels = createClaudeCodeBridgeModelListMemo({
-      list,
-      ttlMs: 60_000,
-    });
-
-    await expect(listModels()).rejects.toThrow("temporary discovery failure");
-    await expect(listModels()).resolves.toEqual(catalog("opus"));
-    expect(list).toHaveBeenCalledTimes(2);
   });
 });

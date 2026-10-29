@@ -2,7 +2,7 @@ import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import {
   closeAutomationRun,
-  disableAutomationsForDeletedThread,
+  disableAutomationsForTargetThread,
   getAutomation,
   listRunningAutomationRuns,
   listRunningAutomationRunsByThread,
@@ -14,8 +14,16 @@ import {
   type Db,
 } from "./data.js";
 import { publishAutomationChange } from "./realtime.js";
-import { executeStoredScript, mapScriptResultToRun } from "./script-runner.js";
+import {
+  executeStoredScript,
+  mapScriptResultToRun,
+  type ScriptRunScope,
+} from "./script-runner.js";
 import type { AutomationExecution } from "./rpc-types.js";
+import type {
+  ProjectsSdk,
+  ScriptWorkingDirectoryResolver,
+} from "./working-directory.js";
 
 type RunFailureHandler = (error: unknown) => void;
 type AgentThreadsSdk = {
@@ -29,8 +37,11 @@ type AgentThreadsSdk = {
     args: Parameters<BbPluginApi["sdk"]["threads"]["spawn"]>[0],
   ): Promise<unknown>;
 };
-type AgentRunApi = Pick<BbPluginApi, "realtime" | "log"> & {
+export type AgentRunApi = Pick<BbPluginApi, "realtime" | "log"> & {
   sdk: { threads: AgentThreadsSdk };
+};
+export type ScriptRunApi = Pick<BbPluginApi, "realtime" | "log"> & {
+  sdk: { projects: ProjectsSdk };
 };
 
 const sdkThreadSchema = z
@@ -66,7 +77,7 @@ function isThreadGoneError(error: unknown): boolean {
   return threadGoneErrorSchema.safeParse(error).success;
 }
 
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -82,12 +93,20 @@ function renderAutomationDueMessage(args: {
   return `[bb automation due:${args.automationId}]\n\n${args.prompt}`;
 }
 
-function isThreadReusable(thread: SdkThread): boolean {
-  return (
-    thread.deletedAt === null &&
-    thread.archivedAt === null &&
-    (thread.status === "idle" || thread.status === "active")
-  );
+function unusableThreadReason(thread: SdkThread): string | null {
+  if (thread.deletedAt !== null) return "was deleted";
+  if (thread.archivedAt !== null) return "was archived";
+  switch (thread.status) {
+    case "idle":
+    case "active":
+      return null;
+    case "error":
+      return "is in an error state";
+    case "pending":
+    case "starting":
+    case "stopping":
+      return `is ${thread.status}`;
+  }
 }
 
 interface AgentRunArgs {
@@ -114,7 +133,10 @@ export async function executeAgentRun(
       await bb.sdk.threads.spawn({
         projectId: args.automation.projectId,
         environment: args.execution.environment,
-        prompt: args.execution.prompt,
+        prompt: renderAutomationDueMessage({
+          automationId: args.automation.id,
+          prompt: args.execution.prompt,
+        }),
         title: args.automation.name,
         providerId: args.execution.providerId,
         model: args.execution.model,
@@ -185,15 +207,16 @@ async function reuseTargetThreadForRun(
     if (!isThreadGoneError(error)) throw error;
     closeRunForUnusableTargetThread(bb, db, {
       ...args,
-      detail: errorMessage(error),
+      reason: "no longer exists",
     });
     return;
   }
 
-  if (!isThreadReusable(thread)) {
+  const unusableReason = unusableThreadReason(thread);
+  if (unusableReason !== null) {
     closeRunForUnusableTargetThread(bb, db, {
       ...args,
-      detail: "missing, deleted, archived, or not runnable",
+      reason: unusableReason,
     });
     return;
   }
@@ -228,35 +251,47 @@ async function reuseTargetThreadForRun(
 function closeRunForUnusableTargetThread(
   bb: Pick<BbPluginApi, "log">,
   db: Db,
-  args: AgentRunArgs & { targetThreadId: string; detail: string },
+  args: AgentRunArgs & { targetThreadId: string; reason: string },
 ): void {
   const now = Date.now();
-  disableAutomationsForDeletedThread(db, {
+  const error = `Target thread ${args.targetThreadId} ${args.reason}`;
+  disableAutomationsForTargetThread(db, {
     threadId: args.targetThreadId,
+    error,
     now,
   });
   closeAutomationRun(db, {
     runId: args.run.id,
     status: "failed",
-    error: `Target thread ${args.targetThreadId} is unavailable: ${args.detail}`,
+    error,
     now,
   });
-  bb.log.error(
-    `Automation ${args.automation.id} target thread ${args.targetThreadId} is unavailable: ${args.detail}`,
-  );
+  bb.log.error(`Automation ${args.automation.id} paused: ${error}`);
 }
 
-export async function executeScriptRun(
-  bb: Pick<BbPluginApi, "realtime" | "log">,
+interface ScriptRunArgs {
+  pluginDataDir: string;
+  automation: AutomationRow;
+  run: AutomationRunRow;
+  execution: Extract<AutomationExecution, { mode: "script" }>;
+  onFailure: RunFailureHandler;
+  serverUrl: string;
+  resolveWorkingDirectory: ScriptWorkingDirectoryResolver;
+  scriptRuns: ScriptRunScope;
+}
+
+export function executeScriptRun(
+  bb: ScriptRunApi,
   db: Db,
-  args: {
-    pluginDataDir: string;
-    automation: AutomationRow;
-    run: AutomationRunRow;
-    execution: Extract<AutomationExecution, { mode: "script" }>;
-    onFailure: RunFailureHandler;
-    serverUrl: string;
-  },
+  args: ScriptRunArgs,
+): Promise<void> {
+  return args.scriptRuns.track(runScript(bb, db, args));
+}
+
+async function runScript(
+  bb: ScriptRunApi,
+  db: Db,
+  args: ScriptRunArgs,
 ): Promise<void> {
   try {
     const scriptFile = args.execution.scriptFile;
@@ -269,6 +304,15 @@ export async function executeScriptRun(
       });
       return;
     }
+    const workingDir = await args.resolveWorkingDirectory(
+      args.automation.projectId,
+      args.execution.workingDirectory,
+    );
+    if (workingDir === null) {
+      throw new Error(
+        `Project ${args.automation.projectId} has no source on the bb server host`,
+      );
+    }
     const result = await executeStoredScript({
       pluginDataDir: args.pluginDataDir,
       automationId: args.automation.id,
@@ -279,6 +323,8 @@ export async function executeScriptRun(
       timeoutMs: args.execution.timeoutMs,
       env: args.execution.env,
       serverUrl: args.serverUrl,
+      workingDir,
+      signal: args.scriptRuns.signal,
     });
     const mapped = mapScriptResultToRun(result);
     closeAutomationRun(db, {
@@ -421,9 +467,6 @@ async function reconcileOutcome(
         status: "failed",
         error: "Turn failed while the automations plugin was not running",
       };
-    // Still going somewhere: leave the run marked running and re-check later.
-    // `pending` belongs here — the thread's first dispatch is queued, not
-    // failed, so the run has neither succeeded nor finished.
     case "pending":
     case "starting":
     case "active":
@@ -437,8 +480,9 @@ export function disableAutomationsForDeletedThreadEvent(
   db: Db,
   threadId: string,
 ): void {
-  const disabled = disableAutomationsForDeletedThread(db, {
+  const disabled = disableAutomationsForTargetThread(db, {
     threadId,
+    error: `Target thread ${threadId} was deleted`,
     now: Date.now(),
   });
   for (const automation of disabled) {

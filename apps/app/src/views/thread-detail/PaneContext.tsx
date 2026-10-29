@@ -8,12 +8,9 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
-import { useNavigate } from "react-router-dom";
-import {
-  getThreadRoutePath,
-  type ThreadRoutePathArgs,
-} from "@/lib/route-paths";
+import type { ThreadRoutePathArgs } from "@/lib/route-paths";
 import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
+import type { SecondaryPanelWidthPercentAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import type { SplitSide } from "@/lib/split-layout";
 
 export interface PaneContextValue {
@@ -41,6 +38,7 @@ export interface PaneSecondaryPanelViewModel {
   panel: ReactNode;
   onToggle: () => void;
   transitionsReady: boolean;
+  widthPercentAtom: SecondaryPanelWidthPercentAtom;
 }
 
 export interface PaneSecondaryPanelRegistration {
@@ -135,26 +133,25 @@ export function useOptionalPaneContext(): PaneContextValue | null {
 
 interface DefaultPaneContextProviderProps {
   children: ReactNode;
+  paneId: string;
+  onRequestClose: (() => void) | null;
+  navigateInPane: (thread: ThreadRoutePathArgs) => void;
 }
 
 export function DefaultPaneContextProvider({
   children,
+  paneId,
+  onRequestClose,
+  navigateInPane,
 }: DefaultPaneContextProviderProps) {
-  const navigate = useNavigate();
-  const navigateInPane = useCallback(
-    (thread: ThreadRoutePathArgs) => {
-      navigate(getThreadRoutePath(thread));
-    },
-    [navigate],
-  );
   const value = useMemo<PaneContextValue>(
     () => ({
-      paneId: "main",
+      paneId,
       isFocused: true,
       isSplitPane: false,
       secondaryPanelHost: null,
       reservesWindowPanelToggle: false,
-      onRequestClose: null,
+      onRequestClose,
       isMaximized: false,
       onToggleMaximize: null,
       isBoundedPane: false,
@@ -162,7 +159,7 @@ export function DefaultPaneContextProvider({
       ownsWindowTopLeft: true,
       navigateInPane,
     }),
-    [navigateInPane],
+    [navigateInPane, onRequestClose, paneId],
   );
 
   return <PaneContext.Provider value={value}>{children}</PaneContext.Provider>;

@@ -1,9 +1,21 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { normalizeProjectPathInput } from "@bb/domain";
 import type { HostDirectoryListing } from "@bb/server-contract";
 import { Button } from "@bb/shared-ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@bb/shared-ui/dropdown-menu";
 import { EmptyState } from "@bb/shared-ui/empty-state";
 import { Icon } from "@bb/shared-ui/icon";
 import { usePointerCoarse } from "@bb/shared-ui/hooks/use-pointer-coarse";
@@ -60,6 +72,7 @@ const DIRECTORY_ENTRY_ROW_HEIGHT_PX = 28;
 const DIRECTORY_ENTRY_OVERSCAN_ROWS = 10;
 
 const NO_ENTRIES: HostDirectoryListing["entries"] = [];
+const NO_ROOTS: HostDirectoryListing["roots"] = [];
 
 interface RemotePathBrowserProps {
   hostId: string;
@@ -95,14 +108,35 @@ export function RemotePathBrowser({
   const crumbs = directory ? toBreadcrumb(directory) : [];
 
   const entries = data?.entries ?? NO_ENTRIES;
+  const roots = data?.roots ?? NO_ROOTS;
   const scrollRef = useRef<HTMLDivElement>(null);
+  const getScrollElement = useCallback(() => scrollRef.current, []);
+  const estimateEntrySize = useCallback(
+    () => DIRECTORY_ENTRY_ROW_HEIGHT_PX,
+    [],
+  );
+  const getEntryKey = useCallback(
+    (index: number) => entries[index]?.path ?? index,
+    [entries],
+  );
   const entryVirtualizer = useVirtualizer({
     count: entries.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => DIRECTORY_ENTRY_ROW_HEIGHT_PX,
-    getItemKey: (index) => entries[index]?.path ?? index,
+    getScrollElement,
+    estimateSize: estimateEntrySize,
+    getItemKey: getEntryKey,
     overscan: DIRECTORY_ENTRY_OVERSCAN_ROWS,
   });
+
+  const cancelCreatingFolder = () => {
+    setIsCreatingFolder(false);
+    setNewFolderError(null);
+  };
+
+  const navigateTo = (path: string) => {
+    cancelCreatingFolder();
+    entryVirtualizer.scrollToOffset(0);
+    setCurrentPath(path);
+  };
 
   const startCreatingFolder = () => {
     if (
@@ -118,16 +152,6 @@ export function RemotePathBrowser({
     setNewFolderName("");
     setNewFolderError(null);
     setIsCreatingFolder(true);
-  };
-
-  const cancelCreatingFolder = () => {
-    setIsCreatingFolder(false);
-    setNewFolderError(null);
-  };
-
-  const navigateTo = (path: string) => {
-    cancelCreatingFolder();
-    setCurrentPath(path);
   };
 
   const createFolder = useMutation({
@@ -349,18 +373,56 @@ export function RemotePathBrowser({
                       className="size-3 shrink-0 opacity-50"
                     />
                   ) : null}
-                  <button
-                    type="button"
-                    disabled={interactionDisabled}
-                    className={cn(
-                      "rounded px-1 py-0.5 hover:bg-muted hover:text-foreground",
-                      index === crumbs.length - 1 &&
-                        "font-medium text-foreground",
-                    )}
-                    onClick={() => navigateTo(crumb.path)}
-                  >
-                    {crumb.label}
-                  </button>
+                  {index === 0 && roots.length > 1 ? (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger
+                        asChild
+                        disabled={interactionDisabled}
+                      >
+                        <button
+                          type="button"
+                          className={cn(
+                            "flex items-center gap-0.5 rounded px-1 py-0.5 hover:bg-muted hover:text-foreground",
+                            crumbs.length === 1 &&
+                              "font-medium text-foreground",
+                          )}
+                        >
+                          {crumb.label}
+                          <Icon
+                            name="ChevronDown"
+                            className="size-3 shrink-0 opacity-50"
+                          />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent
+                        align="start"
+                        mobileTitle="Drive"
+                        className="max-h-72 overflow-y-auto"
+                      >
+                        {roots.map((root) => (
+                          <DropdownMenuItem
+                            key={root}
+                            onSelect={() => navigateTo(root)}
+                          >
+                            {root}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={interactionDisabled}
+                      className={cn(
+                        "rounded px-1 py-0.5 hover:bg-muted hover:text-foreground",
+                        index === crumbs.length - 1 &&
+                          "font-medium text-foreground",
+                      )}
+                      onClick={() => navigateTo(crumb.path)}
+                    >
+                      {crumb.label}
+                    </button>
+                  )}
                 </span>
               ))}
             </div>
@@ -405,7 +467,6 @@ export function RemotePathBrowser({
             aria-label="Create new folder"
             className="mb-1 flex flex-col gap-1"
           >
-            {}
             <div className="flex items-center gap-2 px-2">
               <Icon
                 name="Folder"

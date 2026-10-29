@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { PluginCliError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import type { MemoryKind, MemoryScope, ReadScope } from "./server.js";
 
 export const CANDIDATE_STATUSES = ["pending", "approved", "rejected"] as const;
@@ -80,7 +80,7 @@ interface CandidateStoreDependencies<TMemory extends { id: string }> {
   isUniqueConstraintError(error: unknown): boolean;
 }
 
-export class CandidateStoreError extends Error {}
+export class CandidateStoreError extends PluginCliError {}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

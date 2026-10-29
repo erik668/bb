@@ -1,13 +1,14 @@
+import { registerCodexAiService } from "./src/ai-service.js";
+import { registerAsyncQuestions } from "./src/async-questions.js";
+import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
 import { codexExtensionKinds } from "./src/extension-kinds.js";
 import { CODEX_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
 
 export default function plugin(bb: BbPluginApi) {
-  bb.experimental_aiServices.register({
-    id: "codex",
-    displayName: "Codex (ChatGPT account or API key)",
-    kinds: ["inference", "voice"],
-  });
+  registerUsageSource(bb);
+  registerCodexAiService(bb);
+  registerAsyncQuestions(bb);
 
   bb.settings.define({
     memoryEnabled: {
@@ -39,9 +40,6 @@ export default function plugin(bb: BbPluginApi) {
     models: { scope: "host" },
     ...CODEX_NATIVE_ROOTS_DECLARATION,
     maintenance: { health: true, usage: true, installation: true },
-    env: {
-      passthrough: ["BB_CODEX_MAINTENANCE_POLICY", "BB_BOOTSTRAP_PHASE"],
-    },
     capabilities: {
       supportsServiceTier: true,
       supportsNativeUserQuestion: false,
@@ -50,9 +48,18 @@ export default function plugin(bb: BbPluginApi) {
       supportsThreadArchive: true,
       supportsThreadRename: true,
       permissionModes: ["accept-edits", "auto", "full"],
-      reasoningLevels: ["low", "medium", "high", "xhigh", "max", "ultra"],
+      reasoningLevels: [
+        "none",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max",
+        "ultra",
+      ],
     },
     reasoningLevels: [
+      { id: "none", label: "None" },
       { id: "low", label: "Low" },
       { id: "medium", label: "Medium" },
       { id: "high", label: "High" },
@@ -67,6 +74,11 @@ export default function plugin(bb: BbPluginApi) {
     serviceTiers: [
       { id: "default", label: "Default" },
       { id: "fast", label: "Fast" },
+      {
+        id: "ultrafast",
+        label: "Ultrafast",
+        experimental_icon: "provider-codex/ultrafast",
+      },
     ],
     composerActions: ["plan", "goal"],
     deriveProviderOptions(context) {

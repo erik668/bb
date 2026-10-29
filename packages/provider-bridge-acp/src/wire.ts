@@ -217,35 +217,6 @@ export const acpSessionNotificationParamsSchema = z
   })
   .passthrough();
 
-export const ACP_PROTOCOL_VERSION = 1;
-
-export const acpInitializeResultSchema = z
-  .object({
-    protocolVersion: z.number(),
-    agentCapabilities: z
-      .object({
-        loadSession: z.boolean().optional(),
-        sessionCapabilities: z
-          .object({
-            fork: z.object({}).passthrough().nullable().optional(),
-          })
-          .passthrough()
-          .optional(),
-        promptCapabilities: z
-          .object({
-            image: z.boolean().optional(),
-            audio: z.boolean().optional(),
-            embeddedContext: z.boolean().optional(),
-          })
-          .passthrough()
-          .optional(),
-      })
-      .passthrough()
-      .optional(),
-    authMethods: z.array(z.object({ id: z.string() }).passthrough()).optional(),
-  })
-  .passthrough();
-
 const acpOptionalString = z
   .union([z.string(), z.null()])
   .transform((value) => value ?? undefined)
@@ -297,6 +268,30 @@ const acpLooseConfigOptionSchema = z
   })
   .passthrough();
 
+const acpConfigOptionSelectGroupSchema = z
+  .object({
+    group: z.string(),
+    options: z.array(z.unknown()),
+  })
+  .passthrough();
+
+function flattenAcpConfigOptionGroups(option: unknown): unknown {
+  if (typeof option !== "object" || option === null) {
+    return option;
+  }
+  const { options } = option as { options?: unknown };
+  if (!Array.isArray(options)) {
+    return option;
+  }
+  return {
+    ...option,
+    options: options.flatMap((entry) => {
+      const group = acpConfigOptionSelectGroupSchema.safeParse(entry);
+      return group.success ? group.data.options : [entry];
+    }),
+  };
+}
+
 function parseAcpConfigOptions(
   options: unknown[] | null | undefined,
   ctx: z.RefinementCtx,
@@ -305,7 +300,8 @@ function parseAcpConfigOptions(
     return undefined;
   }
   const parsedOptions: AcpConfigOption[] = [];
-  for (const option of options) {
+  for (const rawOption of options) {
+    const option = flattenAcpConfigOptionGroups(rawOption);
     const loose = acpLooseConfigOptionSchema.safeParse(option);
     if (!loose.success) {
       continue;
@@ -379,13 +375,7 @@ export const acpSessionForkResultSchema = acpConfigStateResultSchema.extend({
   sessionId: z.string(),
 });
 
-export const acpStopReasonSchema = z.enum([
-  "end_turn",
-  "max_tokens",
-  "max_turn_requests",
-  "refusal",
-  "cancelled",
-]);
+export const acpStopReasonSchema = z.string();
 export type AcpStopReason = z.infer<typeof acpStopReasonSchema>;
 
 export const acpPromptResultSchema = z

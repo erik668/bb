@@ -1,19 +1,29 @@
+import { countUnarchivedThreadDescendants } from "../../services/threads/thread-archive.js";
+import { listThreadCascades } from "../../services/threads/thread-cascade.js";
+import { cancelAbandonedProviderCreations } from "../../services/threads/thread-environment-providers.js";
 import {
   THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT,
   THREAD_SEARCH_LIMIT_PER_GROUP_MAX,
   countNonDeletedAssignedChildThreads,
   countThreads,
   getEnvironment,
+  getHost,
+  getThread,
   getThreadSectionById,
   listThreadMentionRowsByIds,
   listThreadsWithPendingInteractionState,
   markThreadDeleted,
+  listThreadDeletionTree,
+  listPluginThreadMetadata,
+  listThreadAncestors,
+  listThreadDescendants,
   searchThreadsWithPendingInteractionState,
   updateThread,
   type ThreadSearchResultGroup as DbThreadSearchResultGroup,
   type UpdateThreadInput,
 } from "@bb/db";
 import type { Environment, Thread, ThreadListEntry } from "@bb/domain";
+import { toEnvironmentResponse } from "../../services/environments/environment-response.js";
 import {
   threadIncludeOptionSchema,
   THREAD_COUNT_ROOT_PARENT,
@@ -23,20 +33,24 @@ import {
   type ThreadIncludeOption,
   type ThreadChildSummaryResponse,
   type ThreadCountResponse,
+  type PluginThreadMetadataListResponse,
+  type ThreadAncestorsListResponse,
+  type ThreadDescendantsListResponse,
+  type ThreadCascadeListResponse,
   type ThreadRunningResponse,
   type ThreadSearchResponse,
   type ThreadWithIncludesResponse,
   type PublicApiSchema,
   type ResolveThreadMentionsResponse,
+  parseThreadListThreadIds,
 } from "@bb/server-contract";
 import type { Hono } from "hono";
 import type { AppDeps } from "../../types.js";
 import { ApiError } from "../../errors.js";
-import { parseOptionalInteger } from "../../services/lib/validation.js";
 import {
-  requestEnvironmentCleanup,
-  requestEnvironmentCleanupAdvance,
-} from "../../services/environments/environment-cleanup-internal.js";
+  parseInteger,
+  parsePaginationQuery,
+} from "../../services/lib/validation.js";
 import {
   getNonDestroyedHostWithStatus,
   requireEnvironment,
@@ -45,18 +59,8 @@ import {
 } from "../../services/lib/entity-lookup.js";
 import { listRunningThreadsWithIntendedHosts } from "../../services/threads/dispatch-attempt.js";
 import { dispatchThreadRenameCommand } from "../../services/threads/thread-commands.js";
-import {
-  finalizeStoppedThread,
-  requestActiveRuntimeThreadStopIfNeeded,
-} from "../../services/threads/thread-lifecycle.js";
+import { requestThreadStorageDeletion } from "../../services/threads/thread-lifecycle.js";
 import { createThreadFromRequest } from "../../services/threads/thread-create.js";
-import { inspectProjectThreadSource } from "../../services/threads/source-provisioning.js";
-import {
-  registerThreadSupervisor,
-  readThreadSupervisorInbox,
-  peekThreadSupervisorInbox,
-  notifyThreadSupervisor,
-} from "../../services/threads/thread-supervision.js";
 import { createThreadForkFromRequest } from "../../services/threads/thread-fork.js";
 import { requireChildThreadsConfirmation } from "../../services/threads/child-thread-confirmation.js";
 import {
@@ -66,6 +70,7 @@ import {
 import { assertValidParentThread } from "../../services/threads/thread-parent.js";
 import { handleThreadOwnershipChange } from "../../services/threads/thread-ownership.js";
 import { applyThreadExecutionOverride } from "../../services/threads/thread-execution-override.js";
+import { applyThreadSessionOptionPatch } from "../../services/threads/thread-session-options.js";
 import { emitPluginThreadDeleted } from "../../services/plugins/plugin-thread-events.js";
 
 function parseThreadIncludes(query: ThreadGetQuery): Set<ThreadIncludeOption> {
@@ -102,7 +107,10 @@ function resolveIncludedThreadEnvironment(
   if (thread.environmentId === null) {
     return null;
   }
-  return getEnvironment(deps.db, thread.environmentId);
+  const environment = getEnvironment(deps.db, thread.environmentId);
+  return environment === null
+    ? null
+    : toEnvironmentResponse(deps.db, environment);
 }
 
 function buildThreadResponse(
@@ -127,6 +135,9 @@ function buildThreadResponse(
   if (args.includes.has("host")) {
     response.host = environment
       ? getNonDestroyedHostWithStatus(deps, environment.hostId)
+      : null;
+    response.environmentHostName = environment
+      ? (getHost(deps.db, environment.hostId)?.name ?? null)
       : null;
   }
   return response;
@@ -154,10 +165,7 @@ function parseSearchLimitPerGroup(value: string | undefined): number {
   const limit =
     value === undefined
       ? THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT
-      : parseOptionalInteger(value, "limitPerGroup");
-  if (limit === undefined) {
-    return THREAD_SEARCH_LIMIT_PER_GROUP_DEFAULT;
-  }
+      : parseInteger(value, "limitPerGroup");
   if (limit <= 0) {
     throw new ApiError(
       400,
@@ -222,21 +230,6 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
   const routes = publicApiRoutes.threads;
-  post(routes.inspectSource, async (context, payload) =>
-    context.json(await inspectProjectThreadSource(deps, payload)),
-  );
-  post(routes.registerSupervisor, (context, payload) =>
-    context.json(registerThreadSupervisor(deps, payload)),
-  );
-  post(routes.supervisorPeek, (context, payload) =>
-    context.json(peekThreadSupervisorInbox(deps, payload)),
-  );
-  post(routes.supervisorInbox, async (context, payload) =>
-    context.json(await readThreadSupervisorInbox(deps, payload)),
-  );
-  post(routes.notifySupervisor, async (context, payload) =>
-    context.json(await notifyThreadSupervisor(deps, payload)),
-  );
 
   get(routes.count, (context, query) => {
     if (query.projectId) {
@@ -271,6 +264,41 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     return context.json(response);
   });
 
+  post(routes.ancestors, (context, payload) => {
+    return context.json({
+      threads: listThreadAncestors(deps.db, payload.threadIds),
+    } satisfies ThreadAncestorsListResponse);
+  });
+
+  post(routes.descendants, (context, payload) => {
+    return context.json({
+      threads: listThreadDescendants(deps.db, payload.threadIds, {
+        includeArchived: payload.includeArchived ?? false,
+        includeHidden: payload.includeHidden ?? false,
+      }),
+    } satisfies ThreadDescendantsListResponse);
+  });
+
+  post(routes.cascade, (context, payload) => {
+    return context.json({
+      threads: listThreadCascades(deps.db, payload.threadIds, payload.action),
+    } satisfies ThreadCascadeListResponse);
+  });
+
+  post(routes.pluginMetadata.list, (context, payload) => {
+    const { threads, corruptThreadIds } = listPluginThreadMetadata(
+      deps.db,
+      payload.pluginId,
+      payload.threadIds,
+    );
+    for (const threadId of corruptThreadIds) {
+      deps.logger.warn(
+        `Ignoring corrupt plugin metadata for thread ${threadId}, plugin ${payload.pluginId}`,
+      );
+    }
+    return context.json({ threads } satisfies PluginThreadMetadataListResponse);
+  });
+
   get(routes.running, (context) => {
     return context.json(
       listRunningThreadsWithIntendedHosts(deps) satisfies ThreadRunningResponse,
@@ -278,14 +306,10 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
   });
 
   get(routes.list, (context, query) => {
-    const limit = parseOptionalInteger(query.limit, "limit");
-    if (limit !== undefined && limit <= 0) {
-      throw new ApiError(400, "invalid_request", "limit must be positive");
-    }
-    const offset = parseOptionalInteger(query.offset, "offset");
-    if (offset !== undefined && offset < 0) {
-      throw new ApiError(400, "invalid_request", "offset must be non-negative");
-    }
+    const { limit, offset } = parsePaginationQuery({
+      limit: query.limit,
+      offset: query.offset,
+    });
     if (query.projectId) {
       requirePublicProject(deps.db, query.projectId);
     }
@@ -301,12 +325,17 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     }
     const threads = listThreadsWithPendingInteractionState(deps.db, {
       ...(query.projectId ? { projectId: query.projectId } : {}),
+      ...(query.environmentId ? { environmentId: query.environmentId } : {}),
+      ...(query.hostId ? { hostId: query.hostId } : {}),
       ...(query.parentThreadId ? { parentThreadId: query.parentThreadId } : {}),
       ...(query.sourceThreadId ? { sourceThreadId: query.sourceThreadId } : {}),
       ...(query.sectionId ? { sectionId: query.sectionId } : {}),
       ...(query.unsectioned === "true" ? { unsectioned: true } : {}),
       ...(query.originKind ? { originKind: query.originKind } : {}),
       ...(query.originPluginId ? { originPluginId: query.originPluginId } : {}),
+      ...(query.threadIds === undefined
+        ? {}
+        : { threadIds: parseThreadListThreadIds(query.threadIds) }),
       includeHidden: query.includeHidden === "true",
       archived:
         query.archived === undefined ? undefined : query.archived === "true",
@@ -390,18 +419,22 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
     );
   });
 
-  function getThreadChildSummary(threadId: string): ThreadChildSummaryResponse {
+  function getThreadChildSummary(thread: Thread): ThreadChildSummaryResponse {
     const nonDeletedChildCount = countNonDeletedAssignedChildThreads(deps.db, {
-      parentThreadId: threadId,
+      parentThreadId: thread.id,
     });
     return {
       nonDeletedChildCount,
+      unarchivedDescendantCount: countUnarchivedThreadDescendants(
+        deps.db,
+        thread,
+      ),
     };
   }
 
   get(routes.childSummary, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    return context.json(getThreadChildSummary(thread.id));
+    return context.json(getThreadChildSummary(thread));
   });
 
   patch(routes.update, async (context, payload) => {
@@ -425,6 +458,13 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       });
     }
 
+    if (payload.sessionOptions !== undefined) {
+      applyThreadSessionOptionPatch(deps, {
+        thread,
+        patch: payload.sessionOptions,
+      });
+    }
+
     const metadataUpdate: UpdateThreadInput = {};
     if ("title" in payload) {
       metadataUpdate.title = payload.title;
@@ -435,12 +475,21 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
         requireThreadSection(deps, sectionId);
       }
       metadataUpdate.sectionId = sectionId;
+    } else if (
+      payload.parentThreadId === null &&
+      thread.parentThreadId !== null
+    ) {
+      metadataUpdate.sectionId =
+        getThread(deps.db, thread.parentThreadId)?.sectionId ?? null;
     }
     if ("parentThreadId" in payload) {
       metadataUpdate.parentThreadId = payload.parentThreadId;
     }
     if ("visibility" in payload) {
       metadataUpdate.visibility = payload.visibility;
+    }
+    if ("parentNotifications" in payload) {
+      metadataUpdate.parentNotifications = payload.parentNotifications;
     }
     const updated =
       Object.keys(metadataUpdate).length > 0
@@ -490,29 +539,24 @@ export function registerThreadBaseRoutes(app: Hono, deps: AppDeps): void {
       deps,
       thread,
     });
-    const deletedThread = markThreadDeleted(deps.db, deps.hub, {
-      threadId: thread.id,
-    });
-    if (deletedThread) emitPluginThreadDeleted(deletedThread);
-    deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
-    if (thread.environmentId === null) {
-      finalizeStoppedThread(deps, {
-        threadId: thread.id,
+    const dependents = listThreadDeletionTree(deps.db, thread.id);
+    markThreadDeleted(deps.db, deps.hub, { threadId: thread.id });
+    for (const dependent of dependents) {
+      const deleted = getThread(deps.db, dependent.id);
+      if (!deleted) continue;
+      if (dependent.deletedAt === null) emitPluginThreadDeleted(deleted);
+      cancelAbandonedProviderCreations(deps, deleted.id);
+      deps.terminalSessions.closeDeletedThreadTerminals({
+        threadId: deleted.id,
       });
-      return context.json({ ok: true });
+      requestThreadStorageDeletion(
+        deps,
+        deleted,
+        deleted.environmentId === null
+          ? null
+          : getEnvironment(deps.db, deleted.environmentId),
+      );
     }
-
-    const environment = requireEnvironment(deps.db, thread.environmentId);
-    requestActiveRuntimeThreadStopIfNeeded(deps, thread, environment);
-    finalizeStoppedThread(deps, {
-      threadId: thread.id,
-    });
-    requestEnvironmentCleanup(deps, {
-      environmentId: environment.id,
-    });
-    requestEnvironmentCleanupAdvance(deps, {
-      environmentId: environment.id,
-    });
     return context.json({ ok: true });
   });
 }

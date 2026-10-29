@@ -19,33 +19,6 @@ async function importFreshLogger() {
   return import("../src/index.js");
 }
 
-async function importFreshLoggerWithPinoTransportSpy() {
-  vi.resetModules();
-
-  const actual = await vi.importActual<{ default: typeof import("pino") }>(
-    "pino",
-  );
-  const transportSpy = vi.fn(actual.default.transport);
-  const mockedPino = Object.assign(
-    ((...args: Parameters<typeof actual.default>) =>
-      actual.default(...args)) as typeof actual.default,
-    actual.default,
-    {
-      transport: transportSpy,
-    },
-  );
-
-  vi.doMock("pino", () => ({
-    default: mockedPino,
-  }));
-
-  const loggerModule = await import("../src/index.js");
-  return {
-    ...loggerModule,
-    transportSpy,
-  };
-}
-
 interface SubprocessLoggerResult {
   exitCode: number | null;
   stderr: string;
@@ -56,6 +29,7 @@ async function runLoggerInSubprocess(args: {
   dataDir: string;
   component: string;
   message: string;
+  stdoutFd?: number;
   timestampMs: number;
   timezone: string;
 }): Promise<SubprocessLoggerResult> {
@@ -88,18 +62,18 @@ async function runLoggerInSubprocess(args: {
       ["--conditions=source", "--import", "tsx", "-e", script],
       {
         env: childEnv,
-        stdio: ["ignore", "pipe", "pipe"],
+        stdio: ["ignore", args.stdoutFd ?? "pipe", "pipe"],
       },
     );
 
     let stdout = "";
     let stderr = "";
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
+    child.stdout?.setEncoding("utf8");
+    child.stderr?.setEncoding("utf8");
+    child.stdout?.on("data", (chunk: string) => {
       stdout += chunk;
     });
-    child.stderr.on("data", (chunk: string) => {
+    child.stderr?.on("data", (chunk: string) => {
       stderr += chunk;
     });
     child.once("error", reject);
@@ -163,7 +137,6 @@ function readComponentLogLines(
 }
 
 afterEach(() => {
-  vi.doUnmock("pino");
   vi.resetModules();
   vi.restoreAllMocks();
   vi.unstubAllEnvs();
@@ -177,49 +150,6 @@ afterAll(async () => {
 });
 
 describe("createLogger", () => {
-  it("writes structured JSON to the component log file", async () => {
-    const dataDir = createTempDir();
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("BB_DATA_DIR", dataDir);
-
-    const { createLogger } = await importFreshLogger();
-    const logger = createLogger({ component: "server" });
-    const logDir = path.join(dataDir, "logs");
-
-    logger.info({ requestId: "req_1" }, "booted");
-    await waitFor(() => readComponentLogLines(logDir, "server").length === 1);
-
-    const entries = readComponentLogLines(logDir, "server");
-    expect(entries[0]).toMatchObject({
-      component: "server",
-      level: 30,
-      msg: "booted",
-      requestId: "req_1",
-    });
-  });
-
-  it("keeps parent context on child loggers", async () => {
-    const dataDir = createTempDir();
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("BB_DATA_DIR", dataDir);
-
-    const { createLogger } = await importFreshLogger();
-    const logger = createLogger({ component: "host-daemon" });
-    const logDir = path.join(dataDir, "logs");
-
-    logger.child({ threadId: "thr_123" }).info("turn started");
-    await waitFor(
-      () => readComponentLogLines(logDir, "host-daemon").length === 1,
-    );
-
-    const entries = readComponentLogLines(logDir, "host-daemon");
-    expect(entries[0]).toMatchObject({
-      component: "host-daemon",
-      threadId: "thr_123",
-      msg: "turn started",
-    });
-  });
-
   it("rotates files when the active log exceeds the configured size", async () => {
     const dataDir = createTempDir();
     vi.stubEnv("NODE_ENV", "production");
@@ -239,6 +169,47 @@ describe("createLogger", () => {
     );
 
     expect(getComponentLogFiles(logDir, "server").length).toBeGreaterThan(1);
+  });
+
+  it("keeps the most recently written rotated files from earlier processes regardless of their numbers", async () => {
+    const dataDir = createTempDir();
+    const logDir = path.join(dataDir, "logs");
+    fs.mkdirSync(logDir, { recursive: true });
+    const hoursAgoByFile = {
+      "server.1.log": 1,
+      "server.104.log": 2,
+      "server.2.log": 3,
+      "server.3.log": 4,
+      "server.103.log": 5,
+      "server.100.log": 6,
+      "server.101.log": 7,
+      "server.102.log": 8,
+    };
+    for (const [entry, hoursAgo] of Object.entries(hoursAgoByFile)) {
+      const filePath = path.join(logDir, entry);
+      fs.writeFileSync(filePath, "");
+      const mtime = new Date(Date.now() - hoursAgo * 60 * 60 * 1000);
+      fs.utimesSync(filePath, mtime, mtime);
+    }
+    fs.writeFileSync(path.join(logDir, "server-stdio.log"), "capture");
+    fs.writeFileSync(path.join(logDir, "host-daemon.1.log"), "");
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("BB_DATA_DIR", dataDir);
+
+    const { createLogger } = await importFreshLogger();
+    createLogger({ component: "server" });
+
+    expect(getComponentLogFiles(logDir, "server")).toEqual([
+      "server.1.log",
+      "server.2.log",
+      "server.3.log",
+      "server.103.log",
+      "server.104.log",
+    ]);
+    expect(fs.readFileSync(path.join(logDir, "server-stdio.log"), "utf8")).toBe(
+      "capture",
+    );
+    expect(fs.existsSync(path.join(logDir, "host-daemon.1.log"))).toBe(true);
   });
 
   it("delivers log lines to both the file and the process stdout in worker mode", async () => {
@@ -269,32 +240,31 @@ describe("createLogger", () => {
     });
   });
 
-  it("uses a direct file destination when stream mode is requested", async () => {
+  it("keeps log lines out of stdout when stdout is a plain file", async () => {
     const dataDir = createTempDir();
-    vi.stubEnv("NODE_ENV", "production");
-    vi.stubEnv("BB_DATA_DIR", dataDir);
-
-    const { createLogger, transportSpy } =
-      await importFreshLoggerWithPinoTransportSpy();
-    const logger = createLogger({
-      component: "host-daemon",
-      transportMode: "stream",
-    });
     const logDir = path.join(dataDir, "logs");
+    const stdoutPath = path.join(dataDir, "server-stdio.log");
+    const message = `stdout-file-${Date.now()}`;
+    const stdoutFd = fs.openSync(stdoutPath, "a");
 
-    logger.info({ requestId: "req_2" }, "sandbox booted");
-    await waitFor(
-      () => readComponentLogLines(logDir, "host-daemon").length === 1,
-    );
+    try {
+      const result = await runLoggerInSubprocess({
+        component: "behavior-check",
+        dataDir,
+        message,
+        stdoutFd,
+        timestampMs: Date.parse("2026-08-08T02:53:23.000Z"),
+        timezone: "UTC",
+      });
+      expect(result.exitCode).toBe(0);
+    } finally {
+      fs.closeSync(stdoutFd);
+    }
 
-    expect(transportSpy).not.toHaveBeenCalled();
-    const entries = readComponentLogLines(logDir, "host-daemon");
-    expect(entries[0]).toMatchObject({
-      component: "host-daemon",
-      level: 30,
-      msg: "sandbox booted",
-      requestId: "req_2",
-    });
+    expect(fs.readFileSync(stdoutPath, "utf8")).toBe("");
+    expect(readComponentLogLines(logDir, "behavior-check")).toMatchObject([
+      { msg: message },
+    ]);
   });
 
   it("uses an explicit data directory when provided", async () => {
@@ -307,7 +277,6 @@ describe("createLogger", () => {
     const logger = createLogger({
       component: "host-daemon",
       dataDir: explicitDataDir,
-      transportMode: "stream",
     });
 
     logger.info({ requestId: "req_explicit" }, "explicit data dir");

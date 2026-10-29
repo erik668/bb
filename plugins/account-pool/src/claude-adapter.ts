@@ -6,16 +6,22 @@ import {
 } from "./credentials.js";
 import type { ProviderAdapter } from "./provider-adapter.js";
 import {
+  fetchOAuthRefresh,
   filterRequestHeaders,
   mountedUpstreamUrl,
+  oauthSecretDueForRefresh,
+  parseOAuthRefreshResponse,
 } from "./provider-adapter.js";
-import { isQuotaRejection, quotaFromHeaders } from "./quota.js";
+import {
+  epochMilliseconds,
+  isQuotaRejection,
+  quotaFromHeaders,
+} from "./quota.js";
 import { parseRequestBody } from "./request-body.js";
 import { quotaFromUsage } from "./usage.js";
 
 const OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 const OAUTH_BETA = "oauth-2025-04-20";
-const REFRESH_WINDOW_MS = 5 * 60 * 1_000;
 const USAGE_REQUEST_TIMEOUT_MS = 10_000;
 const ALLOWED_REQUEST_HEADERS = new Set([
   "accept",
@@ -72,9 +78,15 @@ export function createClaudeAdapter(options: {
         },
       };
     },
-    modelFamily: (body) => parseRequestBody(body).family,
-    prepareBody: (body, account) =>
-      parseRequestBody(body).forAccount(account.accountUuid),
+    parseRequest(body) {
+      const parsed = parseRequestBody(body);
+      return {
+        family: parsed.family,
+        affinityId: parsed.affinityId,
+        parentAffinityId: parsed.parentAffinityId,
+        forAccount: (account) => parsed.forAccount(account.accountUuid),
+      };
+    },
     upstreamUrl: (request, settings) =>
       mountedUpstreamUrl(request, settings.anthropicUpstreamBaseUrl),
     requestHeaders(inbound, _account, secret) {
@@ -93,30 +105,16 @@ export function createClaudeAdapter(options: {
     quotaFromHeaders,
     isQuotaRejection,
     async refreshSecret(context) {
-      const secret = context.secret;
-      if (
-        secret.kind !== "oauth" ||
-        secret.expiresAt === null ||
-        secret.expiresAt > context.now() + REFRESH_WINDOW_MS
-      ) {
-        return { secret, refreshed: false };
-      }
-      const response = await context.fetch(options.refreshUrl, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          accept: "application/json",
-        },
-        body: JSON.stringify({
+      const secret = oauthSecretDueForRefresh(context);
+      if (secret === null) return { secret: context.secret, refreshed: false };
+      const parsed = parseOAuthRefreshResponse(
+        await fetchOAuthRefresh(context, options.refreshUrl, {
           grant_type: "refresh_token",
           refresh_token: secret.refreshToken,
           client_id: OAUTH_CLIENT_ID,
         }),
-      });
-      if (!response.ok) {
-        throw new Error(`OAuth refresh failed with HTTP ${response.status}.`);
-      }
-      const parsed = refreshResponseSchema.parse(await response.json());
+        refreshResponseSchema,
+      );
       const rawExpiresAt =
         parsed.expires_at ??
         (parsed.expires_in === undefined
@@ -126,10 +124,7 @@ export function createClaudeAdapter(options: {
         kind: "oauth",
         accessToken: parsed.access_token,
         refreshToken: parsed.refresh_token ?? secret.refreshToken,
-        expiresAt:
-          rawExpiresAt < 1_000_000_000_000
-            ? Math.round(rawExpiresAt * 1_000)
-            : Math.round(rawExpiresAt),
+        expiresAt: epochMilliseconds(rawExpiresAt),
         ...(secret.idToken === undefined ? {} : { idToken: secret.idToken }),
       };
       await context.accounts.writeSecret(context.account.id, refreshed);

@@ -3,6 +3,7 @@ import type { PluginProviderReasoningLevel } from "@get-bb/plugin-sdk";
 import { experimental_acpLaunchSpecSchema } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import type { AcpLaunchSpec } from "@get-bb/plugin-sdk/provider-bridge/acp";
 import type { AcpNativeRootsResolver } from "./native-roots/resolver.js";
+import { registryAgentIcon } from "./registry-icons.js";
 
 export const ACP_FAMILY = "acp";
 
@@ -31,6 +32,7 @@ export interface AcpAgentDefinition {
   providerUsage?: boolean;
   providerInstallation?: boolean;
   nativeRootsResolver?: AcpNativeRootsResolver;
+  modelCatalogScope?: "host" | "workspace";
 }
 
 const SLUG_PATTERN = /^[a-z0-9][a-z0-9-]*$/u;
@@ -53,6 +55,7 @@ export const customAcpAgentSchema = z
     nativeSkillRoots: launchSpecFields.nativeSkillRoots,
     permissionCli: launchSpecFields.permissionCli,
     supportsManualCompaction: z.boolean().default(false),
+    providerUsage: z.boolean().optional(),
   })
   .strict();
 export type CustomAcpAgent = z.infer<typeof customAcpAgentSchema>;
@@ -68,7 +71,7 @@ export function customAcpAgentDefinition(
   return {
     id: formatCustomAcpProviderId(agent.id),
     displayName: agent.displayName,
-    icon: CUSTOM_AGENT_GLYPH,
+    icon: registryAgentIcon(agent.id) ?? CUSTOM_AGENT_GLYPH,
     launch: {
       displayName: agent.displayName,
       command: agent.command,
@@ -87,10 +90,15 @@ export function customAcpAgentDefinition(
         ? {}
         : { permissionCli: agent.permissionCli }),
     },
+    ...(agent.providerUsage ? { providerUsage: true } : {}),
     ...(agent.dialect === undefined ? {} : { dialect: agent.dialect }),
     ...(shipped?.nativeRootsResolver === undefined
       ? {}
       : { nativeRootsResolver: shipped.nativeRootsResolver }),
+    ...(shipped?.modelCatalogScope === "workspace" ||
+    agent.dialect === "opencode"
+      ? { modelCatalogScope: "workspace" as const }
+      : {}),
     visibility: "always",
     fork: "none",
     supportsManualCompaction: agent.supportsManualCompaction,

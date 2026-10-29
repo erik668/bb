@@ -1,23 +1,16 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import { z } from "zod";
 import { handleLine } from "./bridge.js";
+import {
+  FULL_ACCESS_SESSION_OPTIONS,
+  stubFakeCodexAppServer,
+} from "./fake-codex-app-server-harness.js";
 
 const THREAD_ID = "thr_signature_1";
-
-const fakeAppServerPath = fileURLToPath(
-  new URL("./fake-codex-app-server.mjs", import.meta.url),
-);
-
-const sessionOptions = {
-  permissionMode: "full",
-  permissionScope: "full",
-  approvalReviewer: null,
-  permissionEscalation: null,
-} as const;
 
 const autoAskSessionOptions = {
   permissionMode: "auto",
@@ -34,17 +27,14 @@ const autoDenySessionOptions = {
 let harness: ReturnType<typeof createBridgeJsonRpcTestHarness>;
 let workspaceDir: string;
 let requestLogPath: string;
+let scriptPath: string;
 
 beforeEach(() => {
   workspaceDir = mkdtempSync(join(tmpdir(), "bb-codex-signature-ws-"));
   requestLogPath = join(workspaceDir, "requests.jsonl");
-  const scriptPath = join(workspaceDir, "script.json");
-  writeFileSync(scriptPath, JSON.stringify({ requestLogPath }), "utf8");
-  vi.stubEnv("BB_CODEX_BRIDGE_APP_SERVER_COMMAND", process.execPath);
-  vi.stubEnv(
-    "BB_CODEX_BRIDGE_APP_SERVER_ARGS",
-    JSON.stringify([fakeAppServerPath, scriptPath]),
-  );
+  scriptPath = join(workspaceDir, "script.json");
+  writeFileSync(scriptPath, JSON.stringify({ requestLogPath }));
+  stubFakeCodexAppServer(scriptPath);
   harness = createBridgeJsonRpcTestHarness(handleLine);
 });
 
@@ -67,18 +57,22 @@ it("keeps the constructed session for a turn whose options carry no envVars", as
     threadId: THREAD_ID,
     cwd: workspaceDir,
     instructionMode: "append",
-    options: { ...sessionOptions, envVars: { PATH: "/usr/bin:/bin" } },
+    options: {
+      ...FULL_ACCESS_SESSION_OPTIONS,
+      envVars: { PATH: "/usr/bin:/bin" },
+    },
   });
   const started = await harness.waitForResponse(1);
-  const providerThreadId = (started.result as { providerThreadId: string })
-    .providerThreadId;
+  const { providerThreadId } = z
+    .object({ providerThreadId: z.string() })
+    .parse(started.result);
 
   harness.sendRequest(2, "turn/start", {
     threadId: THREAD_ID,
     providerThreadId,
     clientRequestId: "creq_signature2",
     input: [{ type: "text", text: "say hello", mentions: [] }],
-    options: { ...sessionOptions },
+    options: { ...FULL_ACCESS_SESSION_OPTIONS },
   });
   const turn = await harness.waitForResponse(2);
 
@@ -88,99 +82,310 @@ it("keeps the constructed session for a turn whose options carry no envVars", as
   ).toEqual([]);
 }, 30_000);
 
+it("applies an escalation change to an auto-reviewed session without replacing it", async () => {
+  harness.sendRequest(1, "thread/start", {
+    threadId: THREAD_ID,
+    cwd: workspaceDir,
+    instructionMode: "append",
+    options: autoAskSessionOptions,
+  });
+  const started = await harness.waitForResponse(1);
+  const { providerThreadId } = z
+    .object({ providerThreadId: z.string() })
+    .parse(started.result);
+
+  harness.sendRequest(2, "turn/start", {
+    threadId: THREAD_ID,
+    providerThreadId,
+    clientRequestId: "creq_signature3",
+    input: [{ type: "text", text: "say hello", mentions: [] }],
+    options: autoDenySessionOptions,
+  });
+  const turn = await harness.waitForResponse(2);
+
+  expect(turn.error).toBeUndefined();
+  expect(
+    harness.messages.filter((message) => message.method === "session/replaced"),
+  ).toEqual([]);
+  expect(
+    recordedRequests()
+      .filter((request) => request.method === "turn/start")
+      .at(-1),
+  ).toMatchObject({
+    method: "turn/start",
+    params: { approvalPolicy: "never", approvalsReviewer: "auto_review" },
+  });
+}, 30_000);
+
+function recordedRequests() {
+  const schema = z.object({
+    method: z.string(),
+    params: z.looseObject({ serviceTier: z.string().nullable().optional() }),
+  });
+  return readFileSync(requestLogPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => schema.parse(JSON.parse(line)));
+}
+
+it("clears Fast for the next turn without replacing the session", async () => {
+  harness.sendRequest(1, "thread/start", {
+    threadId: THREAD_ID,
+    cwd: workspaceDir,
+    instructionMode: "append",
+    options: { ...FULL_ACCESS_SESSION_OPTIONS, serviceTier: "fast" },
+  });
+  const started = await harness.waitForResponse(1);
+  expect(started.error).toBeUndefined();
+  const { providerThreadId } = z
+    .object({ providerThreadId: z.string() })
+    .parse(started.result);
+
+  for (const [index, serviceTier] of ["fast", "default", "fast"].entries()) {
+    const id = index + 2;
+    harness.sendRequest(id, "turn/start", {
+      threadId: THREAD_ID,
+      providerThreadId,
+      clientRequestId: `creq_tiertestx${id}`,
+      input: [{ type: "text", text: "say hello", mentions: [] }],
+      options: { ...FULL_ACCESS_SESSION_OPTIONS, serviceTier },
+    });
+    expect((await harness.waitForResponse(id)).error).toBeUndefined();
+    expect(
+      recordedRequests()
+        .filter((request) => request.method === "turn/start")
+        .at(-1),
+    ).toEqual({
+      method: "turn/start",
+      params: expect.objectContaining({
+        serviceTier: serviceTier === "default" ? null : "fast",
+      }),
+    });
+  }
+  expect(
+    harness.messages.filter((message) => message.method === "session/replaced"),
+  ).toEqual([]);
+}, 30_000);
+
+it.each(["start", "resume", "fork"] as const)(
+  "sends an explicit default reset when constructing a %s session",
+  async (kind) => {
+    harness.sendRequest(1, `thread/${kind}`, {
+      threadId: THREAD_ID,
+      ...(kind === "resume" ? { providerThreadId: "provider-fast" } : {}),
+      ...(kind === "fork" ? { sourceProviderThreadId: "provider-fast" } : {}),
+      cwd: workspaceDir,
+      instructionMode: "append",
+      options: { ...FULL_ACCESS_SESSION_OPTIONS, serviceTier: "default" },
+    });
+    expect((await harness.waitForResponse(1)).error).toBeUndefined();
+    expect(recordedRequests()).toContainEqual({
+      method: `thread/${kind}`,
+      params: expect.objectContaining({ serviceTier: null }),
+    });
+  },
+  30_000,
+);
+
 it.each([
   {
-    label: "ask to deny",
-    initialOptions: autoAskSessionOptions,
-    initialApprovalPolicy: "on-request",
-    turnOptions: autoDenySessionOptions,
-    turnApprovalPolicy: "never",
+    before: FULL_ACCESS_SESSION_OPTIONS,
+    after: autoAskSessionOptions,
+    sandbox: "workspaceWrite",
+    beforeResponse: false,
+    compaction: true,
   },
   {
-    label: "deny to ask",
-    initialOptions: autoDenySessionOptions,
-    initialApprovalPolicy: "never",
-    turnOptions: autoAskSessionOptions,
-    turnApprovalPolicy: "on-request",
+    before: FULL_ACCESS_SESSION_OPTIONS,
+    after: autoAskSessionOptions,
+    sandbox: "workspaceWrite",
+    beforeResponse: false,
+    compaction: false,
+  },
+  {
+    before: FULL_ACCESS_SESSION_OPTIONS,
+    after: autoAskSessionOptions,
+    sandbox: "workspaceWrite",
+    beforeResponse: true,
+    compaction: false,
+  },
+  {
+    before: autoAskSessionOptions,
+    after: FULL_ACCESS_SESSION_OPTIONS,
+    sandbox: "dangerFullAccess",
+    beforeResponse: false,
+    compaction: false,
   },
 ])(
-  "rebuilds an auto-reviewed session when escalation changes from $label",
-  async ({
-    initialOptions,
-    initialApprovalPolicy,
-    turnOptions,
-    turnApprovalPolicy,
-  }) => {
+  "applies $sandbox before steering (start response pending: $beforeResponse, initial compaction: $compaction)",
+  async ({ before, after, sandbox, beforeResponse, compaction }) => {
+    if (compaction)
+      vi.stubEnv("FAKE_CODEX_COMPACTION_MODE", "wait-for-interrupt");
+    writeFileSync(
+      scriptPath,
+      JSON.stringify({
+        requestLogPath,
+        startResponseDelayMs: beforeResponse ? 2000 : 0,
+      }),
+    );
     harness.sendRequest(1, "thread/start", {
       threadId: THREAD_ID,
       cwd: workspaceDir,
       instructionMode: "append",
-      options: initialOptions,
+      options: before,
     });
     const started = await harness.waitForResponse(1);
-    expect(started.error).toBeUndefined();
-    const providerThreadId = (started.result as { providerThreadId: string })
-      .providerThreadId;
-
+    const { providerThreadId } = z
+      .object({ providerThreadId: z.string() })
+      .parse(started.result);
     harness.sendRequest(2, "turn/start", {
       threadId: THREAD_ID,
       providerThreadId,
-      clientRequestId: "creq_signature3",
-      input: [{ type: "text", text: "say hello", mentions: [] }],
-      options: turnOptions,
+      clientRequestId: "creq_permstart2",
+      input: compaction
+        ? [
+            {
+              type: "text",
+              text: "/compact",
+              mentions: [
+                {
+                  start: 0,
+                  end: 8,
+                  resource: {
+                    kind: "command",
+                    trigger: "/",
+                    name: "compact",
+                    source: "command",
+                    origin: "builtin",
+                    label: "compact",
+                    argumentHint: null,
+                  },
+                },
+              ],
+            },
+          ]
+        : [{ type: "text", text: "/wait-for-interrupt", mentions: [] }],
+      options: before,
     });
-    const turn = await harness.waitForResponse(2);
-
-    expect(turn.error).toBeUndefined();
+    if (!beforeResponse) {
+      expect((await harness.waitForResponse(2)).error).toBeUndefined();
+    }
+    await vi.waitFor(() =>
+      expect(harness.messages).toContainEqual(
+        expect.objectContaining({
+          method: "thread/delta",
+          params: expect.objectContaining({
+            deltas: expect.arrayContaining([
+              expect.objectContaining({ kind: "turn.open" }),
+            ]),
+          }),
+        }),
+      ),
+    );
+    if (beforeResponse) {
+      expect(harness.messages.some((message) => message.id === 2)).toBe(false);
+    }
+    harness.sendRequest(3, "turn/steer", {
+      threadId: THREAD_ID,
+      providerThreadId,
+      expectedTurnId: "turn-fx-1",
+      clientRequestId: "creq_permsteer2",
+      input: [
+        {
+          type: "text",
+          text: "Continue with the new permissions",
+          mentions: [],
+        },
+      ],
+      options: after,
+    });
+    expect((await harness.waitForResponse(3)).error).toBeUndefined();
     expect(
       harness.messages.filter(
         (message) => message.method === "session/replaced",
       ),
-    ).toEqual([
-      expect.objectContaining({
-        params: expect.objectContaining({
-          threadId: THREAD_ID,
-          providerThreadId,
-          contextLost: false,
-        }),
-      }),
-    ]);
-    const requests = readFileSync(requestLogPath, "utf8")
-      .trim()
-      .split("\n")
-      .map((line): unknown => JSON.parse(line));
-    expect(requests).toEqual(
-      expect.arrayContaining([
-        {
-          method: "thread/start",
-          params: expect.objectContaining({
-            approvalPolicy: initialApprovalPolicy,
-            approvalsReviewer: "auto_review",
-            sandbox: "workspace-write",
-          }),
-        },
-        {
-          method: "thread/resume",
-          params: expect.objectContaining({
-            threadId: providerThreadId,
-            approvalPolicy: turnApprovalPolicy,
-            approvalsReviewer: "auto_review",
-            sandbox: "workspace-write",
-          }),
-        },
-        {
-          method: "turn/start",
-          params: expect.objectContaining({
-            threadId: providerThreadId,
-            approvalPolicy: turnApprovalPolicy,
-            approvalsReviewer: "auto_review",
-            sandboxPolicy: expect.objectContaining({
-              type: "workspaceWrite",
-            }),
-          }),
-        },
-      ]),
+    ).toEqual([]);
+    const requests = recordedRequests();
+    expect(requests.filter((entry) => entry.method === "turn/steer")).toEqual(
+      [],
     );
+    expect(
+      requests.filter((entry) => entry.method === "turn/interrupt"),
+    ).toHaveLength(1);
+    expect(
+      requests.filter((entry) => entry.method === "turn/start").at(-1)?.params,
+    ).toMatchObject({
+      threadId: providerThreadId,
+      sandboxPolicy: { type: sandbox },
+    });
   },
   30_000,
 );
+
+it("applies follow-up permission changes in both directions without replacing the app-server", async () => {
+  harness.sendRequest(1, "thread/start", {
+    threadId: THREAD_ID,
+    cwd: workspaceDir,
+    instructionMode: "append",
+    options: FULL_ACCESS_SESSION_OPTIONS,
+  });
+  const started = await harness.waitForResponse(1);
+  expect(started.error).toBeUndefined();
+  const { providerThreadId } = z
+    .object({ providerThreadId: z.string() })
+    .parse(started.result);
+  const cases = [
+    {
+      options: autoAskSessionOptions,
+      approvalPolicy: "on-request",
+      approvalsReviewer: "auto_review",
+      sandbox: "workspaceWrite",
+    },
+    {
+      options: FULL_ACCESS_SESSION_OPTIONS,
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "dangerFullAccess",
+    },
+    {
+      options: {
+        ...autoAskSessionOptions,
+        permissionMode: "accept-edits",
+        approvalReviewer: "user",
+        permissionEscalation: "deny",
+      },
+      approvalPolicy: "never",
+      approvalsReviewer: "user",
+      sandbox: "workspaceWrite",
+    },
+  ] as const;
+  for (const [index, testCase] of cases.entries()) {
+    const id = index + 2;
+    harness.sendRequest(id, "turn/start", {
+      threadId: THREAD_ID,
+      providerThreadId,
+      clientRequestId: `creq_permtestx${id}`,
+      input: [{ type: "text", text: "say hello", mentions: [] }],
+      options: testCase.options,
+    });
+    expect((await harness.waitForResponse(id)).error).toBeUndefined();
+    expect(
+      recordedRequests()
+        .filter((request) => request.method === "turn/start")
+        .at(-1),
+    ).toMatchObject({
+      method: "turn/start",
+      params: {
+        approvalPolicy: testCase.approvalPolicy,
+        approvalsReviewer: testCase.approvalsReviewer,
+        sandboxPolicy: { type: testCase.sandbox },
+      },
+    });
+  }
+  expect(
+    harness.messages.filter((message) => message.method === "session/replaced"),
+  ).toEqual([]);
+  expect(
+    recordedRequests().filter((request) => request.method === "initialize"),
+  ).toHaveLength(1);
+}, 30_000);

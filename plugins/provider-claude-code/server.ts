@@ -1,12 +1,9 @@
+import { registerUsageSource } from "./src/usage-source.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import {
-  CLAUDE_CODE_ACTIVE_CATALOG_DATA,
-  CLAUDE_XHIGH_CAPABLE_REASONING_EFFORT_DATA,
-  DEFAULT_CLAUDE_CODE_MODEL,
-} from "./src/model-catalog-data.js";
 import { CLAUDE_NATIVE_ROOTS_DECLARATION } from "./src/native-roots.js";
 
 export default function plugin(bb: BbPluginApi) {
+  registerUsageSource(bb);
   bb.settings.define({
     memoryEnabled: {
       type: "boolean",
@@ -19,7 +16,7 @@ export default function plugin(bb: BbPluginApi) {
       type: "boolean",
       label: "Disable provider subagents",
       description:
-        "Hide Claude Code's native Task tool so agents use bb for delegation.",
+        "Hide Claude Code's native subagent tools so agents use bb for delegation. Changes restart Claude before the next turn, preserving the conversation.",
       default: false,
     },
     workflowsDisabled: {
@@ -28,11 +25,11 @@ export default function plugin(bb: BbPluginApi) {
       description: "Hide Claude Code's native Workflow tool for bb threads.",
       default: false,
     },
-    idleQueryReleaseEnabled: {
+    disable1MContext: {
       type: "boolean",
-      label: "Release idle Claude processes",
+      label: "Disable 1M context",
       description:
-        "Close a quiescent Claude Code process after 30 seconds and resume it on the next turn.",
+        "Disable the 1M-token context window for Claude Code threads. Applies on the next turn.",
       default: false,
     },
     chromeEnabled: {
@@ -40,6 +37,27 @@ export default function plugin(bb: BbPluginApi) {
       label: "Claude in Chrome",
       description:
         "Start Claude Code with the Claude in Chrome browser tools. Needs the Chrome extension and a claude.ai login on the host.",
+      default: false,
+    },
+    artifactsEnabled: {
+      type: "boolean",
+      label: "Claude Artifacts",
+      description:
+        "Give Claude Code its Artifact tools to read, publish, and edit claude.ai artifacts. Claude may publish private pages to claude.ai without asking. Needs a claude.ai login on the host. Applies on the next turn.",
+      default: false,
+    },
+    sandboxEnabled: {
+      type: "boolean",
+      label: "Claude Code sandbox",
+      description:
+        "Run Bash commands in Claude Code's sandbox in Accept Edits and Approve for me modes. Turn off to use Claude Code's own command approvals and sandbox settings instead.",
+      default: true,
+    },
+    fullAccessApprovalsEnabled: {
+      type: "boolean",
+      label: "Approvals in Full Access",
+      description:
+        "Show Claude Code's own approval prompts in Full Access: permissions.ask rules, PreToolUse hooks that answer ask, and Claude Code's built-in safety checks. Off approves every request, so unattended threads never wait. Applies on the next turn.",
       default: false,
     },
   });
@@ -60,7 +78,7 @@ export default function plugin(bb: BbPluginApi) {
     ...CLAUDE_NATIVE_ROOTS_DECLARATION,
     maintenance: { health: true, usage: true, installation: true },
     capabilities: {
-      supportsServiceTier: false,
+      supportsServiceTier: true,
       supportsNativeUserQuestion: true,
       fork: "checkpoint",
       supportsManualCompaction: true,
@@ -81,27 +99,32 @@ export default function plugin(bb: BbPluginApi) {
       },
       { id: "max", label: "Max" },
     ],
+    serviceTiers: [
+      { id: "default", label: "Default" },
+      {
+        id: "fast",
+        label: "Fast",
+        description:
+          "Faster responses on supported Opus models at a higher cost per token.",
+      },
+    ],
     composerActions: ["plan"],
-    env: { passthrough: ["BB_CLAUDE_CODE_EXECUTABLE"] },
-    models: {
-      scope: "host",
-      fallback: CLAUDE_CODE_ACTIVE_CATALOG_DATA.map((entry) => ({
-        id: entry.model,
-        displayName: entry.displayName,
-        description: entry.description,
-        supportedReasoningEfforts: CLAUDE_XHIGH_CAPABLE_REASONING_EFFORT_DATA,
-        defaultReasoningEffort: entry.defaultReasoningEffort,
-        isDefault: entry.model === DEFAULT_CLAUDE_CODE_MODEL,
-      })),
+    completedTurnDisplay: "flat",
+    env: {
+      passthrough: ["BB_CLAUDE_CODE_EXECUTABLE", "CLAUDE_CODE_OAUTH_TOKEN"],
     },
+    models: { scope: "host" },
     deriveProviderOptions(context) {
       return {
         memoryEnabled: context.settings.memoryEnabled !== false,
         providerSubagentsEnabled: context.settings.subagentsDisabled !== true,
         workflowsEnabled: context.settings.workflowsDisabled !== true,
-        idleQueryReleaseEnabled:
-          context.settings.idleQueryReleaseEnabled === true,
         chromeEnabled: context.settings.chromeEnabled === true,
+        disable1MContext: context.settings.disable1MContext === true,
+        artifactsEnabled: context.settings.artifactsEnabled === true,
+        sandboxEnabled: context.settings.sandboxEnabled !== false,
+        fullAccessApprovalsEnabled:
+          context.settings.fullAccessApprovalsEnabled === true,
         ...(context.promptMode === "plan"
           ? { claudeCodePermissionMode: "plan" }
           : {}),

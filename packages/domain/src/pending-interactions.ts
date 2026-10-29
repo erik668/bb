@@ -5,7 +5,10 @@ import {
   PLUGIN_INTERACTION_MAX_TITLE_LENGTH,
   jsonByteLength,
 } from "./plugin-interaction-limits.js";
-import { threadEventItemPresentationSchema } from "./item-presentation.js";
+import {
+  THREAD_EVENT_ITEM_PRESENTATION_DETAIL_MAX_LENGTH,
+  threadEventItemPresentationSchema,
+} from "./item-presentation.js";
 import {
   extensionKindSchema,
   isExtensionKind,
@@ -199,7 +202,7 @@ export type ApprovalPendingInteractionPayload = z.infer<
   typeof approvalPendingInteractionPayloadSchema
 >;
 
-export const USER_QUESTION_MAX_QUESTIONS = 4;
+export const USER_QUESTION_MAX_QUESTIONS = 10;
 export const USER_QUESTION_MAX_OPTIONS = 4;
 export const USER_QUESTION_MAX_SELECTED = 4;
 export const USER_QUESTION_MAX_FREE_TEXT_LENGTH = 4096;
@@ -262,9 +265,6 @@ const pendingInteractionUserQuestionOptionSchema = z.object({
   label: pendingInteractionUserQuestionOptionLabelSchema,
   description: pendingInteractionUserQuestionOptionDescriptionSchema.optional(),
 });
-export type PendingInteractionUserQuestionOption = z.infer<
-  typeof pendingInteractionUserQuestionOptionSchema
->;
 
 export const pendingInteractionUserQuestionQuestionSchema = z
   .object({
@@ -280,6 +280,7 @@ export const pendingInteractionUserQuestionQuestionSchema = z
       )
       .optional(),
     allowFreeText: z.boolean(),
+    required: z.boolean().default(true),
   })
   .superRefine((question, context) => {
     const optionValues = new Set<string>();
@@ -340,6 +341,7 @@ const pluginPendingInteractionPayloadSchema = z.object({
   kind: z.literal("plugin"),
   title: z.string().trim().min(1).max(PLUGIN_INTERACTION_MAX_TITLE_LENGTH),
   data: jsonValueSchema,
+  presentation: threadEventItemPresentationSchema.optional(),
 });
 type PluginPendingInteractionPayload = z.infer<
   typeof pluginPendingInteractionPayloadSchema
@@ -449,8 +451,33 @@ export type UserQuestionPendingInteractionResolution = z.infer<
   typeof userQuestionPendingInteractionResolutionSchema
 >;
 
+export const pluginInteractionDescriptionSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1)
+    .max(PLUGIN_INTERACTION_MAX_TITLE_LENGTH)
+    .optional(),
+  detail: z
+    .string()
+    .trim()
+    .min(1)
+    .max(THREAD_EVENT_ITEM_PRESENTATION_DETAIL_MAX_LENGTH)
+    .optional(),
+  payload: jsonValueSchema
+    .refine(
+      (value) => jsonByteLength(value) <= PLUGIN_INTERACTION_MAX_PAYLOAD_BYTES,
+      { message: "Plugin interaction description payload exceeds 64 KiB" },
+    )
+    .optional(),
+});
+export type PluginInteractionDescription = z.infer<
+  typeof pluginInteractionDescriptionSchema
+>;
+
 const pluginPendingInteractionResolutionSchema = z.object({
   kind: z.literal("plugin_submitted"),
+  description: pluginInteractionDescriptionSchema.optional(),
 });
 type PluginPendingInteractionResolution = z.infer<
   typeof pluginPendingInteractionResolutionSchema
@@ -700,6 +727,9 @@ const pluginInteractionLifecycleSchema =
     payload: pluginPendingInteractionPayloadSchema.omit({ data: true }),
     resolution: pluginPendingInteractionResolutionSchema.nullable(),
   });
+export type PluginInteractionLifecycle = z.infer<
+  typeof pluginInteractionLifecycleSchema
+>;
 
 const pluginExtensionInteractionLifecycleSchema =
   interactionLifecycleRecordBaseSchema.extend({
@@ -732,6 +762,12 @@ export function isUserQuestionInteractionLifecycle(
   return lifecycle.payload.kind === "user_question";
 }
 
+export function isPluginInteractionLifecycle(
+  lifecycle: InteractionLifecycle,
+): lifecycle is PluginInteractionLifecycle {
+  return lifecycle.payload.kind === "plugin";
+}
+
 export function toInteractionLifecycle(
   interaction: PendingInteraction,
 ): InteractionLifecycle {
@@ -741,10 +777,11 @@ export function toInteractionLifecycle(
     statusReason: interaction.statusReason,
   };
   if (isPluginPendingInteraction(interaction)) {
+    const { data: _data, ...payload } = interaction.payload;
     return {
       ...base,
       origin: interaction.origin,
-      payload: { kind: "plugin", title: interaction.payload.title },
+      payload,
       resolution: interaction.resolution,
     };
   }

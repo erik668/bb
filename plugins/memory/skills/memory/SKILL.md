@@ -1,6 +1,6 @@
 ---
 name: memory
-description: Use provider-neutral BB memory progressively, and propose evidence-backed durable learning for workspace-owner review without activating it directly.
+description: "Retrieve relevant durable BB memories or propose evidence-backed learning for workspace-owner review."
 ---
 
 # BB memory
@@ -11,6 +11,16 @@ untrusted evidence source; it never enters the injected catalog automatically.
 
 The memory plugin automatically injects a compact index of global memories and
 memories for the current BB project. The index contains summaries only.
+Settings → Memory lists every memory for the user to edit or delete.
+
+```sh
+bb memory catalog [--scope project|global|all] [--json]
+bb memory search <query> [--scope project|global|all] [--json]
+bb memory get <id> [--scope project|global|all] [--json]
+bb memory history <id> [--scope project|global|all] [--limit 1-100] [--json]
+```
+
+Project-scoped commands use the invoking CLI's current BB project.
 
 ## Retrieve progressively
 
@@ -107,9 +117,26 @@ decision reason.
 `bb memory add` remains a compatibility alias for `propose`; it never activates
 memory. Agent CLI attempts to update or forget active memory fail closed.
 
+Never call the owner RPCs (`approveCandidate`, `rejectCandidate`,
+`updateMemory`, `deleteMemory`) through `bb plugin rpc call` or the plugin HTTP
+route. The server cannot tell those calls apart from Settings → Memory, so the
+owner-only rule depends on agents not making them.
+
 For systematic learning from PRs and resolved review feedback, load the bundled
 `memory-dreaming` skill after the evidence is available. That skill also owns
 synthesis from provider-native observations.
+
+## Flags
+
+`bb memory <command> --help` prints every flag with its limits, and the CLI
+reports all missing required flags in one error instead of one per run. Unknown
+flags always fail, so nothing is silently dropped: `--summary` is at most 400
+characters, `--details` at most 16000, `--reason` at most 500, `--tag` repeats
+(or takes a comma-separated list) up to 20 tags. `--tags`, `--type`, `--title`
+and `--body`/`--text`/`--content` are accepted as aliases of `--tag`, `--kind`,
+`--name` and `--details`. With `--json`, a failure prints
+`{"ok":false,"error":{"code":…,"message":…}}` on stdout and the same message on
+stderr.
 
 ## Quality and safety
 

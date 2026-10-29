@@ -90,6 +90,14 @@ export const threadTabSchema = z.discriminatedUnion("kind", [
   z.object({ id: threadTabIdSchema, kind: z.literal("git-diff") }).strict(),
   z
     .object({
+      id: threadTabIdSchema,
+      kind: z.literal("plugin-fixed"),
+      pluginId: z.string().min(1).max(THREAD_TAB_PATH_MAX_LENGTH),
+      tabId: z.string().min(1).max(THREAD_TAB_PATH_MAX_LENGTH),
+    })
+    .strict(),
+  z
+    .object({
       actionId: z.string().min(1).max(THREAD_TAB_PATH_MAX_LENGTH),
       fileOpenerOwner: threadTabFileOpenerOwnerSchema.optional(),
       id: threadTabIdSchema,
@@ -135,9 +143,26 @@ export const threadTabSchema = z.discriminatedUnion("kind", [
     .strict(),
   z
     .object({
+      id: threadTabIdSchema,
+      kind: z.literal("attachment-file-preview"),
+      name: z.string().min(1).max(THREAD_TAB_TITLE_MAX_LENGTH),
+      path: threadTabPathSchema,
+      projectId: z.string().min(1),
+    })
+    .strict(),
+  z
+    .object({
       environmentId: z.string().min(1).nullable(),
       id: threadTabIdSchema,
       kind: z.literal("browser"),
+      desktopTarget: z
+        .object({
+          hostId: z.string().min(1),
+          instanceId: z.string().min(1),
+          generation: z.string().min(1),
+        })
+        .strict()
+        .optional(),
       title: z.string().min(1).max(THREAD_TAB_TITLE_MAX_LENGTH).nullable(),
       url: z.string().max(THREAD_TAB_URL_MAX_LENGTH),
     })

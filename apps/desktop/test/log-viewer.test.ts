@@ -1,10 +1,12 @@
 import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { killProcessesReferencingPath } from "@bb/test-helpers";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   createLogLineBuffer,
   createLogTailer,
+  formatLogLine,
   resolveCurrentLogFile,
   type LogTailer,
 } from "../src/log-viewer.js";
@@ -40,6 +42,7 @@ afterEach(async () => {
   while (tempDirs.length > 0) {
     const tempDir = tempDirs.pop();
     if (tempDir !== undefined) {
+      await killProcessesReferencingPath(tempDir.path);
       await rm(tempDir.path, { force: true, recursive: true });
     }
   }
@@ -69,12 +72,99 @@ function isProcessRunning(pid: number): boolean {
 
 function createTestLogLine(args: CreateTestLogLineArgs): LogViewerLine {
   return {
-    source: "server",
     text: `line-${args.index}`,
   };
 }
 
+describe("formatLogLine", () => {
+  const timeMs = new Date(2026, 8, 9, 9, 25, 50, 443).getTime();
+
+  it("renders pino records with a local timestamp, level, message, and remaining fields", () => {
+    const line = JSON.stringify({
+      level: 40,
+      time: timeMs,
+      component: "server",
+      errorCode: "host_unavailable",
+      errorDetails: { reason: "disconnected" },
+      msg: "Failed to resolve host",
+    });
+
+    expect(formatLogLine({ component: "server", line })).toBe(
+      '2026-09-09 09:25:50.443 [warn] [server] Failed to resolve host {"errorCode":"host_unavailable","errorDetails":{"reason":"disconnected"}}',
+    );
+  });
+
+  it("omits the field suffix when only core fields are present", () => {
+    const line = JSON.stringify({
+      level: 30,
+      time: timeMs,
+      component: "server",
+      msg: "Daemon WebSocket closed",
+    });
+
+    expect(formatLogLine({ component: "server", line })).toBe(
+      "2026-09-09 09:25:50.443 [info] [server] Daemon WebSocket closed",
+    );
+  });
+
+  it("keeps a sub-component that differs from the log file component", () => {
+    const line = JSON.stringify({
+      level: 50,
+      time: timeMs,
+      component: "provider",
+      msg: "boom",
+    });
+
+    expect(formatLogLine({ component: "host-daemon", line })).toBe(
+      "2026-09-09 09:25:50.443 [error] [host-daemon:provider] boom",
+    );
+  });
+
+  it("falls back to the raw line for non-pino output", () => {
+    expect(formatLogLine({ component: "server", line: "plain text" })).toBe(
+      "[server] plain text",
+    );
+    expect(formatLogLine({ component: "server", line: '{"msg":"x"}' })).toBe(
+      '[server] {"msg":"x"}',
+    );
+    expect(formatLogLine({ component: "server", line: "{not json" })).toBe(
+      "[server] {not json",
+    );
+  });
+});
+
 describe("log viewer", () => {
+  it("shows persisted desktop diagnostics and follows new entries alongside an attached server", async () => {
+    const tempDir = await createTempDir();
+    await writeFile(
+      join(tempDir.path, "desktop.log"),
+      "desktop startup failed\n",
+    );
+    await writeFile(join(tempDir.path, "server.1.log"), "attached server\n");
+    const lines: LogViewerLine[] = [];
+    const tailer = createLogTailer({
+      logDir: tempDir.path,
+      onLines: (entries) => lines.push(...entries),
+    });
+    tailers.push(tailer);
+    await tailer.start();
+    await waitFor({
+      predicate: () =>
+        lines.some((line) => line.text === "[server] attached server"),
+    });
+    await appendFile(
+      join(tempDir.path, "desktop.log"),
+      "Connect renewal failed\n",
+    );
+    await waitFor({
+      predicate: () =>
+        lines.some((line) => line.text === "[desktop] Connect renewal failed"),
+    });
+    expect(
+      lines.some((line) => line.text === "[desktop] desktop startup failed"),
+    ).toBe(true);
+  });
+
   it("selects the newest matching server log file", async () => {
     const tempDir = await createTempDir();
     const firstServerLog = join(tempDir.path, "server.1.log");
@@ -159,28 +249,54 @@ describe("log viewer", () => {
     });
   });
 
-  it("kills tail child processes when stopped", async () => {
-    const tempDir = await createTempDir();
-    await writeFile(join(tempDir.path, "server.1.log"), "");
-    await writeFile(join(tempDir.path, "host-daemon.1.log"), "");
-    const tailer = createLogTailer({
-      logDir: tempDir.path,
-      onLines() {},
-    });
-    tailers.push(tailer);
-    await tailer.start();
+  it.skipIf(process.platform === "win32")(
+    "kills tail child processes when stopped",
+    async () => {
+      const tempDir = await createTempDir();
+      await writeFile(join(tempDir.path, "server.1.log"), "");
+      await writeFile(join(tempDir.path, "host-daemon.1.log"), "");
+      const tailer = createLogTailer({
+        logDir: tempDir.path,
+        onLines() {},
+      });
+      tailers.push(tailer);
+      await tailer.start();
 
-    const processIds = tailer.processIds();
-    expect(processIds).toHaveLength(2);
-    expect(processIds.every(isProcessRunning)).toBe(true);
+      const processIds = tailer.processIds();
+      expect(processIds).toHaveLength(2);
+      expect(processIds.every(isProcessRunning)).toBe(true);
 
-    tailer.stop();
-    await waitFor({
-      predicate() {
-        return processIds.every((pid) => !isProcessRunning(pid));
-      },
-    });
-  });
+      tailer.stop();
+      await waitFor({
+        predicate() {
+          return processIds.every((pid) => !isProcessRunning(pid));
+        },
+      });
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not start tail processes when stopped while a refresh is resolving log files",
+    async () => {
+      const tempDir = await createTempDir();
+      await writeFile(join(tempDir.path, "desktop.log"), "");
+      await writeFile(join(tempDir.path, "server.1.log"), "");
+      await writeFile(join(tempDir.path, "host-daemon.1.log"), "");
+      const tailer = createLogTailer({
+        logDir: tempDir.path,
+        onLines() {},
+      });
+      tailers.push(tailer);
+      const started = tailer.start();
+      while (tailer.processIds().length === 0) {
+        await new Promise((resolvePromise) => setImmediate(resolvePromise));
+      }
+      tailer.stop();
+      await started;
+
+      expect(tailer.processIds()).toEqual([]);
+    },
+  );
 
   it("caps the in-memory line buffer to the configured line limit", () => {
     const buffer = createLogLineBuffer({

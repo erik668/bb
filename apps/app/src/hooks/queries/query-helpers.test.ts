@@ -1,13 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ThreadListEntry, WorkspaceStatus } from "@bb/domain";
-import {
-  makeWorkspaceMergeBase,
-  makeWorkspaceStatus,
-  makeWorkspaceWorkingTree,
-} from "@bb/test-helpers";
+import type { ThreadListEntry } from "@bb/domain";
 import type {
-  EnvironmentDiffBranchesResponse,
-  EnvironmentStatusResponse,
   ProjectBranchesResponse,
   SidebarBootstrapResponse,
   ThreadResponse,
@@ -21,22 +14,13 @@ import {
   makeThreadResponse as makeThreadResponseFixture,
   makeThreadTimelineResponse as makeThreadTimelineResponseFixture,
 } from "@/test/fixtures/thread-responses";
+import { optimisticallyInsertThread } from "../cache-owners/query-cache";
 import {
-  getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys,
-  getEnvironmentWorkspaceStateInvalidationQueryKeys,
-  optimisticallyInsertThread,
-} from "../cache-owners/query-cache";
-import {
-  environmentDiffFilesQueryKeyPrefix,
-  environmentDiffPatchQueryKeyPrefix,
-  environmentWorkStatusQueryKey,
   sidebarNavigationQueryKey,
   threadListQueryKey,
   threadsQueryKey,
 } from "./query-keys";
 import {
-  resolveEnvironmentMergeBaseBranchesPlaceholder,
-  resolveEnvironmentWorkStatusPlaceholder,
   resolveProjectSourceBranchesPlaceholder,
   resolveThreadPlaceholder,
   resolveThreadTimelinePlaceholder,
@@ -47,16 +31,6 @@ import { BbHttpError } from "@/lib/sdk";
 import { isTransientReadError, requireEnabledQueryArg } from "./query-helpers";
 
 describe("requireEnabledQueryArg", () => {
-  it("returns the value when present", () => {
-    expect(
-      requireEnabledQueryArg({
-        value: "thr_1",
-        hookName: "useThread",
-        argName: "thread id",
-      }),
-    ).toBe("thr_1");
-  });
-
   it("keeps a numeric zero rather than treating it as missing", () => {
     expect(
       requireEnabledQueryArg({
@@ -79,6 +53,18 @@ describe("requireEnabledQueryArg", () => {
 });
 
 describe("isTransientReadError", () => {
+  it("retries coded transport errors but never HTTP failures", () => {
+    expect(
+      isTransientReadError({ code: "transport_error", message: "Offline" }),
+    ).toBe(true);
+    expect(
+      isTransientReadError({
+        code: "handler_error",
+        status: 500,
+        message: "Failed to fetch",
+      }),
+    ).toBe(false);
+  });
   it("matches browser transport failures but not HTTP responses", () => {
     expect(isTransientReadError(new TypeError("Failed to fetch"))).toBe(true);
     expect(isTransientReadError(new TypeError("Load failed"))).toBe(true);
@@ -104,20 +90,6 @@ describe("isTransientReadError", () => {
   });
 });
 
-function makeStatusResponse(
-  state: WorkspaceStatus["workingTree"]["state"],
-): EnvironmentStatusResponse {
-  return {
-    outcome: "available",
-    workspace: makeWorkspaceStatus({
-      workingTree: makeWorkspaceWorkingTree({ state }),
-      checkout: { kind: "branch", branchName: "feature", headSha: null },
-      branch: { currentBranch: "feature", defaultBranch: "main" },
-      mergeBase: makeWorkspaceMergeBase({ baseRef: "origin/main" }),
-    }),
-  };
-}
-
 function makeProjectBranchesResponse(): ProjectBranchesResponse {
   return {
     branches: ["main"],
@@ -130,19 +102,10 @@ function makeProjectBranchesResponse(): ProjectBranchesResponse {
     defaultBranch: "main",
     defaultBranchRelation: "equal",
     defaultWorktreeBaseBranch: "origin/main",
+    isWorktree: false,
     hasUncommittedChanges: false,
     operation: { kind: "none" },
     originDefaultBranch: "origin/main",
-    remoteBranches: ["origin/main"],
-    remoteBranchesTruncated: false,
-    selectedBranch: null,
-  };
-}
-
-function makeEnvironmentDiffBranchesResponse(): EnvironmentDiffBranchesResponse {
-  return {
-    branches: ["main"],
-    branchesTruncated: false,
     remoteBranches: ["origin/main"],
     remoteBranchesTruncated: false,
     selectedBranch: null,
@@ -163,7 +126,6 @@ function makeThreadResponse(
     environmentId: "env-1",
     runtime: {
       displayStatus: "waiting-for-host",
-      hostReconnectGraceExpiresAt: null,
     },
     canSpawnChild: false,
     ...thread,
@@ -189,57 +151,13 @@ function makeThreadTimelineResponse(
   return makeThreadTimelineResponseFixture({
     rows,
     timelinePage: {
-      kind: "latest",
-      segmentLimit: 20,
       returnedSegmentCount: rows.length > 0 ? 1 : 0,
-      hasOlderRows: false,
       olderCursor: null,
+      historySnapshot: "snapshot-1",
+      olderRowsSourceSeqEnd: null,
     },
   });
 }
-
-describe("resolveEnvironmentWorkStatusPlaceholder", () => {
-  it("reuses previous work status only for the same thread query", () => {
-    const previousStatus = makeStatusResponse("clean");
-    const previousNotApplicableStatus: EnvironmentStatusResponse = {
-      outcome: "not_applicable",
-      reason: "non_git_environment",
-      message: "Workspace status is not available for non-git environments",
-    };
-
-    expect(
-      resolveEnvironmentWorkStatusPlaceholder(
-        previousStatus,
-        ["environmentWorkStatus", "thread-1", null],
-        "thread-1",
-      ),
-    ).toBe(previousStatus);
-
-    expect(
-      resolveEnvironmentWorkStatusPlaceholder(
-        previousStatus,
-        ["environmentWorkStatus", "thread-1", null],
-        "thread-2",
-      ),
-    ).toBeUndefined();
-
-    expect(
-      resolveEnvironmentWorkStatusPlaceholder(
-        previousNotApplicableStatus,
-        ["environmentWorkStatus", "thread-1", null],
-        "thread-1",
-      ),
-    ).toBe(previousNotApplicableStatus);
-
-    expect(
-      resolveEnvironmentWorkStatusPlaceholder(
-        previousNotApplicableStatus,
-        ["environmentWorkStatus", "thread-1", null],
-        "thread-2",
-      ),
-    ).toBeUndefined();
-  });
-});
 
 describe("resolveThreadPlaceholder", () => {
   it("reuses previous thread data only for the same thread query", () => {
@@ -275,6 +193,7 @@ describe("resolveThreadTimelinePlaceholder", () => {
         text: "Done",
         sourceSeqStart: 1,
         sourceSeqEnd: 1,
+        messageSeq: 1,
         startedAt: 1,
         createdAt: 1,
         attachments: null,
@@ -396,119 +315,6 @@ describe("resolveProjectSourceBranchesPlaceholder", () => {
   });
 });
 
-describe("resolveEnvironmentMergeBaseBranchesPlaceholder", () => {
-  it("reuses previous branch data only when the environment, limit, and selected branch match", () => {
-    const previousBranches = makeEnvironmentDiffBranchesResponse();
-
-    expect(
-      resolveEnvironmentMergeBaseBranchesPlaceholder({
-        previousData: previousBranches,
-        previousQueryKey: [
-          "environmentMergeBaseBranches",
-          "env-1",
-          "",
-          50,
-          "origin/main",
-        ],
-        environmentId: "env-1",
-        limit: 50,
-        selectedBranch: "origin/main",
-      }),
-    ).toBe(previousBranches);
-
-    expect(
-      resolveEnvironmentMergeBaseBranchesPlaceholder({
-        previousData: previousBranches,
-        previousQueryKey: [
-          "environmentMergeBaseBranches",
-          "env-1",
-          "",
-          50,
-          "origin/main",
-        ],
-        environmentId: "env-2",
-        limit: 50,
-        selectedBranch: "origin/main",
-      }),
-    ).toBeUndefined();
-
-    expect(
-      resolveEnvironmentMergeBaseBranchesPlaceholder({
-        previousData: previousBranches,
-        previousQueryKey: [
-          "environmentMergeBaseBranches",
-          "env-1",
-          "",
-          50,
-          "origin/main",
-        ],
-        environmentId: "env-1",
-        limit: 50,
-        selectedBranch: "main",
-      }),
-    ).toBeUndefined();
-  });
-});
-
-describe("getEnvironmentWorkspaceStateInvalidationQueryKeys", () => {
-  it("targets workspace-derived status and the observer-backed diff TOC, but never the observer-less patch cache", () => {
-    const queryKeys = getEnvironmentWorkspaceStateInvalidationQueryKeys({
-      environmentId: "env-1",
-    });
-
-    expect(queryKeys).toEqual([
-      ["environmentWorkStatus", "env-1"],
-      ["environmentPullRequest", "env-1"],
-      ["environmentDiffFiles", "env-1"],
-      ["environmentFilePreview", "env-1"],
-    ]);
-    expect(queryKeys).not.toContainEqual(
-      environmentDiffPatchQueryKeyPrefix("env-1"),
-    );
-  });
-});
-
-describe("getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys", () => {
-  it("targets only merge-base-dependent work status and the diff TOC/patch caches", () => {
-    const { queryClient } = createQueryClientTestHarness();
-
-    queryClient.setQueryData(
-      environmentWorkStatusQueryKey("env-1", null),
-      null,
-    );
-    queryClient.setQueryData(
-      environmentWorkStatusQueryKey("env-1", "main"),
-      null,
-    );
-    queryClient.setQueryData(
-      environmentWorkStatusQueryKey("env-2", "main"),
-      null,
-    );
-
-    const queryKeys =
-      getCachedEnvironmentRefWorkspaceStateInvalidationQueryKeys(queryClient, {
-        environmentId: "env-1",
-      });
-
-    expect(queryKeys).toHaveLength(2);
-    expect(queryKeys).toContainEqual(
-      environmentWorkStatusQueryKey("env-1", "main"),
-    );
-    expect(queryKeys).toContainEqual(
-      environmentDiffFilesQueryKeyPrefix("env-1"),
-    );
-    expect(queryKeys).not.toContainEqual(
-      environmentDiffPatchQueryKeyPrefix("env-1"),
-    );
-    expect(queryKeys).not.toContainEqual(
-      environmentWorkStatusQueryKey("env-1", null),
-    );
-    expect(queryKeys).not.toContainEqual(
-      environmentWorkStatusQueryKey("env-2", "main"),
-    );
-  });
-});
-
 describe("optimisticallyInsertThread", () => {
   it("does not treat the prefix-only threads key as an active thread list", () => {
     const { queryClient } = createQueryClientTestHarness();
@@ -521,22 +327,24 @@ describe("optimisticallyInsertThread", () => {
     ).toEqual([]);
   });
 
-  it("preserves the server-provided runtime state", () => {
+  it("places a new thread on its selected machine in the first cached sidebar row", () => {
     const { queryClient } = createQueryClientTestHarness();
-    const threadListKey = threadListQueryKey({
-      archived: false,
-      projectId: "project-1",
-    });
-    queryClient.setQueryData(threadListKey, []);
+    queryClient.setQueryData(
+      sidebarNavigationQueryKey(),
+      makeSidebarNavigation(),
+    );
 
-    optimisticallyInsertThread(queryClient, makeThreadResponse());
+    optimisticallyInsertThread(
+      queryClient,
+      makeThreadResponse(),
+      "host-selected",
+    );
 
-    const [thread] =
-      queryClient.getQueryData<ThreadListEntry[]>(threadListKey) ?? [];
-    expect(thread?.runtime).toEqual({
-      displayStatus: "waiting-for-host",
-      hostReconnectGraceExpiresAt: null,
-    });
+    expect(
+      queryClient.getQueryData<SidebarBootstrapResponse>(
+        sidebarNavigationQueryKey(),
+      )?.projects[0]?.threads[0]?.environmentHostId,
+    ).toBe("host-selected");
   });
 
   it("projects queued work into the thread list and sidebar immediately", () => {
@@ -583,7 +391,6 @@ describe("optimisticallyInsertThread", () => {
       makeThreadResponse({
         runtime: {
           displayStatus: "active",
-          hostReconnectGraceExpiresAt: null,
         },
       }),
     );

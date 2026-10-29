@@ -1,21 +1,26 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
+import { flushSync } from "react-dom";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { THREAD_JUMP_APP_COMMAND_IDS } from "@bb/domain";
-import { Link, useNavigate } from "react-router-dom";
-import { Icon } from "@bb/shared-ui/icon";
-import { COARSE_POINTER_CHILD_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
-import { OverflowFade } from "@/components/ui/overflow-fade.js";
+import { useNavigate } from "react-router-dom";
+import { OverflowFade } from "@bb/shared-ui/overflow-fade";
 import {
   Sidebar,
+  SidebarCollapsibleBody,
   SidebarContent,
   SidebarFooter,
   SidebarMenu,
-  SidebarMenuButton,
-  SidebarMenuItem,
   useCloseMobileSidebar,
   useSidebar,
+  useIsSidebarFramed,
 } from "@/components/ui/sidebar.js";
-import { ProjectList } from "./ProjectList";
+import { ThreadActionSurfaceVisibility } from "@/lib/thread-actions/thread-action-registry";
 import { PluginThreadList } from "./PluginThreadList";
 import { useThreadListReplacement } from "./threadListProvider";
 import {
@@ -25,17 +30,9 @@ import {
 } from "@/components/plugin/PluginSidebarFooterItems";
 import { SidebarPluginAttentionGlyph } from "./SidebarPluginAttentionGlyph";
 import { SidebarUpdatesBadge } from "./SidebarUpdatesBadge";
-import { SidebarHistoryNavigationControls } from "./SidebarHistoryNavigationControls";
-import { useQuickCreateProjectController } from "@/hooks/useQuickCreateProject";
-import {
-  CHROME_ROW_CLASS,
-  getBbDesktopInfo,
-  MACOS_CHROME_CONTROL_NO_DRAG_CLASS,
-  MACOS_WINDOW_DRAG_CLASS,
-  shouldUseMacosDesktopChrome,
-} from "@/lib/bb-desktop";
+import { SidebarResizeHandle, SidebarTopReserveRow } from "./SidebarChrome";
+import { SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import { getRootComposeRoutePath, getThreadRoutePath } from "@/lib/route-paths";
-import { usePaneContentSplitDrag } from "./usePaneContentSplitDrag";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import {
   EMPTY_SIDEBAR_THREAD_SHORTCUT_KEYS,
@@ -53,46 +50,65 @@ import {
   useIndexedAppCommandHandlers,
 } from "@/components/commands/AppCommandProvider";
 import { useRouteState } from "@/hooks/useRouteState";
-import { SidebarNavigationRegion } from "./SidebarNavigationRegion";
+import { SidebarNavigationModelProvider } from "./SidebarNavigationModel";
+import { SIDEBAR_FOOTER_MORE_ID } from "./sidebarFooterPreferences";
+import { LazySidebarFooterCustomize } from "./LazySidebarFooterCustomize";
+import {
+  CHROME_ROW_HEIGHT_CLASS,
+  getBbDesktopInfo,
+  MACOS_WINDOW_DRAG_CLASS,
+  shouldUseMacosDesktopChrome,
+} from "@/lib/bb-desktop";
+import { NavRailSettingsButton } from "./NavRailSettingsButton";
+import { SidebarNavigationHeader } from "./SidebarNavigationHeader";
+import {
+  SidebarNavigationProviderMount,
+  SidebarNavigationRegion,
+  useSidebarNavigationCustomize,
+} from "./SidebarNavigationHost";
+import {
+  sidebarNavigationPlacement,
+  type ResolvedSidebarNavigation,
+} from "./sidebarNavigationProvider";
 
-const NEW_THREAD_PANE_CONTENT = { kind: "new-thread" } as const;
+import { NAV_RAIL_WIDTH_CLASS } from "./navRailWidth";
 
 const BUG_REPORT_NEW_ISSUE_URL = "https://github.com/get-bb/bb/issues/new";
-const SIDEBAR_FOOTER_ACTION_CLASS = cn(
-  COARSE_POINTER_CHILD_ICON_BUTTON_CLASS,
-  "text-muted-foreground hover:text-sidebar-foreground [&>svg]:opacity-80",
-);
 
 interface AppSidebarProps {
   onResizeMouseDown: (event: React.MouseEvent<HTMLDivElement>) => void;
   isResizing: boolean;
-  showTopReserve: boolean;
+  isBodyHidden: boolean;
+  navigation: ResolvedSidebarNavigation;
   settingsRoutePath: string;
-  toolsRoutePath?: string;
-  mobileHosted?: { hidden: boolean };
+  isSettingsActive: boolean;
+  alternateBody: ReactNode;
 }
 
 export function AppSidebar({
   onResizeMouseDown,
   isResizing,
-  showTopReserve,
+  isBodyHidden,
+  navigation,
   settingsRoutePath,
-  toolsRoutePath,
-  mobileHosted,
+  isSettingsActive,
+  alternateBody,
 }: AppSidebarProps) {
-  const quickCreateProject = useQuickCreateProjectController();
+  const placement = sidebarNavigationPlacement(navigation);
+  const [desktopInfo] = useState(getBbDesktopInfo);
+  const isFramed = useIsSidebarFramed();
   const threadListReplacement = useThreadListReplacement();
   const { threadId: activeThreadId } = useRouteState();
   const navigate = useNavigate();
-  const newThreadSplit = usePaneContentSplitDrag({
-    content: NEW_THREAD_PANE_CONTENT,
-    enabled: true,
-    label: "New thread",
-  });
   const closeOnMobile = useCloseMobileSidebar();
-  const { isCompactViewport, openMobile } = useSidebar();
-  const [compactCustomizeMode, setCompactCustomizeMode] = useState(false);
-  const [desktopInfo] = useState(getBbDesktopInfo);
+  const { isCompactViewport, open, openMobile } = useSidebar();
+  const isThreadListVisible =
+    !isBodyHidden && (isCompactViewport ? openMobile : open);
+  const [isFooterCustomizing, setFooterCustomizing] = useState(false);
+  const navigationCustomize = useSidebarNavigationCustomize(() =>
+    setFooterCustomizing(false),
+  );
+  const setNavigationCustomizing = navigationCustomize.setCustomizing;
   const [threadShortcutKeysById, setThreadShortcutKeysById] = useState<
     ReadonlyMap<string, SidebarThreadShortcutPresentation>
   >(EMPTY_SIDEBAR_THREAD_SHORTCUT_KEYS);
@@ -100,7 +116,6 @@ export function AppSidebar({
   const threadShortcutTargetsRef = useRef<
     readonly SidebarThreadShortcutTarget[]
   >([]);
-  const usesDesktopChrome = shouldUseMacosDesktopChrome(desktopInfo);
   const threadJumpShortcuts = useAppCommandShortcuts(
     THREAD_JUMP_APP_COMMAND_IDS,
   );
@@ -178,28 +193,24 @@ export function AppSidebar({
     [activeThreadId, closeOnMobile, navigate],
   );
 
-  const isHiddenHostedBody = mobileHosted?.hidden === true;
-  const isCompactCustomizeModeActive =
-    isCompactViewport && compactCustomizeMode;
   useEffect(() => {
-    if (!isCompactViewport || !openMobile || isHiddenHostedBody) {
-      setCompactCustomizeMode(false);
-    }
-  }, [isCompactViewport, isHiddenHostedBody, openMobile]);
+    if (!isCompactViewport) return;
+    if (!openMobile || isBodyHidden) setFooterCustomizing(false);
+    if (!openMobile) setNavigationCustomizing(false);
+  }, [isBodyHidden, isCompactViewport, openMobile, setNavigationCustomizing]);
   const activateVisibleThreadShortcut = useCallback(
-    (index: number) =>
-      isHiddenHostedBody ? false : activateThreadShortcut(index),
-    [activateThreadShortcut, isHiddenHostedBody],
+    (index: number) => (isBodyHidden ? false : activateThreadShortcut(index)),
+    [activateThreadShortcut, isBodyHidden],
   );
   useIndexedAppCommandHandlers(
     THREAD_JUMP_APP_COMMAND_IDS,
     activateVisibleThreadShortcut,
   );
   useAppCommandHandler("thread.previous", () =>
-    isHiddenHostedBody ? false : activateAdjacentThread(-1),
+    isBodyHidden ? false : activateAdjacentThread(-1),
   );
   useAppCommandHandler("thread.next", () =>
-    isHiddenHostedBody ? false : activateAdjacentThread(1),
+    isBodyHidden ? false : activateAdjacentThread(1),
   );
 
   useEffect(() => {
@@ -210,142 +221,155 @@ export function AppSidebar({
     hideThreadShortcuts();
   }, [hideThreadShortcuts, isAppCommandModifierHeld, showThreadShortcuts]);
 
-  const originalThreadList = (
-    <ProjectList
-      onNewProject={
-        quickCreateProject.isAvailable
-          ? quickCreateProject.openCreateDialog
-          : undefined
-      }
-      onProjectSelect={closeOnMobile}
-      isCreatingProject={quickCreateProject.isCreating}
-    />
+  const navigationRegion = (className: string) => (
+    <SidebarNavigationRegion
+      placement={placement}
+      customize={navigationCustomize}
+      className={className}
+    >
+      {placement === "rail" && !isFramed ? (
+        <div
+          aria-hidden="true"
+          className={cn(
+            CHROME_ROW_HEIGHT_CLASS,
+            "shrink-0",
+            shouldUseMacosDesktopChrome(desktopInfo) && MACOS_WINDOW_DRAG_CLASS,
+          )}
+        />
+      ) : null}
+      {placement === "rail" ? (
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col",
+            isFramed ? "pt-2.5" : "pt-1",
+          )}
+        >
+          <SidebarNavigationProviderMount resolved={navigation} />
+        </div>
+      ) : (
+        <SidebarNavigationProviderMount resolved={navigation} />
+      )}
+    </SidebarNavigationRegion>
+  );
+
+  const footer = (
+    <SidebarFooter
+      className={cn(
+        "w-full justify-center pl-(--bb-frame-footer-inset) pointer-fine:pl-[calc(var(--bb-frame-footer-inset)_+_(2rem_-_var(--bb-title-bar-control-size))/2)] pointer-fine:[&_[data-sidebar=menu-button]]:size-(--bb-title-bar-control-size) [&_[data-sidebar=menu-button]]:ring-inset pointer-fine:[&_[data-sidebar=menu]]:gap-0.5",
+        isFramed
+          ? cn(
+              "h-(--bb-app-chrome-row-height) py-0",
+              placement === "rail" && "-mb-px",
+            )
+          : "pb-(--bb-frame-footer-inset)",
+      )}
+    >
+      <SidebarMenu
+        className={cn(
+          "flex-row items-center gap-1",
+          isFooterCustomizing && "hidden",
+        )}
+      >
+        <PluginSidebarFooterItems
+          onCustomize={() => {
+            pluginSidebarFooter.dismiss();
+            setNavigationCustomizing(false);
+            setFooterCustomizing(true);
+          }}
+          activeDisclosureKey={pluginSidebarFooter.activeKey}
+          onDisclosureCommand={pluginSidebarFooter.handleCommand}
+          onNavigate={closeOnMobile}
+          builtInActions={[
+            ...(placement === "list"
+              ? [
+                  {
+                    id: "settings" as const,
+                    href: settingsRoutePath,
+                    ariaLabel: settingsShortcut
+                      ? `Settings (${settingsShortcut.label})`
+                      : "Settings",
+                    ariaKeyShortcuts: settingsShortcut?.ariaKeyshortcuts,
+                    onActivate: () => {
+                      closeOnMobile();
+                      void navigate(settingsRoutePath);
+                    },
+                  },
+                ]
+              : []),
+            {
+              id: "mobile",
+              href: "/settings/mobile",
+              onActivate: () => {
+                closeOnMobile();
+                void navigate("/settings/mobile");
+              },
+            },
+            {
+              id: "report-bug",
+              onActivate: () => {
+                closeOnMobile();
+                openUrlInExternalBrowser(BUG_REPORT_NEW_ISSUE_URL);
+              },
+            },
+          ]}
+        />
+        <SidebarPluginAttentionGlyph
+          className={SIDEBAR_FOOTER_ACTION_CLASS}
+          onNavigate={closeOnMobile}
+        />
+        <SidebarUpdatesBadge onNavigate={closeOnMobile} />
+      </SidebarMenu>
+    </SidebarFooter>
   );
 
   const body = (
     <>
-      {showTopReserve ? (
-        <div
-          data-testid="app-sidebar-top-reserve-row"
-          className={cn(
-            CHROME_ROW_CLASS,
-            "shrink-0 justify-end px-2",
-            usesDesktopChrome && MACOS_WINDOW_DRAG_CLASS,
-          )}
-        >
-          <SidebarHistoryNavigationControls
+      <SidebarTopReserveRow
+        testId="app-sidebar-top-reserve-row"
+        headerSlot={
+          navigation.kind === "plugin" &&
+          navigation.slot.headerComponent !== undefined ? (
+            <SidebarNavigationHeader resolved={navigation} />
+          ) : undefined
+        }
+      />
+      {placement === "list" ? navigationRegion("shrink-0") : null}
+      <SidebarContent>
+        <ThreadActionSurfaceVisibility visible={isThreadListVisible}>
+          <PluginThreadList
+            replacement={threadListReplacement}
             onNavigate={closeOnMobile}
-            className={cn(
-              "group-data-[collapsible=icon]:hidden",
-              usesDesktopChrome && MACOS_CHROME_CONTROL_NO_DRAG_CLASS,
-            )}
           />
-        </div>
-      ) : null}
-      <SidebarNavigationRegion
-        compactCustomizeMode={isCompactCustomizeModeActive}
-        onCompactCustomizeModeChange={setCompactCustomizeMode}
-        onNavigate={closeOnMobile}
-        splitEnabled
-        toolsRoutePath={toolsRoutePath}
-        newThreadSplit={newThreadSplit}
-        onNewChat={handleNewChat}
-        onSearchThreads={closeOnMobile}
-      />
-      <div
-        aria-hidden="true"
-        className={cn(
-          "mx-2 my-2 shrink-0 border-t border-sidebar-border/25",
-          isCompactCustomizeModeActive && "hidden",
-        )}
-        data-testid="app-sidebar-navigation-divider"
-      />
-      <SidebarContent
-        className={cn(isCompactCustomizeModeActive && "hidden")}
-        aria-hidden={isCompactCustomizeModeActive ? true : undefined}
-        inert={isCompactCustomizeModeActive ? true : undefined}
-      >
-        <PluginThreadList
-          replacement={threadListReplacement}
-          original={originalThreadList}
-          searchQuery=""
-          onNavigate={closeOnMobile}
-        />
+        </ThreadActionSurfaceVisibility>
       </SidebarContent>
-      <SidebarFooter className="relative">
-        <OverflowFade placement="above" tone="sidebar" size="sm" />
-        <PluginSidebarFooterDisclosure
-          item={pluginSidebarFooter.activeItem}
-          onDismiss={pluginSidebarFooter.dismiss}
-        />
-        <SidebarMenu className="flex-row flex-wrap-reverse items-center gap-1">
-          <SidebarMenuItem className="min-w-0">
-            <SidebarMenuButton
-              asChild
-              aria-label={
-                settingsShortcut
-                  ? `Settings (${settingsShortcut.label})`
-                  : "Settings"
-              }
-              aria-keyshortcuts={settingsShortcut?.ariaKeyshortcuts}
-              tooltip={{
-                children: settingsShortcut
-                  ? `Settings (${settingsShortcut.label})`
-                  : "Settings",
-                hidden: false,
-                side: "top",
-              }}
-              className={SIDEBAR_FOOTER_ACTION_CLASS}
-            >
-              <Link to={settingsRoutePath} onClick={closeOnMobile}>
-                <Icon name="Settings" />
-                <span className="sr-only">Settings</span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <PluginSidebarFooterItems
-            activeDisclosureKey={pluginSidebarFooter.activeKey}
-            suppressedTooltipKey={pluginSidebarFooter.suppressedTooltipKey}
-            onTooltipSuppressionEnd={
-              pluginSidebarFooter.clearTooltipSuppression
-            }
-            onDisclosureCommand={pluginSidebarFooter.handleCommand}
-            onNavigate={closeOnMobile}
-          />
-          <SidebarMenuItem className="min-w-0">
-            <SidebarMenuButton
-              className={SIDEBAR_FOOTER_ACTION_CLASS}
-              tooltip={{
-                children: "Report a bug",
-                hidden: false,
-                side: "top",
-              }}
-              aria-label="Report a bug"
-              onClick={() => {
-                closeOnMobile();
-                openUrlInExternalBrowser(BUG_REPORT_NEW_ISSUE_URL);
-              }}
-            >
-              <Icon name="Bug" />
-              <span className="sr-only">Report a bug</span>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
-          <li aria-hidden="true" className="min-w-0 flex-1" />
-          <SidebarPluginAttentionGlyph
-            className={SIDEBAR_FOOTER_ACTION_CLASS}
-            onNavigate={closeOnMobile}
-          />
-          <SidebarUpdatesBadge onNavigate={closeOnMobile} />
-        </SidebarMenu>
-      </SidebarFooter>
       <div
-        data-testid="app-sidebar-resize-handle"
         className={cn(
-          "absolute -right-1.5 top-0 z-30 hidden h-full w-3 cursor-col-resize md:block",
-          "before:absolute before:inset-y-0 before:left-1/2 before:w-px before:-translate-x-1/2 before:bg-transparent before:transition-colors hover:before:bg-sidebar-border",
-          "group-data-[collapsible=icon]:hidden",
-          isResizing && "before:bg-sidebar-border",
+          "relative flex flex-col gap-2",
+          (isFooterCustomizing || pluginSidebarFooter.activeItem !== null) &&
+            "px-2 pt-2",
         )}
+      >
+        <OverflowFade placement="above" tone="sidebar" size="sm" />
+        {isFooterCustomizing ? (
+          <div className="max-h-[50svh] overflow-y-auto">
+            <LazySidebarFooterCustomize
+              onDone={() => {
+                flushSync(() => setFooterCustomizing(false));
+                document.getElementById(SIDEBAR_FOOTER_MORE_ID)?.focus();
+              }}
+            />
+          </div>
+        ) : (
+          <PluginSidebarFooterDisclosure
+            item={pluginSidebarFooter.activeItem}
+            onDismiss={pluginSidebarFooter.dismiss}
+          />
+        )}
+      </div>
+      {placement === "list" ? footer : null}
+      <SidebarResizeHandle
+        testId="app-sidebar-resize-handle"
+        isResizing={isResizing}
         onMouseDown={onResizeMouseDown}
       />
     </>
@@ -353,18 +377,78 @@ export function AppSidebar({
 
   return (
     <SidebarThreadShortcutKeysContext.Provider value={threadShortcutKeysById}>
-      {mobileHosted ? (
-        <div
-          ref={sidebarRef}
-          data-testid="app-sidebar-body"
-          hidden={mobileHosted.hidden}
-          className="flex min-h-0 flex-1 flex-col"
-        >
-          {body}
-        </div>
-      ) : (
-        <Sidebar ref={sidebarRef}>{body}</Sidebar>
-      )}
+      <SidebarNavigationModelProvider
+        onNavigate={closeOnMobile}
+        onNewChat={handleNewChat}
+        onSearchThreads={closeOnMobile}
+        onOpenCustomize={navigationCustomize.open}
+        splitEnabled
+      >
+        <Sidebar ref={sidebarRef}>
+          <div className="grid min-h-0 flex-1 grid-cols-[auto_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto]">
+            {placement === "rail"
+              ? navigationRegion(
+                  cn(
+                    "relative z-10 flex shrink-0 flex-col",
+                    NAV_RAIL_WIDTH_CLASS,
+                    !isFramed &&
+                      "-mt-[env(safe-area-inset-top)] bg-surface-recessed pt-[env(safe-area-inset-top)]",
+                  ),
+                )
+              : null}
+            <SidebarCollapsibleBody
+              data-testid="nav-rail-sidebar-body"
+              className={cn(
+                "col-start-2 row-start-1",
+                (isBodyHidden || placement === "list") && "row-span-2",
+                isFramed &&
+                  !isBodyHidden &&
+                  placement === "rail" &&
+                  "rounded-bl-none border-b-0 [clip-path:inset(0_-6px_0_0_round_var(--bb-frame-card-radius)_0_0_0)]",
+              )}
+            >
+              <div
+                data-testid="app-sidebar-body"
+                hidden={isBodyHidden}
+                className="flex min-h-0 min-w-0 flex-1 flex-col"
+              >
+                {body}
+              </div>
+              {alternateBody}
+            </SidebarCollapsibleBody>
+            {placement === "rail" ? (
+              <div
+                className={cn(
+                  "col-start-1 row-start-2 flex shrink-0 items-center justify-center",
+                  NAV_RAIL_WIDTH_CLASS,
+                  isFramed
+                    ? "h-(--bb-app-chrome-row-height)"
+                    : "bg-surface-recessed -mb-[env(safe-area-inset-bottom)] pt-2 pb-[calc(var(--bb-frame-footer-inset)_+_env(safe-area-inset-bottom))]",
+                )}
+              >
+                <NavRailSettingsButton
+                  isSettingsActive={isSettingsActive}
+                  settingsRoutePath={settingsRoutePath}
+                />
+              </div>
+            ) : null}
+            {placement === "rail" ? (
+              <SidebarCollapsibleBody
+                data-testid="sidebar-footer-body"
+                contentInFlow
+                hidden={isBodyHidden}
+                className={cn(
+                  "col-start-2 row-start-2",
+                  isFramed &&
+                    "rounded-tl-none border-t-0 [clip-path:inset(0_-6px_0_0_round_0_0_0_var(--bb-frame-card-radius))]",
+                )}
+              >
+                {footer}
+              </SidebarCollapsibleBody>
+            ) : null}
+          </div>
+        </Sidebar>
+      </SidebarNavigationModelProvider>
     </SidebarThreadShortcutKeysContext.Provider>
   );
 }

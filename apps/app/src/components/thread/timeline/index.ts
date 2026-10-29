@@ -1,12 +1,14 @@
 export { isRunningThreadRuntimeDisplayStatus } from "@bb/client-core";
 export { ThreadTimelineRows } from "./ThreadTimelineRows.js";
 export type { ThreadTimelineRowsProps } from "./ThreadTimelineRows.js";
-export { ThreadTimelinePanelContent } from "./ThreadTimelinePanelContent.js";
 export {
   ThreadTimelineSurface,
   type ThreadTimelineSurfaceProps,
 } from "./ThreadTimelineSurface.js";
-export { useThreadTimelineController } from "./useThreadTimelineController.js";
+export {
+  useThreadTimelineController,
+  type UseThreadTimelineControllerResult,
+} from "./useThreadTimelineController.js";
 export type { TimelineTitleActionResolver } from "./TimelineTitleView.js";
 export { TimelineWorkingIndicator } from "./TimelineWorkingIndicator.js";
 export { ThreadContextWindowIndicator } from "./ThreadContextWindowIndicator.js";
@@ -16,11 +18,10 @@ export type {
   ThreadTimelineInlineMessageEditor,
   ThreadTimelineForkMessageHandler,
   ThreadTimelineAddToChatHandler,
-  ThreadTimelineSendToMainMessageHandler,
   ThreadTimelineConsumerMessageAction,
   ThreadTimelineLinkHandler,
   ThreadTimelineLocalFileLink,
   ThreadTimelineLocalFileLinkHandler,
-  ThreadTimelineOpenPluginPanelHandler,
+  ThreadTimelineUnreadDividerAnchor,
   ThreadTimelineUnreadDividerPlacement,
 } from "./types.js";

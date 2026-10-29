@@ -32,6 +32,7 @@ function userRow(args: {
     turnId: `${TURN_PREFIX}${args.seq}`,
     sourceSeqStart: args.seq,
     sourceSeqEnd: args.seq,
+    messageSeq: args.seq,
     startedAt: args.createdAt,
     createdAt: args.createdAt,
     kind: "conversation",
@@ -58,6 +59,7 @@ function assistantRow(args: {
     turnId: `${TURN_PREFIX}${args.seq - 1}`,
     sourceSeqStart: args.seq,
     sourceSeqEnd: args.seq,
+    messageSeq: args.seq,
     startedAt: args.createdAt,
     createdAt: args.createdAt,
     kind: "conversation",
@@ -105,7 +107,7 @@ const conversationRows: TimelineRow[] = [
 ];
 
 const afterCutoffPlacement: ThreadTimelineUnreadDividerPlacement = {
-  kind: "after-cutoff",
+  anchor: "first-unread-row",
   cutoffAt: T0 + 3 * MINUTE + 30_000,
 };
 

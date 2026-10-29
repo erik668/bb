@@ -1,5 +1,5 @@
 import { useCallback, useMemo, type ReactNode } from "react";
-import { useAtom } from "jotai";
+import { useAtom, useAtomValue } from "jotai";
 import { DndContext, type DragEndEvent } from "@dnd-kit/core";
 import {
   SortableContext,
@@ -10,10 +10,10 @@ import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
-import { PluginIcon } from "@/components/plugin/PluginIcon";
+import { PluginItemIcon } from "@/components/plugin/PluginIcon";
 import type { PluginPanelActionEntry } from "@/components/plugin/PluginPanelActions";
-import { useSidebarSortable } from "@/components/sidebar/sortableMotion";
-import { useReorderDnd } from "@/components/ui/useReorderDnd";
+import { useSidebarSortable } from "@bb/shared-ui/sortable-motion";
+import { useReorderDnd } from "@bb/shared-ui/use-reorder-dnd";
 import { isDesktopBrowserAvailable } from "@/lib/bb-desktop";
 import { arrangeByStoredOrder, reorderStoredOrder } from "@/lib/stored-order";
 import type { AppShortcutPresentation } from "@/lib/app-keybindings";
@@ -27,7 +27,7 @@ import { newTabActionOrderAtom } from "./newTabActionsAtoms";
 export type OpenBrowserHandler = () => void;
 export type StartTerminalHandler = () => void;
 
-export interface NewTabActionsProps {
+export interface UseNewTabActionsArgs {
   onOpenBrowser?: OpenBrowserHandler;
   onStartTerminal?: StartTerminalHandler;
   startTerminalDisabled?: boolean;
@@ -35,10 +35,15 @@ export interface NewTabActionsProps {
   pluginActions?: readonly PluginPanelActionEntry[];
 }
 
-interface NewTabAction {
+export interface NewTabActionsProps {
+  actions: readonly NewTabAction[];
+}
+
+export interface NewTabAction {
   id: string;
   icon: ReactNode;
   label: string;
+  tooltip?: string;
   disabled: boolean;
   shortcut: AppShortcutPresentation | null;
   trailing: ReactNode;
@@ -66,7 +71,7 @@ interface NewTabActionRowProps {
 
 const ACTIONS_SECTION_LABEL = "Actions";
 const NEW_TAB_ACTION_DRAG_HANDLE_CLASS =
-  "cursor-grab touch-none opacity-0 transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing group-hover:opacity-100 [@media(hover:none)]:opacity-100";
+  "relative cursor-grab touch-none opacity-0 transition-opacity focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing group-hover:opacity-100 [@media(hover:none)]:opacity-100";
 const OPEN_BROWSER_ACTION_ID = "file-search-result-open-browser";
 const START_TERMINAL_ACTION_ID = "file-search-result-start-terminal";
 
@@ -80,13 +85,14 @@ function actionIcon(iconName: IconName): ReactNode {
   );
 }
 
-export function NewTabActions({
+export function useNewTabActions({
   onOpenBrowser,
   onStartTerminal,
   pluginActions,
   startTerminalDisabled = false,
   startTerminalTrailing,
-}: NewTabActionsProps) {
+}: UseNewTabActionsArgs): NewTabAction[] {
+  const storedOrder = useAtomValue(newTabActionOrderAtom);
   const terminalShortcut = useAppCommandShortcut("terminal.open");
   const showOpenBrowser =
     onOpenBrowser !== undefined && isDesktopBrowserAvailable();
@@ -118,13 +124,14 @@ export function NewTabActions({
     actions.push({
       id: action.id,
       icon: (
-        <PluginIcon
+        <PluginItemIcon
           pluginId={action.pluginId}
           icon={action.icon}
           className={COARSE_POINTER_COMPACT_ICON_SIZE_CLASS}
         />
       ),
       label: action.title,
+      tooltip: action.tooltip,
       disabled: false,
       shortcut: null,
       trailing: null,
@@ -132,6 +139,37 @@ export function NewTabActions({
     });
   }
 
+  return arrangeByStoredOrder({
+    items: actions,
+    getId: (action) => action.id,
+    storedOrder,
+  }).ordered;
+}
+
+function toSearchWords(label: string): string[] {
+  return label
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word.length > 0);
+}
+
+export function matchNewTabActions(
+  actions: readonly NewTabAction[],
+  query: string,
+): NewTabAction[] {
+  const queryWords = toSearchWords(query);
+  if (queryWords.length === 0) {
+    return [];
+  }
+  return actions.filter((action) => {
+    const words = toSearchWords(action.label);
+    return queryWords.every((queryWord) =>
+      words.some((word) => word.startsWith(queryWord)),
+    );
+  });
+}
+
+export function NewTabActions({ actions }: NewTabActionsProps) {
   if (actions.length === 0) {
     return null;
   }
@@ -148,27 +186,20 @@ export function NewTabActions({
 
 function NewTabActionList({ actions }: NewTabActionListProps) {
   const [storedOrder, setStoredOrder] = useAtom(newTabActionOrderAtom);
-  const { ordered, normalizedOrder } = useMemo(
+  const { normalizedOrder } = useMemo(
     () =>
       arrangeByStoredOrder({
-        items: actions.map((action) => action.id),
-        getId: (id) => id,
+        items: actions,
+        getId: (action) => action.id,
         storedOrder,
       }),
     [actions, storedOrder],
   );
-  const orderedActions = useMemo(() => {
-    const byId = new Map(actions.map((action) => [action.id, action]));
-    return ordered.flatMap((id) => {
-      const action = byId.get(id);
-      return action ? [action] : [];
-    });
-  }, [actions, ordered]);
 
-  if (orderedActions.length < 2) {
+  if (actions.length < 2) {
     return (
       <div className="flex flex-col gap-px">
-        {orderedActions.map((action) => (
+        {actions.map((action) => (
           <NewTabActionRow key={action.id} action={action} />
         ))}
       </div>
@@ -177,7 +208,7 @@ function NewTabActionList({ actions }: NewTabActionListProps) {
 
   return (
     <ReorderableNewTabActionList
-      actions={orderedActions}
+      actions={actions}
       normalizedOrder={normalizedOrder}
       onOrderChange={setStoredOrder}
     />
@@ -272,17 +303,19 @@ function NewTabActionRow({ action, dragHandle }: NewTabActionRowProps) {
     <div
       className={cn(
         LAUNCHER_ACTION_ROW_BASE_CLASS,
-        "relative scroll-mt-7 focus-within:bg-state-hover focus-within:text-foreground",
+        "relative scroll-mt-7 select-none focus-within:bg-state-hover focus-within:text-foreground",
         !action.disabled && "hover:bg-state-hover",
       )}
     >
       <button
         type="button"
         id={action.id}
+        title={action.tooltip ?? action.label}
+        data-panel-new-tab-item=""
         aria-keyshortcuts={action.shortcut?.ariaKeyshortcuts}
         disabled={action.disabled}
         onClick={action.onSelect}
-        className="flex min-w-0 flex-1 items-center gap-1.5 text-left focus-visible:outline-none disabled:cursor-default"
+        className="flex min-w-0 flex-1 items-center gap-1.5 text-left after:absolute after:inset-0 after:rounded after:content-[''] focus-visible:outline-none disabled:cursor-default"
       >
         <span className={LAUNCHER_ROW_ICON_CLASS}>{action.icon}</span>
         <span className="min-w-0 flex-1 truncate text-foreground">
@@ -292,7 +325,7 @@ function NewTabActionRow({ action, dragHandle }: NewTabActionRowProps) {
       <AppCommandShortcutHint shortcut={action.shortcut} />
       {dragHandle}
       {action.trailing !== null ? (
-        <div className="flex min-w-0 shrink-0 items-center">
+        <div className="relative flex min-w-0 shrink-0 items-center">
           {action.trailing}
         </div>
       ) : null}

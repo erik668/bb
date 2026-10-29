@@ -9,7 +9,10 @@ import {
   projectBufferedTextEvent,
   projectReasoningTextEvent,
 } from "./buffered-text-projection.js";
-import { resolveBufferedTextIdentity } from "./buffered-text-identity.js";
+import {
+  createBufferedTextInstanceKey,
+  resolveBufferedTextIdentity,
+} from "./buffered-text-identity.js";
 import type { EventMeta } from "./event-decode.js";
 import type { EventProjectionAssistantTextMessage } from "./event-projection-types.js";
 import { messageId } from "./format-helpers.js";
@@ -41,6 +44,7 @@ function createAssistantTextMessage(
     kind: "assistant-text",
     id: messageId(args.decoded.threadId, "assistant", args.messageKey),
     threadId: args.decoded.threadId,
+    sourceEvent: { seq: args.meta.seq, part: 0 },
     sourceSeqStart: args.meta.seq,
     sourceSeqEnd: args.meta.seq,
     createdAt: args.meta.createdAt,
@@ -133,7 +137,10 @@ export function projectAssistantAndReasoningEvent(
   if (
     projectReasoningTextEvent({
       identity: reasoningIdentity,
-      mode: "delta",
+      mode:
+        args.decoded.type === "item/reasoning/summaryTextDelta"
+          ? "summary-delta"
+          : "content-delta",
       state: args.state,
       text: parseReasoningDeltaText(args.decoded),
     })
@@ -141,11 +148,28 @@ export function projectAssistantAndReasoningEvent(
     return true;
   }
 
+  const reasoningFinalText = parseReasoningFinalText(args.decoded);
+  let reasoningCompletionText = reasoningFinalText;
+  if (
+    reasoningIdentity &&
+    args.decoded.type === "item/completed" &&
+    args.decoded.item.type === "reasoning"
+  ) {
+    const deltas = args.state.reasoningDeltaTextByKey.get(
+      createBufferedTextInstanceKey(reasoningIdentity),
+    );
+    if (
+      deltas?.summary === args.decoded.item.summary.join("") &&
+      deltas.content === args.decoded.item.content.join("")
+    ) {
+      reasoningCompletionText = null;
+    }
+  }
   const projectedReasoningFinal = projectReasoningTextEvent({
     identity: reasoningIdentity,
     mode: "final",
     state: args.state,
-    text: parseReasoningFinalText(args.decoded),
+    text: reasoningCompletionText,
   });
 
   if (
@@ -157,9 +181,9 @@ export function projectAssistantAndReasoningEvent(
       meta: args.meta,
       state: args.state,
       status: "completed",
-      text: parseReasoningFinalText(args.decoded),
+      text: reasoningCompletionText,
     });
   }
 
-  return projectedReasoningFinal;
+  return projectedReasoningFinal || reasoningFinalText !== null;
 }

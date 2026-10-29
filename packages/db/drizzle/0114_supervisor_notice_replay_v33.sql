@@ -1,1 +1,0 @@
-CREATE UNIQUE INDEX `thread_supervisor_inbox_queue_idx` ON `thread_supervisor_inbox` (`queued_message_id`);

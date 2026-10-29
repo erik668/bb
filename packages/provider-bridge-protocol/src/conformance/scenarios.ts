@@ -8,6 +8,7 @@ import {
 import { z } from "zod";
 import {
   BRIDGE_JSON_RPC_ERRORS,
+  BRIDGE_NOTIFICATION_METHODS,
   BRIDGE_REQUEST_METHODS,
   bridgeErrorDataSchema,
   initializeResultSchema,
@@ -55,6 +56,65 @@ function identityProblem(
   return `the result must be ${IDENTITY_RESULT_SHAPE} — the runtime adopts no session without providerThreadId on the result (a thread/identity notification does not substitute for it); issues: ${parsed.error.issues
     .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
     .join("; ")} (got ${JSON.stringify(result)})`;
+}
+
+const identityNotificationParamsSchema = z
+  .object({ threadId: z.string(), providerThreadId: z.string() })
+  .passthrough();
+
+async function checkIdentityAnnounced(
+  context: ScenarioContext,
+  args: {
+    id: string;
+    providerThreadId: string;
+    request: string;
+    threadId: string;
+    title: string;
+  },
+): Promise<ConformanceCheckResult> {
+  const { client } = context;
+  const announced = await client.waitFor(() => {
+    const notified = client
+      .notifications(BRIDGE_NOTIFICATION_METHODS.threadIdentity)
+      .some((message) => {
+        const params = identityNotificationParamsSchema.safeParse(
+          message.params,
+        );
+        return (
+          params.success &&
+          params.data.threadId === args.threadId &&
+          params.data.providerThreadId === args.providerThreadId
+        );
+      });
+    const assembled = threadEvents(context, args.threadId).some(
+      (event) =>
+        event.type === "thread/identity" &&
+        event.providerThreadId === args.providerThreadId,
+    );
+    return notified || assembled ? true : undefined;
+  });
+  if (announced === null) {
+    const named = client
+      .notifications(BRIDGE_NOTIFICATION_METHODS.threadIdentity)
+      .flatMap((message) => {
+        const params = identityNotificationParamsSchema.safeParse(
+          message.params,
+        );
+        return params.success && params.data.threadId === args.threadId
+          ? [params.data.providerThreadId]
+          : [];
+      });
+    return fail(
+      args.id,
+      args.title,
+      `${args.request} returned providerThreadId "${args.providerThreadId}" for thread "${args.threadId}", but no thread/identity notification or thread.identity delta announced it${
+        named.length === 0
+          ? ""
+          : ` (thread/identity named ${named.map((id) => `"${id}"`).join(", ")})`
+      }; bb persists and resumes only sessions announced this way, so every later send would start a new session`,
+    );
+  }
+  return pass(args.id, args.title);
 }
 
 function pass(id: string, title: string): ConformanceCheckResult {
@@ -313,6 +373,7 @@ export interface HandshakeScenarioOutcome {
 
 export async function runHandshakeScenario(
   client: ConformanceClient,
+  fixture: ConformanceSessionFixture,
 ): Promise<HandshakeScenarioOutcome> {
   const id = client.request(BRIDGE_REQUEST_METHODS.initialize, {
     protocolVersion: PROVIDER_BRIDGE_PROTOCOL_VERSION,
@@ -358,57 +419,66 @@ export async function runHandshakeScenario(
   return {
     results: [
       pass("handshake/initialize", title),
-      ...(await runSkillsConfigureDeclaredScenario(
-        client,
-        parsed.data.capabilities.skills.configure,
-      )),
+      ...(await runDeclaredRequestScenario(client, {
+        id: "skills/configure-declared",
+        method: BRIDGE_REQUEST_METHODS.skillsConfigure,
+        params: { roots: [] },
+        capability: "skills.configure",
+        declared: parsed.data.capabilities.skills.configure,
+      })),
+      ...(await runDeclaredRequestScenario(client, {
+        id: "commands/list-declared",
+        method: BRIDGE_REQUEST_METHODS.commandList,
+        params: { cwd: fixture.cwd },
+        capability: "commands.list",
+        declared: parsed.data.capabilities.commands.list,
+      })),
     ],
     capabilities: parsed.data.capabilities,
   };
 }
 
-const SKILLS_CONFIGURE_DECLARED_ID = "skills/configure-declared";
-const SKILLS_CONFIGURE_DECLARED_TITLE =
-  "skills/configure is handled iff the handshake declares skills.configure";
-
-async function runSkillsConfigureDeclaredScenario(
+async function runDeclaredRequestScenario(
   client: ConformanceClient,
-  declared: boolean,
+  args: {
+    id: string;
+    method: string;
+    params: Record<string, unknown>;
+    capability: string;
+    declared: boolean;
+  },
 ): Promise<ConformanceCheckResult[]> {
-  const id = client.request(BRIDGE_REQUEST_METHODS.skillsConfigure, {
-    roots: [],
-  });
+  const title = `${args.method} is handled iff the handshake declares ${args.capability}`;
+  const id = client.request(args.method, args.params);
   const response = await client.waitForResponse(id);
   if (response === null) {
-    return [
-      fail(
-        SKILLS_CONFIGURE_DECLARED_ID,
-        SKILLS_CONFIGURE_DECLARED_TITLE,
-        "skills/configure was not answered",
-      ),
-    ];
+    return [fail(args.id, title, `${args.method} was not answered`)];
   }
-  if (declared) {
+  if (args.declared) {
     return response.error === undefined
-      ? [pass(SKILLS_CONFIGURE_DECLARED_ID, SKILLS_CONFIGURE_DECLARED_TITLE)]
+      ? [pass(args.id, title)]
       : [
           fail(
-            SKILLS_CONFIGURE_DECLARED_ID,
-            SKILLS_CONFIGURE_DECLARED_TITLE,
-            `the handshake declares skills.configure but the request failed: ${JSON.stringify(response.error)}`,
+            args.id,
+            title,
+            `the handshake declares ${args.capability} but the request failed: ${JSON.stringify(response.error)}`,
           ),
         ];
   }
   return errorCode(response) === BRIDGE_JSON_RPC_ERRORS.METHOD_NOT_FOUND
-    ? [pass(SKILLS_CONFIGURE_DECLARED_ID, SKILLS_CONFIGURE_DECLARED_TITLE)]
+    ? [pass(args.id, title)]
     : [
         fail(
-          SKILLS_CONFIGURE_DECLARED_ID,
-          SKILLS_CONFIGURE_DECLARED_TITLE,
-          `the handshake does not declare skills.configure, yet the bridge answered the request with ${JSON.stringify(response.error ?? response.result)}; declare it (the runtime never sends an undeclared request)`,
+          args.id,
+          title,
+          `the handshake does not declare ${args.capability}, yet the bridge answered the request with ${JSON.stringify(response.error ?? response.result)}; declare it (the runtime never sends an undeclared request)`,
         ),
       ];
 }
+
+const START_IDENTITY_ANNOUNCED_ID = "session/start-identity-announced";
+const START_IDENTITY_ANNOUNCED_TITLE =
+  "thread/start announces the returned session through thread/identity";
 
 export async function runSessionLifecycleScenarios(
   context: ScenarioContext,
@@ -454,6 +524,22 @@ export async function runSessionLifecycleScenarios(
   }
 
   const startSkipDetail = "prerequisite session/start-identity failed";
+
+  results.push(
+    context.providerThreadId === undefined
+      ? skipped(
+          START_IDENTITY_ANNOUNCED_ID,
+          START_IDENTITY_ANNOUNCED_TITLE,
+          startSkipDetail,
+        )
+      : await checkIdentityAnnounced(context, {
+          id: START_IDENTITY_ANNOUNCED_ID,
+          providerThreadId: context.providerThreadId,
+          request: "thread/start",
+          threadId,
+          title: START_IDENTITY_ANNOUNCED_TITLE,
+        }),
+  );
 
   if (context.providerThreadId === undefined) {
     results.push(
@@ -725,6 +811,9 @@ const RESUME_IDENTITY_TITLE =
   "thread/resume returns a provider thread identity";
 
 const FORK_IDENTITY_ID = "session/fork-identity";
+const FORK_IDENTITY_ANNOUNCED_ID = "session/fork-identity-announced";
+const FORK_IDENTITY_ANNOUNCED_TITLE =
+  "thread/fork announces the forked session through thread/identity";
 const FORK_IDENTITY_TITLE =
   "thread/fork returns a provider thread identity for the forked session";
 
@@ -782,6 +871,13 @@ async function runForkIdentityScenario(
       ),
     ];
   }
+  const announced = await checkIdentityAnnounced(context, {
+    id: FORK_IDENTITY_ANNOUNCED_ID,
+    providerThreadId: parsed.data.providerThreadId,
+    request: "thread/fork",
+    threadId: forkThreadId,
+    title: FORK_IDENTITY_ANNOUNCED_TITLE,
+  });
   const releaseId = client.request(BRIDGE_REQUEST_METHODS.threadStop, {
     threadId: forkThreadId,
     providerThreadId: parsed.data.providerThreadId,
@@ -789,7 +885,7 @@ async function runForkIdentityScenario(
     activeTurnId: null,
   });
   await client.waitForResponse(releaseId);
-  return [pass(FORK_IDENTITY_ID, FORK_IDENTITY_TITLE)];
+  return [pass(FORK_IDENTITY_ID, FORK_IDENTITY_TITLE), announced];
 }
 
 const THREADS_INDEPENDENT_ID = "session/threads-independent";

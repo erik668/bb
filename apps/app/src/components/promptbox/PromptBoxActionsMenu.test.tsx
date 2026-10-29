@@ -1,7 +1,13 @@
 // @vitest-environment jsdom
 
-import type { ComposerView } from "@get-bb/plugin-sdk";
+import type {
+  ComposerSelection,
+  ComposerView,
+  PluginComposerApi,
+  PluginComposerScope,
+} from "@get-bb/plugin-sdk";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -9,6 +15,18 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  collectPluginAppRegistrations,
+  definePluginApp,
+} from "@/lib/plugin-app-definition";
+import {
+  resetPluginSlotStoreForTest,
+  setPluginSlotRegistrations,
+} from "@/lib/plugin-slots";
+import { registerComposerMenuPlugins } from "@/test/fixtures/composer-menu";
+import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { ComposerRendererTestHost } from "@/test/fixtures/composer-renderer";
+import { installPluginRuntime } from "@/lib/plugin-frontend";
 import { MemoryRouter } from "react-router-dom";
 import {
   PluginComposerHostProvider,
@@ -16,21 +34,59 @@ import {
   type PluginComposerHost,
 } from "@/components/plugin/plugin-composer-host";
 import type { PluginComposerPlusMenuContribution } from "@/components/plugin/PluginComposerActions";
+import { ComposerMenuEntry } from "@/components/promptbox/composer-root";
 import { emptyPromptDraftState } from "@bb/client-core";
+import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import {
   resetPluginLogoStoreForTest,
   setPluginLogoUrls,
 } from "@/lib/plugin-logos";
-import {
-  CREATE_PLUGIN_PROMPT_ACTION,
-  PromptBoxActionsMenu,
-  withAppPromptActions,
-} from "./PromptBoxActionsMenu";
+import { loadComposerMenus } from "@/test/fixtures/composer-plugin-modules";
+
+vi.mock("@/hooks/usePromptMentions", async () =>
+  (await import("@/test/fixtures/composer-search")).fakePromptMentionsModule(),
+);
+vi.mock("@/hooks/useCommandSuggestions", async () =>
+  (
+    await import("@/test/fixtures/composer-search")
+  ).fakeCommandSuggestionsModule(),
+);
+
+installPluginRuntime();
+const { ComposerPlusMenuSlot, ComposerSendMenu, PromptBoxActionsMenu } =
+  await loadComposerMenus();
 
 afterEach(() => {
   cleanup();
+  resetPluginSlotStoreForTest();
   resetPluginLogoStoreForTest();
 });
+
+function composerHost(
+  scope: PluginComposerScope,
+  selection: () => ComposerSelection,
+  subscribeSelection: PluginComposerHost["subscribeSelection"] = () => () => {},
+): { host: PluginComposerHost; view: ComposerView } {
+  const draft = { ...emptyPromptDraftState(), text: "Draft" };
+  return {
+    view: {
+      scope,
+      layout: "expanded",
+      draft: { text: "Draft", isEmpty: false, attachmentCount: 0 },
+      run: { isRunning: false, isSubmitting: false },
+    },
+    host: {
+      scope,
+      textEffectKey: `test-${scope.kind}`,
+      getCurrent: () => draft,
+      subscribeDraft: () => () => {},
+      setDraft: () => {},
+      focus: () => {},
+      getSelection: selection,
+      subscribeSelection,
+    },
+  };
+}
 
 describe("PromptBoxActionsMenu", () => {
   it("does not render when no prompt actions are provided", () => {
@@ -45,67 +101,145 @@ describe("PromptBoxActionsMenu", () => {
 
     const trigger = screen.getByRole("button", { name: "Prompt actions" });
     expect(trigger.classList).toContain("text-subtle-foreground/75");
+    expect(trigger.querySelector('[data-icon="Plus"]')).not.toBeNull();
+    expect(trigger.querySelector('[data-icon="Spinner"]')).toBeNull();
     fireEvent.pointerDown(trigger, { button: 0 });
-    fireEvent.click(
-      await screen.findByRole("menuitem", { name: "Attach files" }),
-    );
-
+    const attach = await screen.findByRole("menuitem", {
+      name: "Attach files",
+    });
+    expect(attach.getAttribute("aria-disabled")).not.toBe("true");
+    expect(attach.querySelector('[data-icon="Paperclip"]')).not.toBeNull();
+    expect(attach.querySelector('[data-icon="Loading"]')).toBeNull();
+    fireEvent.click(attach);
     expect(onAttach).toHaveBeenCalledOnce();
   });
 
-  it("keeps the plus menu trigger stable during attachment uploads", () => {
-    render(
-      <PromptBoxActionsMenu
-        isAttaching
-        onAction={() => {}}
-        onAttach={() => {}}
-      />,
-    );
+  it.each<PluginComposerScope>([
+    { kind: "new-thread", projectId: null },
+    { kind: "thread", threadId: "thread-1" },
+    { kind: "queued-message", threadId: "thread-1", queuedMessageId: "q-1" },
+  ])(
+    "lists provider actions before the Automation and Plugin rows in a $kind composer",
+    async (scope) => {
+      registerComposerMenuPlugins();
+      const selection: ComposerSelection = {};
+      const { host, view } = composerHost(scope, () => selection);
+      render(
+        <MemoryRouter>
+          <PluginComposerHostProvider value={host}>
+            <PluginComposerViewProvider value={view}>
+              <ComposerRendererTestHost>
+                <ComposerPlusMenuSlot
+                  actions={[
+                    { kind: "skills", text: "/skills " },
+                    { kind: "plan", text: "/plan " },
+                  ]}
+                  onAction={() => {}}
+                />
+              </ComposerRendererTestHost>
+            </PluginComposerViewProvider>
+          </PluginComposerHostProvider>
+        </MemoryRouter>,
+      );
 
-    const trigger = screen.getByRole("button", { name: "Prompt actions" });
-    expect(trigger.querySelector('[data-icon="Plus"]')).not.toBeNull();
-    expect(trigger.querySelector('[data-icon="Spinner"]')).toBeNull();
-  });
+      fireEvent.pointerDown(
+        screen.getByRole("button", { name: "Prompt actions" }),
+        { button: 0 },
+      );
+      const menuItems = await screen.findAllByRole("menuitem");
+      expect(menuItems.map((item) => item.textContent)).toEqual([
+        "Skills",
+        "Plan",
+        "Automation",
+        "Plugin",
+      ]);
+      expect(
+        menuItems.map((item) =>
+          item.querySelector("[data-icon]")?.getAttribute("data-icon"),
+        ),
+      ).toEqual(["Zap", "ListTodo", "Repeat", "Plug02"]);
+    },
+  );
 
-  it("seeds the composer with the plugin prompt after the provider actions", async () => {
-    const onAction = vi.fn();
-    render(
-      <PromptBoxActionsMenu
-        actions={withAppPromptActions([{ kind: "plan", text: "/plan " }])}
-        onAction={onAction}
-      />,
-    );
+  it.each(["plus", "send"] as const)(
+    "re-renders %s-menu rows when the composer selection changes",
+    async (menu) => {
+      const definition = definePluginApp((app) =>
+        app.composer.customize({
+          id: "conditional",
+          [menu === "plus" ? "plusMenu" : "sendMenu"]: [
+            {
+              id: "codex-only",
+              label: "Codex only",
+              disabled: (composer: PluginComposerApi) =>
+                composer.selection?.providerId !== "codex",
+              run: () => {},
+            },
+          ],
+        }),
+      );
+      setPluginSlotRegistrations(
+        "conditional",
+        makePluginRegistrationSet(collectPluginAppRegistrations(definition)),
+      );
+      let selection: ComposerSelection = { providerId: "codex" };
+      const listeners = new Set<() => void>();
+      const { host, view } = composerHost(
+        { kind: "new-thread", projectId: null },
+        () => selection,
+        (listener) => {
+          listeners.add(listener);
+          return () => listeners.delete(listener);
+        },
+      );
+      render(
+        <MemoryRouter>
+          <PluginComposerHostProvider value={host}>
+            <PluginComposerViewProvider value={view}>
+              <ComposerRendererTestHost>
+                {menu === "plus" ? (
+                  <ComposerPlusMenuSlot onAction={() => {}} />
+                ) : (
+                  <ComposerSendMenu
+                    isPointerCoarse={false}
+                    modifierKind="steer"
+                    hasInput
+                    canSubmit
+                    onSubmit={undefined}
+                  >
+                    <button>Send</button>
+                  </ComposerSendMenu>
+                )}
+              </ComposerRendererTestHost>
+            </PluginComposerViewProvider>
+          </PluginComposerHostProvider>
+        </MemoryRouter>,
+      );
+      fireEvent.pointerDown(
+        screen.getByRole("button", {
+          name: menu === "plus" ? "Prompt actions" : "Send options",
+        }),
+        { button: 0 },
+      );
+      const row = await screen.findByRole("menuitem", { name: "Codex only" });
+      expect(row.getAttribute("aria-disabled")).not.toBe("true");
 
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Prompt actions" }),
-      { button: 0 },
-    );
-    const menuItems = await screen.findAllByRole("menuitem");
-    expect(menuItems.map((item) => item.textContent)).toEqual([
-      "Plan",
-      "Automation",
-      "Plugin",
-    ]);
+      act(() => {
+        selection = { providerId: "claude-code" };
+        for (const listener of listeners) listener();
+      });
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Plugin" }));
+      await waitFor(() =>
+        expect(
+          screen
+            .getByRole("menuitem", { name: "Codex only" })
+            .getAttribute("aria-disabled"),
+        ).toBe("true"),
+      );
+    },
+  );
 
-    expect(onAction).toHaveBeenCalledWith(CREATE_PLUGIN_PROMPT_ACTION);
-  });
-
-  it("keeps a provider-owned action instead of the app copy", () => {
-    const providerPlugin = { kind: "plugin", text: "/plugin " } as const;
-
-    expect(withAppPromptActions([providerPlugin])).toEqual([
-      providerPlugin,
-      {
-        kind: "automation",
-        command: { trigger: "/", name: "automation", trailingText: " " },
-        text: "/automation ",
-      },
-    ]);
-  });
-
-  it("restores composer focus after an update-only plugin item", async () => {
+  it("restores composer focus after an update-only plugin item in the compact drawer", async () => {
     const view: ComposerView = {
       scope: { kind: "new-thread", projectId: null },
       layout: "expanded",
@@ -137,23 +271,25 @@ describe("PromptBoxActionsMenu", () => {
       },
     ];
     render(
-      <MemoryRouter>
-        <PluginComposerHostProvider value={host}>
-          <PluginComposerViewProvider value={view}>
-            <input id="composer-focus-target" aria-label="Composer" />
-            <PromptBoxActionsMenu
-              onAction={() => {}}
-              pluginItems={pluginItems}
-            />
-          </PluginComposerViewProvider>
-        </PluginComposerHostProvider>
-      </MemoryRouter>,
+      <CompactViewportOverrideProvider isCompactViewport>
+        <MemoryRouter>
+          <PluginComposerHostProvider value={host}>
+            <PluginComposerViewProvider value={view}>
+              <input id="composer-focus-target" aria-label="Composer" />
+              <PromptBoxActionsMenu
+                onAction={() => {}}
+                plugins={{
+                  plusMenuItems: pluginItems,
+                  MenuEntry: ComposerMenuEntry,
+                }}
+              />
+            </PluginComposerViewProvider>
+          </PluginComposerHostProvider>
+        </MemoryRouter>
+      </CompactViewportOverrideProvider>,
     );
 
-    fireEvent.pointerDown(
-      screen.getByRole("button", { name: "Prompt actions" }),
-      { button: 0 },
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Prompt actions" }));
     fireEvent.click(
       await screen.findByRole("menuitem", { name: "Update prompt" }),
     );
@@ -166,7 +302,7 @@ describe("PromptBoxActionsMenu", () => {
     });
   });
 
-  it("renders display-name groups and preserves focus deliberately moved by a plugin", async () => {
+  it("renders plugin rows without a header and preserves focus deliberately moved by a plugin", async () => {
     const focusedByPlugin = vi.fn();
     const view: ComposerView = {
       scope: { kind: "new-thread", projectId: null },
@@ -181,7 +317,7 @@ describe("PromptBoxActionsMenu", () => {
       getCurrent: () => draft,
       subscribeDraft: () => () => {},
       setDraft: vi.fn(),
-      focus: vi.fn(),
+      focus: () => document.getElementById("composer-focus-target")?.focus(),
     };
     const pluginItems: readonly PluginComposerPlusMenuContribution[] = [
       {
@@ -192,8 +328,8 @@ describe("PromptBoxActionsMenu", () => {
         item: {
           id: "improve",
           label: "Improve prompt",
-          run: ({ view: receivedView }) => {
-            focusedByPlugin(receivedView);
+          run: ({ composer }) => {
+            focusedByPlugin(composer.key);
             document.getElementById("plugin-focus-target")?.focus();
           },
         },
@@ -206,7 +342,7 @@ describe("PromptBoxActionsMenu", () => {
         item: {
           id: "rewrite",
           label: "Rewrite prompt",
-          disabled: (receivedView) => receivedView.draft.isEmpty,
+          disabled: (composer) => composer.isEmpty,
           run: vi.fn(),
         },
       },
@@ -241,11 +377,15 @@ describe("PromptBoxActionsMenu", () => {
       <MemoryRouter>
         <PluginComposerHostProvider value={host}>
           <PluginComposerViewProvider value={view}>
+            <input id="composer-focus-target" aria-label="Composer" />
             <button id="plugin-focus-target">Plugin focus target</button>
             <PromptBoxActionsMenu
               actions={[{ kind: "plan", text: "/plan " }]}
               onAction={() => {}}
-              pluginItems={pluginItems}
+              plugins={{
+                plusMenuItems: pluginItems,
+                MenuEntry: ComposerMenuEntry,
+              }}
             />
           </PluginComposerViewProvider>
         </PluginComposerHostProvider>
@@ -262,13 +402,17 @@ describe("PromptBoxActionsMenu", () => {
       "Improve prompt",
       "Rewrite prompt",
     ]);
-    expect(screen.getByText("Alpha Assistant")).toBeTruthy();
-    expect(screen.getByText("Zeta Writer")).toBeTruthy();
+    expect(screen.queryByText("Plugin")).toBeNull();
+    expect(screen.queryByText("Alpha Assistant")).toBeNull();
+    expect(screen.queryByText("Zeta Writer")).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Improve prompt" }));
-    await waitFor(() => {
-      expect(focusedByPlugin).toHaveBeenCalledWith(view);
-      expect(document.activeElement?.id).toBe("plugin-focus-target");
-    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("menuitem", { name: "Improve prompt" }),
+      ).toBeNull(),
+    );
+    expect(focusedByPlugin).toHaveBeenCalledWith("plus-menu-test");
+    expect(document.activeElement?.id).toBe("plugin-focus-target");
   });
 });

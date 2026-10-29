@@ -1,37 +1,85 @@
 import type { QueryClient } from "@tanstack/react-query";
-import type { Environment, ThreadListEntry } from "@bb/domain";
+import { optimisticQueryUpdate } from "@bb/query-tags";
+import type { Environment } from "@bb/domain";
 import {
   environmentQueryKey,
   threadSearchQueryKeyPrefix,
 } from "../queries/query-keys";
 import { invalidateEnvironmentWorkspaceStateQueries } from "./environment-cache-effects";
 import {
-  applyToCachedThreadListsAndSidebarNavigation,
-  type CachedThreadListsAndSidebarNavigationMapper,
-} from "./query-cache";
+  beginThreadEntityPrediction,
+  findThreadEntityIds,
+  patchThreadEntity,
+  type ThreadEntityPrediction,
+} from "./thread-entity-store";
 
 interface EnvironmentUpdateResultArgs {
   environment: Environment;
   queryClient: QueryClient;
 }
 
-interface ApplyEnvironmentNameToCachedThreadArgs {
-  environment: Environment;
-  thread: ThreadListEntry;
+export interface EnvironmentNameUpdateTransaction {
+  environmentId: string;
+  name: string | null;
+  prediction: ThreadEntityPrediction<Environment>;
 }
 
-function applyEnvironmentNameToCachedThread({
-  environment,
-  thread,
-}: ApplyEnvironmentNameToCachedThreadArgs): ThreadListEntry {
-  if (thread.environmentId !== environment.id) {
-    return thread;
-  }
-
+export async function beginEnvironmentNameUpdateTransaction({
+  environmentId,
+  name,
+  queryClient,
+}: {
+  environmentId: string;
+  name: string | null;
+  queryClient: QueryClient;
+}): Promise<EnvironmentNameUpdateTransaction> {
+  const nameFrom = (result: { value: Environment } | undefined) =>
+    result === undefined ? name : result.value.name;
   return {
-    ...thread,
-    environmentName: environment.name,
+    environmentId,
+    name,
+    prediction: beginThreadEntityPrediction<Environment>(queryClient, {
+      threadIds: findThreadEntityIds(
+        queryClient,
+        (thread) => thread.environmentId === environmentId,
+      ),
+      update: (entity, _threadId, result) => ({
+        ...entity,
+        list: entity.list && {
+          ...entity.list,
+          environmentName: nameFrom(result),
+        },
+      }),
+      extra: [
+        optimisticQueryUpdate<Environment, Environment>(
+          environmentQueryKey(environmentId),
+          (environment, result) => ({ ...environment, name: nameFrom(result) }),
+        ),
+      ],
+    }),
   };
+}
+
+export function rollbackEnvironmentNameUpdateTransaction({
+  transaction,
+}: {
+  queryClient: QueryClient;
+  transaction: EnvironmentNameUpdateTransaction | undefined;
+}): void {
+  transaction?.prediction.fail();
+}
+
+export function completeEnvironmentNameUpdateTransaction({
+  environment,
+  queryClient,
+  transaction,
+}: {
+  environment: Environment;
+  queryClient: QueryClient;
+  transaction: EnvironmentNameUpdateTransaction | undefined;
+}): void {
+  transaction?.prediction.succeed(environment);
+  applyEnvironmentUpdateResult({ environment, queryClient });
 }
 
 export function applyEnvironmentUpdateResult({
@@ -42,16 +90,13 @@ export function applyEnvironmentUpdateResult({
     environmentQueryKey(environment.id),
     environment,
   );
-  const applyEnvironmentName: CachedThreadListsAndSidebarNavigationMapper = (
-    threads,
-  ) =>
-    threads.map((thread) =>
-      applyEnvironmentNameToCachedThread({ environment, thread }),
-    );
-  applyToCachedThreadListsAndSidebarNavigation(
+  for (const threadId of findThreadEntityIds(
     queryClient,
-    applyEnvironmentName,
-  );
+    (thread) => thread.environmentId === environment.id,
+  ))
+    patchThreadEntity(queryClient, threadId, {
+      environmentName: environment.name,
+    });
   queryClient.invalidateQueries({ queryKey: threadSearchQueryKeyPrefix() });
   invalidateEnvironmentWorkspaceStateQueries({
     environmentId: environment.id,

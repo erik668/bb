@@ -6,34 +6,37 @@ import {
 } from "@bb/domain";
 import type { Thread } from "@bb/domain";
 import {
-  createConnection,
   createProject,
   createThread,
   insertEvents,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { DbConnection } from "@bb/db";
 import type { TimelineRow } from "@bb/server-contract";
 import { buildThreadTimelineWithProfile } from "../../../src/services/threads/timeline.js";
 
 const providerThreadId = "pi-thread-1";
+const PLUGIN_METADATA_MARKER = "timeline-plugin-metadata-must-stay-private";
 const PROCESS_EVENT =
   '<process_event kind="success" process_id="proc_551c">Process completed successfully</process_event>';
 
 function setup(): { db: DbConnection; thread: Thread } {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
-    type: "persistent",
   });
   const { project } = createProject(db, noopNotifier, {
     name: "test-project",
     source: { type: "local_path", hostId: host.id, path: "/tmp/test" },
   });
   const thread = createThread(db, noopNotifier, {
+    originPluginId: "timeline-launcher",
+    pluginMetadata: {
+      pluginId: "timeline-launcher",
+      metadata: { marker: PLUGIN_METADATA_MARKER },
+    },
     projectId: project.id,
     providerId: "pi",
   });
@@ -155,19 +158,20 @@ describe("timeline pages with provider-recorded input", () => {
     seedExtensionTriggeredTurn(db, thread);
 
     const { response } = buildThreadTimelineWithProfile(db, thread, {
+      completedTurnDisplay: "collapse",
       eventBudget: 1_000_000,
-      includeProviderUnhandledOperations: false,
+      includeClearedContextHistory: false,
+      includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: 32_000,
       maxSeq: 0,
       page: { kind: "latest", segmentLimit: 20 },
     });
 
-    expect(response.timelinePage).toEqual({
-      kind: "latest",
-      segmentLimit: 20,
+    expect(response.timelinePage).toMatchObject({
       returnedSegmentCount: 1,
-      hasOlderRows: false,
       olderCursor: null,
     });
     expect(conversationTexts(response.rows)).toEqual([
@@ -176,6 +180,8 @@ describe("timeline pages with provider-recorded input", () => {
       `user:${PROCESS_EVENT}`,
       "assistant:The process finished.",
     ]);
+    expect(JSON.stringify(response)).not.toContain("pluginMetadata");
+    expect(JSON.stringify(response)).not.toContain(PLUGIN_METADATA_MARKER);
     const turnRow = response.rows.find(
       (row) => row.kind === "turn" && row.turnId === "turn-2",
     );

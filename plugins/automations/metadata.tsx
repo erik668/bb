@@ -1,11 +1,18 @@
 import type { ReactNode } from "react";
-import { Icon, type IconName } from "@bb/shared-ui/icon";
+import type { AutomationResponse } from "./src/rpc-types";
+import { Icon, type IconName } from "@/components/ui/icon";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
-} from "@bb/shared-ui/tooltip";
+} from "@/components/ui/tooltip";
+
+export function automationErrorMessage(
+  automation: Pick<AutomationResponse, "lastError" | "lastRunStatus">,
+): string | null {
+  return automation.lastRunStatus === "running" ? null : automation.lastError;
+}
 
 export function AutomationMetadataItem({
   children,

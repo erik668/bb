@@ -19,11 +19,40 @@ The core entities and how they relate:
 
 **Environment**: the execution context for a thread. It binds a workspace (a directory on disk) to a host. An environment can be **unmanaged** (point at an existing directory), or **managed**. Environments managed by bb will be cleaned up when there are no longer any unarchived threads using it. Multiple threads can share an environment.
 
-**Host**: a long-lived daemon identity for a machine that runs work. A server has a primary host and can enroll additional remote hosts; project sources and environments retain the host boundary.
+**Host**: a long-lived daemon identity for a machine that runs work. A server runs on one host (the server machine, `primaryHostId` in the API) and can enroll additional remote hosts; project sources and environments retain the host boundary.
 
 **Commands and events**: the server talks to daemons over the active daemon WebSocket with host RPC requests. Lifecycle work such as provisioning an environment, starting a thread, or stopping a thread can run asynchronously from the API caller's perspective, and the server settles command side effects when the daemon returns an RPC result. Daemons separately post provider and thread progress as event batches.
 
 ## Contracts and boundaries
+
+### Thread lifecycle ownership
+
+`lifecycleOwnerThreadId` is an optional relationship set only at creation and
+never changed. It is independent of sidebar `parentThreadId`, fork
+`sourceThreadId`, visibility, and attribution. Spawn and fork accept a live
+owner across projects, hosts, and environments. Side chats are owned by their
+source, and every workflow worker attempt by its origin.
+
+- Archiving an owner recursively archives its dependents and stops their
+  execution; unarchiving the owner does not restore them (restore them
+  explicitly, owner first).
+- Deleting a thread recursively deletes its sidebar children and lifecycle
+  dependents, following both relationships at every level, including hidden and
+  archived threads. Fork sources alone do not imply deletion. The owner row
+  remains until every lifecycle dependent finishes storage cleanup on its own
+  host; failures are retried.
+- Dependents can be archived or deleted independently of their owner. Deleting
+  an owning project also deletes cross-project dependents; deleting only a
+  dependent's project leaves its external owner intact.
+- Stop affects only the requested turn or runtime.
+
+An archived thread keeps its terminals and any running turn for a short grace
+period (`ARCHIVE_UNDO_GRACE_MS`) so Undo restores it intact; after that bb stops
+it. During the grace it still counts as live, so its environment and machine
+are not retired under it. A thread start still in flight is stopped as soon as
+it is archived.
+
+### Transport contracts
 
 Two contract packages define the boundaries between components:
 

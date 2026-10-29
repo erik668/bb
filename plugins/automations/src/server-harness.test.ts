@@ -1,4 +1,5 @@
 import { unlink } from "node:fs/promises";
+import { dirname, join, sep } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createFakePluginHost,
@@ -6,15 +7,22 @@ import {
   PluginContextStaleError,
   type FakePluginHost,
 } from "@get-bb/plugin-sdk/testing";
+import { createScriptRunScope } from "./script-runner.js";
 import plugin from "./server.js";
 import { createAutomationService } from "./service.js";
 import {
   automationListResponseSchema,
   automationsOverviewResponseSchema,
+  automationDetailResponseSchema,
   automationResponseSchema,
   automationRunListResponseSchema,
   automationRunRpcResponseSchema,
 } from "./rpc-types.js";
+
+function storedScriptPathPattern(automationId: string): RegExp {
+  const suffix = join(sep, "scripts", automationId, "script.sh");
+  return new RegExp(`${suffix.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&")}$`);
+}
 
 const PROJECT_ID = "proj_test";
 const MISSING_PROJECT_ID = "proj_missing";
@@ -36,7 +44,27 @@ const rpcMethods = [
 ].sort();
 
 function project(projectId = PROJECT_ID) {
-  return { id: projectId, name: "Test Project", deletedAt: null };
+  return {
+    id: projectId,
+    kind: "standard" as const,
+    name: "Test Project",
+    gitRemoteUrl: null,
+    createdAt: 1,
+    updatedAt: 1,
+    deletedAt: null,
+    sources: [
+      {
+        id: `psrc_${projectId}`,
+        projectId,
+        type: "local_path" as const,
+        hostId: "host_fake",
+        path: "/test/project",
+        isDefault: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ],
+  };
 }
 
 async function bootAutomationsPlugin(
@@ -50,6 +78,7 @@ async function bootAutomationsPlugin(
   const host = createFakePluginHost({
     pluginId: "automations",
     sdk: {
+      system: { config: async () => ({ primaryHostId: "host_fake" }) },
       projects: {
         async get({ projectId }) {
           if (projectId === PROJECT_ID) return project(projectId);
@@ -146,7 +175,7 @@ async function createAgentAutomation(
     targetThreadId?: string;
   } = {},
 ) {
-  return automationResponseSchema.parse(
+  return automationDetailResponseSchema.parse(
     await harness.callRpc("automations_create", {
       projectId: PROJECT_ID,
       name: options.name ?? "Agent automation",
@@ -217,7 +246,7 @@ describe("automations server plugin harness", () => {
       }),
     );
 
-    const found = automationResponseSchema.parse(
+    const found = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_get", {
         projectId: PROJECT_ID,
         automationId: created.id,
@@ -286,7 +315,7 @@ describe("automations server plugin harness", () => {
       "--json",
     ]);
     expect(createdResult.exitCode).toBe(0);
-    const created = automationResponseSchema.parse(
+    const created = automationDetailResponseSchema.parse(
       JSON.parse(createdResult.stdout ?? ""),
     );
     expect(created).toMatchObject({
@@ -311,7 +340,7 @@ describe("automations server plugin harness", () => {
         await harness.callRpc("automations_list", { projectId: PROJECT_ID }),
       )[0]?.id,
     ).toBe(created.id);
-    const editable = automationResponseSchema.parse(
+    const editable = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_get", {
         projectId: PROJECT_ID,
         automationId: created.id,
@@ -320,6 +349,7 @@ describe("automations server plugin harness", () => {
     expect(editable.execution).toMatchObject({
       mode: "script",
       script: "echo ok",
+      resolvedWorkingDirectory: "/test/project",
     });
     expect(editable.execution).not.toHaveProperty("scriptFile");
 
@@ -345,7 +375,7 @@ describe("automations server plugin harness", () => {
       "--json",
     ]);
     expect(agentUpdateResult.exitCode).toBe(0);
-    const agentUpdated = automationResponseSchema.parse(
+    const agentUpdated = automationDetailResponseSchema.parse(
       JSON.parse(agentUpdateResult.stdout ?? ""),
     );
     expect(agentUpdated.execution).toEqual({
@@ -376,20 +406,22 @@ describe("automations server plugin harness", () => {
       "--json",
     ]);
     expect(scriptUpdateResult.exitCode).toBe(0);
-    const scriptUpdated = automationResponseSchema.parse(
+    const scriptUpdated = automationDetailResponseSchema.parse(
       JSON.parse(scriptUpdateResult.stdout ?? ""),
     );
     expect(scriptUpdated.execution).toEqual({
       mode: "script",
       scriptFile: "script.sh",
       storedScriptPath: expect.stringMatching(
-        new RegExp(`/scripts/${created.id}/script\\.sh$`),
+        storedScriptPathPattern(created.id),
       ),
       interpreter: "bash",
+      workingDirectory: { type: "project" },
+      resolvedWorkingDirectory: "/test/project",
       timeoutMs: 12_000,
       env: { CHANNEL: "qa" },
     });
-    const updatedEditable = automationResponseSchema.parse(
+    const updatedEditable = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_get", {
         projectId: PROJECT_ID,
         automationId: created.id,
@@ -399,20 +431,230 @@ describe("automations server plugin harness", () => {
       mode: "script",
       script: "echo updated",
       storedScriptPath: expect.stringMatching(
-        new RegExp(`/scripts/${created.id}/script\\.sh$`),
+        storedScriptPathPattern(created.id),
       ),
       interpreter: "bash",
+      workingDirectory: { type: "project" },
+      resolvedWorkingDirectory: "/test/project",
       timeoutMs: 12_000,
       env: { CHANNEL: "qa" },
     });
+
+    const readScript = async () =>
+      automationDetailResponseSchema.parse(
+        await harness.callRpc("automations_get", {
+          projectId: PROJECT_ID,
+          automationId: created.id,
+        }),
+      ).execution;
+    const contentOnlyResult = await harness.runCli([
+      "update",
+      created.id,
+      "--project",
+      PROJECT_ID,
+      "--script",
+      "echo refreshed",
+    ]);
+    expect(contentOnlyResult.exitCode).toBe(0);
+    expect(await readScript()).toMatchObject({
+      script: "echo refreshed",
+      interpreter: "bash",
+      workingDirectory: { type: "project" },
+      timeoutMs: 12_000,
+      env: { CHANNEL: "qa" },
+    });
+
+    const envOnlyResult = await harness.runCli([
+      "update",
+      created.id,
+      "--project",
+      PROJECT_ID,
+      "--env-json",
+      '{"CHANNEL":"prod"}',
+    ]);
+    expect(envOnlyResult.exitCode).toBe(0);
+    expect(await readScript()).toMatchObject({
+      script: "echo refreshed",
+      timeoutMs: 12_000,
+      env: { CHANNEL: "prod" },
+    });
+
+    const clearEnvResult = await harness.runCli([
+      "update",
+      created.id,
+      "--project",
+      PROJECT_ID,
+      "--env-json",
+      "{}",
+    ]);
+    expect(clearEnvResult.exitCode).toBe(0);
+    expect(await readScript()).not.toHaveProperty("env");
+
+    const mixedResult = await harness.runCli([
+      "update",
+      created.id,
+      "--project",
+      PROJECT_ID,
+      "--model",
+      "gpt-5",
+      "--timeout",
+      "5000",
+    ]);
+    expect(mixedResult.exitCode).toBe(1);
+    expect(mixedResult.stderr).toContain(
+      "Cannot combine agent execution flags with script flags",
+    );
 
     const errorResult = await harness.runCli([
       "create",
       "--project",
       PROJECT_ID,
+      "--name",
+      "No execution",
+      "--in",
+      "1h",
     ]);
     expect(errorResult.exitCode).toBe(1);
     expect(errorResult.stderr).toContain("Provide an execution mode");
+
+    await harness.dispose();
+  });
+
+  it("accepts a bare millisecond timeout and a duration with a unit", async () => {
+    const { harness } = await bootAutomationsPlugin();
+
+    const bare = await harness.runCli([
+      "create",
+      "--project",
+      PROJECT_ID,
+      "--name",
+      "Bare timeout",
+      "--in",
+      "1h",
+      "--script",
+      "echo ok",
+      "--timeout",
+      "5000",
+      "--json",
+    ]);
+    expect(bare.exitCode, bare.stderr).toBe(0);
+    expect(
+      automationDetailResponseSchema.parse(JSON.parse(bare.stdout ?? ""))
+        .execution,
+    ).toMatchObject({ mode: "script", timeoutMs: 5_000 });
+
+    const withUnit = await harness.runCli([
+      "create",
+      "--project",
+      PROJECT_ID,
+      "--name",
+      "Unit timeout",
+      "--in",
+      "1h",
+      "--script",
+      "echo ok",
+      "--timeout",
+      "90s",
+      "--json",
+    ]);
+    expect(withUnit.exitCode, withUnit.stderr).toBe(0);
+    expect(
+      automationDetailResponseSchema.parse(JSON.parse(withUnit.stdout ?? ""))
+        .execution,
+    ).toMatchObject({ mode: "script", timeoutMs: 90_000 });
+
+    const tooLong = await harness.runCli([
+      "create",
+      "--project",
+      PROJECT_ID,
+      "--name",
+      "Too long",
+      "--in",
+      "1h",
+      "--script",
+      "echo ok",
+      "--timeout",
+      "20m",
+    ]);
+    expect(tooLong.exitCode).toBe(1);
+    expect(tooLong.stderr).toContain("invalid value '20m' for --timeout");
+
+    await harness.dispose();
+  });
+
+  it("prints help for the whole CLI and for one command with exit 0", async () => {
+    const { harness } = await bootAutomationsPlugin();
+
+    const topLevel = await harness.runCli(["--help"]);
+    expect(topLevel.exitCode, topLevel.stderr).toBe(0);
+    expect(topLevel.stdout).toContain("bb automation list");
+    expect(topLevel.stdout).toContain("bb automation delete");
+
+    const perCommand = await harness.runCli(["runs", "--help"]);
+    expect(perCommand.exitCode, perCommand.stderr).toBe(0);
+    expect(perCommand.stdout).toContain("bb automation runs <automationId>");
+    expect(perCommand.stdout).toContain("--limit <1-200>");
+
+    const bare = await harness.runCli([]);
+    expect(bare.exitCode, bare.stderr).toBe(0);
+    expect(bare.stdout).toContain("bb automation <command> [options]");
+
+    await harness.dispose();
+  });
+
+  it("rejects a positional argument to list", async () => {
+    const { harness } = await bootAutomationsPlugin();
+
+    const strayArgument = await harness.runCli([
+      "list",
+      "--project",
+      PROJECT_ID,
+      "auto_123",
+    ]);
+    expect(strayArgument.exitCode).toBe(1);
+    expect(strayArgument.stderr).toContain("unexpected argument 'auto_123'");
+
+    await harness.dispose();
+  });
+
+  it("reports every missing value once and names the thread's project", async () => {
+    const { harness } = await bootAutomationsPlugin();
+
+    const missingBoth = await harness.runCli(["show"]);
+    expect(missingBoth.exitCode).toBe(1);
+    expect(missingBoth.stderr).toContain(
+      "missing required arguments: <automationId>",
+    );
+
+    const missingName = await harness.runCli(["create", "--script", "echo ok"]);
+    expect(missingName.exitCode).toBe(1);
+    expect(missingName.stderr).toContain("missing required options: --name");
+
+    const noContext = await harness.runCli(["list"]);
+    expect(noContext.exitCode).toBe(1);
+    expect(noContext.stderr).toContain("missing required option --project");
+    expect(noContext.stderr).toContain("bb project list");
+
+    const withContext = await harness.runCli(["list"], {
+      projectId: PROJECT_ID,
+    });
+    expect(withContext.exitCode).toBe(1);
+    expect(withContext.stderr).toContain(
+      `missing required option --project (This thread's project is ${PROJECT_ID}; re-run with --project ${PROJECT_ID})`,
+    );
+
+    const envelope = await harness.runCli(["list", "--json"], {
+      projectId: PROJECT_ID,
+    });
+    expect(envelope.exitCode).toBe(1);
+    expect(JSON.parse(envelope.stdout ?? "")).toEqual({
+      ok: false,
+      error: {
+        code: "missing_required",
+        message: "missing required option --project",
+        hint: `This thread's project is ${PROJECT_ID}; re-run with --project ${PROJECT_ID}`,
+      },
+    });
 
     await harness.dispose();
   });
@@ -431,7 +673,7 @@ describe("automations server plugin harness", () => {
       "echo ok",
       "--json",
     ]);
-    const created = automationResponseSchema.parse(
+    const created = automationDetailResponseSchema.parse(
       JSON.parse(createdResult.stdout ?? ""),
     );
     if (
@@ -455,6 +697,52 @@ describe("automations server plugin harness", () => {
         automationId: created.id,
       }),
     ).rejects.toThrow("Script file was not found");
+
+    await harness.dispose();
+  });
+
+  it("lists only automations that re-prompt a thread, not ones it created", async () => {
+    const { harness } = await bootAutomationsPlugin();
+    const targeted = await createAgentAutomation(harness, {
+      name: "Targets the thread",
+      targetThreadId: THREAD_ID,
+    });
+    await harness.callRpc("automations_create", {
+      projectId: PROJECT_ID,
+      name: "Created by the thread",
+      enabled: true,
+      trigger: oneShotTrigger(),
+      execution: agentExecution(),
+      origin: "agent",
+      createdByThreadId: THREAD_ID,
+    });
+
+    const listed = automationListResponseSchema.parse(
+      await harness.callRpc("automations_list", { targetThreadId: THREAD_ID }),
+    );
+    expect(listed.map((automation) => automation.id)).toEqual([targeted.id]);
+
+    const cliList = await harness.runCli([
+      "list",
+      "--target-thread",
+      THREAD_ID,
+      "--json",
+    ]);
+    expect(cliList.exitCode).toBe(0);
+    expect(
+      automationListResponseSchema
+        .parse(JSON.parse(cliList.stdout ?? ""))
+        .map((automation) => automation.id),
+    ).toEqual([targeted.id]);
+
+    const conflicting = await harness.runCli([
+      "list",
+      "--project",
+      PROJECT_ID,
+      "--target-thread",
+      THREAD_ID,
+    ]);
+    expect(conflicting.exitCode).not.toBe(0);
 
     await harness.dispose();
   });
@@ -490,7 +778,7 @@ describe("automations server plugin harness", () => {
       ]);
 
       expect(result.exitCode).toBe(0);
-      const automation = automationResponseSchema.parse(
+      const automation = automationDetailResponseSchema.parse(
         JSON.parse(result.stdout ?? ""),
       );
       expect(automation.execution).toMatchObject({
@@ -549,7 +837,7 @@ describe("automations server plugin harness", () => {
       "--json",
     ]);
     expect(environmentUpdate.exitCode).toBe(0);
-    const environmentTargeted = automationResponseSchema.parse(
+    const environmentTargeted = automationDetailResponseSchema.parse(
       JSON.parse(environmentUpdate.stdout ?? ""),
     );
     expect(environmentTargeted).toMatchObject({
@@ -581,7 +869,7 @@ describe("automations server plugin harness", () => {
       "--json",
     ]);
     expect(threadTargetUpdate.exitCode).toBe(0);
-    const threadTargeted = automationResponseSchema.parse(
+    const threadTargeted = automationDetailResponseSchema.parse(
       JSON.parse(threadTargetUpdate.stdout ?? ""),
     );
     expect(threadTargeted.execution).toMatchObject({
@@ -606,7 +894,7 @@ describe("automations server plugin harness", () => {
       "--json",
     ]);
     expect(worktreeUpdate.exitCode).toBe(0);
-    const worktreeTargeted = automationResponseSchema.parse(
+    const worktreeTargeted = automationDetailResponseSchema.parse(
       JSON.parse(worktreeUpdate.stdout ?? ""),
     );
     expect(worktreeTargeted.execution).toMatchObject({
@@ -651,7 +939,8 @@ describe("automations server plugin harness", () => {
     ]);
     expect(update.exitCode).toBe(0);
     expect(
-      automationResponseSchema.parse(JSON.parse(update.stdout ?? "")).execution,
+      automationDetailResponseSchema.parse(JSON.parse(update.stdout ?? ""))
+        .execution,
     ).toMatchObject({ mode: "agent", prompt: longPrompt });
 
     const listed = automationListResponseSchema.parse(
@@ -671,10 +960,11 @@ describe("automations server plugin harness", () => {
     ]);
     expect(shown.exitCode).toBe(0);
     expect(
-      automationResponseSchema.parse(JSON.parse(shown.stdout ?? "")).execution,
+      automationDetailResponseSchema.parse(JSON.parse(shown.stdout ?? ""))
+        .execution,
     ).toMatchObject({ prompt: longPrompt });
 
-    const repaired = automationResponseSchema.parse(
+    const repaired = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_update", {
         projectId: PROJECT_ID,
         automationId: created.id,
@@ -909,6 +1199,7 @@ describe("automations server plugin harness", () => {
       db: host.bb.storage.database(),
       pluginDataDir: "/tmp/bb-automations-test",
       serverUrl: "http://127.0.0.1:38886",
+      scriptRuns: createScriptRunScope(),
     });
     await expect(
       service.update({
@@ -919,7 +1210,7 @@ describe("automations server plugin harness", () => {
     ).rejects.toThrow();
 
     for (const automationId of [full.id, partial.id]) {
-      const unchanged = automationResponseSchema.parse(
+      const unchanged = automationDetailResponseSchema.parse(
         await harness.callRpc("automations_get", {
           projectId: PROJECT_ID,
           automationId,
@@ -963,7 +1254,7 @@ describe("automations server plugin harness", () => {
     ]);
     expect(invalidPermissionMode.exitCode).toBe(1);
     expect(invalidPermissionMode.stderr).toContain(
-      "Expected accept-edits, auto, or full",
+      "invalid value 'write' for --permission-mode. Expected one of: accept-edits, auto, full",
     );
 
     await harness.dispose();
@@ -973,7 +1264,7 @@ describe("automations server plugin harness", () => {
     const { harness } = await bootAutomationsPlugin();
     const created = await createAgentAutomation(harness);
 
-    const updated = automationResponseSchema.parse(
+    const updated = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_update", {
         projectId: PROJECT_ID,
         automationId: created.id,
@@ -1054,7 +1345,7 @@ describe("automations server plugin harness", () => {
       "Permission mode auto is not supported by provider codex.",
     );
 
-    const unchanged = automationResponseSchema.parse(
+    const unchanged = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_get", {
         projectId: PROJECT_ID,
         automationId: created.id,
@@ -1171,6 +1462,70 @@ describe("automations server plugin harness", () => {
     await reloaded.harness.dispose();
   });
 
+  it("discovers a late-enrolled server host before dispatching a project script", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
+    const host = await bootAutomationsPlugin();
+    const { harness } = host;
+    const source = project();
+    source.sources[0]!.path = dirname(host.bb.storage.database().name);
+    harness.sdk.stub("projects.get", async () => source);
+    const created = await harness.runCli([
+      "create",
+      "--project",
+      PROJECT_ID,
+      "--name",
+      "Late enrollment",
+      "--in",
+      "1m",
+      "--script",
+      "printf 'late enrollment OK'",
+      "--interpreter",
+      "sh",
+      "--working-directory",
+      "project",
+      "--json",
+    ]);
+    expect(created.exitCode).toBe(0);
+    const automation = automationDetailResponseSchema.parse(
+      JSON.parse(created.stdout!),
+    );
+    let primaryHostId: string | null = null;
+    harness.sdk.stub("system.config", () => ({ primaryHostId }));
+    const initialCalls = harness.sdk.callsTo("system.config").length;
+    const service = harness.runService("automation-sweep");
+    try {
+      await vi.waitFor(() =>
+        expect(harness.sdk.callsTo("system.config")).toHaveLength(
+          initialCalls + 1,
+        ),
+      );
+      primaryHostId = "host_fake";
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(async () => {
+        const { runs } = automationRunListResponseSchema.parse(
+          await harness.callRpc("automations_runs", {
+            projectId: PROJECT_ID,
+            automationId: automation.id,
+          }),
+        );
+        expect(runs[0]).toMatchObject({
+          status: "succeeded",
+          output: expect.stringMatching(/(?:^|\n)late enrollment OK$/),
+          exitCode: 0,
+          error: null,
+        });
+      });
+      const calls = harness.sdk.callsTo("system.config").length;
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(harness.sdk.callsTo("system.config")).toHaveLength(calls);
+    } finally {
+      service.controller.abort();
+      await service.done;
+      await harness.dispose();
+    }
+  });
+
   it("dispatches a due agent automation from one sweep tick and closes it from thread.idle", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -1192,6 +1547,7 @@ describe("automations server plugin harness", () => {
     expect(harness.sdk.callsTo("threads.spawn")).toHaveLength(1);
     expect(harness.sdk.callsTo("threads.spawn")[0]?.[0]).toMatchObject({
       projectId: PROJECT_ID,
+      prompt: `[bb automation due:${automation.id}]\n\nsummarize the inbox`,
       title: "Sweep",
       origin: "plugin",
       originPluginId: "automations",
@@ -1249,7 +1605,7 @@ describe("automations server plugin harness", () => {
       }),
     });
 
-    const disabled = automationResponseSchema.parse(
+    const disabled = automationDetailResponseSchema.parse(
       await harness.callRpc("automations_get", {
         projectId: PROJECT_ID,
         automationId: automation.id,
@@ -1258,7 +1614,7 @@ describe("automations server plugin harness", () => {
     expect(disabled).toMatchObject({
       enabled: false,
       nextRunAt: null,
-      lastError: "target thread deleted",
+      lastError: "Target thread thr_target was deleted",
     });
 
     await harness.dispose();

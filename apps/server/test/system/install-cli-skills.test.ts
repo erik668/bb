@@ -23,13 +23,17 @@ async function writeBuiltinCliSkill(harness: TestAppHarness): Promise<void> {
   );
 }
 
-function expectedCliSkillTreeHash(harness: TestAppHarness): string {
-  const entry = resolveServerOwnedSkillCatalogEntries({
-    builtinSkillsRootPath: harness.deps.config.builtinSkillsRootPath,
-    dataDir: harness.deps.config.dataDir,
-    logger: harness.deps.logger,
-    skillTreeRegistry: harness.deps.skillTreeRegistry,
-  }).find(({ runtimeSource }) => runtimeSource.name === "bb-cli");
+async function expectedCliSkillTreeHash(
+  harness: TestAppHarness,
+): Promise<string> {
+  const entry = (
+    await resolveServerOwnedSkillCatalogEntries({
+      builtinSkillsRootPath: harness.deps.config.builtinSkillsRootPath,
+      dataDir: harness.deps.config.dataDir,
+      logger: harness.deps.logger,
+      skillTreeRegistry: harness.deps.skillTreeRegistry,
+    })
+  ).find(({ runtimeSource }) => runtimeSource.name === "bb-cli");
   if (entry?.runtimeSource.kind !== "tree") {
     throw new Error("The built-in bb-cli skill did not resolve to a tree");
   }
@@ -37,7 +41,7 @@ function expectedCliSkillTreeHash(harness: TestAppHarness): string {
 }
 
 function installRequest(hostIds: string[]): Request {
-  return new Request("http://test/api/v1/system/cli-skills/install", {
+  return new Request("http://localhost/api/v1/system/cli-skills/install", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ hostIds }),
@@ -150,7 +154,7 @@ describe("install cli skills", () => {
       const current = seedHostSession(harness.deps, { id: "host-current" });
       const stale = seedHostSession(harness.deps, { id: "host-stale" });
       const empty = seedHostSession(harness.deps, { id: "host-empty" });
-      const expectedHash = expectedCliSkillTreeHash(harness);
+      const expectedHash = await expectedCliSkillTreeHash(harness);
       const hashByHostId: Record<string, string | null> = {
         "host-current": expectedHash,
         "host-stale": "b".repeat(64),

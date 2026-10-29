@@ -1,3 +1,4 @@
+import { openApplicationUrl } from "@/lib/shell/application-url";
 import {
   buildBridgeEventScript,
   parsePageToShellMessage,
@@ -9,6 +10,7 @@ import {
 import { useCallback, useMemo, useRef } from "react";
 import { Linking, Platform, Share } from "react-native";
 import type { WebView, WebViewMessageEvent } from "react-native-webview";
+import { describeError } from "@/lib/describe-error";
 import { haptic } from "@/lib/haptics";
 import { buildBridgeSharePayload, isExternallyOpenable } from "@/lib/shell";
 import { updateAppBadgeCount } from "@/notifications/AppBadgeSync";
@@ -17,6 +19,7 @@ export interface ShellBridgeCallbacks {
   onReady(path: string): void;
   onPath(path: string): void;
   onOpenNative(screen: NativeScreen): void;
+  onSwitchServer(id: string): void;
 }
 
 export interface ShellBridge {
@@ -63,12 +66,24 @@ export function useShellBridge(
         case "open-native":
           callbacksRef.current.onOpenNative(message.screen);
           return;
+        case "switch-server":
+          callbacksRef.current.onSwitchServer(message.id);
+          return;
         case "open-external": {
           if (!isExternallyOpenable(message.url)) return;
           await Linking.openURL(message.url).catch(() => undefined);
           return;
         }
         case "request": {
+          if (message.request.kind === "open-application") {
+            try {
+              await openApplicationUrl(message.request.payload.url);
+              respond(message.id, { ok: true, result: null });
+            } catch (error) {
+              respond(message.id, { ok: false, error: describeError(error) });
+            }
+            return;
+          }
           if (message.request.kind === "share") {
             const payload = buildBridgeSharePayload(
               Platform.OS,
@@ -86,7 +101,7 @@ export function useShellBridge(
             } catch (error) {
               respond(message.id, {
                 ok: false,
-                error: error instanceof Error ? error.message : String(error),
+                error: describeError(error),
               });
             }
           }

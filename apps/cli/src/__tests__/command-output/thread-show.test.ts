@@ -1,14 +1,18 @@
 import { describe, expect, it, vi } from "vitest";
 import * as domain from "@bb/domain";
-import type * as serverContract from "@bb/server-contract";
+import type { ThreadGitDiffResponse } from "bb-plugin-bb--git/contract";
+import type {
+  EnvironmentPullRequest,
+  PullRequest,
+} from "bb-plugin-bb--github-pr-status/contract";
 import {
   setupCommandOutputTestEnvironment,
   collectLogLines,
   createClientMock,
   runCommand,
   stubServerApi,
+  type CommandRegistrar,
 } from "../helpers/command-output-harness.js";
-import type { CommandRegistrar } from "../helpers/command-output-harness.js";
 import * as fixtures from "../helpers/command-output-fixtures.js";
 import { registerThreadCommands } from "../../commands/thread/index.js";
 
@@ -18,9 +22,46 @@ describe("bb thread show command output", () => {
   const register: CommandRegistrar = (program) =>
     registerThreadCommands(program, () => "http://server");
 
-  function makePullRequest(
-    overrides: Partial<domain.ThreadPullRequest> = {},
-  ): domain.ThreadPullRequest {
+  function stubPullRequestRpc(
+    environmentId: string,
+    row: EnvironmentPullRequest,
+  ): { urls: string[]; bodies: unknown[] } {
+    const urls: string[] = [];
+    const bodies: unknown[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      urls.push(String(input));
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(
+        JSON.stringify({ ok: true, result: { [environmentId]: row } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    return { urls, bodies };
+  }
+
+  function stubGitRpc(result: unknown): { urls: string[]; bodies: unknown[] } {
+    const urls: string[] = [];
+    const bodies: unknown[] = [];
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const url = String(input);
+      const body: unknown = JSON.parse(String(init?.body));
+      if (url.includes("/plugins/bb--git/")) {
+        urls.push(url);
+        bodies.push(body);
+        return new Response(JSON.stringify({ ok: true, result }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(
+        JSON.stringify({ ok: true, result: { "": { outcome: "absent" } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    return { urls, bodies };
+  }
+
+  function makePullRequest(overrides: Partial<PullRequest> = {}): PullRequest {
     return {
       number: 42,
       title: "Review thread show",
@@ -29,6 +70,8 @@ describe("bb thread show command output", () => {
       baseRefName: "main",
       headRefName: "bb/thread-show-pr",
       updatedAt: "2026-06-24T12:00:00.000Z",
+      autoMerge: false,
+      inMergeQueue: false,
       checks: {
         state: "passing",
         totalCount: 3,
@@ -50,58 +93,49 @@ describe("bb thread show command output", () => {
     };
   }
 
-  it("bb thread show prints archived timestamp for archived threads", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
-      id: "thread-archived-1",
-      projectId: "proj-1",
-      providerId: "codex",
-      status: "idle",
-      archivedAt: 1_700_000_000_000,
-      createdAt: 1,
-      updatedAt: 2,
-    });
-    const get = vi.fn(async () => thread);
-    const timelineGet = fixtures.makeEmptyTimelineGetMock();
-    stubServerApi({
-      "v1.threads.:id.$get": get,
-      "v1.threads.:id.timeline.$get": timelineGet,
-    });
+  it.each([
+    {
+      flag: "archived",
+      stamp: { archivedAt: 1_700_000_000_000 },
+      label: "Archived:",
+    },
+    {
+      flag: "pinned",
+      stamp: { pinnedAt: 1_700_000_000_000 },
+      label: "Pinned:",
+    },
+  ])(
+    "bb thread show prints $flag timestamp for $flag threads",
+    async ({ flag, stamp, label }) => {
+      const thread: domain.Thread = fixtures.makeThread({
+        id: `thread-${flag}-1`,
+        projectId: "proj-1",
+        providerId: "codex",
+        status: "idle",
+        createdAt: 1,
+        updatedAt: 2,
+        ...stamp,
+      });
+      const get = vi.fn(async () => thread);
+      const timelineGet = fixtures.makeEmptyTimelineGetMock();
+      stubServerApi({
+        "v1.threads.:id.$get": get,
+        "v1.threads.:id.timeline.$get": timelineGet,
+      });
 
-    await runCommand(["thread", "show", "thread-archived-1"], register);
+      await runCommand(["thread", "show", `thread-${flag}-1`], register);
 
-    expect(get).toHaveBeenCalledWith({
-      param: { id: "thread-archived-1" },
-    });
-    expect(timelineGet).toHaveBeenCalledWith({
-      param: { id: "thread-archived-1" },
-      query: { summaryOnly: "true" },
-    });
-    const lines = collectLogLines(vi.mocked(console.log));
-    expect(lines.some((line) => line.includes("Archived:"))).toBe(true);
-  });
-
-  it("bb thread show prints pinned timestamp for pinned threads", async () => {
-    const thread: domain.Thread = fixtures.makeThread({
-      id: "thread-pinned-1",
-      projectId: "proj-1",
-      providerId: "codex",
-      status: "idle",
-      pinnedAt: 1_700_000_000_000,
-      createdAt: 1,
-      updatedAt: 2,
-    });
-    const get = vi.fn(async () => thread);
-    const timelineGet = fixtures.makeEmptyTimelineGetMock();
-    stubServerApi({
-      "v1.threads.:id.$get": get,
-      "v1.threads.:id.timeline.$get": timelineGet,
-    });
-
-    await runCommand(["thread", "show", "thread-pinned-1"], register);
-
-    const lines = collectLogLines(vi.mocked(console.log));
-    expect(lines.some((line) => line.includes("Pinned:"))).toBe(true);
-  });
+      expect(get).toHaveBeenCalledWith({
+        param: { id: `thread-${flag}-1` },
+      });
+      expect(timelineGet).toHaveBeenCalledWith({
+        param: { id: `thread-${flag}-1` },
+        query: { summaryOnly: "true" },
+      });
+      const lines = collectLogLines(vi.mocked(console.log));
+      expect(lines.some((line) => line.includes(label))).toBe(true);
+    },
+  );
 
   it("bb thread show --self resolves from BB_THREAD_ID", async () => {
     vi.stubEnv("BB_THREAD_ID", "thread-show-self");
@@ -148,17 +182,14 @@ describe("bb thread show command output", () => {
     });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const statusGet = vi.fn(async () => ({
+    const rpc = stubGitRpc({
       outcome: "not_applicable",
       reason: "non_git_environment",
       message: "Workspace is not a Git repository.",
-    }));
-    const pullRequestGet = vi.fn(async () => ({ outcome: "absent" }));
+    });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.pull-request.$get": pullRequestGet,
-      "v1.environments.:id.status.$get": statusGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -168,10 +199,12 @@ describe("bb thread show command output", () => {
       register,
     );
 
-    expect(statusGet).toHaveBeenCalledWith({
-      param: { id: "env-work-status" },
-      query: { mergeBaseBranch: "main" },
-    });
+    expect(rpc.urls).toEqual([
+      "http://server/api/v1/plugins/bb--git/rpc/workspaceStatus",
+    ]);
+    expect(rpc.bodies).toEqual([
+      { environmentId: "env-work-status", mergeBaseBranch: "main" },
+    ]);
     expect(collectLogLines(vi.mocked(console.log))).toContain(
       "Work status: Workspace is not a Git repository.",
     );
@@ -210,7 +243,7 @@ describe("bb thread show command output", () => {
       createdAt: 1,
       updatedAt: 2,
     });
-    const gitDiff: domain.ThreadGitDiffResponse = {
+    const gitDiff: ThreadGitDiffResponse = {
       diff: "",
       files: "M\tsrc/file.ts\n",
       mergeBaseRef: "abc1234",
@@ -219,17 +252,10 @@ describe("bb thread show command output", () => {
     };
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const diffResponse: serverContract.EnvironmentDiffResponse = {
-      outcome: "available",
-      diff: gitDiff,
-    };
-    const diffGet = vi.fn(async () => diffResponse);
-    const pullRequestGet = vi.fn(async () => ({ outcome: "absent" }));
+    const rpc = stubGitRpc({ outcome: "available", diff: gitDiff });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.diff.$get": diffGet,
-      "v1.environments.:id.pull-request.$get": pullRequestGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -239,13 +265,12 @@ describe("bb thread show command output", () => {
       register,
     );
 
-    expect(diffGet).toHaveBeenCalledWith({
-      param: { id: "env-diff-base" },
-      query: {
-        mergeBaseBranch: "release",
-        target: "all",
+    expect(rpc.bodies).toEqual([
+      {
+        environmentId: "env-diff-base",
+        target: { type: "all", mergeBaseBranch: "release" },
       },
-    });
+    ]);
   });
 
   it("bb thread show --git-diff renders an available uncommitted diff response", async () => {
@@ -265,7 +290,7 @@ describe("bb thread show command output", () => {
       createdAt: 1,
       updatedAt: 2,
     });
-    const diffResponse: serverContract.EnvironmentDiffResponse = {
+    const rpc = stubGitRpc({
       outcome: "available",
       diff: {
         diff: "diff --git a/smoke.txt b/smoke.txt\nnew file mode 100644\n",
@@ -274,16 +299,12 @@ describe("bb thread show command output", () => {
         shortstat: "1 file changed\n",
         truncated: false,
       },
-    };
+    });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const diffGet = vi.fn(async () => diffResponse);
-    const pullRequestGet = vi.fn(async () => ({ outcome: "absent" }));
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.diff.$get": diffGet,
-      "v1.environments.:id.pull-request.$get": pullRequestGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -300,12 +321,9 @@ describe("bb thread show command output", () => {
       register,
     );
 
-    expect(diffGet).toHaveBeenCalledWith({
-      param: { id: "env-uncommitted-diff" },
-      query: {
-        target: "uncommitted",
-      },
-    });
+    expect(rpc.bodies).toEqual([
+      { environmentId: "env-uncommitted-diff", target: { type: "uncommitted" } },
+    ]);
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output).toContain("Git diff:");
     expect(output).toContain("A\tsmoke.txt");
@@ -337,23 +355,23 @@ describe("bb thread show command output", () => {
     });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const pullRequestGet = vi.fn(async () => ({
+    const rpc = stubPullRequestRpc("env-show-pr", {
       outcome: "available",
       pullRequest,
-    }));
+    });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.pull-request.$get": pullRequestGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
 
     await runCommand(["thread", "show", "thread-show-pr"], register);
 
-    expect(pullRequestGet).toHaveBeenCalledWith({
-      param: { id: "env-show-pr" },
-    });
+    expect(rpc.urls).toEqual([
+      "http://server/api/v1/plugins/bb--github-pr-status/rpc/pullRequests",
+    ]);
+    expect(rpc.bodies).toEqual([{ keys: ["env-show-pr"] }]);
     const output = collectLogLines(vi.mocked(console.log)).join("\n");
     expect(output.indexOf("Environment:")).toBeLessThan(
       output.indexOf("Pull request:"),
@@ -390,14 +408,13 @@ describe("bb thread show command output", () => {
     });
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const pullRequestGet = vi.fn(async () => ({
+    stubPullRequestRpc("env-show-pr-down", {
       outcome: "unavailable",
       message: "gh pr view failed: authentication required",
-    }));
+    });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.pull-request.$get": pullRequestGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });
@@ -430,14 +447,13 @@ describe("bb thread show command output", () => {
     const pullRequest = makePullRequest();
     const get = vi.fn(async () => thread);
     const environmentGet = vi.fn(async () => environment);
-    const pullRequestGet = vi.fn(async () => ({
+    stubPullRequestRpc("env-json-show-pr", {
       outcome: "available",
       pullRequest,
-    }));
+    });
     const timelineGet = fixtures.makeEmptyTimelineGetMock();
     stubServerApi({
       "v1.environments.:id.$get": environmentGet,
-      "v1.environments.:id.pull-request.$get": pullRequestGet,
       "v1.threads.:id.$get": get,
       "v1.threads.:id.timeline.$get": timelineGet,
     });

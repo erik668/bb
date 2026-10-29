@@ -43,16 +43,6 @@ export function* iterateThreadListCacheEntries(
   }
 }
 
-function mapThreadListCacheData<T extends ThreadListCacheData>(
-  data: T,
-  mapper: (list: ThreadListEntry[]) => ThreadListEntry[],
-): T {
-  if (isThreadListEntryArray(data)) {
-    return mapper(data) as T;
-  }
-  return { ...data, pages: data.pages.map(mapper) } as T;
-}
-
 function isThreadListCacheData(value: unknown): value is ThreadListCacheData {
   return isThreadListEntryArray(value) || isInfiniteThreadListData(value);
 }
@@ -62,14 +52,8 @@ interface CachedThreadList {
   data: ThreadListCacheData;
 }
 
-export type CachedThreadListSnapshot = CachedThreadList[];
-
 interface ThreadListCacheQueryOptions {
   queryKey: QueryKey;
-}
-
-interface ApplyToCachedThreadListsOptions extends ThreadListCacheQueryOptions {
-  mapper: (list: ThreadListEntry[]) => ThreadListEntry[];
 }
 
 export function getCachedThreadLists(
@@ -86,27 +70,4 @@ export function getCachedThreadLists(
     result.push({ queryKey, data });
   }
   return result;
-}
-
-export function restoreCachedThreadLists(
-  queryClient: QueryClient,
-  snapshot: CachedThreadListSnapshot,
-): void {
-  for (const { queryKey, data } of snapshot) {
-    queryClient.setQueryData(queryKey, data);
-  }
-}
-
-export function applyToCachedThreadLists(
-  queryClient: QueryClient,
-  options: ApplyToCachedThreadListsOptions,
-): void {
-  for (const { queryKey, data } of getCachedThreadLists(queryClient, {
-    queryKey: options.queryKey,
-  })) {
-    queryClient.setQueryData(
-      queryKey,
-      mapThreadListCacheData(data, options.mapper),
-    );
-  }
 }

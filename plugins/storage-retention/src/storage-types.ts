@@ -1,0 +1,319 @@
+import { z } from "zod";
+
+export const HOST_STORAGE_LARGEST_THREADS_LIMIT = 20;
+
+const byteCountSchema = z.number().int().nonnegative();
+
+export const hostStorageThreadSchema = z.object({
+  threadId: z.string(),
+  projectId: z.string(),
+  title: z.string(),
+  archivedAt: z.number().nullable(),
+  updatedAt: z.number(),
+  running: z.boolean(),
+  hidden: z.boolean(),
+  pinned: z.boolean(),
+  sizeBytes: byteCountSchema,
+});
+export type HostStorageThread = z.infer<typeof hostStorageThreadSchema>;
+
+export const hostStorageLeftoverWorktreeSchema = z.object({
+  environmentId: z.string(),
+  projectId: z.string(),
+  path: z.string(),
+  sizeBytes: byteCountSchema,
+  teardownMessage: z.string().nullable(),
+});
+export type HostStorageLeftoverWorktree = z.infer<
+  typeof hostStorageLeftoverWorktreeSchema
+>;
+
+export const externalWorktreeScanSchema = z.object({
+  projectId: z.string(),
+  repositoryPath: z.string(),
+  path: z.string(),
+  branch: z.string().nullable(),
+  locked: z.boolean(),
+  changedFileCount: z.number().int().nonnegative().nullable().default(null),
+  unsavedCommitCount: z.number().int().nonnegative().nullable().default(null),
+  lastActivityAt: z.number().nullable(),
+  sizeBytes: byteCountSchema,
+});
+const linkedThreadSchema = z.object({
+  threadId: z.string(),
+  title: z.string(),
+  archived: z.boolean(),
+});
+export const hostStorageExternalWorktreeSchema =
+  externalWorktreeScanSchema.extend({ threads: z.array(linkedThreadSchema) });
+export type HostStorageExternalWorktree = z.infer<
+  typeof hostStorageExternalWorktreeSchema
+>;
+
+const developerEntrySchema = z.object({
+  name: z.string(),
+  sizeBytes: byteCountSchema,
+  sourcePath: z.string().nullable().default(null),
+  sourcePathState: z.enum(["exists", "missing", "unknown"]).default("unknown"),
+  running: z.boolean().default(false),
+});
+export const developerStorageScanSchema = z.object({
+  path: z.string(),
+  sizeBytes: byteCountSchema,
+  entries: z.array(developerEntrySchema),
+});
+export const developerStorageSchema = developerStorageScanSchema.extend({
+  entries: z.array(
+    developerEntrySchema.extend({
+      threads: z.array(linkedThreadSchema),
+      current: z.boolean(),
+    }),
+  ),
+});
+
+export const hostStorageReportSchema = z.object({
+  hostId: z.string(),
+  scannedAt: z.number(),
+  disk: z
+    .object({ totalBytes: byteCountSchema, freeBytes: byteCountSchema })
+    .nullable(),
+  activeThreadBytes: byteCountSchema,
+  archivedThreadBytes: byteCountSchema,
+  orphanBytes: byteCountSchema,
+  leftoverWorktreeBytes: byteCountSchema,
+  threadsWithStorageCount: z.number().int().nonnegative(),
+  archivedThreadCount: z.number().int().nonnegative(),
+  orphanCount: z.number().int().nonnegative(),
+  hiddenThreads: z.object({
+    activeCount: z.number().int().nonnegative(),
+    activeBytes: byteCountSchema,
+    archivedCount: z.number().int().nonnegative(),
+    archivedBytes: byteCountSchema,
+  }),
+  archivedFiles: z.object({
+    threadCount: z.number().int().nonnegative(),
+    bytes: byteCountSchema,
+  }),
+  archivedLargeFiles: z.object({
+    threadCount: z.number().int().nonnegative(),
+    fileCount: z.number().int().nonnegative(),
+    bytes: byteCountSchema,
+  }),
+  largestThreads: z
+    .array(hostStorageThreadSchema)
+    .max(HOST_STORAGE_LARGEST_THREADS_LIMIT),
+  leftoverWorktrees: z.array(hostStorageLeftoverWorktreeSchema),
+  projectWorktrees: z.array(
+    z.object({
+      projectId: z.string(),
+      projectName: z.string(),
+      worktreeCount: z.number().int().nonnegative(),
+      cleanupPendingCount: z.number().int().nonnegative(),
+      externalCount: z.number().int().nonnegative(),
+      externalBytes: byteCountSchema,
+    }),
+  ),
+  externalWorktrees: z.array(hostStorageExternalWorktreeSchema),
+  developerStorage: developerStorageSchema.nullable(),
+});
+export type HostStorageReport = z.infer<typeof hostStorageReportSchema>;
+
+export const hostStorageScanStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("idle") }),
+  z.object({ state: z.literal("scanning"), startedAt: z.number() }),
+  z.object({
+    state: z.literal("failed"),
+    failedAt: z.number(),
+    message: z.string(),
+  }),
+]);
+export type HostStorageScanStatus = z.infer<typeof hostStorageScanStatusSchema>;
+
+export const largeFileCleanupStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("idle") }),
+  z.object({ state: z.enum(["queued", "running"]), startedAt: z.number() }),
+  z.object({
+    state: z.literal("completed"),
+    clearedFiles: byteCountSchema,
+    clearedBytes: byteCountSchema,
+  }),
+  z.object({ state: z.literal("failed"), message: z.string() }),
+]);
+export type LargeFileCleanupStatus = z.infer<
+  typeof largeFileCleanupStatusSchema
+>;
+
+export const archivedFileCleanupStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("idle") }),
+  z.object({
+    state: z.enum(["queued", "running"]),
+    clearedThreads: byteCountSchema,
+    clearedBytes: byteCountSchema,
+  }),
+  z.object({
+    state: z.literal("completed"),
+    clearedThreads: byteCountSchema,
+    clearedBytes: byteCountSchema,
+  }),
+  z.object({
+    state: z.literal("failed"),
+    message: z.string(),
+    clearedThreads: byteCountSchema,
+    clearedBytes: byteCountSchema,
+  }),
+]);
+export type ArchivedFileCleanupStatus = z.infer<
+  typeof archivedFileCleanupStatusSchema
+>;
+
+export const maintenanceKindSchema = z.enum([
+  "orphans",
+  "development",
+  "worktrees",
+  "externalWorktrees",
+]);
+export type MaintenanceKind = z.infer<typeof maintenanceKindSchema>;
+
+export const maintenanceStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.literal("idle") }),
+  z.object({
+    state: z.enum(["queued", "running"]),
+    kind: maintenanceKindSchema,
+  }),
+  z.object({
+    state: z.literal("completed"),
+    kind: maintenanceKindSchema,
+    message: z.string(),
+  }),
+  z.object({
+    state: z.literal("failed"),
+    kind: maintenanceKindSchema,
+    message: z.string(),
+  }),
+]);
+export type MaintenanceStatus = z.infer<typeof maintenanceStatusSchema>;
+
+export const externalWorktreeSkipReasonSchema = z.enum([
+  "notWorktree",
+  "locked",
+  "uncommittedChanges",
+  "unsavedCommits",
+  "inUseByBb",
+]);
+export type ExternalWorktreeSkipReason = z.infer<
+  typeof externalWorktreeSkipReasonSchema
+>;
+
+export const externalWorktreeRemovalSchema = z.discriminatedUnion("state", [
+  z.object({ path: z.string(), state: z.enum(["queued", "running"]) }),
+  z.object({
+    path: z.string(),
+    state: z.literal("completed"),
+    removedBytes: byteCountSchema,
+  }),
+  z.object({
+    path: z.string(),
+    state: z.literal("skipped"),
+    reasons: z.array(externalWorktreeSkipReasonSchema).min(1),
+  }),
+  z.object({
+    path: z.string(),
+    state: z.literal("failed"),
+    message: z.string(),
+  }),
+]);
+export type ExternalWorktreeRemoval = z.infer<
+  typeof externalWorktreeRemovalSchema
+>;
+
+export const hostStorageResponseSchema = z.object({
+  report: hostStorageReportSchema.nullable(),
+  scan: hostStorageScanStatusSchema,
+  largeFileCleanup: largeFileCleanupStatusSchema,
+  archivedFileCleanup: archivedFileCleanupStatusSchema,
+  maintenance: maintenanceStatusSchema,
+  maintenanceJobs: z.array(maintenanceStatusSchema),
+  externalWorktreeRemovals: z.array(externalWorktreeRemovalSchema),
+});
+export type HostStorageResponse = z.infer<typeof hostStorageResponseSchema>;
+
+export const hostStorageListResponseSchema = z.object({
+  hosts: z.array(
+    z.object({
+      hostId: z.string(),
+      report: hostStorageReportSchema.nullable(),
+      scan: hostStorageScanStatusSchema,
+      largeFileCleanup: largeFileCleanupStatusSchema,
+      archivedFileCleanup: archivedFileCleanupStatusSchema,
+      maintenance: maintenanceStatusSchema,
+      maintenanceJobs: z.array(maintenanceStatusSchema),
+      externalWorktreeRemovals: z.array(externalWorktreeRemovalSchema),
+    }),
+  ),
+});
+export type HostStorageListResponse = z.infer<
+  typeof hostStorageListResponseSchema
+>;
+
+export const hostStorageRemoveOrphansResponseSchema = z.object({
+  removedCount: z.number().int().nonnegative(),
+  removedBytes: byteCountSchema,
+  report: hostStorageReportSchema,
+});
+export type HostStorageRemoveOrphansResponse = z.infer<
+  typeof hostStorageRemoveOrphansResponseSchema
+>;
+
+export const hostStorageRetryWorktreeCleanupResponseSchema = z.object({
+  retriedCount: z.number().int().nonnegative(),
+});
+export type HostStorageRetryWorktreeCleanupResponse = z.infer<
+  typeof hostStorageRetryWorktreeCleanupResponseSchema
+>;
+
+export const hostStorageRemoveExternalWorktreesResponseSchema = z.object({
+  removedCount: z.number().int().nonnegative(),
+  removedBytes: byteCountSchema,
+  skipped: z.array(
+    z.object({
+      path: z.string(),
+      reasons: z.array(externalWorktreeSkipReasonSchema).min(1),
+    }),
+  ),
+  failed: z.array(z.object({ path: z.string(), message: z.string() })),
+});
+export type HostStorageRemoveExternalWorktreesResponse = z.infer<
+  typeof hostStorageRemoveExternalWorktreesResponseSchema
+>;
+
+export const entryCleanupInputSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("thread"), threadId: z.string().min(1) }).strict(),
+  z
+    .object({
+      kind: z.literal("development"),
+      hostId: z.string().min(1),
+      names: z.array(z.string().min(1)).min(1).max(500),
+      stopRunning: z.boolean(),
+    })
+    .strict(),
+]);
+export type EntryCleanupInput = z.infer<typeof entryCleanupInputSchema>;
+export const entryCleanupStatusSchema = z.discriminatedUnion("state", [
+  z.object({ state: z.enum(["queued", "running"]) }),
+  z.object({ state: z.literal("failed"), message: z.string() }),
+  z.object({
+    state: z.literal("completed"),
+    result: z.discriminatedUnion("kind", [
+      z.object({ kind: z.literal("thread"), ok: z.literal(true) }),
+      z.object({
+        kind: z.literal("development"),
+        running: z.array(z.string()),
+        removedCount: byteCountSchema,
+        removedBytes: byteCountSchema,
+        skippedCount: byteCountSchema,
+        stoppedProcessCount: byteCountSchema,
+      }),
+    ]),
+  }),
+]);
+export type EntryCleanupStatus = z.infer<typeof entryCleanupStatusSchema>;

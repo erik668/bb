@@ -2,7 +2,7 @@ import type {
   PendingInteraction,
   ProviderPendingInteraction,
 } from "@bb/domain";
-import { ThreadPendingInteractionBanner } from "@/components/thread/pending-interactions/ThreadPendingInteractionBanner";
+import { ThreadPendingInteractionBanners } from "@/components/thread/pending-interactions/ThreadPendingInteractionBanner";
 import { StoryCard, StoryRow } from "../../../../.ladle/story-card";
 
 export default {
@@ -59,6 +59,7 @@ const singleQuestion: PendingInteraction = {
           },
         ],
         allowFreeText: true,
+        required: true,
       },
     ],
   },
@@ -82,6 +83,7 @@ const multiQuestion: PendingInteraction = {
           { value: "tests", label: "Tests" },
         ],
         allowFreeText: false,
+        required: true,
       },
       {
         id: "notes",
@@ -89,6 +91,7 @@ const multiQuestion: PendingInteraction = {
         shortLabel: "Notes",
         multiSelect: false,
         allowFreeText: true,
+        required: true,
       },
     ],
   },
@@ -111,36 +114,39 @@ const resolvingQuestion: PendingInteraction = {
 
 export function Overview() {
   return (
-    <StoryCard>
+    <StoryCard className="m-0 p-4">
       <StoryRow
+        className="grid-cols-1 gap-y-2 px-0 md:grid-cols-[210px_minmax(0,1fr)]"
         label="single question"
         hint="one selectable answer with optional free text"
       >
         <PromptStage>
-          <ThreadPendingInteractionBanner
-            interaction={singleQuestion}
+          <ThreadPendingInteractionBanners
+            interactions={[singleQuestion]}
             threadId={singleQuestion.threadId}
           />
         </PromptStage>
       </StoryRow>
       <StoryRow
+        className="grid-cols-1 gap-y-2 px-0 md:grid-cols-[210px_minmax(0,1fr)]"
         label="multi-question"
         hint="multiple questions must each be answered before submit"
       >
         <PromptStage>
-          <ThreadPendingInteractionBanner
-            interaction={multiQuestion}
+          <ThreadPendingInteractionBanners
+            interactions={[multiQuestion]}
             threadId={multiQuestion.threadId}
           />
         </PromptStage>
       </StoryRow>
       <StoryRow
+        className="grid-cols-1 gap-y-2 px-0 md:grid-cols-[210px_minmax(0,1fr)]"
         label="resolving"
         hint="answer submitted; provider resolution is in-flight"
       >
         <PromptStage>
-          <ThreadPendingInteractionBanner
-            interaction={resolvingQuestion}
+          <ThreadPendingInteractionBanners
+            interactions={[resolvingQuestion]}
             threadId={resolvingQuestion.threadId}
           />
         </PromptStage>

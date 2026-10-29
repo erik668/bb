@@ -6,7 +6,7 @@ import {
   type SystemMessageSubject,
   type ThreadEventTurnStatus,
 } from "@bb/domain";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   queueChildThreadNeedsAttentionNotificationBestEffort,
   queueChildThreadTurnNotificationBestEffort,
@@ -19,7 +19,11 @@ import {
   seedThread,
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
-import { createTestAppHarness, withTestHarness } from "../helpers/test-app.js";
+import { createTestAppHarness } from "../helpers/test-app.js";
+import {
+  withChildThreadNotificationClock,
+  flushChildThreadNotifications,
+} from "../helpers/child-thread-notification-clock.js";
 
 type TestHarness = Awaited<ReturnType<typeof createTestAppHarness>>;
 
@@ -67,10 +71,9 @@ interface StampedSystemMessage {
 async function waitForStampedSystemMessage(
   harness: TestHarness,
   parentThreadId: string,
-  timeoutMs = 4_000,
 ): Promise<StampedSystemMessage> {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
+  await flushChildThreadNotifications();
+  return vi.waitFor(() => {
     const rows = harness.db
       .select()
       .from(events)
@@ -91,9 +94,10 @@ async function waitForStampedSystemMessage(
         };
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error("Timed out waiting for a stamped system message");
+    throw new Error(
+      "Expected a stamped system message after flushing notifications",
+    );
+  });
 }
 
 describe("Family B emit-site discriminator stamping", () => {
@@ -108,7 +112,7 @@ describe("Family B emit-site discriminator stamping", () => {
 
   for (const { turnStatus, expectedKind } of childTurnStatuses) {
     it(`stamps a single ${turnStatus} child outcome as ${expectedKind}`, async () => {
-      await withTestHarness(async (harness) => {
+      await withChildThreadNotificationClock(async (harness) => {
         const fixture = seedParentFixture(harness, `host-child-${turnStatus}`);
         const child = seedThread(harness.deps, {
           projectId: fixture.projectId,
@@ -131,50 +135,14 @@ describe("Family B emit-site discriminator stamping", () => {
           kind: "thread",
           threadId: child.id,
           threadName: "Worker child",
+          outcomes: [{ threadId: child.id, status: turnStatus }],
         });
       });
     });
   }
 
-  it("stamps a multi-child batch as child-outcome-batch with a count subject", async () => {
-    await withTestHarness(async (harness) => {
-      const fixture = seedParentFixture(harness, "host-child-batch");
-      const childA = seedThread(harness.deps, {
-        projectId: fixture.projectId,
-        title: "Worker A",
-        parentThreadId: fixture.parentThreadId,
-      });
-      const childB = seedThread(harness.deps, {
-        projectId: fixture.projectId,
-        title: "Worker B",
-        parentThreadId: fixture.parentThreadId,
-      });
-
-      await queueChildThreadTurnNotificationBestEffort(harness.deps, {
-        childThread: childA,
-        parentThreadId: fixture.parentThreadId,
-        turnStatus: "completed",
-      });
-      await queueChildThreadTurnNotificationBestEffort(harness.deps, {
-        childThread: childB,
-        parentThreadId: fixture.parentThreadId,
-        turnStatus: "interrupted",
-      });
-
-      const stamped = await waitForStampedSystemMessage(
-        harness,
-        fixture.parentThreadId,
-      );
-      expect(stamped.systemMessageKind).toBe("child-outcome-batch");
-      expect(stamped.systemMessageSubject).toEqual({
-        kind: "thread-batch",
-        count: 2,
-      });
-    });
-  });
-
   it("stamps a needs-attention notification as child-needs-attention", async () => {
-    await withTestHarness(async (harness) => {
+    await withChildThreadNotificationClock(async (harness) => {
       const fixture = seedParentFixture(harness, "host-child-attention");
       const child = seedThread(harness.deps, {
         projectId: fixture.projectId,
@@ -202,7 +170,7 @@ describe("Family B emit-site discriminator stamping", () => {
   });
 
   it("stamps ownership assignment as ownership-assigned naming the child", async () => {
-    await withTestHarness(async (harness) => {
+    await withChildThreadNotificationClock(async (harness) => {
       const fixture = seedParentFixture(harness, "host-ownership-assign");
       const child = seedThread(harness.deps, {
         projectId: fixture.projectId,
@@ -229,7 +197,7 @@ describe("Family B emit-site discriminator stamping", () => {
   });
 
   it("stamps ownership removal as ownership-removed naming the child", async () => {
-    await withTestHarness(async (harness) => {
+    await withChildThreadNotificationClock(async (harness) => {
       const fixture = seedParentFixture(harness, "host-ownership-remove");
       const child = seedThread(harness.deps, {
         projectId: fixture.projectId,

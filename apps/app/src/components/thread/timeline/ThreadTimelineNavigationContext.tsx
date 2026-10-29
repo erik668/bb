@@ -1,5 +1,5 @@
 import { createContext, useContext, useMemo, type ReactNode } from "react";
-import type { PromptMentionLinkResolver } from "@/components/promptbox/editor/prompt-mention-link";
+import type { PromptMentionLinkResolver } from "@bb/client-core";
 import type {
   ThreadTimelineLinkHandler,
   ThreadTimelineLocalFileLinkHandler,
@@ -10,6 +10,7 @@ interface ThreadTimelineNavigation {
   onOpenLink: ThreadTimelineLinkHandler;
   onOpenLocalFileLink: ThreadTimelineLocalFileLinkHandler;
   resolveMentionLink: PromptMentionLinkResolver;
+  threadId?: string;
   workspaceRootPath: string | undefined;
 }
 
@@ -22,6 +23,7 @@ export function ThreadTimelineNavigationProvider({
   onOpenLink,
   onOpenLocalFileLink,
   resolveMentionLink,
+  threadId,
   workspaceRootPath,
 }: ThreadTimelineNavigation & { children: ReactNode }) {
   const navigation = useMemo<ThreadTimelineNavigation>(
@@ -30,6 +32,7 @@ export function ThreadTimelineNavigationProvider({
       onOpenLink,
       onOpenLocalFileLink,
       resolveMentionLink,
+      threadId,
       workspaceRootPath,
     }),
     [
@@ -37,6 +40,7 @@ export function ThreadTimelineNavigationProvider({
       onOpenLink,
       onOpenLocalFileLink,
       resolveMentionLink,
+      threadId,
       workspaceRootPath,
     ],
   );

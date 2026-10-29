@@ -1,44 +1,70 @@
 import { SourceLoadingSkeleton } from "@/components/code/code-loading-skeletons";
 import {
   type CSSProperties,
+  type ReactNode,
+  useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import type { UrlTransform } from "react-markdown";
+import { FilePreviewScrollPositionContext } from "./filePreviewScrollPositionContext";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { Button } from "@bb/shared-ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuCheckboxItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+} from "@bb/shared-ui/dropdown-menu";
+import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
+import { useElementWidth } from "@/hooks/useElementWidth";
 import { SourceCodeHost } from "@/components/code/SourceCodeHost";
-import { COARSE_POINTER_TEXT_SM_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
+import {
+  COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
+  COARSE_POINTER_TEXT_SM_CLASS,
+} from "@bb/shared-ui/coarse-pointer-sizing";
 import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { CopyButton } from "@/components/ui/copy-button.js";
 import { Icon } from "@bb/shared-ui/icon";
-import { OpenInEditorButton } from "@/components/ui/open-in-editor-button.js";
+import { OpenInEditorButton } from "@bb/shared-ui/open-in-editor-button";
 import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import type { MarkdownLinkRouting } from "@/components/ui/markdown-link-routing.js";
 import { MarkdownPreview } from "@/components/ui/markdown-preview.js";
+import { ImageLightbox } from "@/components/ui/image-lightbox.js";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@bb/shared-ui/tooltip";
-import { TruncateStart } from "@/components/ui/truncate-start.js";
 import { copyToClipboardWithToast } from "@/lib/clipboard";
+import { formatByteSize } from "@bb/shared-ui/lib/format-byte-size";
+import { saveFile } from "@/lib/save-file";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
 import type {
   FilePreviewLineRange,
-  WorkspaceFilePreviewStatusLabel,
+  UnsupportedFilePreviewReason,
 } from "@bb/client-core";
 import {
   DEFAULT_CODE_OVERFLOW_MODE,
+  LINE_WRAP_LABEL,
   type CodeOverflowMode,
   type CodeOverflowModeChangeHandler,
 } from "@/lib/code-overflow-mode";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { SecondaryPanelSelectionActions } from "./SecondaryPanelSelectionActions.js";
+import {
+  FILE_PREVIEW_WRAPPER_STYLE,
+  FilePreviewHeaderFrame,
+  FilePreviewPath,
+} from "./FilePreviewChrome.js";
+import { useImageTabLightbox } from "./ImageTabLightboxContext.js";
 
 export interface FilePreviewFile {
   cacheKey?: string;
@@ -46,22 +72,30 @@ export interface FilePreviewFile {
   contents: string;
 }
 
+export interface UnsupportedFilePreviewFile {
+  mimeType: string;
+  name: string;
+  reason: UnsupportedFilePreviewReason;
+  sizeBytes: number;
+  url: string;
+}
+
 type IframePreviewSandbox = "allow-scripts";
 
 interface IframeFilePreviewTarget {
-  sandbox: IframePreviewSandbox | null;
+  sandbox: IframePreviewSandbox;
   title: string;
   url: string;
 }
 
-type FilePreviewState =
+export type FilePreviewState =
   | { kind: "loading" }
   | { kind: "empty" }
   | { kind: "not-found" }
   | { kind: "error"; message?: string }
+  | { kind: "unsupported"; file: UnsupportedFilePreviewFile }
   | { kind: "image"; url: string }
   | { kind: "video"; url: string }
-  | ({ kind: "iframe" } & IframeFilePreviewTarget)
   | {
       kind: "html";
       file: FilePreviewFile;
@@ -73,10 +107,15 @@ type FilePreviewState =
       file: FilePreviewFile;
       lineRange: FilePreviewLineRange | null;
       textPreviewKind: TextFilePreviewKind | null;
-      markdownUrlTransform?: UrlTransform;
     };
 
+interface FilePreviewDownload {
+  url: string;
+  fileName: string;
+}
+
 interface FilePreviewProps {
+  download?: FilePreviewDownload | null;
   state: FilePreviewState;
   path: string;
   copyPath?: string | null;
@@ -87,10 +126,11 @@ interface FilePreviewProps {
   onRefresh?: () => void;
   isRefreshing?: boolean;
   markdownLinkRouting?: MarkdownLinkRouting;
-  statusLabel?: WorkspaceFilePreviewStatusLabel | null;
+  statusLabel?: string | null;
 }
 
 interface FilePreviewBodyProps {
+  iframePreview: ReactNode;
   state: FilePreviewState;
   path: string;
   lineOverflowMode: CodeOverflowMode;
@@ -100,6 +140,7 @@ interface FilePreviewBodyProps {
 }
 
 interface HtmlFilePreviewBodyProps {
+  iframePreview: ReactNode;
   lineOverflowMode: CodeOverflowMode;
   onSelectionAddToChat?: (text: string) => void;
   state: Extract<FilePreviewState, { kind: "html" }>;
@@ -107,6 +148,8 @@ interface HtmlFilePreviewBodyProps {
 }
 
 interface FilePreviewHeaderProps {
+  download: FilePreviewDownload | null;
+  previewIcon: ReactNode;
   path: string;
   copyPath: string | null;
   rawContents: string | null;
@@ -115,7 +158,7 @@ interface FilePreviewHeaderProps {
   onRevealInFinder?: (path: string) => void;
   onRefresh?: () => void;
   isRefreshing: boolean;
-  statusLabel: WorkspaceFilePreviewStatusLabel | null;
+  statusLabel: string | null;
   toggleKind: FilePreviewToggleKind | null;
   showLineOverflowToggle: boolean;
   lineOverflowMode: CodeOverflowMode;
@@ -130,15 +173,9 @@ interface FilePreviewLineWrapButtonProps {
   onLineOverflowModeChange: CodeOverflowModeChangeHandler;
 }
 
-interface FilePreviewPathProps {
-  path: string;
-  copyPath: string | null;
-}
-
 interface MarkdownFilePreviewProps {
   file: FilePreviewFile;
   onSelectionAddToChat?: (text: string) => void;
-  urlTransform?: UrlTransform;
   markdownLinkRouting?: MarkdownLinkRouting;
 }
 
@@ -155,6 +192,10 @@ interface FilePreviewImageProps {
 interface FilePreviewVideoProps {
   url: string;
   title: string;
+}
+
+interface UnsupportedFilePreviewProps {
+  file: UnsupportedFilePreviewFile;
 }
 
 interface FilePreviewMessageProps {
@@ -193,9 +234,6 @@ const CSV_PREVIEW_MAX_ROWS = 500;
 const CSV_PREVIEW_ROW_HEIGHT_PX = 29;
 const CSV_PREVIEW_OVERSCAN_ROWS = 8;
 
-const FILE_PREVIEW_WRAPPER_STYLE = {
-  "--md-content-w": "100cqi",
-} as CSSProperties;
 
 const HTML_FILE_PREVIEW_IFRAME_STYLE = {
   width: "100%",
@@ -204,14 +242,11 @@ const HTML_FILE_PREVIEW_IFRAME_STYLE = {
 } as CSSProperties;
 const IFRAME_LOADING_INDICATOR_DELAY_MS = 160;
 const FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS =
-  "h-5 w-5 rounded-sm p-0 [&_svg]:size-3 max-md:pointer-coarse:h-9 max-md:pointer-coarse:w-9 max-md:pointer-coarse:[&_svg]:size-5";
+  "h-5 w-5 rounded-sm p-0 [&_[data-icon-root]]:size-3 max-md:pointer-coarse:h-9 max-md:pointer-coarse:w-9 max-md:pointer-coarse:[&_[data-icon-root]]:size-5";
 const FILE_PREVIEW_VIEW_MODE_BUTTON_CLASS =
-  "h-5 rounded-sm px-2 text-muted-foreground max-md:pointer-coarse:h-[30px]";
+  "h-5 rounded-sm px-2 text-muted-foreground max-md:pointer-coarse:h-9";
 
 function getFilePreviewExternalUrl(state: FilePreviewState): string | null {
-  if (state.kind === "iframe") {
-    return state.url;
-  }
   if (state.kind === "html") {
     return state.iframe.url;
   }
@@ -259,10 +294,6 @@ function getFileContentsCopyLabel(kind: FilePreviewToggleKind | null): string {
     return "Copy HTML source";
   }
   return "Copy file contents";
-}
-
-function getLineWrapToggleLabel(lineOverflowMode: CodeOverflowMode): string {
-  return lineOverflowMode === "wrap" ? "Disable line wrap" : "Wrap lines";
 }
 
 function getFilePreviewLineRange(
@@ -422,6 +453,7 @@ export function getCsvTruncationNote(
 }
 
 export function FilePreview({
+  download = null,
   state,
   path,
   copyPath = null,
@@ -434,6 +466,37 @@ export function FilePreview({
   markdownLinkRouting,
   statusLabel = null,
 }: FilePreviewProps) {
+  const iframeTarget = state.kind === "html" ? state.iframe : null;
+  const iframeKey = JSON.stringify([
+    state.kind,
+    iframeTarget?.url,
+    state.kind === "html" ? state.file.cacheKey : null,
+  ]);
+  const [iframeLoad, setIframeLoad] = useState<{
+    key: string;
+    status: IframeLoadState;
+  }>({
+    key: iframeKey,
+    status: "loading",
+  });
+  if (iframeLoad.key !== iframeKey) {
+    setIframeLoad({ key: iframeKey, status: "loading" });
+  }
+  const iframeLoadState =
+    iframeLoad.key === iframeKey ? iframeLoad.status : "loading";
+  const iframePreview =
+    iframeTarget === null ? null : (
+      <IframeFilePreview
+        key={iframeKey}
+        {...iframeTarget}
+        loadState={iframeLoadState}
+        onLoadStateChange={(status) =>
+          setIframeLoad((current) =>
+            current.key === iframeKey ? { key: iframeKey, status } : current,
+          )
+        }
+      />
+    );
   const toggleKind = getFilePreviewToggleKind(state);
   const filePreviewLineRange = getFilePreviewLineRange(state);
   const rawContents = getRawFilePreviewContents(state);
@@ -456,9 +519,7 @@ export function FilePreview({
     );
   }, [filePreviewLineRange, path, toggleKind]);
 
-  const usesIframeLayout =
-    state.kind === "iframe" ||
-    (state.kind === "html" && viewMode === "preview");
+  const usesIframeLayout = state.kind === "html" && viewMode === "preview";
   const bodyViewMode: FilePreviewViewMode =
     toggleKind === null ? "preview" : viewMode;
   const usesCodeLayout = usesCodeViewLayout(state, bodyViewMode);
@@ -472,22 +533,39 @@ export function FilePreview({
     state.textPreviewKind === "csv" &&
     bodyViewMode === "preview";
   const usesFullHeightLayout =
-    usesIframeLayout || usesCsvPreviewLayout || usesCodeLayout;
-  const usesContentHeightLayout = usesMarkdownPreviewLayout;
+    usesIframeLayout ||
+    usesCsvPreviewLayout ||
+    usesCodeLayout ||
+    usesMarkdownPreviewLayout;
 
   return (
     <div
       className={
         usesFullHeightLayout
-          ? "@container/page flex h-full min-h-0 flex-col"
-          : usesContentHeightLayout
-            ? "@container/page flex min-h-full flex-col"
-            : "@container/page min-h-full"
+          ? cn(
+              "@container/page flex h-full min-h-0 flex-col",
+              usesMarkdownPreviewLayout && "overflow-y-auto",
+            )
+          : "@container/page min-h-full"
+      }
+      data-file-preview-scroll-container={
+        usesMarkdownPreviewLayout ? "" : undefined
       }
       style={FILE_PREVIEW_WRAPPER_STYLE}
     >
       {headerMode === "file" ? (
         <FilePreviewHeader
+          download={download}
+          previewIcon={
+            <FilePreviewIcon
+              key={path}
+              loading={
+                state.kind === "loading" ||
+                isRefreshing ||
+                (usesIframeLayout && iframeLoadState === "loading")
+              }
+            />
+          }
           path={path}
           copyPath={copyPath}
           rawContents={rawContents}
@@ -506,6 +584,7 @@ export function FilePreview({
         />
       ) : null}
       <FilePreviewBody
+        iframePreview={iframePreview}
         state={state}
         path={path}
         lineOverflowMode={lineOverflowMode}
@@ -518,6 +597,7 @@ export function FilePreview({
 }
 
 function FilePreviewBody({
+  iframePreview,
   state,
   path,
   lineOverflowMode,
@@ -538,9 +618,12 @@ function FilePreviewBody({
     return (
       <FilePreviewMessage
         message={state.message ?? "Failed to load file"}
-        role={state.message === undefined ? "alert" : undefined}
+        role="alert"
       />
     );
+  }
+  if (state.kind === "unsupported") {
+    return <UnsupportedFilePreview file={state.file} />;
   }
   if (state.kind === "image") {
     return <FilePreviewImage url={state.url} alt={path} />;
@@ -548,18 +631,10 @@ function FilePreviewBody({
   if (state.kind === "video") {
     return <FilePreviewVideo url={state.url} title={path} />;
   }
-  if (state.kind === "iframe") {
-    return (
-      <IframeFilePreview
-        sandbox={state.sandbox}
-        title={state.title}
-        url={state.url}
-      />
-    );
-  }
   if (state.kind === "html") {
     return (
       <HtmlFilePreviewBody
+        iframePreview={iframePreview}
         lineOverflowMode={lineOverflowMode}
         onSelectionAddToChat={onSelectionAddToChat}
         state={state}
@@ -579,7 +654,6 @@ function FilePreviewBody({
     return (
       <MarkdownFilePreview
         file={state.file}
-        urlTransform={state.markdownUrlTransform}
         markdownLinkRouting={markdownLinkRouting}
         onSelectionAddToChat={onSelectionAddToChat}
       />
@@ -597,6 +671,8 @@ function FilePreviewBody({
 }
 
 function FilePreviewHeader({
+  download,
+  previewIcon,
   path,
   copyPath,
   rawContents,
@@ -614,17 +690,16 @@ function FilePreviewHeader({
   onViewModeChange,
 }: FilePreviewHeaderProps) {
   const openShortcut = useAppCommandShortcut("workspace.openPreferred");
+  const { ref: headerRef, width } = useElementWidth();
+  const isCompactViewport = useIsCompactViewport();
+  const isNarrow = width > 0 ? width < 560 : isCompactViewport;
   const showHeaderControls = showLineOverflowToggle || toggleKind !== null;
   const copyFileContentsLabel = getFileContentsCopyLabel(toggleKind);
 
   return (
-    <div className="sticky top-0 z-10 bg-sidebar">
-      <div className="flex h-9 items-center gap-2 bg-surface-raised px-4">
+    <FilePreviewHeaderFrame headerRef={headerRef}>
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <Icon
-            name="File"
-            className="size-3.5 shrink-0 text-subtle-foreground"
-          />
+          {previewIcon}
           <FilePreviewPath path={path} copyPath={copyPath} />
           {statusLabel === null ? null : (
             <span
@@ -636,130 +711,144 @@ function FilePreviewHeader({
               ({statusLabel})
             </span>
           )}
-          <TooltipProvider delayDuration={300}>
-            {onRefresh ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className={cn(
-                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
-                      "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
-                    )}
-                    onClick={onRefresh}
-                    disabled={isRefreshing}
-                    aria-label={
-                      isRefreshing ? "Refreshing file" : "Refresh file"
-                    }
-                  >
-                    <Icon
-                      name={isRefreshing ? "Spinner" : "RotateCcw"}
-                      className={cn(isRefreshing && "animate-spin")}
-                      aria-hidden
-                    />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {isRefreshing ? "Refreshing file" : "Refresh file"}
-                </TooltipContent>
-              </Tooltip>
-            ) : null}
-            {rawContents === null ? null : (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <CopyButton
-                    text={rawContents}
-                    label={copyFileContentsLabel}
-                    className={cn(
-                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
-                      "shrink-0 rounded-md hover:bg-state-hover hover:text-foreground",
-                    )}
-                  />
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  {copyFileContentsLabel}
-                </TooltipContent>
-              </Tooltip>
-            )}
-            {externalUrl === null ? null : (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className={cn(
-                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
-                      "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
-                    )}
-                    onClick={() => {
-                      openUrlInExternalBrowser(
-                        toAbsolutePreviewUrl(externalUrl),
-                      );
-                    }}
-                    aria-label="Open in external browser"
-                  >
-                    {}
-                    <Icon name="Globe" aria-hidden />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">
-                  Open in external browser
-                </TooltipContent>
-              </Tooltip>
-            )}
-            {onRevealInFinder && copyPath ? (
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className={cn(
-                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
-                      "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
-                    )}
-                    onClick={() => onRevealInFinder(copyPath)}
-                    aria-label="Reveal in Finder"
-                  >
-                    <Icon name="Folder" aria-hidden />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="bottom">Reveal in Finder</TooltipContent>
-              </Tooltip>
-            ) : null}
-            {onOpenInEditor ? (
-              <>
+          {!isNarrow ? (
+            <TooltipProvider delayDuration={300}>
+              {onRefresh ? (
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <OpenInEditorButton
-                      onClick={() => onOpenInEditor(path)}
-                      className={FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS}
-                      label={
-                        openShortcut
-                          ? `Open in editor (${openShortcut.label})`
-                          : "Open in editor"
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                        "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
+                      )}
+                      onClick={onRefresh}
+                      disabled={isRefreshing}
+                      aria-label={
+                        isRefreshing ? "Refreshing file" : "Refresh file"
                       }
-                      aria-keyshortcuts={openShortcut?.ariaKeyshortcuts}
+                    >
+                      <Icon name="RotateCcw" aria-hidden />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    {isRefreshing ? "Refreshing file" : "Refresh file"}
+                  </TooltipContent>
+                </Tooltip>
+              ) : null}
+              {download !== null ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS}
+                      onClick={() => void saveFile(download)}
+                      aria-label="Download"
+                    >
+                      <Icon name="Download" aria-hidden />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Download</TooltipContent>
+                </Tooltip>
+              ) : null}
+              {rawContents === null ? null : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <CopyButton
+                      text={rawContents}
+                      label={copyFileContentsLabel}
+                      className={cn(
+                        FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                        "shrink-0 rounded-md hover:bg-state-hover hover:text-foreground",
+                      )}
                     />
                   </TooltipTrigger>
                   <TooltipContent side="bottom">
-                    {openShortcut
-                      ? `Open in editor (${openShortcut.label})`
-                      : "Open in editor"}
+                    {copyFileContentsLabel}
                   </TooltipContent>
                 </Tooltip>
-                <AppCommandShortcutHint shortcut={openShortcut} />
-              </>
-            ) : null}
-          </TooltipProvider>
+              )}
+              {externalUrl === null ? null : (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                        "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
+                      )}
+                      onClick={() => {
+                        openUrlInExternalBrowser(
+                          toAbsolutePreviewUrl(externalUrl),
+                        );
+                      }}
+                      aria-label="Open in external browser"
+                    >
+                      <Icon name="Globe" aria-hidden />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">
+                    Open in external browser
+                  </TooltipContent>
+                </Tooltip>
+              )}
+              {onRevealInFinder && copyPath ? (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon"
+                      className={cn(
+                        FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                        "shrink-0 text-muted-foreground hover:bg-state-hover hover:text-foreground",
+                      )}
+                      onClick={() => onRevealInFinder(copyPath)}
+                      aria-label="Reveal in Finder"
+                    >
+                      <Icon name="Folder" aria-hidden />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">Reveal in Finder</TooltipContent>
+                </Tooltip>
+              ) : null}
+              {onOpenInEditor ? (
+                <>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <OpenInEditorButton
+                        onClick={() => onOpenInEditor(path)}
+                        className={FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS}
+                        label={
+                          openShortcut
+                            ? `Open in editor (${openShortcut.label})`
+                            : "Open in editor"
+                        }
+                        aria-keyshortcuts={openShortcut?.ariaKeyshortcuts}
+                      />
+                    </TooltipTrigger>
+                    <TooltipContent side="bottom">
+                      {openShortcut
+                        ? `Open in editor (${openShortcut.label})`
+                        : "Open in editor"}
+                    </TooltipContent>
+                  </Tooltip>
+                  <AppCommandShortcutHint shortcut={openShortcut} />
+                </>
+              ) : null}
+            </TooltipProvider>
+          ) : null}
         </div>
-        {showHeaderControls ? (
+        {showHeaderControls || isNarrow ? (
           <div className="ml-auto flex shrink-0 items-center gap-1">
             <FilePreviewLineWrapButton
-              showLineOverflowToggle={showLineOverflowToggle}
+              showLineOverflowToggle={showLineOverflowToggle && !isNarrow}
               lineOverflowMode={lineOverflowMode}
               onLineOverflowModeChange={onLineOverflowModeChange}
             />
@@ -797,45 +886,108 @@ function FilePreviewHeader({
                 </Button>
               </div>
             ) : null}
+            {isNarrow ? (
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className={cn(
+                      FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
+                      "shrink-0 max-md:pointer-coarse:size-10",
+                    )}
+                    aria-label="File actions"
+                  >
+                    <Icon name="MoreHorizontal" aria-hidden />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="end"
+                  mobileTitle="File actions"
+                  className="max-md:pointer-coarse:[&_[role=menuitem]]:min-h-11 max-md:pointer-coarse:[&_[role=menuitem]]:text-sm max-md:pointer-coarse:[&_[role=menuitemcheckbox]]:min-h-11 max-md:pointer-coarse:[&_[role=menuitemcheckbox]]:text-sm"
+                >
+                  <DropdownMenuLabel className="max-w-80 break-all font-mono">
+                    {path}
+                  </DropdownMenuLabel>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    onSelect={() => {
+                      void copyToClipboardWithToast(copyPath ?? path, {
+                        successMessage: "File path copied",
+                        errorMessage: "Failed to copy file path",
+                      });
+                    }}
+                  >
+                    <Icon name="Copy" aria-hidden /> Copy file path
+                  </DropdownMenuItem>
+                  {rawContents !== null ? (
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void copyToClipboardWithToast(rawContents, {
+                          successMessage: "Copied to clipboard",
+                          errorMessage: "Failed to copy file contents",
+                        });
+                      }}
+                    >
+                      <Icon name="Copy" aria-hidden /> {copyFileContentsLabel}
+                    </DropdownMenuItem>
+                  ) : null}
+                  {download !== null ? (
+                    <DropdownMenuItem onSelect={() => void saveFile(download)}>
+                      <Icon name="Download" aria-hidden /> Download
+                    </DropdownMenuItem>
+                  ) : null}
+                  {onRefresh ? (
+                    <DropdownMenuItem
+                      disabled={isRefreshing}
+                      onSelect={onRefresh}
+                    >
+                      <Icon name="RotateCcw" aria-hidden />{" "}
+                      {isRefreshing ? "Refreshing file" : "Refresh file"}
+                    </DropdownMenuItem>
+                  ) : null}
+                  {externalUrl !== null ? (
+                    <DropdownMenuItem
+                      onSelect={() =>
+                        openUrlInExternalBrowser(
+                          toAbsolutePreviewUrl(externalUrl),
+                        )
+                      }
+                    >
+                      <Icon name="Globe" aria-hidden /> Open in external browser
+                    </DropdownMenuItem>
+                  ) : null}
+                  {onRevealInFinder && copyPath ? (
+                    <DropdownMenuItem onSelect={() => onRevealInFinder(copyPath)}>
+                      <Icon name="Folder" aria-hidden /> Reveal in Finder
+                    </DropdownMenuItem>
+                  ) : null}
+                  {onOpenInEditor ? (
+                    <DropdownMenuItem onSelect={() => onOpenInEditor(path)}>
+                      <Icon name="ExternalLink" aria-hidden /> Open in editor
+                    </DropdownMenuItem>
+                  ) : null}
+                  {showLineOverflowToggle ? (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuCheckboxItem
+                        className="gap-2 [&>[data-icon-root]]:size-4 [&>[data-icon-root]]:shrink-0"
+                        checked={lineOverflowMode === "wrap"}
+                        onCheckedChange={(checked) =>
+                          onLineOverflowModeChange(checked ? "wrap" : "scroll")
+                        }
+                      >
+                        <Icon name="TextWrap" aria-hidden />
+                        {LINE_WRAP_LABEL}
+                      </DropdownMenuCheckboxItem>
+                    </>
+                  ) : null}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            ) : null}
           </div>
         ) : null}
-      </div>
-    </div>
-  );
-}
-
-function FilePreviewPath({ path, copyPath }: FilePreviewPathProps) {
-  const copyTarget = copyPath ?? path;
-  const label = "Copy file path";
-  const className = cn(
-    "min-w-0 font-mono font-medium leading-5 text-file-accent",
-    COARSE_POINTER_TEXT_SM_CLASS,
-  );
-
-  return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            className={cn(
-              className,
-              "cursor-pointer rounded-sm text-left underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
-            )}
-            aria-label={label}
-            onClick={() => {
-              void copyToClipboardWithToast(copyTarget, {
-                successMessage: "File path copied",
-                errorMessage: "Failed to copy file path",
-              });
-            }}
-          >
-            <TruncateStart>{path}</TruncateStart>
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">{label}</TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    </FilePreviewHeaderFrame>
   );
 }
 
@@ -847,8 +999,6 @@ function FilePreviewLineWrapButton({
   if (!showLineOverflowToggle) {
     return null;
   }
-
-  const label = getLineWrapToggleLabel(lineOverflowMode);
 
   return (
     <TooltipProvider delayDuration={300}>
@@ -862,7 +1012,7 @@ function FilePreviewLineWrapButton({
               FILE_PREVIEW_HEADER_ICON_BUTTON_CLASS,
               "text-muted-foreground",
             )}
-            aria-label={label}
+            aria-label={LINE_WRAP_LABEL}
             aria-pressed={lineOverflowMode === "wrap"}
             onClick={() => {
               onLineOverflowModeChange(
@@ -873,13 +1023,14 @@ function FilePreviewLineWrapButton({
             <Icon name="TextWrap" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="bottom">{label}</TooltipContent>
+        <TooltipContent side="bottom">{LINE_WRAP_LABEL}</TooltipContent>
       </Tooltip>
     </TooltipProvider>
   );
 }
 
 function HtmlFilePreviewBody({
+  iframePreview,
   lineOverflowMode,
   onSelectionAddToChat,
   state,
@@ -892,12 +1043,7 @@ function HtmlFilePreviewBody({
         className={isPreviewVisible ? "contents" : "hidden"}
         aria-hidden={isPreviewVisible ? undefined : true}
       >
-        <IframeFilePreview
-          key={state.file.cacheKey}
-          sandbox={state.iframe.sandbox}
-          title={state.iframe.title}
-          url={state.iframe.url}
-        />
+        {iframePreview}
       </div>
       <div
         className={isPreviewVisible ? "hidden" : "contents"}
@@ -918,16 +1064,31 @@ function HtmlFilePreviewBody({
 function MarkdownFilePreview({
   file,
   onSelectionAddToChat,
-  urlTransform,
   markdownLinkRouting,
 }: MarkdownFilePreviewProps) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const scrollPosition = useContext(FilePreviewScrollPositionContext);
+  useLayoutEffect(() => {
+    const container = contentRef.current?.closest<HTMLElement>(
+      "[data-file-preview-scroll-container]",
+    );
+    if (!container || !scrollPosition) return;
+    container.scrollTop = scrollPosition.scrollTop;
+    const savePosition = () => {
+      scrollPosition.scrollTop = container.scrollTop;
+    };
+    container.addEventListener("scroll", savePosition);
+    return () => container.removeEventListener("scroll", savePosition);
+  }, [scrollPosition, file.name, file.contents]);
   return (
-    <SecondaryPanelSelectionActions onSelectionAddToChat={onSelectionAddToChat}>
-      <div className="flex-auto bg-background px-4 py-4">
+    <SecondaryPanelSelectionActions
+      markdown
+      onSelectionAddToChat={onSelectionAddToChat}
+    >
+      <div ref={contentRef} className="flex-auto bg-background px-4 py-4">
         <MarkdownPreview
           allowHtml
           content={file.contents}
-          urlTransform={urlTransform}
           linkRouting={markdownLinkRouting}
         />
       </div>
@@ -968,9 +1129,7 @@ function CsvFilePreview({ file, onSelectionAddToChat }: CsvFilePreviewProps) {
 
   return (
     <SecondaryPanelSelectionActions onSelectionAddToChat={onSelectionAddToChat}>
-      {}
       <div className="flex min-h-0 flex-auto flex-col bg-surface-raised px-4 py-4">
-        {}
         <div
           ref={scrollRef}
           className="persistent-scrollbar min-h-0 overflow-auto overscroll-contain rounded-md border border-border bg-background"
@@ -1065,13 +1224,39 @@ function CsvFilePreview({ file, onSelectionAddToChat }: CsvFilePreviewProps) {
 }
 
 function FilePreviewImage({ url, alt }: FilePreviewImageProps) {
+  const [isLightboxOpen, setIsLightboxOpen] = useState(false);
+  const imageTabLightbox = useImageTabLightbox();
+
+  useLayoutEffect(() => {
+    if (imageTabLightbox?.isOpen) {
+      imageTabLightbox.update({ alt, src: url });
+    }
+  }, [alt, imageTabLightbox, url]);
+
   return (
     <div className="pt-4">
-      <img
-        src={url}
-        alt={alt}
-        className="block max-h-[34rem] w-full object-contain"
-      />
+      <button
+        type="button"
+        className="block w-full cursor-zoom-in"
+        aria-label={`Open ${alt} in full screen preview`}
+        onClick={() => {
+          if (imageTabLightbox) {
+            imageTabLightbox.open({ alt, src: url });
+            return;
+          }
+          setIsLightboxOpen(true);
+        }}
+      >
+        <img src={url} alt={alt} className="mx-auto block h-auto max-w-full" />
+      </button>
+      {imageTabLightbox === null ? (
+        <ImageLightbox
+          title={alt}
+          imageSrc={isLightboxOpen ? url : null}
+          imageAlt={alt}
+          onClose={() => setIsLightboxOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -1090,30 +1275,54 @@ function FilePreviewVideo({ url, title }: FilePreviewVideoProps) {
   );
 }
 
-function IframeFilePreview({ sandbox, title, url }: IframeFilePreviewTarget) {
-  const [loadState, setLoadState] = useState<IframeLoadState>("loading");
-  const [showLoadingIndicator, setShowLoadingIndicator] = useState(false);
-
+function FilePreviewIcon({ loading }: { loading: boolean }) {
+  const [showLoading, setShowLoading] = useState(false);
   useEffect(() => {
-    setLoadState("loading");
-  }, [url]);
-
-  useEffect(() => {
-    if (loadState !== "loading") {
-      setShowLoadingIndicator(false);
+    if (!loading) {
+      setShowLoading(false);
       return;
     }
+    const timeout = window.setTimeout(
+      () => setShowLoading(true),
+      IFRAME_LOADING_INDICATOR_DELAY_MS,
+    );
+    return () => window.clearTimeout(timeout);
+  }, [loading]);
+  const spinning = loading && showLoading;
+  return (
+    <span
+      className={cn(
+        "flex items-center justify-center text-subtle-foreground",
+        COARSE_POINTER_COMPACT_ICON_SIZE_SHRINK_CLASS,
+      )}
+    >
+      <Icon
+        name={spinning ? "Spinner" : "File"}
+        className={cn(
+          "size-full",
+          spinning && "animate-spin motion-reduce:animate-none",
+        )}
+        aria-hidden
+      />
+      {spinning ? (
+        <span role="status" className="sr-only">
+          Loading preview…
+        </span>
+      ) : null}
+    </span>
+  );
+}
 
-    setShowLoadingIndicator(false);
-    const timeoutId = window.setTimeout(() => {
-      setShowLoadingIndicator(true);
-    }, IFRAME_LOADING_INDICATOR_DELAY_MS);
-
-    return () => {
-      window.clearTimeout(timeoutId);
-    };
-  }, [loadState, url]);
-
+function IframeFilePreview({
+  sandbox,
+  title,
+  url,
+  loadState,
+  onLoadStateChange,
+}: IframeFilePreviewTarget & {
+  loadState: IframeLoadState;
+  onLoadStateChange: (state: IframeLoadState) => void;
+}) {
   if (loadState === "error") {
     return (
       <div className="min-h-0 flex-1 overflow-hidden">
@@ -1126,20 +1335,51 @@ function IframeFilePreview({ sandbox, title, url }: IframeFilePreviewTarget) {
   }
 
   return (
-    <div className="relative min-h-0 flex-1 overflow-hidden">
-      {loadState === "loading" && showLoadingIndicator ? (
-        <div className="absolute inset-x-0 top-0 z-10">
-          <SourceLoadingSkeleton />
-        </div>
-      ) : null}
+    <div className="min-h-0 flex-1 overflow-hidden">
       <iframe
         title={title}
         src={url}
-        sandbox={sandbox === null ? undefined : sandbox}
+        sandbox={sandbox}
         style={HTML_FILE_PREVIEW_IFRAME_STYLE}
-        onLoad={() => setLoadState("loaded")}
-        onError={() => setLoadState("error")}
+        onLoad={() => onLoadStateChange("loaded")}
+        onError={() => onLoadStateChange("error")}
       />
+    </div>
+  );
+}
+
+function UnsupportedFilePreview({ file }: UnsupportedFilePreviewProps) {
+  return (
+    <div className="flex flex-col items-center gap-4 px-6 py-12 text-center">
+      <div className="flex size-12 items-center justify-center rounded-lg bg-surface-raised text-muted-foreground">
+        <Icon name="File" className="size-6" aria-hidden />
+      </div>
+      <div className="flex max-w-full min-w-0 flex-col gap-1">
+        <p className="truncate text-sm font-medium text-foreground">
+          {file.name}
+        </p>
+        <p className="text-xs text-muted-foreground">
+          {`${file.mimeType} · ${formatByteSize(file.sizeBytes)}`}
+        </p>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        {file.reason === "too-large"
+          ? "This file is too large to preview."
+          : "This file type can't be previewed."}
+      </p>
+      <Button asChild variant="outline" size="sm">
+        <a
+          href={file.url}
+          download={file.name}
+          onClick={(event) => {
+            event.preventDefault();
+            void saveFile({ url: file.url, fileName: file.name });
+          }}
+        >
+          <Icon name="Download" aria-hidden />
+          Download
+        </a>
+      </Button>
     </div>
   );
 }
@@ -1174,7 +1414,6 @@ function FilePreviewCode({
       overflow={lineOverflowMode}
       highlightedLines={highlightedLines}
       scrollToHighlightedLines
-      fallback={<SourceLoadingSkeleton />}
       onSelectionAddToChat={onSelectionAddToChat}
     />
   );

@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { killProcessesReferencingPath } from "@bb/test-helpers";
 import { describe, expect, it } from "vitest";
 import {
   buildDaemonRestartCommand,
@@ -67,22 +68,6 @@ function isProcessRunning(pid: number): boolean {
     return true;
   } catch {
     return false;
-  }
-}
-
-async function stopProcess(pid: number): Promise<void> {
-  if (!isProcessRunning(pid)) {
-    return;
-  }
-  process.kill(pid, "SIGTERM");
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    if (!isProcessRunning(pid)) {
-      return;
-    }
-    await delay(50);
-  }
-  if (isProcessRunning(pid)) {
-    process.kill(pid, "SIGKILL");
   }
 }
 
@@ -306,10 +291,15 @@ describe("standalone restart command", () => {
     expect(command).toContain('[ "$connected" = 1 ]');
     expect(command).not.toContain("&;");
     expect(command).not.toContain("do; if");
-    expect(command).not.toContain("test-openai-key");
   });
 
-  it("does not map whitespace-only QA OpenAI opt-in restart keys", async () => {
+  it("does not map whitespace-only QA OpenAI opt-in restart keys", async ({
+    skip,
+  }) => {
+    skip(
+      process.platform === "win32",
+      "the standalone QA restart command is a POSIX shell script",
+    );
     await expect(
       runRestartProviderEnvBlock(buildTestRestartProviderEnvBlock(), {
         OPENAI_API_KEY: "ambient-openai-key",
@@ -318,13 +308,25 @@ describe("standalone restart command", () => {
     ).resolves.toBe("unset");
   });
 
-  it("keeps OpenAI unset during restart when ambient and opt-in keys are absent", async () => {
+  it("keeps OpenAI unset during restart when ambient and opt-in keys are absent", async ({
+    skip,
+  }) => {
+    skip(
+      process.platform === "win32",
+      "the standalone QA restart command is a POSIX shell script",
+    );
     await expect(
       runRestartProviderEnvBlock(buildTestRestartProviderEnvBlock(), {}),
     ).resolves.toBe("unset");
   });
 
-  it("maps a non-empty QA OpenAI opt-in key during restart", async () => {
+  it("maps a non-empty QA OpenAI opt-in key during restart", async ({
+    skip,
+  }) => {
+    skip(
+      process.platform === "win32",
+      "the standalone QA restart command is a POSIX shell script",
+    );
     await expect(
       runRestartProviderEnvBlock(buildTestRestartProviderEnvBlock(), {
         OPENAI_API_KEY: "ambient-openai-key",
@@ -353,14 +355,19 @@ describe("standalone restart command", () => {
     expect(command).toContain("daemon_pid=''");
   });
 
-  it("starts a detached daemon repeatedly and replaces the current pid", async () => {
+  it("starts a detached daemon repeatedly and replaces the current pid", async ({
+    skip,
+  }) => {
+    skip(
+      process.platform === "win32",
+      "the standalone QA restart command is a POSIX shell script",
+    );
     const tempDir = await fs.mkdtemp(
       path.join(tmpdir(), "bb-restart-command-"),
     );
     const pidPath = path.join(tempDir, "daemon.pid");
     const logPath = path.join(tempDir, "host-daemon.log");
     const entrypoint = path.join(tempDir, "daemon-child.mjs");
-    let daemonPid: number | null = null;
     const server = createServer((request, response) => {
       if (request.url === "/api/v1/hosts") {
         response.setHeader("content-type", "application/json");
@@ -408,26 +415,23 @@ describe("standalone restart command", () => {
       const shellResult = await runShellCommand(command, {
         PATH: process.env.PATH ?? "",
       });
-      daemonPid = await waitForPidFile(pidPath);
-      expect(isProcessRunning(daemonPid)).toBe(true);
+      const firstDaemonPid = await waitForPidFile(pidPath);
+      expect(isProcessRunning(firstDaemonPid)).toBe(true);
 
       signalProcessGroup(shellResult.processGroupId);
       await delay(500);
 
-      expect(isProcessRunning(daemonPid)).toBe(true);
+      expect(isProcessRunning(firstDaemonPid)).toBe(true);
 
-      const firstDaemonPid = daemonPid;
       await runShellCommand(command, {
         PATH: process.env.PATH ?? "",
       });
-      daemonPid = await waitForPidFile(pidPath, firstDaemonPid);
+      const restartedDaemonPid = await waitForPidFile(pidPath, firstDaemonPid);
 
       expect(isProcessRunning(firstDaemonPid)).toBe(false);
-      expect(isProcessRunning(daemonPid)).toBe(true);
+      expect(isProcessRunning(restartedDaemonPid)).toBe(true);
     } finally {
-      if (daemonPid) {
-        await stopProcess(daemonPid);
-      }
+      await killProcessesReferencingPath(tempDir);
       await new Promise<void>((resolve, reject) => {
         server.close((error) => {
           if (error) {

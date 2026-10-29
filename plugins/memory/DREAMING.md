@@ -59,7 +59,10 @@ only the human-facing Settings → Memory surface may approve or reject.
 
 This slice provides durable candidate state and an owner-only BB Settings
 boundary. The receipt actor label is `memory-settings-owner`; it does not claim
-cryptographically distinct human identity. Automatic candidate generation,
+cryptographically distinct human identity. Owner RPCs are reachable by any
+local process through `bb plugin rpc call` or the plugin RPC route; the
+boundary against agents is the instruction in the bundled `memory` skill, not
+server enforcement. Automatic candidate generation,
 Codex native-memory observation, embedding retrieval, eval-based
 auto-promotion, and multi-user approval policy are not implemented. Claude Code
 native memory is an optional evidence source only.

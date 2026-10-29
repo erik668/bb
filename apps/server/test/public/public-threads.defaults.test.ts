@@ -6,13 +6,14 @@ import {
 import {
   createProjectSource,
   getProjectExecutionDefaults,
-  listThreads,
+  listThreadsWithPendingInteractionState,
   setExperiments,
   upsertProjectExecutionDefaults,
 } from "@bb/db";
 import { defaultExperiments, threadSchema } from "@bb/domain";
 import { sidebarBootstrapResponseSchema } from "@bb/server-contract";
 import { waitForQueuedCommand } from "../helpers/commands.js";
+import { seedModelCatalog } from "../helpers/provider-model-catalogs.js";
 import { availableModelFixture } from "../helpers/available-models.js";
 import { registerProviderHostRpcResponder } from "../helpers/host-rpc.js";
 import { readJson } from "../helpers/json.js";
@@ -25,6 +26,7 @@ import {
   seedThread,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
+import { installFakeGitWorktreeProvider } from "../helpers/environment-provider.js";
 import { beforeEach, describe, expect, it } from "vitest";
 
 describe("public thread default routes", () => {
@@ -36,6 +38,16 @@ describe("public thread default routes", () => {
   it("remembers resolved execution options after thread creation", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({
+            model: "gpt-5-mini",
+            reasoningLevels: ["high"],
+          }),
+        ],
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-defaults-create",
@@ -106,6 +118,7 @@ describe("public thread default routes", () => {
 
   it("allows managed-worktree threads on a secondary host", async () => {
     await withTestHarness(async (harness) => {
+      const provider = installFakeGitWorktreeProvider();
       const { host: localHost } = seedHostSession(harness.deps, {
         id: "host-managed-default",
       });
@@ -155,12 +168,10 @@ describe("public thread default routes", () => {
 
       expect(response.status).toBe(201);
       const thread = threadSchema.parse(await readJson(response));
-      const environmentResponse = await harness.app.request(
-        `/api/v1/threads/${thread.id}?include=environment`,
-      );
-      await expect(readJson(environmentResponse)).resolves.toMatchObject({
-        environment: { hostId: secondaryHost.id },
-      });
+      const context = await provider.waitForProvision();
+      expect(context.thread.id).toBe(thread.id);
+      expect(context.host?.id).toBe(secondaryHost.id);
+      expect(context.inputs).toEqual({ branch: { kind: "default" } });
       expect(secondarySource.path).toBe("/tmp/secondary-managed-source");
     });
   });
@@ -213,6 +224,13 @@ describe("public thread default routes", () => {
   it("inherits the remembered provider and execution defaults when thread creation omits them", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({ model: "gpt-5", reasoningLevels: ["high"] }),
+        ],
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-defaults-inherit",
@@ -352,6 +370,7 @@ describe("public thread default routes", () => {
               availableModelFixture({ model: "gpt-first" }),
               availableModelFixture({
                 model: "gpt-provider-default",
+                reasoningLevels: ["medium"],
                 isDefault: true,
               }),
             ],
@@ -421,6 +440,7 @@ describe("public thread default routes", () => {
             models: [
               availableModelFixture({
                 model: "gpt-provider-default",
+                reasoningLevels: ["medium"],
                 isDefault: true,
               }),
             ],
@@ -482,7 +502,7 @@ describe("public thread default routes", () => {
     });
   });
 
-  it("returns an actionable error when the default model catalog cannot be loaded", async () => {
+  it("returns an actionable error when an explicitly requested provider's model catalog cannot be loaded", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps);
       registerProviderHostRpcResponder(harness, {
@@ -511,6 +531,7 @@ describe("public thread default routes", () => {
         body: JSON.stringify({
           origin: "cli",
           projectId: project.id,
+          providerId: "codex",
           input: [{ type: "text", text: "Create without defaults" }],
           environment: {
             type: "reuse",
@@ -523,14 +544,84 @@ describe("public thread default routes", () => {
       await expect(readJson(response)).resolves.toEqual({
         code: "model_catalog_unavailable",
         message: expect.stringContaining("Unable to load codex models"),
-        details: { providerId: "codex", code: "failed" },
+        details: {
+          providerId: "codex",
+          code: "failed",
+          detail: "Codex model discovery failed",
+        },
         retryable: true,
       });
-      expect(listThreads(harness.db, { projectId: project.id })).toHaveLength(
-        0,
-      );
+      expect(
+        listThreadsWithPendingInteractionState(harness.db, {
+          projectId: project.id,
+        }),
+      ).toHaveLength(0);
     });
   });
+
+  it.each(["failed", "empty"])(
+    "falls back to another available provider when the product default's model catalog is %s",
+    async (catalogState) => {
+      await withTestHarness(async (harness) => {
+        const { host, session } = seedHostSession(harness.deps);
+        registerProviderHostRpcResponder(harness, {
+          hostId: host.id,
+          sessionId: session.id,
+          restoreCommandCaptureAfterResponse: true,
+          modelsByProviderId:
+            catalogState === "empty"
+              ? { codex: { models: [], selectedOnlyModels: [] } }
+              : {},
+          modelErrorsByProviderId:
+            catalogState === "failed"
+              ? {
+                  codex: {
+                    errorCode: "command_failed",
+                    errorMessage: "Codex model discovery failed",
+                  },
+                }
+              : {},
+        });
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+          path: "/tmp/thread-defaults-catalog-fallback",
+        });
+        const environment = seedEnvironment(harness.deps, {
+          hostId: host.id,
+          projectId: project.id,
+          path: "/tmp/thread-defaults-catalog-fallback",
+        });
+
+        const response = await harness.app.request("/api/v1/threads", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            origin: "cli",
+            projectId: project.id,
+            input: [{ type: "text", text: "Create without defaults" }],
+            environment: {
+              type: "reuse",
+              environmentId: environment.id,
+            },
+          }),
+        });
+
+        expect(response.status).toBe(201);
+        const createdThread = threadSchema.parse(await readJson(response));
+        expect(createdThread.providerId).toBe("claude-code");
+        const queuedStart = await waitForQueuedCommand(
+          harness,
+          ({ command }) =>
+            command.type === "thread.start" &&
+            command.threadId === createdThread.id,
+        );
+        expect(queuedStart.command).toMatchObject({
+          providerId: "claude-code",
+          options: { model: "test-provider-default" },
+        });
+      });
+    },
+  );
 
   it("rejects thread creation without an origin at the public API boundary", async () => {
     await withTestHarness(async (harness) => {
@@ -573,6 +664,16 @@ describe("public thread default routes", () => {
   it("does not overwrite project execution defaults after a thread send", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps);
+      await seedModelCatalog(harness, {
+        hostId: host.id,
+        providerId: "codex",
+        models: [
+          availableModelFixture({
+            model: "gpt-5-mini",
+            reasoningLevels: ["high"],
+          }),
+        ],
+      });
       const { project } = seedProjectWithSource(harness.deps, {
         hostId: host.id,
         path: "/tmp/thread-send-defaults",
@@ -672,44 +773,6 @@ describe("public thread default routes", () => {
           projectId: project.id,
         }),
       ).toBeNull();
-    });
-  });
-
-  it("excludes side-chat threads from sidebar bootstrap", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps);
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/thread-defaults-sidebar-side-chat",
-      });
-      const parentThread = seedThread(harness.deps, {
-        projectId: project.id,
-        title: "Parent",
-      });
-      const sideChatThread = seedThread(harness.deps, {
-        projectId: project.id,
-        sourceThreadId: parentThread.id,
-        originKind: "fork",
-        originPluginId: "side-chat",
-        visibility: "hidden",
-        title: "Side chat",
-      });
-
-      const response = await harness.app.request("/api/v1/sidebar-bootstrap");
-
-      expect(response.status).toBe(200);
-      const bootstrap = sidebarBootstrapResponseSchema.parse(
-        await readJson(response),
-      );
-      const sidebarProject = bootstrap.projects.find(
-        (candidate) => candidate.id === project.id,
-      );
-      expect(sidebarProject?.threads.map((thread) => thread.id)).toContain(
-        parentThread.id,
-      );
-      expect(sidebarProject?.threads.map((thread) => thread.id)).not.toContain(
-        sideChatThread.id,
-      );
     });
   });
 

@@ -5,8 +5,13 @@ import {
   useRpc,
   type StandardSchemaV1InferOutput,
 } from "@get-bb/plugin-sdk/app";
-import { Input } from "@bb/shared-ui/input";
-import { MAX_LIMIT_VALUE } from "./limits.js";
+import { Input } from "@/components/ui/input";
+import {
+  commitGlobalLimitDraft,
+  commitHostLimitDraft,
+  MAX_LIMIT_VALUE,
+  type LimitDraftCommit,
+} from "./limits.js";
 import type { concurrencyLimitRpcContract } from "./server.js";
 
 type ConfigurationView = StandardSchemaV1InferOutput<
@@ -33,16 +38,6 @@ function draftsFor(view: ConfigurationView): Record<string, string> {
     drafts[host.id] = host.override === null ? "" : String(host.override);
   }
   return drafts;
-}
-
-function parseDraft(
-  raw: string,
-): { ok: true; value: number | null } | { ok: false } {
-  const trimmed = raw.trim();
-  if (trimmed === "") return { ok: true, value: null };
-  if (!/^\d+$/u.test(trimmed)) return { ok: false };
-  const value = Number(trimmed);
-  return value <= MAX_LIMIT_VALUE ? { ok: true, value } : { ok: false };
 }
 
 function ConcurrencyLimitSettings() {
@@ -109,37 +104,28 @@ function ConcurrencyLimitSettings() {
     if (invalidField === field) setInvalidField(null);
   }
 
-  function commitGlobal(): void {
-    if (view === null) return;
-    const parsed = parseDraft(drafts[GLOBAL_FIELD] ?? "");
-    if (!parsed.ok) {
-      setInvalidField(GLOBAL_FIELD);
+  function applyCommit(field: string, commit: LimitDraftCommit): void {
+    if (commit.kind === "invalid") {
+      setInvalidField(field);
       return;
     }
-    if (parsed.value === view.globalLimit) return;
-    void save({
-      globalLimit: parsed.value,
-      hostOverrides: view.hostOverrides,
-    });
+    if (commit.kind === "changed") void save(commit.configuration);
+  }
+
+  function commitGlobal(): void {
+    if (view === null) return;
+    applyCommit(
+      GLOBAL_FIELD,
+      commitGlobalLimitDraft(view, drafts[GLOBAL_FIELD] ?? ""),
+    );
   }
 
   function commitHost(hostId: string): void {
     if (view === null) return;
-    const parsed = parseDraft(drafts[hostId] ?? "");
-    if (!parsed.ok) {
-      setInvalidField(hostId);
-      return;
-    }
-    const existing = view.hostOverrides.find(
-      (override) => override.hostId === hostId,
+    applyCommit(
+      hostId,
+      commitHostLimitDraft(view, hostId, drafts[hostId] ?? ""),
     );
-    if (parsed.value === (existing?.limit ?? null)) return;
-    const hostOverrides = view.hostOverrides.filter(
-      (override) => override.hostId !== hostId,
-    );
-    if (parsed.value !== null)
-      hostOverrides.push({ hostId, limit: parsed.value });
-    void save({ globalLimit: view.globalLimit, hostOverrides });
   }
 
   if (view === null) {
@@ -162,7 +148,7 @@ function ConcurrencyLimitSettings() {
 
   return (
     <div className="w-full space-y-5">
-      <div className="flex items-start justify-between gap-6">
+      <div className="flex items-start justify-between gap-6 pr-2">
         <div className="min-w-0">
           <h3 className="text-sm font-medium text-foreground">Overall limit</h3>
           <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
@@ -172,7 +158,7 @@ function ConcurrencyLimitSettings() {
         <Input
           aria-label="Overall thread limit"
           aria-invalid={invalidField === GLOBAL_FIELD}
-          className="w-28"
+          className="w-28 shrink-0"
           disabled={disabled}
           inputMode="numeric"
           max={MAX_LIMIT_VALUE}
@@ -205,7 +191,7 @@ function ConcurrencyLimitSettings() {
               {view.hosts.map((host) => (
                 <div
                   key={host.id}
-                  className="flex min-h-14 items-center gap-3 rounded-md px-2 py-2 hover:bg-accent/50"
+                  className="flex min-h-14 items-center gap-3 rounded-md px-2 py-2"
                 >
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-foreground">
@@ -224,7 +210,7 @@ function ConcurrencyLimitSettings() {
                   <Input
                     aria-label={`${host.name} thread limit`}
                     aria-invalid={invalidField === host.id}
-                    className="w-28"
+                    className="w-28 shrink-0"
                     disabled={disabled}
                     inputMode="numeric"
                     max={MAX_LIMIT_VALUE}

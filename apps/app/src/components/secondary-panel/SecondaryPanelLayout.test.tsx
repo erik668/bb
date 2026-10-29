@@ -1,7 +1,15 @@
 // @vitest-environment jsdom
 
-import type { ReactNode } from "react";
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { useContext, type ReactNode } from "react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
+import { createStore, Provider, useSetAtom } from "jotai";
+import { RESET } from "jotai/utils";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { dispatchBrowserViewBoundsSync } from "@/lib/browser-view-bounds-sync";
@@ -15,13 +23,17 @@ import {
   SecondaryPanelLayout,
   type SecondaryPanelRenderArgs,
 } from "./SecondaryPanelLayout";
+import { panelGroupState } from "@/test/react-resizable-panels-stub";
+import {
+  getPluginPageSecondaryPanelWidthPercentAtom,
+  getThreadSecondaryPanelWidthPercentAtom,
+  SecondaryPanelWidthPercentAtomContext,
+  secondaryPanelWidthPercentAtom,
+  type SecondaryPanelWidthPercentAtom,
+} from "./threadSecondaryPanelAtoms";
 
 type DrawerShellCallback = (open: boolean) => void;
 
-const panelGroupState = vi.hoisted(() => ({
-  getLayout: vi.fn(() => [60, 40]),
-  setLayout: vi.fn(),
-}));
 const drawerShellState = vi.hoisted(() => ({
   onContentAnimationEnd: undefined as DrawerShellCallback | undefined,
 }));
@@ -30,42 +42,10 @@ vi.mock("@/lib/browser-view-bounds-sync", () => ({
   dispatchBrowserViewBoundsSync: vi.fn(),
 }));
 
-vi.mock("jotai", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("jotai")>()),
-  useAtomValue: () => 40,
-}));
-
-vi.mock("react-resizable-panels", async () => {
-  const React = await import("react");
-
-  const PanelGroup = React.forwardRef<
-    {
-      getLayout: () => number[];
-      setLayout: (layout: number[]) => void;
-    },
-    { children?: ReactNode }
-  >(({ children, ...props }, ref) => {
-    React.useImperativeHandle(
-      ref,
-      () => ({
-        getLayout: panelGroupState.getLayout,
-        setLayout: panelGroupState.setLayout,
-      }),
-      [],
-    );
-    return React.createElement(
-      "div",
-      { ...props, "data-testid": "panel-group" },
-      children,
-    );
-  });
-  PanelGroup.displayName = "MockPanelGroup";
-
-  const Panel = ({ children }: { children?: ReactNode }) =>
-    React.createElement("div", { "data-testid": "main-panel" }, children);
-
-  return { Panel, PanelGroup };
-});
+vi.mock(
+  "react-resizable-panels",
+  () => import("@/test/react-resizable-panels-stub"),
+);
 
 vi.mock("./CompactSecondaryPanelShelf", async () => {
   const React = await import("react");
@@ -102,7 +82,6 @@ interface QueuedAnimationFrames {
 
 interface RenderLayoutArgs {
   collapseActive?: boolean;
-  compactPresentation?: "shelf" | "full";
   isCompactViewport: boolean;
   onClose?: () => void;
   isFocusedHosted?: boolean;
@@ -110,6 +89,7 @@ interface RenderLayoutArgs {
   panelGroupKey?: string;
   renderPanel: (args: SecondaryPanelRenderArgs) => ReactNode;
   resetKey: string;
+  widthPercentAtom?: SecondaryPanelWidthPercentAtom;
 }
 
 const noop = () => {};
@@ -149,38 +129,45 @@ function withHostedPane(
 
 function renderLayout(args: RenderLayoutArgs) {
   let renderArgs = args;
+  const store = createStore();
+  store.set(secondaryPanelWidthPercentAtom, 40);
   const renderContent = () =>
     withHostedPane(
-      <CompactViewportOverrideProvider
-        isCompactViewport={renderArgs.isCompactViewport}
-      >
-        <SecondaryPanelLayout
-          open={renderArgs.open}
-          onToggle={noop}
-          onClose={renderArgs.onClose ?? noop}
-          panelGroupKey={renderArgs.panelGroupKey}
-          resetKey={renderArgs.resetKey}
-          contentKey={renderArgs.resetKey}
-          drawerLabel="Details"
-          drawerFallback={<div data-testid="drawer-fallback" />}
-          mainPanelId="test-main-panel"
-          main={<main data-testid="main-content" />}
-          collapse={
-            renderArgs.collapseActive === undefined
-              ? undefined
-              : { active: renderArgs.collapseActive, onToggle: noop }
-          }
-          renderPanel={renderArgs.renderPanel}
-          composerHost={null}
-          compactPresentation={renderArgs.compactPresentation ?? "shelf"}
-        />
-      </CompactViewportOverrideProvider>,
+      <Provider store={store}>
+        <CompactViewportOverrideProvider
+          isCompactViewport={renderArgs.isCompactViewport}
+        >
+          <SecondaryPanelLayout
+            open={renderArgs.open}
+            onToggle={noop}
+            onClose={renderArgs.onClose ?? noop}
+            panelGroupKey={renderArgs.panelGroupKey}
+            resetKey={renderArgs.resetKey}
+            contentKey={renderArgs.resetKey}
+            drawerLabel="Details"
+            drawerFallback={<div data-testid="drawer-fallback" />}
+            mainPanelId="test-main-panel"
+            main={<main data-testid="main-content" />}
+            collapse={
+              renderArgs.collapseActive === undefined
+                ? undefined
+                : { active: renderArgs.collapseActive, onToggle: noop }
+            }
+            renderPanel={renderArgs.renderPanel}
+            composerHost={null}
+            widthPercentAtom={
+              renderArgs.widthPercentAtom ?? secondaryPanelWidthPercentAtom
+            }
+          />
+        </CompactViewportOverrideProvider>
+      </Provider>,
       renderArgs.isFocusedHosted,
     );
   const view = render(renderContent());
 
   return {
     ...view,
+    store,
     rerenderWith(nextArgs: Partial<RenderLayoutArgs>) {
       renderArgs = { ...renderArgs, ...nextArgs };
       view.rerender(renderContent());
@@ -291,6 +278,7 @@ afterEach(() => {
     value: PRISTINE_CANCEL_ANIMATION_FRAME,
   });
   drawerShellState.onContentAnimationEnd = undefined;
+  window.localStorage.clear();
 });
 
 beforeEach(() => {
@@ -332,6 +320,9 @@ describe("SecondaryPanelLayout", () => {
     const mainContent = screen.getByTestId("main-content");
     expect(panelGroup.style.getPropertyValue("--panel-collapse-duration")).toBe(
       "220ms",
+    );
+    expect(mainContent.parentElement?.className).toContain(
+      "motion-reduce:transition-none",
     );
 
     view.rerenderWith({ resetKey: "plugin-page-b" });
@@ -433,6 +424,98 @@ describe("SecondaryPanelLayout", () => {
     expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([60, 40]);
   });
 
+  it("sizes a plugin page from its own width instead of the thread width", () => {
+    const pluginPageWidthAtom = getPluginPageSecondaryPanelWidthPercentAtom({
+      panelPath: "board",
+      pluginId: "test-plugin",
+    });
+    function PanelWidthProbe() {
+      const setWidthPercent = useSetAtom(
+        useContext(SecondaryPanelWidthPercentAtomContext),
+      );
+      return (
+        <button type="button" onClick={() => setWidthPercent(33)}>
+          Resize
+        </button>
+      );
+    }
+
+    const view = renderLayout({
+      isCompactViewport: false,
+      open: true,
+      renderPanel: () => <PanelWidthProbe />,
+      resetKey: "plugin-page",
+      widthPercentAtom: pluginPageWidthAtom,
+    });
+
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([50, 50]);
+    fireEvent.click(screen.getByRole("button", { name: "Resize" }));
+    expect(view.store.get(pluginPageWidthAtom)).toBe(33);
+    expect(view.store.get(secondaryPanelWidthPercentAtom)).toBe(40);
+    expect(
+      getPluginPageSecondaryPanelWidthPercentAtom({
+        panelPath: "board",
+        pluginId: "other-plugin",
+      }),
+    ).not.toBe(pluginPageWidthAtom);
+  });
+
+  it("gives each thread its own width that falls back to the last width set", () => {
+    const firstThreadWidthAtom =
+      getThreadSecondaryPanelWidthPercentAtom("thr_first");
+    const secondThreadWidthAtom =
+      getThreadSecondaryPanelWidthPercentAtom("thr_second");
+    function PanelWidthProbe() {
+      const setWidthPercent = useSetAtom(
+        useContext(SecondaryPanelWidthPercentAtomContext),
+      );
+      return (
+        <>
+          <button type="button" onClick={() => setWidthPercent(30)}>
+            Narrow
+          </button>
+          <button type="button" onClick={() => setWidthPercent(60)}>
+            Wide
+          </button>
+          <button type="button" onClick={() => setWidthPercent(RESET)}>
+            Reset
+          </button>
+        </>
+      );
+    }
+
+    const view = renderLayout({
+      isCompactViewport: false,
+      open: true,
+      panelGroupKey: "thread-detail",
+      renderPanel: () => <PanelWidthProbe />,
+      resetKey: "thr_first",
+      widthPercentAtom: firstThreadWidthAtom,
+    });
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([60, 40]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Narrow" }));
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([70, 30]);
+
+    view.rerenderWith({
+      resetKey: "thr_second",
+      widthPercentAtom: secondThreadWidthAtom,
+    });
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([70, 30]);
+    fireEvent.click(screen.getByRole("button", { name: "Wide" }));
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([40, 60]);
+
+    view.rerenderWith({
+      resetKey: "thr_first",
+      widthPercentAtom: firstThreadWidthAtom,
+    });
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([70, 30]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(panelGroupState.setLayout).toHaveBeenLastCalledWith([40, 60]);
+    expect(view.store.get(secondThreadWidthAtom)).toBe(60);
+  });
+
   it("publishes one hosted panel model and gates native content on pane focus", () => {
     const frames = installAnimationFrameQueue();
     const renderPanel = createPanelRenderer();
@@ -451,6 +534,7 @@ describe("SecondaryPanelLayout", () => {
       isMainCollapsed: true,
       isOpen: true,
       transitionsReady: false,
+      widthPercentAtom: secondaryPanelWidthPercentAtom,
     });
     expect(renderPanel).toHaveBeenLastCalledWith(
       expect.objectContaining({
@@ -674,6 +758,24 @@ describe("SecondaryPanelLayout", () => {
 });
 
 describe("compact sidebar and right panel", () => {
+  it("keeps a newly requested panel open while the sidebar is dismissing", () => {
+    const onClose = vi.fn();
+    const view = renderLayout({
+      isCompactViewport: true,
+      onClose,
+      open: false,
+      renderPanel: createPanelRenderer(),
+      resetKey: "thread-1",
+    });
+    act(() => setCompactSidebarDrawerShowing(true));
+    view.rerenderWith({ open: true });
+    act(() => setCompactSidebarDrawerShowing(false));
+    expect(onClose).not.toHaveBeenCalled();
+    expect(screen.getByTestId("responsive-drawer-shell").dataset.open).toBe(
+      "true",
+    );
+  });
+
   it("closes the right panel when the sidebar drawer opens so only one shelf is engaged", () => {
     const onClose = vi.fn();
     renderLayout({

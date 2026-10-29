@@ -1,29 +1,30 @@
+import type { TunnelIngressLease } from "../connect-next/tunnel-ingress.js";
+import type { EnvironmentRemoval } from "@bb/domain";
+import type { MachineEnrollmentService } from "../machines/machine-services.js";
 import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
-import type { DbConnection } from "@bb/db";
+import type { DbConnection, HostRow } from "@bb/db";
 import type {
   DynamicTool,
   PendingInteraction,
   Thread,
   ThreadQueuedMessage,
-  WorkflowResultCleanupProvenance,
 } from "@bb/domain";
 import type {
   HostDaemonConnectTunnelIdentity,
   HostDaemonContributedEnvEntry,
 } from "@bb/host-daemon-contract";
-import {
-  pluginUpdateCheckEntrySchema,
-  type InstalledPlugin,
-  type PluginApplyUpdateResult,
-  type PluginRuntimeStatus,
-  type PluginSourceDetail,
+import type {
+  PluginApplyUpdateResult,
+  PluginRuntimeStatus,
 } from "@bb/server-contract";
 import type { ServerLogger } from "../../types.js";
 import type { TelemetryService } from "../system/telemetry.js";
 import type { NotificationHub } from "../../ws/hub.js";
-import type { BundledPluginRegistration } from "./builtin-registry.js";
+import type {
+  BundledPluginRegistration,
+  RetiredBundledPlugin,
+} from "./builtin-registry.js";
 import type { PluginManifest } from "./manifest.js";
-import type { BuiltinPluginSourceWatch } from "./builtin-source-watch.js";
 import type {
   PluginApiHandle,
   PluginBackgroundServiceRecord,
@@ -32,15 +33,8 @@ import type {
 import type { HostSharedPortCoordinator } from "../../ws/host-shared-ports.js";
 import type { ProviderRegistryService } from "../providers/provider-registry.js";
 import type { PluginHostArtifactRegistry } from "./plugin-host-artifact-registry.js";
-export type {
-  PluginHandlerStats,
-  PluginRuntimeStatus,
-  PluginUpdateCheckEntry,
-} from "@bb/server-contract";
 
 type PluginServiceState = "running" | "backoff" | "stopped";
-
-export type PluginListEntry = InstalledPlugin;
 
 export interface ServiceRuntime {
   record: PluginBackgroundServiceRecord;
@@ -54,9 +48,15 @@ export interface ServiceRuntime {
 }
 
 export interface LoadedPlugin {
+  pluginId: string;
   manifest: PluginManifest;
   handle: PluginApiHandle;
   services: ServiceRuntime[];
+  moduleRootUrls: Set<string>;
+  hostArtifact: PluginHostArtifactSnapshot | null;
+  stopping: AbortController;
+  released: AbortController;
+  invocations: Set<Promise<void>>;
 }
 
 export interface PluginHostArtifactSnapshot {
@@ -67,6 +67,7 @@ export interface PluginHostArtifactSnapshot {
 }
 
 export interface PluginServiceDeps {
+  machineEnrollments?: MachineEnrollmentService;
   db: DbConnection;
   sharedPorts?: Pick<
     HostSharedPortCoordinator,
@@ -74,6 +75,9 @@ export interface PluginServiceDeps {
     | "validateSharedPortDeclaration"
     | "replaceDeclarationsForOwner"
     | "clearDeclarationsForOwner"
+    | "setNextTunnelConfig"
+    | "listNextTunnelStatuses"
+    | "onNextTunnelStatusChange"
   >;
   ensureSharedPortTunnel?: (
     hostId: string,
@@ -95,16 +99,15 @@ export interface PluginServiceDeps {
    * drove this signal itself and no app had registered a listener.
    */
   requestQueueDrain?: () => void;
-  stopAcceptedWorkflowWorker?: (
-    provenance: WorkflowResultCleanupProvenance,
-  ) => Promise<void>;
-  /** Per-handler hook decision box; tests shrink it to exercise the timeout path. */
-  pluginHookTimeoutMs?: number;
   /** Thread DTO assembly for lifecycle events + plugin-signal broadcast +
    * the `plugins-changed` system broadcast on lifecycle completion. */
   hub: Pick<
     NotificationHub,
-    "getDaemonSessionIdForHost" | "notifyPluginSignal" | "notifySystem"
+    | "getDaemonSessionIdForHost"
+    | "notifyPluginSignal"
+    | "notifySystem"
+    | "notifyPluginChanged"
+    | "onWatchedTargets"
   >;
   logger: ServerLogger;
   telemetry: TelemetryService;
@@ -112,15 +115,18 @@ export interface PluginServiceDeps {
     import("../interactions/pending-interactions.js").PendingInteractionLifecycle,
     | "requestPluginInteraction"
     | "interruptPluginInteractions"
+    | "interruptOwnedPluginInteractions"
     | "setPluginDirectory"
   >;
   getAppUrl?: () => string | null;
   dataDir: string;
   appVersion: string;
   bundledPlugins?: readonly BundledPluginRegistration[];
+  retiredBundledPlugins?: readonly RetiredBundledPlugin[];
   watchBuiltinPluginSources?: boolean;
-  watchBuiltinPluginSource?: BuiltinPluginSourceWatch;
   loadTimeoutMs?: number;
+  /** How long an install waits for `bb.onInstall` handlers. Defaults to 30s. */
+  installHandlerTimeoutMs?: number;
   serviceStopTimeoutMs?: number;
   serviceRestartBaseMs?: number;
   mentionSearchTimeoutMs?: number;
@@ -133,7 +139,10 @@ export interface PluginServiceDeps {
     durationMs: number,
     onElapsed: () => void,
   ) => () => void;
-  scheduleUpdateCheck?: (delayMs: number, onElapsed: () => void) => () => void;
+  scheduleUpdateCheck?: (
+    delayMs: number,
+    onElapsed: () => Promise<void>,
+  ) => () => void;
   afterPluginRollbackStateRestored?: (args: {
     pluginId: string;
     snapshotId: string;
@@ -158,6 +167,7 @@ export interface PluginServiceDeps {
     pluginId: string;
     generation: string;
   }) => Promise<void>;
+  openTunnelIngress?: (audience: string) => Promise<TunnelIngressLease>;
 }
 
 export interface PluginAgentToolContribution {
@@ -208,15 +218,33 @@ export interface PluginMentionSearchGroup {
 }
 
 export type PluginMentionResolveResult =
-  | { ok: true; context: string }
+  | {
+      ok: true;
+      context: string;
+      images: Array<
+        | { type: "image"; url: string; context?: string }
+        | { type: "localImage"; path: string; context?: string }
+      >;
+    }
   | { ok: false; error: string };
 
 export interface PluginThreadEventEmitter {
+  emitEnvironmentRemoved(removal: EnvironmentRemoval): void;
+  emitThreadEvents(threadId: string): void;
+  emitTerminalInput(
+    terminal: import("@bb/server-contract").TerminalSession,
+  ): void;
+  emitHostDeleted(host: HostRow): void;
   emitThreadCreated(thread: Thread): void;
   emitThreadActive(thread: Thread): void;
   emitThreadIdle(thread: Thread): void;
   emitThreadFailed(thread: Thread): void;
   emitThreadArchived(thread: Thread): void;
+  emitThreadUnarchived(thread: Thread): void;
+  emitThreadParentChanged(
+    thread: Thread,
+    previousParentThreadId: string | null,
+  ): void;
   emitThreadDeleted(thread: Thread): void;
   emitInteractionPending(thread: Thread, interaction: PendingInteraction): void;
   /**
@@ -226,6 +254,7 @@ export interface PluginThreadEventEmitter {
    */
   emitMessageQueued(entry: ThreadQueuedMessage): void;
   emitMessageDispatched(entry: ThreadQueuedMessage): void;
+  emitMessageCancelled(entry: ThreadQueuedMessage): void;
   /**
    * A turn on this thread failed and the thread has already landed in `error`.
    * Takes the id alone: the payload is read from the failed turn's own records,
@@ -242,10 +271,7 @@ export type PluginWireLookup<T> =
       detail: string | null;
     }
   | { outcome: "not-found" }
-  | { outcome: "found"; value: T };
-
-export { pluginUpdateCheckEntrySchema };
-export type PluginSourceView = PluginSourceDetail;
+  | { outcome: "found"; value: T; owner: LoadedPlugin };
 
 export type PluginApplyUpdateOutcome =
   | { ok: true; result: PluginApplyUpdateResult }

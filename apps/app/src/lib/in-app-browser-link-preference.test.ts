@@ -1,26 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  isHttpOrHttpsUrl,
   openUrlByPreference,
   resolveUrlOpenTarget,
 } from "./in-app-browser-link-preference";
-
-describe("isHttpOrHttpsUrl", () => {
-  it("accepts http and https URLs", () => {
-    expect(isHttpOrHttpsUrl("http://example.com")).toBe(true);
-    expect(isHttpOrHttpsUrl("https://example.com/docs?q=1#frag")).toBe(true);
-    expect(isHttpOrHttpsUrl("HTTPS://EXAMPLE.COM")).toBe(true);
-  });
-
-  it("rejects non-http schemes, relative paths, and protocol-relative URLs", () => {
-    expect(isHttpOrHttpsUrl("mailto:hi@example.com")).toBe(false);
-    expect(isHttpOrHttpsUrl("file:///Users/me/app.ts")).toBe(false);
-    expect(isHttpOrHttpsUrl("/projects/abc")).toBe(false);
-    expect(isHttpOrHttpsUrl("#section")).toBe(false);
-    expect(isHttpOrHttpsUrl("//example.com")).toBe(false);
-    expect(isHttpOrHttpsUrl("javascript:alert(1)")).toBe(false);
-  });
-});
 
 describe("resolveUrlOpenTarget", () => {
   it("routes http(s) links into the in-app browser on desktop when enabled", () => {
@@ -35,7 +17,7 @@ describe("resolveUrlOpenTarget", () => {
       resolveUrlOpenTarget({
         desktopBrowserAvailable: true,
         openLinksInAppBrowser: true,
-        url: "http://example.com",
+        url: "HTTP://EXAMPLE.COM",
       }),
     ).toBe("in-app-browser");
   });
@@ -66,6 +48,8 @@ describe("resolveUrlOpenTarget", () => {
       "file:///Users/me/app.ts",
       "/projects/abc",
       "#section",
+      "//example.com",
+      "javascript:alert(1)",
     ]) {
       expect(
         resolveUrlOpenTarget({
@@ -79,6 +63,22 @@ describe("resolveUrlOpenTarget", () => {
 });
 
 describe("openUrlByPreference", () => {
+  it("routes application links externally even when the in-app browser is preferred", () => {
+    const openedInApp: string[] = [];
+    const openedExternally: string[] = [];
+    expect(
+      openUrlByPreference({
+        desktopBrowserAvailable: true,
+        openLinksInAppBrowser: true,
+        openExternalBrowser: (url) => openedExternally.push(url),
+        openInAppBrowser: (url) => openedInApp.push(url),
+        url: "reflect://note/Project%20X",
+      }),
+    ).toBe(true);
+    expect(openedInApp).toEqual([]);
+    expect(openedExternally).toEqual(["reflect://note/Project%20X"]);
+  });
+
   it("opens http(s) URLs in the in-app browser when enabled", () => {
     const openedInApp: string[] = [];
     const openedExternally: string[] = [];

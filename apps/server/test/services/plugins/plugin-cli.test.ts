@@ -6,7 +6,7 @@ import {
   generatedSkillsRootPath,
   pluginCommandsSkillDir,
 } from "../../../src/services/plugins/plugin-commands-skill.js";
-import { resolveInjectedSkillSources } from "../../../src/services/skills/injected-skills.js";
+import { resolveSkillCatalogEntries } from "../../../src/services/skills/injected-skills.js";
 import {
   createTestAppHarness,
   testLogger,
@@ -126,6 +126,7 @@ describe("plugin CLI commands (bb.cli.register + endpoints + skill + logs)", () 
               usage: "bb acme issues [--json]",
             },
           ],
+          rendersHelp: false,
         },
       ],
       mentionProviders: [],
@@ -348,19 +349,20 @@ describe("plugin CLI commands (bb.cli.register + endpoints + skill + logs)", () 
     );
     const content = await readFile(skillFile, "utf8");
     expect(content).toContain("name: plugin-commands");
-    expect(content).toContain("capped at 1048576 UTF-8 bytes");
+    expect(content).toContain("capped at 33554432 UTF-8 bytes");
     expect(content).toContain("plugin_cli_output_too_large");
     expect(content).toContain("## bb acme — Acme tools");
     expect(content).toContain("bb acme issues [--json]");
 
-    const sources = resolveInjectedSkillSources(testLogger, {
-      additionalSkillsRootPaths: [
-        generatedSkillsRootPath(harness.config.dataDir),
-      ],
-      builtinSkillsRootPath: join(harness.config.dataDir, "builtin-skills"),
-      dataDir: harness.config.dataDir,
-      skillTreeRegistry: harness.deps.skillTreeRegistry,
-    });
+    const sources = (
+      await resolveSkillCatalogEntries(testLogger, {
+        additionalSkillsRootPaths: [
+          generatedSkillsRootPath(harness.config.dataDir),
+        ],
+        dataDir: harness.config.dataDir,
+        skillTreeRegistry: harness.deps.skillTreeRegistry,
+      })
+    ).map((entry) => entry.runtimeSource);
     const skill = sources.find((source) => source.name === "plugin-commands");
     expect(skill?.sourceType).toBe("data-dir");
     expect(skill).toMatchObject({ kind: "tree", entryPath: "SKILL.md" });

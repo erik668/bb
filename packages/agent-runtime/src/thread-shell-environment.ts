@@ -28,9 +28,35 @@ export function buildThreadShellEnvironment(
   };
 }
 
+function resolveContributedEnvValue(
+  contribution: AgentRuntimeContributedEnvEntry,
+  baseShellEnv: AgentRuntimeShellEnvironment | undefined,
+): string | null {
+  if (typeof contribution.value === "string") return contribution.value;
+  const serverUrl = baseShellEnv?.BB_SERVER_URL;
+  return serverUrl === undefined
+    ? null
+    : `${serverUrl}${contribution.value.serverPath}`;
+}
+
+export function resolveContributedEnvironment(
+  contributedEnv: readonly AgentRuntimeContributedEnvEntry[],
+  baseShellEnv: AgentRuntimeShellEnvironment | undefined,
+): Record<string, string> {
+  const envVars: Record<string, string> = {};
+  for (const contribution of contributedEnv) {
+    const value = resolveContributedEnvValue(contribution, baseShellEnv);
+    if (value !== null) envVars[contribution.name] = value;
+  }
+  return envVars;
+}
+
 export interface ResolvedThreadEnvironmentEntry {
   name: string;
-  source: "shell" | { plugin: string };
+  source:
+    | "shell"
+    | { plugin: string }
+    | { core: "machine-git" | "machine-environment" | "project-environment" };
   value: string | { masked: true };
   reason?: string;
 }
@@ -56,25 +82,22 @@ export function resolveThreadEnvironment(args: ResolveThreadEnvironmentArgs): {
     ([name, value]) => ({ name, source: "shell", value }),
   );
   for (const contribution of args.contributedEnv) {
-    let value: string;
-    if (typeof contribution.value === "string") {
-      value = contribution.value;
-    } else {
-      const serverUrl = args.baseShellEnv?.BB_SERVER_URL;
-      if (serverUrl === undefined) {
-        entries.push({
-          name: contribution.name,
-          source: contribution.source,
-          value: { masked: true },
-          reason: `${contribution.reason} (dropped: no BB_SERVER_URL)`,
-        });
-        droppedContributions.push({
-          name: contribution.name,
-          plugin: contribution.source.plugin,
-        });
-        continue;
-      }
-      value = `${serverUrl}${contribution.value.serverPath}`;
+    const value = resolveContributedEnvValue(contribution, args.baseShellEnv);
+    if (value === null) {
+      entries.push({
+        name: contribution.name,
+        source: contribution.source,
+        value: { masked: true },
+        reason: `${contribution.reason} (dropped: no BB_SERVER_URL)`,
+      });
+      droppedContributions.push({
+        name: contribution.name,
+        plugin:
+          "plugin" in contribution.source
+            ? contribution.source.plugin
+            : contribution.source.core,
+      });
+      continue;
     }
     envVars[contribution.name] = value;
     const existingIndex = entries.findIndex(
@@ -84,7 +107,7 @@ export function resolveThreadEnvironment(args: ResolveThreadEnvironmentArgs): {
     entries.push({
       name: contribution.name,
       source: contribution.source,
-      value: contribution.secret ? { masked: true } : value,
+      value: "core" in contribution.source ? { masked: true } : value,
       reason: contribution.reason,
     });
   }

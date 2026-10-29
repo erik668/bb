@@ -6,17 +6,16 @@ import {
 } from "@bb/domain";
 import type { ClientTurnRequestId, Thread } from "@bb/domain";
 import {
-  createConnection,
   createProject,
   createThread,
   insertEvents,
-  migrate,
   noopNotifier,
   upsertHost,
 } from "@bb/db";
+import { createMigratedConnection } from "@bb/db/testing";
 import type { DbConnection } from "@bb/db";
 import type { TimelineRow } from "@bb/server-contract";
-import { buildThreadTimeline } from "../../../src/services/threads/timeline.js";
+import { buildThreadTimelineWithProfile } from "../../../src/services/threads/timeline.js";
 
 const providerThreadId = "provider-root";
 
@@ -34,11 +33,9 @@ interface SetupResult {
 }
 
 function setup(): SetupResult {
-  const db = createConnection(":memory:");
-  migrate(db);
+  const db = createMigratedConnection();
   const host = upsertHost(db, noopNotifier, {
     name: "test-host",
-    type: "persistent",
   });
   const { project } = createProject(db, noopNotifier, {
     name: "test-project",
@@ -305,7 +302,7 @@ function nestedRows(row: TimelineRow): readonly TimelineRow[] {
     return row.children ?? [];
   }
   if (row.kind === "work" && row.workKind === "delegation") {
-    return row.childRows;
+    return row.childRows ?? [];
   }
   return [];
 }
@@ -333,14 +330,18 @@ describe("thread timeline parented pagination", () => {
     const { db, thread } = setup();
     insertCrossWindowSubagentEvents(db, thread);
 
-    const timeline = buildThreadTimeline(db, thread, {
+    const timeline = buildThreadTimelineWithProfile(db, thread, {
+      completedTurnDisplay: "collapse",
       eventBudget: 1_000_000,
-      includeProviderUnhandledOperations: false,
+      includeClearedContextHistory: false,
+      includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 51,
       page: { kind: "latest", segmentLimit: 1 },
-    });
+    }).response;
 
     expect(rowTexts(timeline.rows)).toContain("Newest response.");
     expect(rowTexts(timeline.rows)).not.toContain("SECOND_SUBAGENT_OUTPUT");
@@ -350,21 +351,34 @@ describe("thread timeline parented pagination", () => {
     const { db, thread } = setup();
     insertCrossWindowSubagentEvents(db, thread);
 
-    const timeline = buildThreadTimeline(db, thread, {
+    const latest = buildThreadTimelineWithProfile(db, thread, {
+      completedTurnDisplay: "collapse",
       eventBudget: 1_000_000,
-      includeProviderUnhandledOperations: false,
+      includeClearedContextHistory: false,
+      includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
+      includeNestedRows: true,
+      maxInlineOutputChars: null,
+      maxSeq: 51,
+      page: { kind: "latest", segmentLimit: 2 },
+    }).response;
+    const timeline = buildThreadTimelineWithProfile(db, thread, {
+      completedTurnDisplay: "collapse",
+      eventBudget: 1_000_000,
+      includeClearedContextHistory: false,
+      includeDiagnosticOperations: false,
+      compactionOfferEnabled: false,
+      summarizeShellCommands: true,
       includeNestedRows: true,
       maxInlineOutputChars: null,
       maxSeq: 51,
       page: {
         kind: "older",
-        beforeCursor: {
-          anchorId: `${thread.id}:user-seed:20`,
-          anchorSeq: 20,
-        },
+        beforeCursor: latest.timelinePage.olderCursor!,
         segmentLimit: 1,
       },
-    });
+    }).response;
     const delegation = flattenRows(timeline.rows).find(
       (
         row,

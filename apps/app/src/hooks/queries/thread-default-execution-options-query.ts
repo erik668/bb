@@ -30,7 +30,7 @@ async function fetchThreadDefaultExecutionOptions(
     threadId,
     signal,
   });
-  if (options !== null) {
+  if (options !== null && !signal?.aborted) {
     writeCachedThreadExecutionOptions(
       threadExecutionOptionsCacheKey(threadId),
       options,
@@ -54,7 +54,8 @@ export function useThreadDefaultExecutionOptions(
         signal,
       ),
     enabled,
-    refetchOnMount: options?.refetchOnMount ?? true,
+    refetchOnMount:
+      options?.refetchOnMount ?? ((query) => query.getObserversCount() === 1),
     ...REALTIME_OWNED_NO_FOCUS_QUERY_POLICY,
     staleTime: options?.staleTime,
     placeholderData: () =>

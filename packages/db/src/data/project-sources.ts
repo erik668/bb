@@ -1,8 +1,9 @@
-import { and, count, eq, inArray, ne } from "drizzle-orm";
+import { hostPathEquals } from "./host-path-sql.js";
+import { and, asc, count, desc, eq, inArray, isNull, ne, notInArray } from "drizzle-orm";
 import type { ProjectSource } from "@bb/domain";
 import type { DbConnection } from "../connection.js";
 import type { DbNotifier } from "../notifier.js";
-import { projectSources } from "../schema.js";
+import { hosts, projectSources } from "../schema.js";
 import { createProjectSourceId } from "../ids.js";
 
 type ProjectSourceRow = typeof projectSources.$inferSelect;
@@ -13,6 +14,7 @@ export interface CreateLocalPathProjectSourceInput {
   hostId: string;
   path: string;
   isDefault?: boolean;
+  ownsPath?: boolean;
 }
 
 export type CreateProjectSourceInput = CreateLocalPathProjectSourceInput;
@@ -65,6 +67,7 @@ export function createProjectSource(
         hostId: input.hostId,
         path: input.path,
         isDefault: shouldBeDefault,
+        ownsPath: input.ownsPath ?? false,
         createdAt: now,
         updatedAt: now,
       })
@@ -73,15 +76,6 @@ export function createProjectSource(
   });
   notifier.notifyProject(input.projectId, ["project-sources-changed"]);
   return toProjectSource(row);
-}
-
-export function listProjectSources(db: DbConnection, projectId: string) {
-  return db
-    .select()
-    .from(projectSources)
-    .where(eq(projectSources.projectId, projectId))
-    .all()
-    .map(toProjectSource);
 }
 
 export function listProjectSourcesByProjectIds(
@@ -96,6 +90,18 @@ export function listProjectSourcesByProjectIds(
     .select()
     .from(projectSources)
     .where(inArray(projectSources.projectId, [...projectIds]))
+    .all()
+    .map(toProjectSource);
+}
+
+export function listProjectSourcesByHost(
+  db: DbConnection,
+  hostId: string,
+) {
+  return db
+    .select()
+    .from(projectSources)
+    .where(eq(projectSources.hostId, hostId))
     .all()
     .map(toProjectSource);
 }
@@ -214,19 +220,32 @@ export function getProjectSourceByHost(
   return source ? toProjectSource(source) : null;
 }
 
-export function getDefaultProjectSource(db: DbConnection, projectId: string) {
-  const source =
+export function getProjectSourceOnPersistentHost(
+  db: DbConnection,
+  projectId: string,
+) {
+  const row =
     db
-      .select()
+      .select({ source: projectSources })
       .from(projectSources)
+      .innerJoin(hosts, eq(hosts.id, projectSources.hostId))
       .where(
         and(
           eq(projectSources.projectId, projectId),
-          eq(projectSources.isDefault, true),
+          eq(projectSources.type, "local_path"),
+          eq(hosts.type, "persistent"),
+          isNull(hosts.destroyedAt),
+          notInArray(hosts.phase, ["removing", "destroyed"]),
         ),
       )
+      .orderBy(
+        desc(projectSources.isDefault),
+        asc(projectSources.createdAt),
+        asc(projectSources.id),
+      )
+      .limit(1)
       .get() ?? null;
-  return source ? toProjectSource(source) : null;
+  return row ? toProjectSource(row.source) : null;
 }
 
 export function deleteProjectSource(
@@ -273,4 +292,11 @@ export function deleteProjectSource(
 
   notifier.notifyProject(deleted, ["project-sources-changed"]);
   return true;
+}
+
+
+export function projectSourceOwnsPath(db: DbConnection, projectId: string, hostId: string, path: string): boolean {
+  return db.select({ ownsPath: projectSources.ownsPath }).from(projectSources).where(and(
+    eq(projectSources.projectId, projectId), eq(projectSources.hostId, hostId), hostPathEquals(projectSources.path, path),
+  )).get()?.ownsPath ?? false;
 }

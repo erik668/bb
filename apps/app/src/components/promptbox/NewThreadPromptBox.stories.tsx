@@ -1,9 +1,9 @@
+import "../../../.ladle/composer-plugin";
 import { useState } from "react";
 import type { PermissionMode, PromptTextMention } from "@bb/domain";
 import type { SystemExecutionOptionsModelLoadError } from "@bb/server-contract";
 import {
   NewThreadPromptBoxUI,
-  type NewThreadBranchConfig,
   type NewThreadEnvironmentConfig,
   type NewThreadModeConfig,
   type NewThreadProjectConfig,
@@ -12,25 +12,22 @@ import {
 import type {
   HistoryConfig,
   PromptBoxAction,
-} from "@/components/promptbox/PromptBoxInternal";
-import {
-  AUTOMATION_PROMPT_ACTION,
-  CREATE_PLUGIN_PROMPT_ACTION,
-} from "@/components/promptbox/PromptBoxActionsMenu";
-import { ProviderCliVersionBanner } from "@/components/promptbox/banner/ProviderCliVersionBanner";
+} from "@/components/promptbox/ComposerBox";
+import { ProviderCliBanner } from "@/components/promptbox/banner/ProviderCliBanner";
 import type { PickerOption } from "@/components/pickers/OptionPicker";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
 import { ModelPickerStoryQueryProvider } from "../../../.ladle/model-picker-query-provider";
 import {
   HOST_IDS,
   PROJECT_IDS,
-  STORY_BRANCH_OPTIONS,
   STORY_CLAUDE_CODE_MORE_MODELS,
+  STORY_ENVIRONMENT_PROVIDERS,
   STORY_PROJECTS,
   STORY_PROJECT_SOURCES,
   STORY_WORKTREE_OPTIONS,
   makeAttachmentsConfig as makeAttachments,
   makeExecutionControlsProps,
+  useInteractiveExecutionControls,
   makeTypeaheadConfig as makeTypeahead,
   makeHost,
 } from "../../../.ladle/story-fixtures";
@@ -45,33 +42,20 @@ const baseExecution = makeExecutionControlsProps();
 const codexModelLoadError = {
   providerId: "codex",
   code: "failed",
+  detail:
+    "bb could not find the Codex CLI on this machine. Install Codex (https://developers.openai.com/codex/cli) or put `codex` on PATH, then retry.",
 } satisfies SystemExecutionOptionsModelLoadError;
 const codexMissingCliModelLoadError = {
   providerId: "codex",
   code: "missing_executable",
+  detail: null,
 } satisfies SystemExecutionOptionsModelLoadError;
 
 const baseEnvironment: NewThreadEnvironmentConfig = {
   value: `host:${HOST_IDS.local}:local`,
-  onChange: noop,
   sources: STORY_PROJECT_SOURCES,
   host: makeHost({ id: HOST_IDS.local }),
   isLocal: true,
-};
-
-const baseBranch: NewThreadBranchConfig = {
-  value: null,
-  currentBranch: "main",
-  isNew: false,
-  options: STORY_BRANCH_OPTIONS,
-  loading: false,
-  currentOptionLabel: "Current: main",
-  placeholder: "Current checkout",
-  triggerLabel: "Current (main)",
-  triggerTitle: "Current: main",
-  onChange: noop,
-  onClear: noop,
-  onCreate: noop,
 };
 
 const baseWorktree: NewThreadWorktreeConfig = {
@@ -124,8 +108,6 @@ const promptActions: readonly PromptBoxAction[] = [
     command: { trigger: "/", name: "goal", trailingText: " " },
     text: "/goal ",
   },
-  AUTOMATION_PROMPT_ACTION,
-  CREATE_PLUGIN_PROMPT_ACTION,
 ];
 
 function useControlledValue(initial: string) {
@@ -140,7 +122,6 @@ function useControlledValue(initial: string) {
 
 const baseModeConfig: NewThreadModeConfig = {
   environment: baseEnvironment,
-  branch: baseBranch,
   worktree: baseWorktree,
   permission: basePermission,
 };
@@ -155,9 +136,11 @@ function PromptStage({ children }: PromptStageProps) {
 
 function DefaultRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
+  const execution = useInteractiveExecutionControls(baseExecution);
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-default"
         value={value}
         mentionRanges={mentionRanges}
@@ -171,7 +154,7 @@ function DefaultRow() {
         promptActions={promptActions}
         modeConfig={baseModeConfig}
         project={baseProject}
-        execution={baseExecution}
+        execution={execution}
       />
     </PromptStage>
   );
@@ -184,6 +167,7 @@ function SubmittingRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-submitting"
         value={value}
         mentionRanges={mentionRanges}
@@ -209,6 +193,7 @@ function LoadingModelsRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-loading-models"
         value={value}
         mentionRanges={mentionRanges}
@@ -243,6 +228,7 @@ function ModelLoadFailedRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-model-load-failed"
         value={value}
         mentionRanges={mentionRanges}
@@ -279,6 +265,7 @@ function UnsupportedCodexCliRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-unsupported-codex-cli"
         value={value}
         mentionRanges={mentionRanges}
@@ -294,13 +281,14 @@ function UnsupportedCodexCliRow() {
         modeConfig={{
           ...baseModeConfig,
           banner: (
-            <ProviderCliVersionBanner
+            <ProviderCliBanner
               displayName="Codex"
+              installed
               currentVersion="0.135.0"
               minimumSupportedVersion="0.136.0"
-              canUpdate
-              updating={false}
-              onUpdate={noop}
+              canRunAction
+              actionRunning={false}
+              onAction={noop}
             />
           ),
         }}
@@ -318,6 +306,7 @@ function MissingCodexCliRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-missing-codex-cli"
         value={value}
         mentionRanges={mentionRanges}
@@ -325,10 +314,24 @@ function MissingCodexCliRow() {
         onSubmit={noop}
         isSubmitting={false}
         disabled
+        autoFocus={false}
         history={baseHistory}
         typeahead={makeTypeahead()}
         attachments={makeAttachments()}
-        modeConfig={baseModeConfig}
+        modeConfig={{
+          ...baseModeConfig,
+          banner: (
+            <ProviderCliBanner
+              displayName="Codex"
+              installed={false}
+              currentVersion={null}
+              minimumSupportedVersion={null}
+              canRunAction
+              actionRunning={false}
+              onAction={noop}
+            />
+          ),
+        }}
         project={baseProject}
         execution={{
           ...baseExecution,
@@ -354,6 +357,7 @@ function GenericModelRequestFailedRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-model-request-failed"
         value={value}
         mentionRanges={mentionRanges}
@@ -396,6 +400,7 @@ function NoModelsAvailableRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-no-models"
         value={value}
         mentionRanges={mentionRanges}
@@ -430,6 +435,7 @@ function CustomModelAfterLoadErrorRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-custom-model-after-load-error"
         value={value}
         mentionRanges={mentionRanges}
@@ -469,6 +475,7 @@ function ClaudeProviderRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-claude"
         value={value}
         mentionRanges={mentionRanges}
@@ -485,8 +492,8 @@ function ClaudeProviderRow() {
           ...baseExecution,
           provider: { ...baseExecution.provider, selectedId: "claude-code" },
           model: {
-            active: { model: "claude-sonnet-5" },
-            selected: "claude-sonnet-5",
+            active: { model: "claude-opus-4-8[1m]" },
+            selected: "claude-opus-4-8[1m]",
             options: [
               { value: "claude-fable-5", label: "Claude Fable 5" },
               { value: "claude-opus-4-8[1m]", label: "Claude Opus 4.8 (1M)" },
@@ -497,7 +504,7 @@ function ClaudeProviderRow() {
             loadFailed: false,
             onChange: noop,
           },
-          serviceTier: { ...baseExecution.serviceTier!, supported: false },
+          serviceTier: { ...baseExecution.serviceTier!, supported: true },
         }}
       />
     </PromptStage>
@@ -509,6 +516,7 @@ function FullAccessRow() {
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-full-access"
         value={value}
         mentionRanges={mentionRanges}
@@ -530,11 +538,28 @@ function FullAccessRow() {
   );
 }
 
+const projectlessHosts = [
+  makeHost({ id: HOST_IDS.local, name: "MacBook Air" }),
+  makeHost({
+    id: HOST_IDS.remote,
+    name: "Bersabel’s development MacBook Air with a long machine name",
+  }),
+];
+
 function ProjectlessThreadRow() {
   const { value, mentionRanges, onChange } = useControlledValue("");
+  const execution = useInteractiveExecutionControls(baseExecution);
+  const [permission, setPermission] = useState<PermissionMode>("auto");
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [hostId, setHostId] = useState<string | null>(HOST_IDS.remote);
+  const [environmentValue, setEnvironmentValue] = useState(
+    "provider:personal-workspace",
+  );
+  const [worktreeId, setWorktreeId] = useState<string | null>(null);
   return (
     <PromptStage>
       <NewThreadPromptBoxUI
+        mentionMenuPlacement="bottom"
         id="story-new-thread-projectless"
         value={value}
         mentionRanges={mentionRanges}
@@ -545,13 +570,47 @@ function ProjectlessThreadRow() {
         history={baseHistory}
         typeahead={makeTypeahead()}
         attachments={makeAttachments()}
-        modeConfig={baseModeConfig}
+        modeConfig={{
+          environment: {
+            ...baseEnvironment,
+            value: environmentValue,
+            machines: {
+              hosts: projectlessHosts,
+              localDaemonHostId: HOST_IDS.local,
+              primaryHostId: HOST_IDS.local,
+            },
+            providers: STORY_ENVIRONMENT_PROVIDERS,
+            selectedProviderHostId: hostId,
+            onSelectProvider: (provider, selectedHostId) => {
+              setEnvironmentValue(`provider:${provider.id}`);
+              setHostId(selectedHostId);
+            },
+          },
+          worktree: {
+            ...baseWorktree,
+            value: worktreeId,
+            onChange: setWorktreeId,
+          },
+          permission: {
+            ...basePermission,
+            value: permission,
+            onChange: setPermission,
+          },
+        }}
         project={{
           ...baseProject,
-          value: null,
+          value: projectId,
+          onChange: (selectedProjectId) => {
+            setProjectId(selectedProjectId);
+            setEnvironmentValue(
+              selectedProjectId === null
+                ? "provider:personal-workspace"
+                : "provider:project-checkout",
+            );
+          },
           allowNoProject: true,
         }}
-        execution={baseExecution}
+        execution={execution}
       />
     </PromptStage>
   );
@@ -563,7 +622,7 @@ export function Overview() {
       <StoryCard>
         <StoryRow
           label="default"
-          hint="codex + workspace-write + local-direct env"
+          hint="interactive provider, model, reasoning, and fast mode"
         >
           <DefaultRow />
         </StoryRow>
@@ -590,7 +649,7 @@ export function Overview() {
         </StoryRow>
         <StoryRow
           label="missing Codex CLI"
-          hint="provider-specific install help; picker menu keeps provider tabs"
+          hint="thread creation blocked; banner exposes Install action, picker keeps provider tabs"
         >
           <MissingCodexCliRow />
         </StoryRow>
@@ -612,7 +671,10 @@ export function Overview() {
         >
           <CustomModelAfterLoadErrorRow />
         </StoryRow>
-        <StoryRow label="claude-code provider" hint="no fast mode toggle">
+        <StoryRow
+          label="claude-code provider"
+          hint="Fast mode on supported Opus models"
+        >
           <ClaudeProviderRow />
         </StoryRow>
         <StoryRow label="full access" hint='permission tone="warning"'>
@@ -620,24 +682,17 @@ export function Overview() {
         </StoryRow>
         <StoryRow
           label="projectless"
-          hint="host picker replaces environment picker"
+          hint="interactive machine, project, model, and permissions; long machine label truncates"
         >
           <ProjectlessThreadRow />
         </StoryRow>
-      </StoryCard>
-    </ModelPickerStoryQueryProvider>
-  );
-}
-
-export function UnsupportedCodexCli() {
-  return (
-    <ModelPickerStoryQueryProvider>
-      <StoryCard>
         <StoryRow
-          label="unsupported Codex CLI"
-          hint="Codex is installed but below bb's minimum supported version"
+          label="mobile width"
+          hint="the projectless composer constrained to a 390px viewport"
         >
-          <UnsupportedCodexCliRow />
+          <div className="w-full max-w-[390px]">
+            <ProjectlessThreadRow />
+          </div>
         </StoryRow>
       </StoryCard>
     </ModelPickerStoryQueryProvider>

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { act } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -16,50 +17,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-function unmountAfterForeignReparent(): Error[] {
-  const errors: Error[] = [];
-  const container = document.createElement("div");
-  document.body.appendChild(container);
-  const root = createRoot(container, {
-    onUncaughtError: (error) => {
-      errors.push(error instanceof Error ? error : new Error(String(error)));
-    },
-  });
-
-  function Tree({ mounted }: { mounted: boolean }) {
-    return <div>{mounted ? <p data-moved="">body</p> : null}</div>;
-  }
-
-  act(() => root.render(<Tree mounted />));
-  const moved = container.querySelector("[data-moved]");
-  expect(moved).not.toBeNull();
-  document.createElement("section").appendChild(moved!);
-
-  const run = (work: () => void): void => {
-    try {
-      act(work);
-    } catch (error) {
-      errors.push(error instanceof Error ? error : new Error(String(error)));
-    }
-  };
-  run(() => root.render(<Tree mounted={false} />));
-  run(() => root.unmount());
-  container.remove();
-  return errors;
-}
-
 describe("foreign DOM mutation guard", () => {
-  it("keeps a foreign reparent from escalating to a root teardown", () => {
-    const unguarded = unmountAfterForeignReparent();
-    expect(unguarded).toHaveLength(1);
-    expect(unguarded[0]?.message).toMatch(/not a child of this node/);
-
-    vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    installForeignDomMutationGuard();
-    expect(unmountAfterForeignReparent()).toEqual([]);
-    expect(foreignDomMutationCount()).toBe(1);
-  });
-
   it("suppresses the removeChild that a foreign reparent turns into a throw", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const reactParent = document.createElement("div");
@@ -330,6 +288,48 @@ describe("foreign DOM mutation guard", () => {
 
     act(() => root.unmount());
     container.remove();
+  });
+
+  it("lets React commit into its root and portal containers while an async plugin mount is pending", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    installForeignDomMutationGuard();
+
+    const container = document.createElement("div");
+    const portalTarget = document.createElement("div");
+    document.body.append(container, portalTarget);
+    const root = createRoot(container);
+    act(() => {
+      root.render(<span data-testid="before-mount" />);
+    });
+
+    let finishMount: () => void = () => undefined;
+    const mount = runWithPluginDomIsolationAsync(
+      () => new Promise<void>((resolve) => (finishMount = resolve)),
+      "slow-mount",
+    );
+    await act(async () => {
+      root.render(
+        <>
+          <div data-testid="overlays" />
+          {createPortal(<div data-testid="portal-child" />, portalTarget)}
+        </>,
+      );
+    });
+
+    expect(container.querySelector("[data-testid='overlays']")).toBeInstanceOf(
+      HTMLDivElement,
+    );
+    expect(
+      portalTarget.querySelector("[data-testid='portal-child']"),
+    ).toBeInstanceOf(HTMLDivElement);
+    expect(pluginHostNodeMoveRefusalCount()).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+
+    finishMount();
+    await mount;
+    act(() => root.unmount());
+    container.remove();
+    portalTarget.remove();
   });
 
   it("preserves MutationObserver subclass identity", () => {

@@ -30,7 +30,6 @@ export type {
   ConformanceReport,
   ConformanceSessionFixture,
 };
-export { ConformanceClient } from "./client.js";
 
 export interface RunBridgeConformanceOptions {
   transport: BridgeConformanceTransport;
@@ -51,7 +50,7 @@ export async function runBridgeConformance(
 
   const results: ConformanceCheckResult[] = [];
   results.push(...(await runRpcHygieneScenarios(client)));
-  const handshake = await runHandshakeScenario(client);
+  const handshake = await runHandshakeScenario(client, options.session);
   results.push(...handshake.results);
   results.push(
     ...(await runSessionLifecycleScenarios({

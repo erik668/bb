@@ -45,10 +45,7 @@ interface ProjectBufferedTextEventArgs<
 
 type ResolveBufferedTextMessageKeyArgs<
   TMessage extends BufferedTextEventProjectionMessage,
-> = Omit<
-  ProjectBufferedTextEventArgs<TMessage>,
-  "createMessage" | "mode" | "text"
->;
+> = Omit<ProjectBufferedTextEventArgs<TMessage>, "createMessage" | "text">;
 
 type UpsertBufferedTextMessageArgs<
   TMessage extends BufferedTextEventProjectionMessage,
@@ -59,7 +56,7 @@ type UpsertBufferedTextMessageArgs<
 
 interface ProjectReasoningTextEventArgs {
   identity: BufferedTextInstanceIdentity | null;
-  mode: "delta" | "final";
+  mode: "content-delta" | "final" | "summary-delta";
   state: ProjectionState;
   text: string | null;
 }
@@ -72,14 +69,17 @@ function resolveBufferedTextMessageKey<
   }
 
   const messageKey = createBufferedTextInstanceKey(args.identity);
-  if (args.state.closedTurnIds.has(args.identity.turnId)) {
+  const turnClosed = args.state.closedTurnIds.has(args.identity.turnId);
+  if (turnClosed && args.mode !== "final") {
     return null;
   }
   if (args.refs.finalizedKeys.has(messageKey)) {
     return null;
   }
 
-  args.state.openTurnIds.add(args.identity.turnId);
+  if (!turnClosed) {
+    args.state.openTurnIds.add(args.identity.turnId);
+  }
   return messageKey;
 }
 
@@ -171,7 +171,13 @@ export function projectReasoningTextEvent(
 
   const buffer = getReasoningTextBuffer(args.state, messageKey);
 
-  if (args.mode === "delta") {
+  if (args.mode !== "final") {
+    const deltas = args.state.reasoningDeltaTextByKey.get(messageKey) ?? {
+      content: "",
+      summary: "",
+    };
+    deltas[args.mode === "summary-delta" ? "summary" : "content"] += args.text;
+    args.state.reasoningDeltaTextByKey.set(messageKey, deltas);
     appendVisibleTextBuffer(buffer, args.text);
     return true;
   }

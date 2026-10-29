@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  buildProviderPromptActionProps,
-  commandPillDismissedRangeEnd,
-} from "../src/prompt/mentions/command-trigger.js";
+import { buildProviderPromptActionProps } from "../src/prompt/mentions/command-trigger.js";
 
 describe("buildProviderPromptActionProps", () => {
   it("maps skills and insertion composer actions into prompt action props", () => {
@@ -19,7 +16,7 @@ describe("buildProviderPromptActionProps", () => {
         },
       ]),
     ).toEqual({
-      skillsTrigger: "/",
+      skillsTriggers: ["/"],
       promptActions: [
         { kind: "skills", text: "/" },
         {
@@ -34,25 +31,5 @@ describe("buildProviderPromptActionProps", () => {
         },
       ],
     });
-  });
-});
-
-describe("commandPillDismissedRangeEnd", () => {
-  it("counts the command pill as a one-position editor atom", () => {
-    expect(
-      commandPillDismissedRangeEnd({
-        triggerPosition: 5,
-        trailingText: " ",
-      }),
-    ).toBe(7);
-  });
-
-  it("does not include serialized command name length", () => {
-    expect(
-      commandPillDismissedRangeEnd({
-        triggerPosition: 5,
-        trailingText: "",
-      }),
-    ).toBe(6);
   });
 });

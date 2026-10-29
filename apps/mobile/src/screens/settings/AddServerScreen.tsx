@@ -1,6 +1,6 @@
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useRef, useState } from "react";
-import { View, type TextInput } from "react-native";
+import { View, type TextInputInstance } from "react-native";
 import { useProfiles } from "@/app-shell";
 import {
   PROFILE_LABEL_MAX_LENGTH,
@@ -29,7 +29,7 @@ function defaultLabel(serverUrl: string): string {
 }
 
 const URL_HELP =
-  "A LAN address, a Tailscale Serve URL, or http://127.0.0.1:<port> in the simulator.";
+  "Use your server’s LAN or Tailscale address. Your phone must be able to reach it.";
 
 export function AddServerScreen() {
   const router = useRouter();
@@ -40,7 +40,7 @@ export function AddServerScreen() {
   const [label, setLabel] = useState("");
   const [urlTouched, setUrlTouched] = useState(false);
   const [submit, setSubmit] = useState<SubmitState>({ phase: "idle" });
-  const labelRef = useRef<TextInput>(null);
+  const labelRef = useRef<TextInputInstance>(null);
 
   const validation = validateDirectServerUrl(url);
   const showUrlError = urlTouched && !validation.ok && url.trim().length > 0;
@@ -77,11 +77,7 @@ export function AddServerScreen() {
         ),
       });
       await setActiveProfile(profile.id);
-      toast.success(`Added ${profile.label}`, {
-        description: probe.advertisedServerUrl
-          ? `Server reports ${probe.advertisedServerUrl}; keeping ${serverUrl}.`
-          : undefined,
-      });
+      toast.success(`Added ${profile.label}`);
       router.dismissTo("/");
       if (params.next?.startsWith("/")) router.push(rawPathHref(params.next));
     } catch (error) {
@@ -91,12 +87,11 @@ export function AddServerScreen() {
 
   return (
     <>
-      {}
       <Stack.Screen
         options={{ title: firstRun ? "Connect to a bb server" : "Add server" }}
       />
       <GroupedScreen testID="add-server-screen">
-        <SettingsSection footnote="Pair through getbb.app from anywhere: scan or type a pairing code from bb Settings → Remote access.">
+        <SettingsSection footnote="Pair through getbb.app from anywhere: scan or type a pairing code from bb Settings → Mobile.">
           <GroupedRow
             title="Connect with bb connect"
             badge={{ icon: "Globe", symbol: "globe", color: colors.blue }}

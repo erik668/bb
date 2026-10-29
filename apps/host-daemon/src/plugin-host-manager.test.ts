@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
 import {
   mkdtemp,
-  mkdir,
   readFile,
   readdir,
   rm,
@@ -12,9 +12,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HostDaemonOnlineRpcCommand } from "@bb/host-daemon-contract";
 import type { WatchPathRootArgs } from "@bb/host-watcher";
-import { sanitizeInheritedChildProcessEnv } from "@bb/process-utils";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PluginHostManager } from "./plugin-host-manager.js";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, rm: vi.fn(actual.rm) };
+});
+
+async function* artifactBody(bytes: Uint8Array): AsyncGenerator<Uint8Array> {
+  yield bytes;
+}
 
 type PluginCall = Extract<
   HostDaemonOnlineRpcCommand,
@@ -27,9 +35,13 @@ const stringSchema = { "~standard": { validate(value) { return typeof value === 
 let lastPaths;
 let retainedLease;
 let hangOnDispose = false;
+const heldEnvironments = new Map();
 export default {
   experimental_apiVersion: 1,
   contract: {
+    environment: { input: anySchema, output: anySchema },
+    releaseEnvironment: { input: anySchema, output: anySchema },
+    secretProbe: { input: anySchema, output: anySchema },
     echo: { input: anySchema, output: anySchema },
     wait: { input: anySchema, output: anySchema },
     crash: { input: anySchema, output: anySchema },
@@ -43,6 +55,43 @@ export default {
   },
   experimental_signals: { changed: { payload: anySchema } },
   handlers: {
+    async secretProbe(input, context) {
+      const secret = process.env.TEST_SECRET ?? null;
+      if (input.chunks) {
+        for (const chunk of input.chunks) {
+          await new Promise((resolve) => process.stderr.write(Buffer.from(chunk), resolve));
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+      }
+      if (input.fail) throw new Error(secret);
+      const payload = { type: secret, true: true, ok: true, nested: [{ text: secret }] };
+      await context.experimental_emitSignal("changed", payload);
+      return payload;
+    },
+    async environment(input, context) {
+      const before = process.env.GATE_VALUE;
+      if (input.id) await context.experimental_emitSignal("changed", { id: input.id, pid: process.pid });
+      await new Promise((resolve) => {
+        if (input.hang) return;
+        const finish = () => {
+          clearTimeout(timer);
+          heldEnvironments.delete(input.id);
+          context.signal.removeEventListener("abort", finish);
+          resolve();
+        };
+        const timer = input.hold ? undefined : setTimeout(finish, input.delay ?? 0);
+        if (input.hold) heldEnvironments.set(input.id, finish);
+        context.signal.addEventListener("abort", finish, { once: true });
+        if (context.signal.aborted) finish();
+      });
+      return { before: before ?? null, after: process.env.GATE_VALUE ?? null, token: process.env.GH_TOKEN ?? null };
+    },
+    releaseEnvironment(input) {
+      const finish = heldEnvironments.get(input.id);
+      if (finish === undefined) throw new Error("No held environment for " + input.id);
+      finish();
+      return { released: true };
+    },
     echo(input) { return { input, pid: process.pid }; },
     wait(_input, context) {
       return new Promise((resolve) => {
@@ -104,6 +153,7 @@ export default {
 function callCommand(overrides: Partial<PluginCall> = {}): PluginCall {
   return {
     type: "plugin.host.call",
+    contributedEnv: [],
     pluginId: "fixture",
     generation: "generation-1",
     artifact: {
@@ -125,9 +175,14 @@ describe("PluginHostManager", () => {
   afterEach(async () => {
     await Promise.all(managers.splice(0).map((manager) => manager.shutdown()));
     await Promise.all(
-      tempDirs
-        .splice(0)
-        .map((dir) => rm(dir, { recursive: true, force: true })),
+      tempDirs.splice(0).map((dir) =>
+        rm(dir, {
+          recursive: true,
+          force: true,
+          maxRetries: 20,
+          retryDelay: 100,
+        }),
+      ),
     );
   });
 
@@ -145,7 +200,7 @@ describe("PluginHostManager", () => {
     const manager = new PluginHostManager({
       dataDir,
       logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn() },
-      fetchArtifact: vi.fn(async () => artifactSource),
+      fetchArtifact: vi.fn(async () => artifactBody(artifactSource)),
       ...overrides,
     });
     managers.push(manager);
@@ -153,7 +208,7 @@ describe("PluginHostManager", () => {
   }
 
   it("verifies, caches, and reuses one worker for an artifact generation", async () => {
-    const fetchArtifact = vi.fn(async () => artifactSource);
+    const fetchArtifact = vi.fn(async () => artifactBody(artifactSource));
     const manager = await createManager({ fetchArtifact });
 
     const [first, second] = await Promise.all([
@@ -168,27 +223,420 @@ describe("PluginHostManager", () => {
     expect(fetchArtifact).toHaveBeenCalledOnce();
   });
 
-  it("migrates a verified legacy host.js cache entry without downloading", async () => {
-    const fetchArtifact = vi.fn(async () => artifactSource);
-    const { dataDir, manager } = await createManagerFixture({ fetchArtifact });
-    const command = callCommand();
-    const digestDirectory = join(
-      dataDir,
-      "plugin-host-artifacts",
-      command.pluginId,
-      command.artifact.digest,
-    );
-    await mkdir(digestDirectory, { recursive: true });
-    await writeFile(join(digestDirectory, "host.js"), artifactSource);
+  it("scopes setup env, rotates while idle, and returns worker output as-is", async () => {
+    const manager = await createManager({
+      shellEnv: () => ({ npm_config_user_agent: "test" }),
+    });
+    const contribution = (value: string) => [
+      {
+        name: "GATE_VALUE",
+        value,
+        reason: "Gate",
+        source: { core: "machine-environment" as const },
+      },
+      {
+        name: "GH_TOKEN",
+        value: 'worker-secret\nwith"quotes',
+        reason: "Git",
+        source: { core: "machine-git" as const },
+      },
+    ];
+    const [first, rotated] = [
+      await manager.call(
+        callCommand({
+          method: "environment",
+          input: { delay: 100 },
+          contributedEnv: contribution("first"),
+        }),
+      ),
+      await manager.call(
+        callCommand({
+          method: "environment",
+          input: {},
+          contributedEnv: contribution("rotated"),
+        }),
+      ),
+    ];
+    expect(first.output).toEqual({
+      before: "first",
+      after: "first",
+      token: 'worker-secret\nwith"quotes',
+    });
+    expect(rotated.output).toEqual({
+      before: "rotated",
+      after: "rotated",
+      token: 'worker-secret\nwith"quotes',
+    });
+    expect(
+      (await manager.call(callCommand({ method: "environment", input: {} })))
+        .output,
+    ).toEqual({ before: null, after: null, token: null });
+  });
 
-    const result = await manager.call(command);
-
-    expect(result.output).toMatchObject({ input: { value: "hello" } });
-    expect(fetchArtifact).not.toHaveBeenCalled();
-    await expect(readdir(digestDirectory)).resolves.toEqual(["host.mjs"]);
-    await expect(readFile(join(digestDirectory, "host.mjs"))).resolves.toEqual(
-      artifactSource,
+  it("accepts a base64-encoded 20MB recording without daemon changes", async () => {
+    const manager = await createManager({ shellEnv: () => ({}) });
+    const result = await manager.call(
+      callCommand({
+        method: "environment",
+        input: {
+          audioBase64: Buffer.alloc(20 * 1024 * 1024).toString("base64"),
+        },
+      }),
     );
+    expect(result.output).toEqual({ before: null, after: null, token: null });
+  });
+
+  describe("environment reuse across active calls", () => {
+    async function fixture(startupDelayMs = 0) {
+      const source =
+        startupDelayMs === 0
+          ? artifactSource
+          : Buffer.concat([
+              Buffer.from(
+                `await new Promise((resolve) => setTimeout(resolve, ${startupDelayMs}));\n`,
+              ),
+              artifactSource,
+            ]);
+      const onSignal = vi.fn();
+      const onWorkerExit = vi.fn();
+      const manager = await createManager({
+        shellEnv: () => ({ GATE_VALUE: "base" }),
+        onSignal,
+        onWorkerExit,
+        fetchArtifact: vi.fn(async () => artifactBody(source)),
+      });
+      const command = (id: string, value: string, delay = 0) =>
+        callCommand({
+          callId: id,
+          artifact: {
+            digest: createHash("sha256").update(source).digest("hex"),
+            byteLength: source.byteLength,
+          },
+          method: "environment",
+          input: { id, delay },
+          timeoutMs: 15_000,
+          contributedEnv: [
+            {
+              name: "GATE_VALUE",
+              value,
+              reason: "test",
+              source: { core: "machine-environment" },
+            },
+          ],
+        });
+      const cancel = (callId: string) =>
+        manager.cancel({
+          type: "plugin.host.cancel",
+          pluginId: "fixture",
+          generation: "generation-1",
+          callId,
+        });
+      const started = (id: string) =>
+        expect.objectContaining({
+          payload: expect.objectContaining({ id }),
+        });
+      const waitForStart = (id: string) =>
+        expect
+          .poll(() => onSignal, { timeout: 10_000 })
+          .toHaveBeenCalledWith(started(id));
+      return {
+        manager,
+        command,
+        cancel,
+        started,
+        waitForStart,
+        onSignal,
+        onWorkerExit,
+      };
+    }
+
+    it.each(["cancel", "deadline", "same-value"])(
+      "preserves a long running call and its PID after %s",
+      async (mode) => {
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        try {
+          const {
+            manager,
+            command,
+            cancel,
+            started,
+            waitForStart,
+            onSignal,
+            onWorkerExit,
+          } = await fixture();
+          const initial = await manager.call(callCommand());
+          const running = Promise.allSettled([
+            manager.call({
+              ...command("a", "first"),
+              input: { id: "a", hold: true },
+            }),
+          ]);
+          await waitForStart("a");
+          const b = command(
+            "b",
+            mode === "same-value" ? "first" : "second",
+            10_000,
+          );
+          const cancelled = manager
+            .call({
+              ...b,
+              timeoutMs: mode === "deadline" ? 200 : b.timeoutMs,
+            })
+            .catch((error: unknown) => error);
+          await waitForStart("b");
+          if (mode === "deadline") await vi.advanceTimersByTimeAsync(200);
+          if (mode !== "deadline") {
+            expect(cancel("b")).toEqual({ cancelled: true });
+            cancel("b");
+          }
+          const error = await cancelled;
+          if (mode === "deadline")
+            expect(error).toMatchObject({
+              message: expect.stringMatching(/deadline/u),
+            });
+          else expect(error).toMatchObject({ name: "AbortError" });
+          await vi.advanceTimersByTimeAsync(5_000);
+          expect(onWorkerExit).not.toHaveBeenCalled();
+          await manager.call(
+            callCommand({ method: "releaseEnvironment", input: { id: "a" } }),
+          );
+          expect(await running).toMatchObject([
+            {
+              status: "fulfilled",
+              value: { output: { before: "first", after: "first" } },
+            },
+          ]);
+          expect(onSignal).toHaveBeenCalledWith(started("b"));
+          expect(
+            (await manager.call(command("c", "third"))).output,
+          ).toMatchObject({ before: "third", after: "third" });
+          expect(
+            (
+              await manager.call(
+                callCommand({ method: "environment", input: {} }),
+              )
+            ).output,
+          ).toMatchObject({ before: "base", after: "base" });
+          expect((await manager.call(callCommand())).output).toEqual(
+            initial.output,
+          );
+          expect(onWorkerExit).not.toHaveBeenCalled();
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it.each([0, 1_500])(
+      "keeps the first values until every overlapping call finishes with %ims startup",
+      async (startupDelayMs) => {
+        const { manager, command, cancel, waitForStart } =
+          await fixture(startupDelayMs);
+        const a = manager
+          .call(command("a", "first", 10_000))
+          .catch((error: unknown) => error);
+        await waitForStart("a");
+        const b = manager
+          .call(command("b", "second", 10_000))
+          .catch((error: unknown) => error);
+        await waitForStart("b");
+        cancel("a");
+        await expect(a).resolves.toMatchObject({ name: "AbortError" });
+        await expect(
+          manager.call(command("c", "third")),
+        ).resolves.toMatchObject({
+          output: { before: "first", after: "first" },
+        });
+        cancel("b");
+        await expect(b).resolves.toMatchObject({ name: "AbortError" });
+        await expect(
+          manager.call(command("d", "fourth")),
+        ).resolves.toMatchObject({
+          output: { before: "fourth", after: "fourth" },
+        });
+      },
+    );
+
+    it("disposes with overlapping calls and starts a fresh generation", async () => {
+      const { manager, command, waitForStart } = await fixture();
+      const a = manager
+        .call(command("a", "first", 10_000))
+        .catch((error: unknown) => error);
+      await waitForStart("a");
+      const b = manager
+        .call(command("b", "second", 10_000))
+        .catch((error: unknown) => error);
+      await waitForStart("b");
+      await manager.dispose({
+        type: "plugin.host.dispose",
+        pluginId: "fixture",
+        generation: "generation-1",
+      });
+      expect(await a).toBeInstanceOf(Error);
+      expect(await b).toBeInstanceOf(Error);
+      await expect(
+        manager.call({ ...command("c", "third"), generation: "generation-2" }),
+      ).resolves.toMatchObject({ output: { before: "third", after: "third" } });
+    });
+
+    it("still force-kills a started handler that ignores cancellation", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { manager, command, cancel, waitForStart, onWorkerExit } =
+          await fixture();
+        const initial = await manager.call(callCommand());
+        const hung = manager
+          .call({
+            ...command("hung", "first"),
+            input: { id: "hung", hang: true },
+          })
+          .catch((error: unknown) => error);
+        await waitForStart("hung");
+        cancel("hung");
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(hung).resolves.toMatchObject({ name: "AbortError" });
+        expect(onWorkerExit).toHaveBeenCalledOnce();
+        expect((await manager.call(callCommand())).output).not.toEqual(
+          initial.output,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("abandons a handler that ignores cancellation without killing other calls or pinning its environment", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const { manager, command, cancel, waitForStart, onWorkerExit } =
+          await fixture();
+        const initial = await manager.call(callCommand());
+        const running = manager.call({
+          ...command("a", "first"),
+          input: { id: "a", hold: true },
+        });
+        await waitForStart("a");
+        const hung = manager
+          .call({
+            ...command("hung", "first"),
+            input: { id: "hung", hang: true },
+          })
+          .catch((error: unknown) => error);
+        await waitForStart("hung");
+        cancel("hung");
+        await vi.advanceTimersByTimeAsync(5_000);
+        await expect(hung).resolves.toMatchObject({ name: "AbortError" });
+        await manager.call(
+          callCommand({ method: "releaseEnvironment", input: { id: "a" } }),
+        );
+        await expect(running).resolves.toMatchObject({
+          output: { before: "first", after: "first" },
+        });
+        await expect(
+          manager.call(command("rotated", "rotated")),
+        ).resolves.toMatchObject({
+          output: { before: "rotated", after: "rotated" },
+        });
+        expect(onWorkerExit).not.toHaveBeenCalled();
+        expect((await manager.call(callCommand())).output).toEqual(
+          initial.output,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  it.each(["type", "true", "changed"])(
+    "preserves worker RPC structure and identifiers when the secret is %s",
+    async (secret) => {
+      const onSignal = vi.fn();
+      const manager = await createManager({ onSignal });
+      const command = callCommand({
+        callId: secret,
+        method: "secretProbe",
+        input: {},
+        contributedEnv: [
+          {
+            name: "TEST_SECRET",
+            value: secret,
+            reason: "Probe",
+            source: { core: "machine-environment" },
+          },
+        ],
+      });
+      const payload = {
+        type: secret,
+        true: true,
+        ok: true,
+        nested: [{ text: secret }],
+      };
+      expect(await manager.call(command)).toEqual({ output: payload });
+      expect(onSignal).toHaveBeenCalledWith({
+        pluginId: "fixture",
+        generation: "generation-1",
+        signal: "changed",
+        payload,
+      });
+      await expect(
+        manager.call({ ...command, input: { fail: true } }),
+      ).rejects.toThrow(secret);
+    },
+  );
+
+  it.each([
+    "first-line\nsecond-line",
+    "first-line\r\nsecond-line",
+    "π-first\nsecond-line",
+  ])("frames worker stderr as-is across byte chunks: %j", async (secret) => {
+    const warn = vi.fn();
+    const manager = await createManager({
+      logger: { debug: vi.fn(), info: vi.fn(), warn },
+    });
+    const command = callCommand({
+      method: "secretProbe",
+      input: {},
+      contributedEnv: [
+        {
+          name: "TEST_SECRET",
+          value: secret,
+          reason: "Probe",
+          source: { core: "machine-environment" },
+        },
+      ],
+    });
+    await manager.call(command);
+    const bytes = Buffer.from(
+      secret.replaceAll("\r\n", "\n").replaceAll("\n", "\r\n") + "\n",
+    );
+    await manager.call({
+      ...command,
+      contributedEnv: [],
+      input: { chunks: [...bytes].map((byte) => [byte]) },
+    });
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        {
+          pluginId: "fixture",
+          origin: "host",
+          stderr: secret.replaceAll("\r\n", "\n").split("\n")[0],
+        },
+        "Host plugin stderr",
+      ),
+    );
+    const pendingPrefix = Buffer.from(secret.slice(0, 5));
+    await manager.call({
+      ...command,
+      contributedEnv: [],
+      input: { chunks: [[...pendingPrefix]] },
+    });
+    await manager.shutdown();
+    const records = warn.mock.calls.filter(
+      ([, message]) => message === "Host plugin stderr",
+    );
+    expect(records.map(([record]) => record.stderr)).toEqual([
+      ...secret.replaceAll("\r\n", "\n").split("\n"),
+      secret.slice(0, 5),
+    ]);
   });
 
   it("logs artifact and worker lifecycle transitions", async () => {
@@ -237,10 +685,10 @@ describe("PluginHostManager", () => {
   });
 
   it("bounds call count and input bytes while worker startup is pending", async () => {
-    let resolveCountFetch!: (bytes: Uint8Array) => void;
+    let resolveCountFetch!: (body: AsyncIterable<Uint8Array>) => void;
     const countFetch = vi.fn(
       () =>
-        new Promise<Uint8Array>((resolve) => {
+        new Promise<AsyncIterable<Uint8Array>>((resolve) => {
           resolveCountFetch = resolve;
         }),
     );
@@ -257,14 +705,14 @@ describe("PluginHostManager", () => {
     await expect(countManager.call(callCommand())).rejects.toThrow(
       /too many active calls/u,
     );
-    resolveCountFetch(artifactSource);
+    resolveCountFetch(artifactBody(artifactSource));
 
     const input = { value: "1234567890" };
     const inputByteLength = Buffer.byteLength(JSON.stringify(input));
-    let resolveByteFetch!: (bytes: Uint8Array) => void;
+    let resolveByteFetch!: (body: AsyncIterable<Uint8Array>) => void;
     const byteFetch = vi.fn(
       () =>
-        new Promise<Uint8Array>((resolve) => {
+        new Promise<AsyncIterable<Uint8Array>>((resolve) => {
           resolveByteFetch = resolve;
         }),
     );
@@ -278,7 +726,7 @@ describe("PluginHostManager", () => {
     await expect(byteManager.call(callCommand({ input }))).rejects.toThrow(
       /active call inputs exceed/u,
     );
-    resolveByteFetch(artifactSource);
+    resolveByteFetch(artifactBody(artifactSource));
     await firstByteCall;
   });
 
@@ -300,7 +748,7 @@ describe("PluginHostManager", () => {
       fetchArtifact: vi.fn(async ({ digest }) => {
         const source = sourceByDigest.get(digest);
         if (source === undefined) throw new Error("unexpected artifact digest");
-        return source;
+        return artifactBody(source);
       }),
     });
 
@@ -337,7 +785,18 @@ describe("PluginHostManager", () => {
     const first = await manager.call(callCommand());
     const firstPid = Reflect.get(Object(first.output), "pid");
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(
+      () =>
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pluginId: "fixture",
+            reason: "host plugin worker became idle",
+            forceKilled: false,
+          }),
+          "Host plugin worker stopped",
+        ),
+      { timeout: 5_000 },
+    );
     const restarted = await manager.call(callCommand());
 
     expect(Reflect.get(Object(restarted.output), "pid")).not.toBe(firstPid);
@@ -346,18 +805,15 @@ describe("PluginHostManager", () => {
       expect.objectContaining({ digest: expect.any(String) }),
       "Using cached host artifact",
     );
-    expect(logger.info).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pluginId: "fixture",
-        reason: "host plugin worker became idle",
-        forceKilled: false,
-      }),
-      "Host plugin worker stopped",
-    );
   });
 
   it("retains a worker with a lease until the lease is released", async () => {
-    const manager = await createManager({ workerIdleTimeoutMs: 20 });
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const manager = await createManager({ logger, workerIdleTimeoutMs: 20 });
     const retained = await manager.call(
       callCommand({ method: "retain", input: { enabled: true } }),
     );
@@ -370,14 +826,25 @@ describe("PluginHostManager", () => {
     await manager.call(
       callCommand({ method: "retain", input: { enabled: false } }),
     );
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await vi.waitFor(
+      () =>
+        expect(logger.info).toHaveBeenCalledWith(
+          expect.objectContaining({
+            pluginId: "fixture",
+            reason: "host plugin worker became idle",
+            forceKilled: false,
+          }),
+          "Host plugin worker stopped",
+        ),
+      { timeout: 5_000 },
+    );
     const restarted = await manager.call(callCommand());
     expect(Reflect.get(Object(restarted.output), "pid")).not.toBe(retainedPid);
   });
 
   it("rejects unverified or invalid artifacts", async () => {
     const tampered = await createManager({
-      fetchArtifact: async () => Buffer.from("tampered"),
+      fetchArtifact: async () => artifactBody(Buffer.from("tampered")),
     });
     await expect(tampered.call(callCommand())).rejects.toThrow(
       /failed verification after retry/u,
@@ -385,7 +852,7 @@ describe("PluginHostManager", () => {
 
     const invalidArtifact = Buffer.from("export default {};\n");
     const invalid = await createManager({
-      fetchArtifact: async () => invalidArtifact,
+      fetchArtifact: async () => artifactBody(invalidArtifact),
     });
     await expect(
       invalid.call(
@@ -411,28 +878,6 @@ describe("PluginHostManager", () => {
     await expect(
       manager.call(callCommand({ method: "large" })),
     ).rejects.toThrow(/exceeds 8388608 bytes/u);
-  });
-
-  it("cancels running calls and enforces deadlines", async () => {
-    const manager = await createManager();
-    await manager.call(callCommand());
-    const command = callCommand({ method: "wait" });
-    const result = manager.call(command);
-    await new Promise((resolve) => setTimeout(resolve, 20));
-
-    expect(
-      manager.cancel({
-        type: "plugin.host.cancel",
-        pluginId: command.pluginId,
-        generation: command.generation,
-        callId: command.callId,
-      }),
-    ).toEqual({ cancelled: true });
-    await expect(result).rejects.toMatchObject({ name: "AbortError" });
-
-    await expect(
-      manager.call(callCommand({ method: "wait", timeoutMs: 20 })),
-    ).rejects.toThrow(/exceeded its deadline/u);
   });
 
   it.each([-4_000_000_000_000, 4_000_000_000_000])(
@@ -465,6 +910,65 @@ describe("PluginHostManager", () => {
       }),
     ).resolves.toEqual({ disposed: true });
     expect(onWorkerExit).not.toHaveBeenCalled();
+  });
+
+  it("waits for temporary directory cleanup without racing another removal", async () => {
+    const manager = await createManager();
+    const command = callCommand({ method: "pathsAndSignal" });
+    const result = await manager.call(command);
+    const tempDir = Reflect.get(Object(result.output), "tempDir");
+    const { rm: remove } =
+      await vi.importActual<typeof import("node:fs/promises")>(
+        "node:fs/promises",
+      );
+    let removalStarted = false;
+    let releaseRemoval!: () => void;
+    const removalGate = new Promise<void>((resolve) => {
+      releaseRemoval = resolve;
+    });
+    let notifyRemoval!: () => void;
+    const started = new Promise<void>((resolve) => {
+      notifyRemoval = resolve;
+    });
+    const rmSpy = vi
+      .spyOn(fs, "rm")
+      .mockImplementation(async (path, options) => {
+        if (path === tempDir) {
+          if (removalStarted) {
+            throw Object.assign(
+              new Error("EPERM: concurrent directory removal"),
+              {
+                code: "EPERM",
+                syscall: "scandir",
+              },
+            );
+          }
+          removalStarted = true;
+          notifyRemoval();
+          await removalGate;
+        }
+        await remove(path, options);
+      });
+    const disposed = Promise.allSettled([
+      manager.dispose({
+        type: "plugin.host.dispose",
+        pluginId: command.pluginId,
+        generation: command.generation,
+      }),
+    ]);
+    try {
+      await started;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      releaseRemoval();
+      expect(await disposed).toEqual([
+        { status: "fulfilled", value: { disposed: true } },
+      ]);
+      await expect(stat(tempDir)).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      releaseRemoval();
+      await disposed;
+      rmSpy.mockRestore();
+    }
   });
 
   it("logs when graceful disposal requires a forced kill", async () => {
@@ -625,26 +1129,5 @@ describe("PluginHostManager", () => {
         }),
       ),
     ).rejects.toThrow(/changed artifact digest/u);
-  });
-});
-
-describe("host plugin worker env", () => {
-  it("uses the login-shell PATH without forwarding daemon BB variables", () => {
-    expect(
-      sanitizeInheritedChildProcessEnv({
-        env: {
-          HOME: "/Users/test",
-          PATH: "/usr/bin",
-          GH_TOKEN: "user-token",
-          BB_CONNECT_MACHINE_CREDENTIAL: "daemon-secret",
-          BB_SERVER_URL: "http://daemon.internal",
-        },
-        shellPath: "/Users/test/bin:/usr/bin",
-      }),
-    ).toEqual({
-      HOME: "/Users/test",
-      PATH: "/Users/test/bin:/usr/bin",
-      GH_TOKEN: "user-token",
-    });
   });
 });

@@ -17,9 +17,11 @@
     },
     "contextWindow": {
       "kind": "required",
+      "snapshot": "optional",
       "used": "required",
       "size": "optional",
       "estimated": "required",
+      "cost": "optional",
       "attach": "required",
       "providerTurnId": "optional"
     },
@@ -134,7 +136,8 @@
     },
     "thread.name": {
       "kind": "required",
-      "name": "required"
+      "name": "required",
+      "source": "optional"
     },
     "thread.started": {
       "kind": "required"
@@ -151,6 +154,10 @@
       "kind": "required",
       "diff": "required",
       "providerTurnId": "optional"
+    },
+    "turn.mainRun": {
+      "kind": "required",
+      "state": "required"
     },
     "turn.open": {
       "kind": "required",
@@ -171,6 +178,7 @@
       "total": "required",
       "last": "required",
       "modelContextWindow": "required",
+      "promptCacheTtlMs": "optional",
       "providerTurnId": "optional"
     }
   },
@@ -187,6 +195,7 @@
       "status": "required",
       "taskStatus": "required",
       "skipTranscript": "required",
+      "foreground": "optional",
       "workflowName": "optional",
       "workflow": "optional",
       "usage": "optional",
@@ -225,6 +234,14 @@
       "type": "required",
       "path": "required",
       "cmd": "optional"
+    },
+    "imageGeneration": {
+      "type": "required",
+      "prompt": "required",
+      "path": "required",
+      "result": "optional",
+      "error": "required",
+      "transparentBackground": "required"
     },
     "imageView": {
       "type": "required",
@@ -289,7 +306,8 @@
     "approvalEnforcedBy": "default",
     "grammarVersions": "default",
     "steerMode": "default",
-    "skills": "default"
+    "skills": "default",
+    "commands": "default"
   },
   "recoveryNotification": {
     "threadId": "optional",
@@ -298,6 +316,7 @@
     "retryable": "required"
   },
   "requestMethods": [
+    "commands/list",
     "initialize",
     "model/list",
     "provider/health",

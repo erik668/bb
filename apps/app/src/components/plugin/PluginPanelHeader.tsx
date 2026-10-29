@@ -1,8 +1,10 @@
+import { usePageTitleValue } from "@/components/layout/page-title";
+import { PageTitleHeader } from "@/components/layout/PageTitleHeader";
 import { Component, type ReactNode } from "react";
 import type { PluginNavPanelChrome } from "@/lib/plugin-nav-panel-chrome";
 import type { PluginNavPanelSlot } from "@/lib/plugin-slots";
 import { usePluginCss } from "@/lib/plugin-css";
-import { PluginIcon } from "./PluginIcon";
+import { PluginItemIcon } from "./PluginIcon";
 import { PluginContext } from "./plugin-context";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import { getPluginPagePanelStateId } from "./plugin-page-panel-state";
@@ -33,15 +35,19 @@ export function PluginPanelHeaderCenter({
 }: {
   chrome: Pick<PluginNavPanelChrome, "pluginId" | "icon" | "title">;
 }) {
+  const pageTitle = usePageTitleValue();
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
-      <PluginIcon
-        pluginId={chrome.pluginId}
-        icon={chrome.icon}
-        className="text-muted-foreground"
-      />
-      <p className="truncate text-sm font-semibold">{chrome.title}</p>
-    </div>
+    <PageTitleHeader
+      icon={
+        <PluginItemIcon
+          pluginId={chrome.pluginId}
+          icon={chrome.icon}
+          className="text-muted-foreground"
+        />
+      }
+      title={chrome.title}
+      value={pageTitle}
+    />
   );
 }
 
@@ -49,10 +55,12 @@ export function PluginPanelHeaderActions({
   panel,
   paneId,
   subPath,
+  paneActions,
 }: {
   panel: PluginNavPanelSlot;
   paneId?: string;
   subPath: string;
+  paneActions?: ReactNode;
 }) {
   const paneContext = useOptionalPaneContext();
   const HeaderContent = panel.headerContent;
@@ -70,7 +78,6 @@ export function PluginPanelHeaderActions({
           pluginId={panel.pluginId}
         >
           <PluginContext.Provider value={panel.pluginId}>
-            {}
             <div
               data-bb-plugin-root=""
               data-bb-plugin={panel.pluginId}
@@ -81,6 +88,7 @@ export function PluginPanelHeaderActions({
           </PluginContext.Provider>
         </HeaderContentBoundary>
       )}
+      {paneActions}
       <div data-plugin-right-panel-toggle-portal={panelStateId} />
     </div>
   );

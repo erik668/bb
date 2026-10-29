@@ -1,3 +1,4 @@
+import { sleep, waitForChildExit } from "./child-process-helpers.mjs";
 import { appendOutput, formatProcessOutput } from "./smoke-output.mjs";
 import { execFile, spawn } from "node:child_process";
 import { createServer } from "node:net";
@@ -16,11 +17,6 @@ const startupTimeoutMs = 60_000;
 const exitTimeoutMs = 10_000;
 const outputFlushTimeoutMs = 2_000;
 const pollIntervalMs = 100;
-async function sleep(delayMs) {
-  await new Promise((resolvePromise) => {
-    setTimeout(resolvePromise, delayMs);
-  });
-}
 
 async function waitFor({
   describe,
@@ -392,27 +388,6 @@ async function pluginStartupIsSettled(serverUrl) {
   }
 }
 
-async function waitForChildExit(child, timeoutMs) {
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return true;
-  }
-  return await new Promise((resolvePromise) => {
-    const timeout = setTimeout(() => {
-      cleanup();
-      resolvePromise(false);
-    }, timeoutMs);
-    const handleExit = () => {
-      cleanup();
-      resolvePromise(true);
-    };
-    const cleanup = () => {
-      clearTimeout(timeout);
-      child.off("exit", handleExit);
-    };
-    child.once("exit", handleExit);
-  });
-}
-
 async function stopRuntime(runtime) {
   const processInfo = await readProcess(runtime.pid);
   if (
@@ -501,6 +476,7 @@ async function smokeLinuxAppImageLifecycle() {
       BB_DESKTOP_VERSION_CHECK: "0",
       BB_HOST_DAEMON_PORT: String(daemonPort),
       BB_SERVER_PORT: String(serverPort),
+      BB_TELEMETRY: "false",
     };
     delete childEnv.APPIMAGE_EXTRACT_AND_RUN;
     delete childEnv.BB_DESKTOP_APP_URL;
@@ -595,6 +571,18 @@ async function smokeLinuxAppImageLifecycle() {
     }
 
     guiMount = resolveMountFromBridgePath(runtime.bridgePath);
+    const bundledLibraryDirectory = join(guiMount, "usr", "lib");
+    const bundledLibraries = await readdir(bundledLibraryDirectory);
+    if (
+      ["libnotify.so.4", "libnotify.so.5", "libnotify.so.1"].some((name) =>
+        bundledLibraries.includes(name),
+      )
+    ) {
+      throw new Error(
+        "The AppImage overrides the system's versioned libnotify",
+      );
+    }
+    await readFile(join(bundledLibraryDirectory, "libnotify.so"));
     runtimeMount = runtimeProcess.environment.APPDIR ?? null;
     if (runtimeMount === null || runtimeMount.length === 0) {
       throw new Error("The runtime supervisor did not inherit APPDIR");

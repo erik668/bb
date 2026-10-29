@@ -1,22 +1,17 @@
-import { execFile as execFileCallback } from "node:child_process";
 import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { promisify } from "node:util";
+import { setupMigratedConnectionTemplate } from "@bb/db/testing";
+import {
+  killProcessesReferencingPath,
+  listOpenFilePids,
+  readPositivePidFile,
+} from "@bb/test-helpers";
 import { isNodeError, removePathWithRetry } from "./helpers/remove-path.js";
-
-const execFile = promisify(execFileCallback);
+import { setupBuiltinHostBuildRecords } from "./helpers/builtin-plugin-fixture.js";
 
 const INTEGRATION_TMP_PREFIX = "bb-integration-";
 const STALE_TMP_ROOT_AGE_MS = 60 * 60_000;
-
-function isExecExitCodeOne(error: unknown): boolean {
-  if (typeof error !== "object" || error === null || !("code" in error)) {
-    return false;
-  }
-
-  return Reflect.get(error, "code") === 1;
-}
 
 function isProcessAlive(pid: number): boolean {
   try {
@@ -51,40 +46,8 @@ async function killProcess(pid: number): Promise<void> {
   process.kill(pid, "SIGKILL");
 }
 
-async function readParentPid(tmpRoot: string): Promise<number | null> {
-  try {
-    const rawPid = await fs.readFile(path.join(tmpRoot, "parent.pid"), "utf8");
-    const pid = Number.parseInt(rawPid.trim(), 10);
-    return Number.isInteger(pid) && pid > 0 ? pid : null;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return null;
-    }
-    throw error;
-  }
-}
-
-async function listOpenFilePids(tmpRoot: string): Promise<number[]> {
-  try {
-    const { stdout } = await execFile("lsof", ["-t", "+D", tmpRoot], {
-      encoding: "utf8",
-    });
-    return stdout
-      .split("\n")
-      .map((value) => Number.parseInt(value.trim(), 10))
-      .filter((value) => Number.isInteger(value) && value > 0);
-  } catch (error) {
-    if (
-      (isNodeError(error) && error.code === "ENOENT") ||
-      isExecExitCodeOne(error)
-    ) {
-      return [];
-    }
-    throw error;
-  }
-}
-
 async function cleanupTmpRoot(tmpRoot: string): Promise<void> {
+  await killProcessesReferencingPath(tmpRoot);
   const openFilePids = new Set(await listOpenFilePids(tmpRoot));
   for (const pid of openFilePids) {
     await killProcess(pid).catch(() => undefined);
@@ -102,7 +65,7 @@ async function listIntegrationTmpRoots(): Promise<string[]> {
     .map((entry) => path.join(tmpdir(), entry.name));
 }
 
-export default async function globalSetup(): Promise<void> {
+export default async function globalSetup(): Promise<() => Promise<void>> {
   const now = Date.now();
   for (const tmpRoot of await listIntegrationTmpRoots()) {
     const metadata = await fs.stat(tmpRoot).catch(() => null);
@@ -110,11 +73,27 @@ export default async function globalSetup(): Promise<void> {
       continue;
     }
 
-    const parentPid = await readParentPid(tmpRoot);
+    const parentPid = await readPositivePidFile(
+      path.join(tmpRoot, "parent.pid"),
+    );
     if (parentPid && isProcessAlive(parentPid)) {
       continue;
     }
 
     await cleanupTmpRoot(tmpRoot).catch(() => undefined);
+  }
+  const cleanupDatabaseTemplate = setupMigratedConnectionTemplate();
+  try {
+    const cleanupBuiltinRecords = await setupBuiltinHostBuildRecords();
+    return async () => {
+      try {
+        cleanupDatabaseTemplate();
+      } finally {
+        await cleanupBuiltinRecords();
+      }
+    };
+  } catch (error) {
+    cleanupDatabaseTemplate();
+    throw error;
   }
 }

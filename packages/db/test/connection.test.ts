@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
+import { resourceUsage } from "node:process";
 import { describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
 import {
@@ -11,6 +13,7 @@ import {
   type SlowDbQueryLogger,
   type SlowDbQueryLogFields,
 } from "../src/connection.js";
+import { createMigratedConnection } from "../src/testing.js";
 import { migrate } from "../src/migrate.js";
 import { hosts } from "../src/schema.js";
 
@@ -41,6 +44,214 @@ function getOnlyInfoLog(logger: CapturingSlowQueryLogger): LoggedInfo {
 }
 
 describe("createConnection", () => {
+  it("distinguishes time waiting inside SQLite from CPU work", () => {
+    const logger = new CapturingSlowQueryLogger();
+    const db = createConnection(":memory:", {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+      slowQueryDiagnosticsEnabled: () => true,
+    });
+    migrate(db);
+    try {
+      const signal = new Int32Array(new SharedArrayBuffer(4));
+      let insideBefore = resourceUsage();
+      let insideAfter = insideBefore;
+      db.$client.function("wait_for_io", () => {
+        insideBefore = resourceUsage();
+        const pages = Buffer.alloc(32 * 1024 * 1024, 1);
+        Atomics.wait(signal, 0, 0, 100);
+        insideAfter = resourceUsage();
+        return 6 + pages[0]!;
+      });
+      logger.clear();
+      const outsideBefore = resourceUsage();
+      expect(db.$client.prepare("SELECT wait_for_io() AS value").get()).toEqual(
+        { value: 7 },
+      );
+      const outsideAfter = resourceUsage();
+      const { fields } = getOnlyInfoLog(logger);
+      expect(fields.durationMs).toBeGreaterThanOrEqual(90);
+      expect(fields.cpuDurationMs).toBeGreaterThanOrEqual(0);
+      expect(fields.durationMs - fields.cpuDurationMs).toBeGreaterThan(50);
+      const diagnostics = fields.diagnostics;
+      expect(diagnostics).toBeDefined();
+      if (!diagnostics) throw new Error("Expected diagnostic attribution");
+      for (const key of [
+        "minorPageFault",
+        "majorPageFault",
+        "fsRead",
+        "fsWrite",
+        "voluntaryContextSwitches",
+        "involuntaryContextSwitches",
+      ] as const) {
+        expect(diagnostics.resourceUsage[key]).toBeGreaterThanOrEqual(
+          insideAfter[key] - insideBefore[key],
+        );
+        expect(diagnostics.resourceUsage[key]).toBeLessThanOrEqual(
+          outsideAfter[key] - outsideBefore[key],
+        );
+      }
+      expect(diagnostics.wal).toEqual({ sizeBytes: null, sampledAt: null });
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it("samples WAL asynchronously and reuses timestamped samples across slow-query bursts", async () => {
+    const logger = new CapturingSlowQueryLogger();
+    let diagnosticsEnabled = false;
+    const directory = mkdtempSync(join(tmpdir(), "bb-wal-sampler-"));
+    const databasePath = join(directory, "bb.db");
+    const template = createMigratedConnection();
+    writeFileSync(databasePath, template.$client.serialize());
+    template.$client.close();
+    const db = createConnection(databasePath, {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: 0,
+      slowQueryDiagnosticsEnabled: () => diagnosticsEnabled,
+    });
+    try {
+      db.$client.exec("CREATE TABLE diagnostic_values (value INTEGER)");
+      db.$client.exec("INSERT INTO diagnostic_values VALUES (0)");
+      const update = db.$client.prepare(
+        "UPDATE diagnostic_values SET value = value + 1",
+      );
+      logger.clear();
+      update.run();
+      expect(getOnlyInfoLog(logger).fields).not.toHaveProperty("diagnostics");
+      diagnosticsEnabled = true;
+      logger.clear();
+      update.run();
+      expect(getOnlyInfoLog(logger).fields.diagnostics?.wal).toEqual({
+        sizeBytes: null,
+        sampledAt: null,
+      });
+      await expect
+        .poll(() => {
+          logger.clear();
+          update.run();
+          return getOnlyInfoLog(logger).fields.diagnostics?.wal.sizeBytes;
+        })
+        .toBeGreaterThan(0);
+      const sample = getOnlyInfoLog(logger).fields.diagnostics!.wal;
+      expect(sample.sampledAt).toEqual(expect.any(String));
+      for (let i = 0; i < 100; i++) update.run();
+      for (const log of logger.infoLogs) {
+        expect(log.fields.diagnostics?.wal).toEqual(sample);
+      }
+      expect(statSync(`${db.$client.name}-wal`).size).toBeGreaterThan(
+        sample.sizeBytes!,
+      );
+      diagnosticsEnabled = false;
+      logger.clear();
+      update.run();
+      expect(getOnlyInfoLog(logger).fields).not.toHaveProperty("diagnostics");
+      db.$client.pragma("journal_mode = DELETE");
+      await delay(1_050);
+      diagnosticsEnabled = true;
+      await expect
+        .poll(() => {
+          logger.clear();
+          update.run();
+          return getOnlyInfoLog(logger).fields.diagnostics?.wal;
+        })
+        .toEqual({ sizeBytes: null, sampledAt: expect.any(String) });
+    } finally {
+      db.$client.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("applies live thresholds to statements prepared before the setting changed", () => {
+    const logger = new CapturingSlowQueryLogger();
+    let thresholdMs = Infinity;
+    const db = createConnection(":memory:", {
+      slowQueryLogger: logger,
+      slowQueryThresholdMs: () => thresholdMs,
+    });
+    migrate(db);
+    try {
+      const statement = db.$client.prepare("SELECT 1");
+      statement.get();
+      expect(logger.infoLogs).toHaveLength(0);
+      thresholdMs = 0;
+      statement.get();
+      expect(getOnlyInfoLog(logger).fields.thresholdMs).toBe(0);
+      logger.clear();
+      thresholdMs = Infinity;
+      statement.get();
+      expect(logger.infoLogs).toHaveLength(0);
+    } finally {
+      db.$client.close();
+    }
+  });
+
+  it.each(["default", "deferred", "immediate", "exclusive"] as const)(
+    "times complete %s transactions and exec while preserving rollback and receivers",
+    (mode) => {
+      const logger = new CapturingSlowQueryLogger();
+      const db = createConnection(":memory:", {
+        slowQueryLogger: logger,
+        slowQueryThresholdMs: 0,
+      });
+      migrate(db);
+      try {
+        db.$client.exec("CREATE TABLE diagnostic_values (value TEXT)");
+        logger.clear();
+        expect(
+          db.$client.exec(
+            "INSERT INTO diagnostic_values VALUES ('private-value')",
+          ),
+        ).toBe(db.$client);
+        expect(getOnlyInfoLog(logger).fields).toMatchObject({
+          operation: "exec",
+          sql: "INSERT INTO diagnostic_values VALUES ('?')",
+        });
+        const nested = db.$client.transaction(() => {
+          db.$client.exec(
+            "INSERT INTO diagnostic_values VALUES ('rolled-back')",
+          );
+          throw new Error("rollback nested transaction");
+        });
+        const transaction = db.$client.transaction(function (
+          this: { prefix: string },
+          value: string,
+        ) {
+          db.$client
+            .prepare("INSERT INTO diagnostic_values VALUES (?)")
+            .run(value);
+          expect(() => nested()).toThrow("rollback nested transaction");
+          return this.prefix + value;
+        });
+        logger.clear();
+        expect(transaction[mode].call({ prefix: "result:" }, "committed")).toBe(
+          "result:committed",
+        );
+        const transactions = logger.infoLogs.filter(
+          (log) => log.fields.operation === "transaction",
+        );
+        expect(transactions.map((log) => log.fields.sql)).toEqual([
+          "TRANSACTION DEFAULT",
+          `TRANSACTION ${mode.toUpperCase()}`,
+        ]);
+        expect(transactions[1]?.fields).toMatchObject({
+          bindingArgumentCount: 1,
+          cpuDurationMs: expect.any(Number),
+          durationMs: expect.any(Number),
+        });
+        expect(
+          db.$client
+            .prepare("SELECT value FROM diagnostic_values ORDER BY value")
+            .all(),
+        ).toEqual([{ value: "committed" }, { value: "private-value" }]);
+        expect(transaction.default).toBe(transaction);
+        expect(Reflect.get(transaction[mode], "database")).toBe(db.$client);
+      } finally {
+        db.$client.close();
+      }
+    },
+  );
+
   it("logs slow prepared statement executions without parameter values", () => {
     const logger = new CapturingSlowQueryLogger();
     const db = createConnection(":memory:", {
@@ -52,6 +263,7 @@ describe("createConnection", () => {
 
     const infoLog = getOnlyInfoLog(logger);
     expect(infoLog.message).toBe("Slow DB query");
+    expect(infoLog.fields).not.toHaveProperty("diagnostics");
     expect(infoLog.fields.operation).toBe("get");
     expect(infoLog.fields.bindingArgumentCount).toBe(1);
     expect(infoLog.fields.sql).toBe("SELECT ? AS value");
