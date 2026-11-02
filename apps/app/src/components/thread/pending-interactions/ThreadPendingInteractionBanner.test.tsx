@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +33,7 @@ import { BottomAnchorContext } from "@/components/ui/bottom-anchored-scroll-body
 import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 
 const mocks = vi.hoisted(() => ({
+  resolveError: null as Error | null,
   resolveMutateAsync: vi.fn(async () => ({})),
   stopMutateAsync: vi.fn(async () => undefined),
 }));
@@ -54,7 +56,7 @@ vi.mock("@/hooks/mutations/thread-interaction-mutations", () => ({
   useResolveThreadPendingInteraction: () => ({
     mutateAsync: mocks.resolveMutateAsync,
     isPending: false,
-    error: null,
+    error: mocks.resolveError,
   }),
   useCancelThreadPendingInteraction: () => ({
     mutate: vi.fn(),
@@ -212,6 +214,7 @@ function isHidden(element: HTMLElement): boolean {
 
 afterEach(() => {
   cleanup();
+  mocks.resolveError = null;
   resetPluginSlotStoreForTest();
   resetPluginLogoStoreForTest();
   resetAllCrashedPluginSlotsForTest();
@@ -318,6 +321,44 @@ describe("ThreadPendingInteractionBanner request family", () => {
       expect.objectContaining({
         resolution: expect.objectContaining({ decision: "deny" }),
       }),
+    );
+  });
+
+  it("expands a plan review into a full-size dialog that carries the same verdict actions", () => {
+    renderBanner(planReview);
+    expect(screen.queryByTestId("plan-review-dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Expand plan" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Read labels from the declaration");
+    expect(dialog.textContent).toContain("/tmp/plans/picker.md");
+    expect(mocks.resolveMutateAsync).not.toHaveBeenCalled();
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Approve plan" }),
+    );
+    expect(mocks.resolveMutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        interactionId: "pint_plan",
+        resolution: expect.objectContaining({ decision: "allow_once" }),
+      }),
+    );
+  });
+
+  it("closes the plan dialog on Escape without collapsing the plan card", () => {
+    renderBanner(planReview);
+    fireEvent.click(screen.getByRole("button", { name: "Expand plan" }));
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(
+      screen.getByTestId("plan-review-banner").hasAttribute("data-expanded"),
+    ).toBe(true);
+  });
+
+  it("shows a failed plan verdict inside the expanded dialog", () => {
+    mocks.resolveError = new Error("Plan verdict rejected by host");
+    renderBanner(planReview);
+    fireEvent.click(screen.getByRole("button", { name: "Expand plan" }));
+    expect(screen.getByRole("dialog").textContent).toContain(
+      "Plan verdict rejected by host",
     );
   });
 
