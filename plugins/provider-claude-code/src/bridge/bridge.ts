@@ -256,6 +256,7 @@ interface ThreadSession {
   sessionSerial: number;
   closing: boolean;
   restartBeforeNextTurn: ClaudeSessionRestart | null;
+  sessionInitialized: boolean;
   launchedWithBypassPermissions: boolean;
   recoveryHintRaisedThisTurn: "authRequired" | "rateLimited" | null;
   streamEnded: boolean;
@@ -1178,6 +1179,7 @@ function createThreadSession(attachment: ThreadAttachment): ThreadSession {
     sessionSerial,
     closing: false,
     restartBeforeNextTurn: null,
+    sessionInitialized: false,
     launchedWithBypassPermissions:
       attachment.sessionOptions.allowBypassPermissions &&
       isBypassPermissionsAvailable(),
@@ -1613,8 +1615,12 @@ function createOnSdkMessage(
     ) {
       threadSession.contextUsageCollector.invalidate();
     }
+    if (message.type === "system" && message.subtype === "init") {
+      threadSession.sessionInitialized = true;
+    }
     const providerThreadId = message.session_id?.trim() ?? "";
     if (
+      threadSession.sessionInitialized &&
       providerThreadId.length > 0 &&
       threadSession.attachment.providerThreadId !== providerThreadId
     ) {
@@ -1658,18 +1664,19 @@ function createOnSdkMessage(
           },
         ]);
       }
-      if (providerThreadId) {
+      const contextSessionId = threadSession.attachment.providerThreadId;
+      if (contextSessionId) {
         void threadSession.contextUsageCollector.capture({
           read: (signal) =>
             readIsolatedClaudeContextUsage({
               sessionOptions: threadSession.attachment.sessionOptions,
-              providerSessionId: providerThreadId,
+              providerSessionId: contextSessionId,
               dynamicTools:
                 threadSession.attachment.sessionConstructionConfig
                   .dynamicTools ?? [],
               signal,
             }),
-          providerSessionId: providerThreadId,
+          providerSessionId: contextSessionId,
           isCurrent: () =>
             getCurrentThreadSession({
               sessionSerial: args.sessionSerial,
