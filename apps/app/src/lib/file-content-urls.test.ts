@@ -1,5 +1,8 @@
 import { expect, it } from "vitest";
-import { buildHostFileContentUrl } from "./file-content-urls";
+import {
+  buildHostFileContentUrl,
+  buildProjectAttachmentContentUrl,
+} from "./file-content-urls";
 
 it.each([
   ["/Users/me/a b.png", "/api/v1/hosts/host_1/files/Users/me/a%20b.png"],
@@ -14,4 +17,16 @@ it.each([
   ],
 ])("keeps the root of %s in the host file URL", (path, url) => {
   expect(buildHostFileContentUrl("host_1", path)).toBe(url);
+});
+
+it("versions attachment content URLs without changing the encoded path", () => {
+  const path = "folder/a & b?#.svg";
+  const contentUrl = buildProjectAttachmentContentUrl("proj_1", path);
+  const url = new URL(contentUrl, "https://bb.example");
+  expect(url.pathname).toBe("/api/v1/projects/proj_1/attachments/content");
+  expect(url.searchParams.get("path")).toBe(path);
+  expect(url.searchParams.get("contentVersion")).toBe("2");
+  expect(contentUrl).not.toBe(
+    `/api/v1/projects/proj_1/attachments/content?path=${encodeURIComponent(path)}`,
+  );
 });

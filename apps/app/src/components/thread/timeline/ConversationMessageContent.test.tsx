@@ -121,7 +121,7 @@ describe("ConversationMessageContent user images", () => {
         .getByRole("link", { name: "Pasted text.txt · 3.5 MB" })
         .getAttribute("href"),
     ).toBe(
-      "/api/v1/projects/proj_paste/attachments/content?path=uploaded-paste.txt",
+      "/api/v1/projects/proj_paste/attachments/content?path=uploaded-paste.txt&contentVersion=2",
     );
   });
 

@@ -41,12 +41,12 @@ export function buildProjectAttachmentContentUrl(
   projectId: string,
   path: string,
 ): string {
-  return toRelativeUrl(
-    apiClient.projects[":id"].attachments.content.$url({
-      param: { id: projectId },
-      query: { path },
-    }),
-  );
+  const url = apiClient.projects[":id"].attachments.content.$url({
+    param: { id: projectId },
+    query: { path },
+  });
+  url.searchParams.set("contentVersion", "2");
+  return toRelativeUrl(url);
 }
 
 export function buildProjectFileContentUrl(
