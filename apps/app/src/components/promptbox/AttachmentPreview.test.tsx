@@ -196,7 +196,7 @@ describe("AttachmentPreview", () => {
     const images = getAllByRole("img");
     expect(images.map((image) => image.getAttribute("src"))).toEqual([
       "blob:local-1",
-      "/api/v1/projects/proj_source/attachments/content?path=restored-2-def.png",
+      "/api/v1/projects/proj_source/attachments/content?path=restored-2-def.png&contentVersion=2",
     ]);
     expect(
       images.every((image) => image.getAttribute("decoding") === "async"),

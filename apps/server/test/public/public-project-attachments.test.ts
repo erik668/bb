@@ -96,6 +96,85 @@ describe("public project attachments", () => {
     });
   });
 
+  it.each([
+    {
+      filename: "untrusted.html",
+      body: '<!doctype html><script>document.documentElement.dataset.attachmentProbe = "executed"</script>',
+      contentType: "text/html; charset=utf-8",
+      cacheControl: "no-store",
+      conditionalStatus: 200,
+    },
+    {
+      filename: "untrusted.svg",
+      body: '<svg xmlns="http://www.w3.org/2000/svg"><script>document.documentElement.dataset.attachmentProbe = "executed"</script></svg>',
+      contentType: "image/svg+xml",
+      cacheControl: "private, immutable, max-age=31536000",
+      conditionalStatus: 304,
+    },
+  ])(
+    "isolates $filename on full, partial, conditional, and HEAD responses",
+    async (fixture) => {
+      await withTestHarness(async (harness) => {
+        const { host } = seedHostSession(harness.deps, {
+          id: "host-project-active-attachment",
+        });
+        const { project } = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+        });
+        const uploadedResponse = await upload(
+          harness.app,
+          project.id,
+          new File([fixture.body], fixture.filename, {
+            type: "application/octet-stream",
+          }),
+        );
+        expect(uploadedResponse.status).toBe(201);
+        const uploaded = uploadedPromptAttachmentSchema.parse(
+          await readJson(uploadedResponse),
+        );
+        const contentUrl = `/api/v1/projects/${project.id}/attachments/content?path=${encodeURIComponent(uploaded.path)}&contentVersion=2`;
+        const content = await harness.app.request(contentUrl);
+        expect(content.status).toBe(200);
+        expect(await content.text()).toBe(fixture.body);
+        const etag = content.headers.get("etag");
+        expect(etag).toBeTruthy();
+
+        const partial = await harness.app.request(contentUrl, {
+          headers: { range: "bytes=0-1" },
+        });
+        expect(partial.status).toBe(206);
+        expect(await partial.text()).toBe(fixture.body.slice(0, 2));
+
+        const conditional = await harness.app.request(contentUrl, {
+          headers: { "if-none-match": etag ?? "" },
+        });
+        expect(conditional.status).toBe(fixture.conditionalStatus);
+        expect(await conditional.text()).toBe(
+          fixture.conditionalStatus === 200 ? fixture.body : "",
+        );
+
+        const head = await harness.app.request(contentUrl, { method: "HEAD" });
+        expect(head.status).toBe(200);
+        expect(await head.text()).toBe("");
+
+        for (const response of [content, partial, conditional, head]) {
+          expect(response.headers.get("content-security-policy")).toBe(
+            "sandbox allow-scripts",
+          );
+          expect(response.headers.get("x-content-type-options")).toBe(
+            "nosniff",
+          );
+          expect(response.headers.get("content-type")).toBe(
+            fixture.contentType,
+          );
+          expect(response.headers.get("cache-control")).toBe(
+            fixture.cacheControl,
+          );
+        }
+      });
+    },
+  );
+
   it("returns stable invalid_request envelopes for oversize and ambiguous forms", async () => {
     await withTestHarness(async (harness) => {
       const { host } = seedHostSession(harness.deps, {

@@ -2,6 +2,7 @@
 import { renameSync } from "node:fs";
 import { createFileStreamResponse } from "../files/file-stream-response.js";
 import { createLocalFileSource } from "../files/local-file-source.js";
+import { createRawFileHeaders } from "../hosts/raw-file-headers.js";
 import { and, eq, isNull } from "drizzle-orm";
 import {
   getProjectAttachment,
@@ -370,13 +371,17 @@ export async function createAttachmentContentResponse({
   request: Request;
 }): Promise<Response> {
   const attachment = await statAttachment(dataDir, projectId, path);
+  const headers = new Headers({
+    "cache-control": "private, immutable, max-age=31536000",
+    "content-type": attachment.mimeType ?? "application/octet-stream",
+  });
+  for (const [name, value] of createRawFileHeaders(attachment)) {
+    headers.set(name, value);
+  }
   return createFileStreamResponse({
     source: attachment.source,
     request,
-    headers: new Headers({
-      "cache-control": "private, immutable, max-age=31536000",
-      "content-type": attachment.mimeType ?? "application/octet-stream",
-    }),
+    headers,
   });
 }
 

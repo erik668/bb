@@ -9,6 +9,7 @@ import {
 import type { Hono } from "hono";
 import type { AppDeps } from "../types.js";
 import { ApiError } from "../errors.js";
+import { browserRequestProblem } from "../browser-request-guard.js";
 import {
   getGateAuthKind,
   getGateMachineId,
@@ -48,6 +49,20 @@ export function registerInternalHostRoutes(app: Hono, deps: AppDeps): void {
   const { post } = typedRoutes<HostDaemonInternalSchema>(app, {
     onValidationError: (message) =>
       new ApiError(400, "invalid_request", message),
+  });
+
+  app.use("/hosts/enroll-key", async (context, next) => {
+    const problem = browserRequestProblem(context, deps, {
+      requireJsonForMutation: true,
+    });
+    if (problem !== null) {
+      throw new ApiError(
+        problem.status,
+        problem.status === 403 ? "forbidden_origin" : "unsupported_media_type",
+        problem.error,
+      );
+    }
+    await next();
   });
 
   post(
