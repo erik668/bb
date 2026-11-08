@@ -13,6 +13,7 @@ import { describe, expect, it } from "vitest";
 import type { ReuseThreadOption } from "@/components/pickers/ReuseEnvironmentPicker";
 import {
   resolveNewThreadProjectDefaultsState,
+  resolveNewThreadBlocker,
   resolveNewThreadSubmitDisabledReason,
   restorePromptDraftAfterOptionChange,
   type ResolveNewThreadSubmitDisabledReasonArgs,
@@ -31,7 +32,10 @@ import {
   shouldReplaceInitialPromptFromLocationState,
   shouldStartComposingFromLocationState,
 } from "./RootComposeView";
-import { resolveRootComposeProjectFileRouting } from "./RootComposePanelTabContent";
+import {
+  resolveRootComposeHostFileTarget,
+  resolveRootComposeProjectFileRouting,
+} from "./RootComposePanelTabContent";
 import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
 import {
   makeProjectWithThreadsResponse,
@@ -127,6 +131,27 @@ describe("resolveNewThreadHostEnvironmentProvider", () => {
       }),
     ).toBeNull();
   });
+});
+
+describe("root-compose host file routing", () => {
+  it.each([
+    {
+      hostId: "host_remote",
+      environmentHostId: "host_local",
+      expected: "host_remote",
+    },
+    { hostId: "host_remote", environmentHostId: null, expected: "host_remote" },
+    { hostId: null, environmentHostId: "host_local", expected: "host_local" },
+    { hostId: null, environmentHostId: null, expected: null },
+  ])(
+    "routes explicit $hostId with environment $environmentHostId to $expected",
+    ({ expected, ...input }) => {
+      const path = "/work/report.md";
+      expect(resolveRootComposeHostFileTarget({ ...input, path })).toEqual(
+        expected === null ? null : { kind: "host", hostId: expected, path },
+      );
+    },
+  );
 });
 
 describe("root-compose project file routing", () => {
@@ -328,6 +353,42 @@ describe("resolveNewThreadSubmitDisabledReason", () => {
     expect(
       resolveNewThreadSubmitDisabledReason({ ...readyState, ...change }),
     ).toBe(reason);
+  });
+
+  it.each<
+    [
+      change: Partial<ResolveNewThreadSubmitDisabledReasonArgs>,
+      reason: string | null,
+    ]
+  >([
+    [{ isLoadingModels: true }, null],
+    [{ promptInputEmpty: true }, null],
+    [
+      {
+        modelLoadError: {
+          providerId: "codex",
+          code: "missing_executable",
+          detail: null,
+        },
+      },
+      "agent_missing",
+    ],
+    [
+      {
+        modelLoadError: {
+          providerId: "codex",
+          code: "auth_required",
+          detail: null,
+        },
+      },
+      "sign_in",
+    ],
+    [{ selectedThreadModel: "" }, "model_selection"],
+    [{ submissionEnvironmentUnavailable: true }, "project_setup"],
+  ])("classifies blocker %o as %s", (change, reason) => {
+    expect(resolveNewThreadBlocker({ ...readyState, ...change })?.reason).toBe(
+      reason,
+    );
   });
 
   it("returns no reason when every submission requirement is ready", () => {

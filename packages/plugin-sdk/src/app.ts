@@ -148,15 +148,27 @@ export const experimental_SourceCode = runtimeComponent(
   "experimental_SourceCode",
 );
 export const experimental_Diff = runtimeComponent("experimental_Diff");
+export const experimental_FilePreview = runtimeComponent(
+  "experimental_FilePreview",
+);
 // The thread Info tab's building blocks (experimental — see
 // docs/api_to_audit.md).
 export const experimental_InfoSection = runtimeComponent(
   "experimental_InfoSection",
 );
+export const experimental_CollapsibleStackCard = runtimeComponent(
+  "experimental_CollapsibleStackCard",
+);
 export const experimental_DetailRow = runtimeComponent(
   "experimental_DetailRow",
 );
 export const experimental_InfoList = runtimeComponent("experimental_InfoList");
+export const experimental_ThreadContextCardRow = runtimeComponent(
+  "experimental_ThreadContextCardRow",
+);
+export const experimental_PanelTabIcon = runtimeComponent(
+  "experimental_PanelTabIcon",
+);
 export const experimental_InfoListRow = runtimeComponent(
   "experimental_InfoListRow",
 );
@@ -291,6 +303,15 @@ export {
 export const experimental_useExperiment = runtimeFunction(
   "experimental_useExperiment",
 );
+export const experimental_useThreadContextKind = runtimeFunction(
+  "experimental_useThreadContextKind",
+);
+export const experimental_usePanelTabs = runtimeFunction(
+  "experimental_usePanelTabs",
+);
+export const experimental_useThreadExtensionState = runtimeFunction(
+  "experimental_useThreadExtensionState",
+);
 export const experimental_useSidebarThreadSplit = runtimeFunction(
   "experimental_useSidebarThreadSplit",
 );
@@ -321,6 +342,7 @@ export const ThreadTitle = runtimeComponent("ThreadTitle");
 export const experimental_ThreadStatusGlyph = runtimeComponent(
   "experimental_ThreadStatusGlyph",
 );
+export { experimental_resolveThreadStatus } from "./internal/thread-status.js";
 export const experimental_ThreadRowMetadata = runtimeComponent(
   "experimental_ThreadRowMetadata",
 );

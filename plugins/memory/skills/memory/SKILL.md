@@ -9,6 +9,12 @@ The active catalog is provider-independent and curated. When the optional
 native observation bridge is enabled, provider memory remains a separate,
 untrusted evidence source; it never enters the injected catalog automatically.
 
+When diagnosing duplicate or conflicting memories, check each provider plugin's
+`memoryEnabled` setting under Settings → Plugins → Claude Code provider and Codex
+provider. Disable it when that separate memory source is unwanted:
+`bb plugin config provider-claude-code set memoryEnabled false` or
+`bb plugin config provider-codex set memoryEnabled false`.
+
 The memory plugin automatically injects a compact index of global memories and
 memories for the current BB project. The index contains summaries only.
 Settings → Memory lists every memory for the user to edit or delete.

@@ -22,11 +22,14 @@ Read the installed SDK declarations for the exact current signatures.
 - `experimental_useBranches`
 - `experimental_useCheckoutState`
 - `experimental_SourceCode`
+- `experimental_FilePreview`
 - `experimental_Diff`
 - `experimental_InfoSection`
+- `experimental_CollapsibleStackCard`
 - `experimental_DetailRow`
 - `experimental_InfoList`
 - `experimental_InfoListRow`
+- `experimental_ThreadContextCardRow`
 - `useRpc`
 - `experimental_useRpcQuery`
 - `experimental_useRpcKeyedQuery`
@@ -36,6 +39,8 @@ Read the installed SDK declarations for the exact current signatures.
 - `useRealtimeConnectionState`
 - `useSettings`
 - `experimental_useExperiment`
+- `experimental_useThreadContextKind`
+- `experimental_useThreadExtensionState`
 - `useBbContext`
 - `experimental_usePluginId`
 - `experimental_useQuestionFormHost`
@@ -43,6 +48,8 @@ Read the installed SDK declarations for the exact current signatures.
 - `experimental_useCanOpenFileExternally`
 - `experimental_useTabVisible`
 - `experimental_useAppPanel`
+- `experimental_usePanelTabs`
+- `experimental_PanelTabIcon`
 - `experimental_useFixedTabTarget`
 - `useComposer`
 - `useComposers`
@@ -91,6 +98,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `useSidebarThreadShortcut`
 - `ThreadTitle`
 - `experimental_ThreadStatusGlyph`
+- `experimental_resolveThreadStatus`
 - `experimental_ThreadRowMetadata`
 - `useEnvironmentProviders`
 - `useSdk`
@@ -122,6 +130,7 @@ Read the installed SDK declarations for the exact current signatures.
 - `PluginNewThreadPanelProps`
 - `PluginPendingInteractionView`
 - `PluginPendingInteractionProps`
+- `ExperimentalQuestionFormAction`
 - `ExperimentalQuestionFormHost`
 - `ExperimentalQuestionShortcut`
 - `BranchPickerProps`
@@ -143,6 +152,8 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalThreadContextSegmentInput`
 - `ExperimentalThreadContextSegmentProps`
 - `ExperimentalThreadContextSegmentReference`
+- `ExperimentalCollapsibleStackCardProps`
+- `ExperimentalCollapsibleStackCardDismiss`
 - `ExperimentalThreadRowMetadataProps`
 - `ExperimentalThreadRowMetadataLineProps`
 - `ExperimentalInfoSectionProps`
@@ -210,6 +221,9 @@ Read the installed SDK declarations for the exact current signatures.
 - `PluginSidebarThreadShortcut`
 - `PluginThreadTitleProps`
 - `PluginThreadStatusGlyphProps`
+- `PluginThreadStatusInput`
+- `PluginThreadStatusThread`
+- `PluginThreadStatus`
 - `PluginEnvironmentProvider`
 - `PluginEnvironmentProvidersState`
 - `PluginBoundThreadsArea`
@@ -218,6 +232,11 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalThreadInfoRowRegistration`
 - `ExperimentalThreadRowMetadataRegistration`
 - `ExperimentalThreadInfoSectionRegistration`
+- `ExperimentalThreadContextCardRowRegistration`
+- `ExperimentalThreadContextCardSectionRegistration`
+- `ExperimentalThreadContextKind`
+- `ExperimentalThreadContextCardProps`
+- `ExperimentalThreadContextCardRowProps`
 - `PluginThreadActionTarget`
 - `PluginThreadActionChoice`
 - `PluginThreadActionChoices`
@@ -325,7 +344,6 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalComposerInput`
 - `ExperimentalComposerThreadLinks`
 - `ExperimentalComposerClipboard`
-- `ExperimentalComposerView`
 - `ExperimentalComposerContribution`
 - `ExperimentalComposerPlusMenuContribution`
 - `ExperimentalComposerSendMenuContribution`
@@ -393,6 +411,10 @@ Read the installed SDK declarations for the exact current signatures.
 - `ExperimentalThreadTabProps`
 - `ExperimentalThreadTabActionContext`
 - `ExperimentalPanelController`
+- `ExperimentalPanelTab`
+- `ExperimentalPanelTabDetail`
+- `ExperimentalPanelTabs`
+- `ExperimentalPanelTabIconProps`
 - `BbContext`
 - `BbNavigate`
 - `PluginSdkApp`

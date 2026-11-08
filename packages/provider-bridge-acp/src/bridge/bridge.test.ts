@@ -879,6 +879,63 @@ describe("acp bridge", () => {
     });
   });
 
+  it.each(["stale-once", "stale", "missing-model", "missing-value"])(
+    "attributes native reasoning only to a confirmed model after a %s reply",
+    async (reply) => {
+      const result = modelListResultSchema.parse(
+        (
+          await waitForResponse(
+            sendModelList({
+              envVars: {
+                FAKE_ACP_MODEL_CONFIG: "1",
+                FAKE_ACP_THOUGHT_LEVEL_CONFIG: "1",
+                FAKE_ACP_MODEL_COUNT: "3",
+                FAKE_ACP_MODEL_CONFIG_REPLY: reply,
+              },
+            }),
+          )
+        ).result,
+      );
+      expect(
+        result.models.find((model) => model.id === "fake/default"),
+      ).toMatchObject({
+        reasoningDiscovery: "known",
+        supportedReasoningEfforts: [],
+      });
+      expect(
+        result.models.find((model) => model.id === "fake/strong"),
+      ).toMatchObject(
+        reply === "stale-once"
+          ? {
+              reasoningDiscovery: "known",
+              defaultReasoningEffort: "none",
+              supportedReasoningEfforts: [
+                { reasoningEffort: "none" },
+                { reasoningEffort: "low" },
+                { reasoningEffort: "medium" },
+                { reasoningEffort: "high" },
+                { reasoningEffort: "xhigh" },
+              ],
+            }
+          : {
+              reasoningDiscovery: "unknown",
+              supportedReasoningEfforts: [],
+            },
+      );
+      expect(
+        result.models.find((model) => model.id === "fake/gen-2"),
+      ).toMatchObject({
+        reasoningDiscovery: "known",
+        defaultReasoningEffort: "low",
+        supportedReasoningEfforts: [
+          { reasoningEffort: "low" },
+          { reasoningEffort: "medium" },
+          { reasoningEffort: "high" },
+        ],
+      });
+    },
+  );
+
   it("keeps probing reasoning for later models after one model's probe fails", async () => {
     const modelListId = sendModelList({
       envVars: {
@@ -1679,7 +1736,13 @@ describe("acp bridge", () => {
           command: process.execPath,
           args: [
             "-e",
-            `require('node:fs').writeFileSync(${JSON.stringify(readyFile)}, String(process.pid)); setInterval(() => {}, 1000);`,
+            [
+              "const fs = require('node:fs');",
+              `const readyFile = ${JSON.stringify(readyFile)};`,
+              "fs.writeFileSync(readyFile + '.tmp', String(process.pid));",
+              "fs.renameSync(readyFile + '.tmp', readyFile);",
+              "setInterval(() => {}, 1000);",
+            ].join(" "),
           ],
         },
         modelListArgs: ["--"],

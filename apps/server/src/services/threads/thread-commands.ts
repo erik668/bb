@@ -1,9 +1,13 @@
-import { environments, hasStoredSpawnAgentToolCall, threads } from "@bb/db";
-import { and, eq, isNull } from "drizzle-orm";
+import {
+  environments,
+  hasStoredSpawnAgentToolCall,
+  liveThread,
+  threads,
+} from "@bb/db";
+import { and, eq } from "drizzle-orm";
 import {
   PromptInput,
   PromptMode,
-  ProjectExecutionDefaults,
   PermissionEscalation,
   ResolvedThreadExecutionOptions,
   RuntimeThreadExecutionOptions,
@@ -139,8 +143,8 @@ interface RuntimeExecutionOptionsArgs {
 }
 
 interface BuildExecutionOptionsArgs {
+  defaultModel?: string;
   hostId?: string | null;
-  projectDefaults?: ProjectExecutionDefaults | null;
   threadId: string;
 }
 
@@ -286,8 +290,8 @@ export async function buildExecutionOptions(
   args: BuildExecutionOptionsArgs,
 ): Promise<ResolvedThreadExecutionOptions> {
   const plan = await resolveExistingThreadExecutionPlan(deps, {
-    ...(args.projectDefaults !== undefined
-      ? { projectDefaults: args.projectDefaults }
+    ...(args.defaultModel !== undefined
+      ? { defaultModel: args.defaultModel }
       : {}),
     ...(args.hostId !== undefined ? { hostId: args.hostId } : {}),
     executionSource: "client/turn/requested",
@@ -448,8 +452,7 @@ function threadHasLiveChildren(
     .where(
       and(
         eq(threads.parentThreadId, threadId),
-        isNull(threads.archivedAt),
-        isNull(threads.deletedAt),
+        liveThread,
       ),
     )
     .limit(1)
@@ -480,6 +483,29 @@ export function dispatchThreadRenameCommand(
         "Live thread rename command failed",
       );
     },
+  });
+}
+
+export function syncThreadTitleToProvider(
+  deps: CommandResultSideEffectsDeps,
+  thread: Thread,
+): void {
+  if (!thread.title || !thread.environmentId) {
+    return;
+  }
+  const environment = deps.db
+    .select()
+    .from(environments)
+    .where(eq(environments.id, thread.environmentId))
+    .get();
+  if (environment?.status !== "ready" || !environment.path) {
+    return;
+  }
+  dispatchThreadRenameCommand(deps, {
+    environment: { id: environment.id, hostId: environment.hostId },
+    providerId: thread.providerId,
+    threadId: thread.id,
+    title: thread.title,
   });
 }
 
