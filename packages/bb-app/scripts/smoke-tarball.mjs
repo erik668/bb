@@ -1,4 +1,8 @@
 import { fork, spawn } from "node:child_process";
+import {
+  assertForkPackageContents,
+  smokeForkMemoryPolicy,
+} from "./smoke-fork-memory.mjs";
 import { createHash, randomUUID } from "node:crypto";
 import { createServer as createHttpServer } from "node:http";
 import { mkdirSync, readdirSync } from "node:fs";
@@ -71,6 +75,8 @@ const packageRoot = resolve(scriptsDir, "..");
 const tempRoot = await mkdtemp(join(tmpdir(), "bb-app-tarball-"));
 const smokeProcessEnv = {
   BB_TELEMETRY: "false",
+  BB_CLI: undefined,
+  BB_CLI_REEXEC: "1",
 };
 const stopManagedProcess = createManagedProcessStop(PROCESS_STOP_TIMEOUT_MS);
 
@@ -545,6 +551,7 @@ async function packTarball() {
     if (entry.files.some((file) => file.path === staleChunkPath)) {
       throw new Error(`npm pack included stale CLI chunk ${staleChunkPath}`);
     }
+    assertForkPackageContents(entry.files);
     return join(tempRoot, entry.filename);
   } finally {
     await rm(staleChunk, { force: true });
@@ -1160,6 +1167,17 @@ async function smokeFullStackAttempt(binDir, sdkDir, attempt) {
       label: "bb cli status",
     });
     await smokeBuiltinPluginsRunning({ binDir, cliEnv });
+    await smokeForkMemoryPolicy({
+      runCli: (args) =>
+        runCommand({
+          ...createInstalledBinInvocation(binDir, "bb", args),
+          env: cliEnv,
+          label: "fork memory policy",
+        }),
+    });
+    process.stdout.write(
+      "bb-app tarball smoke: fork memory policy and workflow exclusion passed\n",
+    );
     // Keep Awake reconciles even its default disabled state, so reaching this
     // log proves the packed daemon found its companion worker, downloaded the
     // plugin artifact, and started the worker for a host RPC call.
@@ -1336,7 +1354,7 @@ try {
   const smokeStartedAt = performance.now();
   const tarballPath = await timed("npm pack", () => packTarball());
   let sdkDir;
-  if (process.platform === "win32" || process.platform === "linux") {
+  if (["win32", "linux", "darwin"].includes(process.platform)) {
     const [npxResult, sdkResult] = await Promise.allSettled([
       timed("npx entrypoint", () => smokeNpxEntrypoint(tarballPath)),
       timed("sdk package", () => smokeSdkPackage(tarballPath)),
@@ -1361,7 +1379,7 @@ try {
   await timed("plugin host worker bundle", () =>
     smokePluginHostWorkerBundle(installedPackageDir),
   );
-  if (process.platform === "linux") {
+  if (process.platform === "linux" || process.platform === "darwin") {
     const results = await Promise.allSettled([
       timed("full stack", () => smokeFullStack(installedBinDir, sdkDir)),
       timed("daemon join", () => smokeDaemonJoin(installedBinDir)),

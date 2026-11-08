@@ -6,6 +6,7 @@ import type {
   ExperimentalTabRegistration,
   ComposerCustomization,
   ExperimentalAppOverlayRegistration,
+  InternalDoNotUseSetupGuideSectionRegistration,
   ExperimentalCodeFenceRendererRegistration,
   PluginDiffRendererRegistration,
   ExperimentalComposerRegistration,
@@ -27,6 +28,8 @@ import type {
   ExperimentalThreadInfoRowRegistration,
   ExperimentalThreadRowMetadataRegistration,
   ExperimentalThreadInfoSectionRegistration,
+  ExperimentalThreadContextCardRowRegistration,
+  ExperimentalThreadContextCardSectionRegistration,
   PluginThreadActionRegistration,
   ExperimentalPluginBrowserToolbarActionRegistration,
   PluginThreadListRegistration,
@@ -50,6 +53,7 @@ export interface PluginRegistrationSet {
   homepageSections: readonly PluginHomepageSectionRegistration[];
   settingsSections: readonly PluginSettingsSectionRegistration[];
   appOverlays?: readonly ExperimentalAppOverlayRegistration[];
+  setupGuideSections?: readonly InternalDoNotUseSetupGuideSectionRegistration[];
   navPanels: readonly LegacyNavPanelRegistration[];
   tabs?: readonly ExperimentalTabRegistration[];
   threadPanelActions: readonly LegacyThreadPanelActionRegistration[];
@@ -65,6 +69,8 @@ export interface PluginRegistrationSet {
   threadInfoRows?: readonly ExperimentalThreadInfoRowRegistration[];
   threadRowMetadata?: readonly ExperimentalThreadRowMetadataRegistration<unknown>[];
   threadInfoSections?: readonly ExperimentalThreadInfoSectionRegistration[];
+  threadContextCardRows?: readonly ExperimentalThreadContextCardRowRegistration[];
+  threadContextCardSections?: readonly ExperimentalThreadContextCardSectionRegistration[];
   threadActions?: readonly PluginThreadActionRegistration<unknown>[];
   browserToolbarActions?: readonly ExperimentalPluginBrowserToolbarActionRegistration[];
   fileOpeners: readonly PluginFileOpenerRegistration[];
@@ -94,6 +100,8 @@ export interface PluginSettingsSectionSlot
   extends PluginSettingsSectionRegistration, PluginSlotBase {}
 export interface ExperimentalAppOverlaySlot
   extends ExperimentalAppOverlayRegistration, PluginSlotBase {}
+export interface PluginSetupGuideSectionSlot
+  extends InternalDoNotUseSetupGuideSectionRegistration, PluginSlotBase {}
 export interface PluginNavPanelSlot
   extends PluginNavPanelRegistration, PluginSlotBase {}
 export type PluginTabSlot = ExperimentalTabRegistration & PluginSlotBase;
@@ -136,10 +144,13 @@ export interface PluginThreadContextSegmentSlot
 export interface PluginThreadInfoRowSlot
   extends ExperimentalThreadInfoRowRegistration, PluginSlotBase {}
 export interface PluginThreadRowMetadataSlot
-  extends ExperimentalThreadRowMetadataRegistration<unknown>,
-    PluginSlotBase {}
+  extends ExperimentalThreadRowMetadataRegistration<unknown>, PluginSlotBase {}
 export interface PluginThreadInfoSectionSlot
   extends ExperimentalThreadInfoSectionRegistration, PluginSlotBase {}
+export interface PluginThreadContextCardRowSlot
+  extends ExperimentalThreadContextCardRowRegistration, PluginSlotBase {}
+export interface PluginThreadContextCardSectionSlot
+  extends ExperimentalThreadContextCardSectionRegistration, PluginSlotBase {}
 export interface PluginThreadActionSlot
   extends PluginThreadActionRegistration<unknown>, PluginSlotBase {}
 export interface PluginBrowserToolbarActionSlot
@@ -176,6 +187,7 @@ export interface PluginSlotSnapshot {
   homepageSections: readonly PluginHomepageSectionSlot[];
   settingsSections: readonly PluginSettingsSectionSlot[];
   appOverlays: readonly ExperimentalAppOverlaySlot[];
+  setupGuideSections: readonly PluginSetupGuideSectionSlot[];
   navPanels: readonly PluginNavPanelSlot[];
   tabs: readonly PluginTabSlot[];
   threadPanelActions: readonly PluginThreadPanelActionSlot[];
@@ -190,6 +202,8 @@ export interface PluginSlotSnapshot {
   threadInfoRows: readonly PluginThreadInfoRowSlot[];
   threadRowMetadata: readonly PluginThreadRowMetadataSlot[];
   threadInfoSections: readonly PluginThreadInfoSectionSlot[];
+  threadContextCardRows: readonly PluginThreadContextCardRowSlot[];
+  threadContextCardSections: readonly PluginThreadContextCardSectionSlot[];
   threadActions: readonly PluginThreadActionSlot[];
   browserToolbarActions: readonly PluginBrowserToolbarActionSlot[];
   fileOpeners: readonly PluginFileOpenerSlot[];
@@ -212,6 +226,7 @@ export const EMPTY_PLUGIN_SLOT_SNAPSHOT: PluginSlotSnapshot = {
   homepageSections: [],
   settingsSections: [],
   appOverlays: [],
+  setupGuideSections: [],
   navPanels: [],
   tabs: coreTabs,
   threadPanelActions: [],
@@ -226,6 +241,8 @@ export const EMPTY_PLUGIN_SLOT_SNAPSHOT: PluginSlotSnapshot = {
   threadInfoRows: [],
   threadRowMetadata: [],
   threadInfoSections: [],
+  threadContextCardRows: [],
+  threadContextCardSections: [],
   threadActions: [],
   browserToolbarActions: [],
   fileOpeners: [],
@@ -255,6 +272,7 @@ const SLOT_KINDS: readonly SlotKind[] = [
   "homepageSections",
   "settingsSections",
   "appOverlays",
+  "setupGuideSections",
   "navPanels",
   "tabs",
   "threadPanelActions",
@@ -269,6 +287,8 @@ const SLOT_KINDS: readonly SlotKind[] = [
   "threadInfoRows",
   "threadRowMetadata",
   "threadInfoSections",
+  "threadContextCardRows",
+  "threadContextCardSections",
   "threadActions",
   "browserToolbarActions",
   "fileOpeners",
@@ -337,6 +357,7 @@ function flattenRegistrations(
     homepageSections: stamp(set.homepageSections),
     settingsSections: stamp(set.settingsSections),
     appOverlays: stamp(set.appOverlays),
+    setupGuideSections: stamp(set.setupGuideSections),
     navPanels: stamp(set.navPanels),
     tabs: stamp(tabs),
     threadPanelActions: stamp(
@@ -360,6 +381,8 @@ function flattenRegistrations(
     threadInfoRows: stamp(set.threadInfoRows),
     threadRowMetadata: stamp(set.threadRowMetadata),
     threadInfoSections: stamp(set.threadInfoSections),
+    threadContextCardRows: stamp(set.threadContextCardRows),
+    threadContextCardSections: stamp(set.threadContextCardSections),
     threadActions: stamp(set.threadActions),
     browserToolbarActions: stamp(set.browserToolbarActions),
     fileOpeners: stamp(set.fileOpeners),

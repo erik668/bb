@@ -5,6 +5,10 @@ active catalog remains provider-neutral and workspace-owner controlled. An
 opt-in compatibility bridge can also treat Claude Code auto-memory as an
 untrusted source of shadow observations without copying it into active memory.
 
+Provider-native memory is controlled in Settings → Plugins → Claude Code provider
+and Codex provider. Keep it off unless you intentionally use it as a separate
+memory source; the shadow bridge is independently opt-in.
+
 - plugin-private SQLite storage with append-only migrations;
 - global and current-project memory scopes;
 - an automatically injected, 3,900-character summary catalog through

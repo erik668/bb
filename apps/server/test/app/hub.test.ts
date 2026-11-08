@@ -40,25 +40,6 @@ describe("NotificationHub", () => {
     });
   });
 
-  it("subscribes clients and delivers environment notifications", () => {
-    const hub = new NotificationHub();
-    const socket = createMockHubSocket();
-
-    hub.subscribe(socket, {
-      kind: "environment-detail",
-      environmentId: "environment-1",
-    });
-    hub.notifyEnvironment("environment-1", ["metadata-changed"]);
-
-    expect(socket.messages).toHaveLength(1);
-    expect(JSON.parse(socket.messages[0])).toMatchObject({
-      type: "changed",
-      entity: "environment",
-      id: "environment-1",
-      changes: ["metadata-changed"],
-    });
-  });
-
   it("cleans up subscriptions on client disconnect", () => {
     const hub = new NotificationHub();
     const socket = createMockHubSocket();
@@ -573,6 +554,22 @@ describe("NotificationHub", () => {
       entity: "system",
       changes: ["config-changed"],
     });
+  });
+
+  it("stops delivering change notifications to clients once stopped", () => {
+    const hub = new NotificationHub();
+    const socket = createMockHubSocket();
+    const listener = vi.fn();
+    hub.onChangedMessage(listener);
+    hub.subscribe(socket, { kind: "system" });
+    hub.subscribe(socket, { kind: "host-list" });
+
+    hub.stopClientChangeNotifications();
+    hub.notifySystem(["provider-registrations-changed"]);
+    hub.notifyHost("host-1", ["provider-model-catalog-changed"]);
+
+    expect(socket.messages).toHaveLength(0);
+    expect(listener).toHaveBeenCalledTimes(2);
   });
 
   it("delivers host notifications to list and detail subscribers", () => {

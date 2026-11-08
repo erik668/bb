@@ -100,7 +100,15 @@ vi.mock("./push-controller", () => ({
   }),
 }));
 vi.mock("./push-storage", () => ({
-  getPushStore: () => ({ hasPrompted: vi.fn(() => true) }),
+  getPushStore: () => ({
+    getSnapshot: () => ({
+      registrations: {
+        "profile-1": { subscriptionId: "sub-1" },
+        "profile-2": { subscriptionId: "sub-2" },
+      },
+    }),
+    hasPrompted: vi.fn(() => true),
+  }),
 }));
 vi.mock("./use-push-store", () => ({
   usePushStoreSnapshot: () => ({
@@ -119,14 +127,21 @@ describe("PushNotificationsHost", () => {
 
   it("keeps foreground pushes silent while retaining them in the notification list", async () => {
     const handler = mocks.setNotificationHandler.mock.calls[0]?.[0];
+    const arriving = (data: Record<string, unknown>) =>
+      handler.handleNotification({ request: { content: { data } } });
 
     expect(handler).toBeDefined();
-    await expect(handler.handleNotification()).resolves.toEqual({
+    await expect(
+      arriving({ kind: "turn-finished", threadId: "thr_1" }),
+    ).resolves.toEqual({
       shouldShowBanner: false,
       shouldShowList: true,
       shouldPlaySound: false,
       shouldSetBadge: false,
     });
+    await expect(
+      arriving({ kind: "dismiss", threadId: "thr_1" }),
+    ).resolves.toMatchObject({ shouldShowList: false });
   });
 
   it("opens a project thread from a push response with its project route", async () => {
@@ -156,6 +171,22 @@ describe("PushNotificationsHost", () => {
 
   it("switches to the server that sent a threadless push", async () => {
     mocks.responseListener(threadlessPush("https://other.example.test"));
+    await vi.waitFor(() =>
+      expect(mocks.push).toHaveBeenCalledWith({
+        pathname: "/webview",
+        params: { profileId: "profile-2" },
+      }),
+    );
+  });
+
+  it("switches to the server whose registration a threadless push names", async () => {
+    mocks.responseListener({
+      notification: {
+        request: {
+          content: { data: { kind: "message", subscriptionId: "sub-2" } },
+        },
+      },
+    });
     await vi.waitFor(() =>
       expect(mocks.push).toHaveBeenCalledWith({
         pathname: "/webview",

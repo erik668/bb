@@ -1,31 +1,39 @@
-import type { ExperimentalLiveFileTarget } from "@get-bb/plugin-sdk";
-import { useLocalOpenTargets } from "@/hooks/useLocalOpenTargets";
-import { useResolvedLiveFileTarget } from "@/hooks/useResolvedLiveFileTarget";
+import { useHostDaemon } from "@/hooks/useHostDaemon";
+import {
+  getRevealInFinderHandler,
+  useLocalOpenTargets,
+} from "@/hooks/useLocalOpenTargets";
+import {
+  getLiveFileOpenContext,
+  useResolvedLiveFileRoot,
+  type LiveFileRoot,
+} from "@/hooks/useResolvedLiveFileTarget";
 
-export function useLiveFileOpenTargets(
-  target: ExperimentalLiveFileTarget | null,
-) {
-  const resolved = useResolvedLiveFileTarget(target, {
-    enabled: target !== null,
-  });
+export function useLiveFileOpenTargets(root: LiveFileRoot | null) {
+  const resolved = useResolvedLiveFileRoot(root);
+  const { isLocalDaemonHost } = useHostDaemon();
+  const openContext =
+    resolved.status === "available"
+      ? getLiveFileOpenContext({
+          hostId: resolved.hostId,
+          isLocalDaemonHost,
+          serverOrigin: window.location.origin,
+        })
+      : null;
   const localTargets = useLocalOpenTargets({
     enabled: resolved.status === "available",
-    ...(resolved.status === "available"
-      ? { openContext: resolved.openContext }
-      : {}),
+    ...(openContext === null ? {} : { openContext }),
   });
   return {
-    resolved,
-    localTargets,
+    ...localTargets,
+    root: resolved,
+    revealInFinder: getRevealInFinderHandler({
+      fileOpenTargets: localTargets.fileOpenTargets,
+      openContext,
+      openPathInFileTarget: localTargets.openPathInFileTarget,
+    }),
     canOpenExternally:
       resolved.status === "available" &&
-      !localTargets.isLoading &&
       localTargets.canOpenPreferredFileTarget,
   };
-}
-
-export function useCanOpenFileExternally(
-  target: ExperimentalLiveFileTarget | null,
-): boolean {
-  return useLiveFileOpenTargets(target).canOpenExternally;
 }

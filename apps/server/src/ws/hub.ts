@@ -1,4 +1,7 @@
-import { emitPluginThreadEvents } from "../services/plugins/plugin-thread-events.js";
+import {
+  emitPluginThreadEvents,
+  emitPluginThreadRead,
+} from "../services/plugins/plugin-thread-events.js";
 import { Buffer } from "node:buffer";
 import {
   realtimeSubscriptionTargetKey as subscriptionKey,
@@ -92,12 +95,19 @@ interface PendingThreadListEventsAppended {
 
 type ThreadChangedMessage = Extract<ServerChangedMessage, { entity: "thread" }>;
 
+const THREAD_DETAIL_ONLY_CHANGE_KINDS: ReadonlySet<ThreadChangeKind> = new Set([
+  "history-compacted",
+  "storage-changed",
+]);
+
 function isThreadDetailOnlyChange(
   message: Pick<ThreadChangedMessage, "changes">,
 ): boolean {
   return (
     message.changes.length > 0 &&
-    message.changes.every((change) => change === "history-compacted")
+    message.changes.every((change) =>
+      THREAD_DETAIL_ONLY_CHANGE_KINDS.has(change),
+    )
   );
 }
 
@@ -107,7 +117,8 @@ function isThreadListRelevantChange(
   if (
     message.changes.some(
       (change) =>
-        change !== "events-appended" && change !== "history-compacted",
+        change !== "events-appended" &&
+        !THREAD_DETAIL_ONLY_CHANGE_KINDS.has(change),
     )
   ) {
     return true;
@@ -267,6 +278,7 @@ export class NotificationHub implements DbNotifier {
   private readonly daemonSessions = new Map<
     string,
     {
+      connectedAt: number;
       heardSinceLivenessCheck: boolean;
       hostId: string;
       localApiPort: number | null;
@@ -323,6 +335,11 @@ export class NotificationHub implements DbNotifier {
     string,
     PendingThreadListEventsAppended
   >();
+  private clientChangeNotificationsStopped = false;
+
+  stopClientChangeNotifications(): void {
+    this.clientChangeNotificationsStopped = true;
+  }
 
   notifyPluginChanged(pluginId: string, tags: readonly string[] | null): void {
     this.notifyClients({
@@ -746,6 +763,7 @@ export class NotificationHub implements DbNotifier {
       this.unregisterDaemon(existingSessionId);
     }
     this.daemonSessions.set(sessionId, {
+      connectedAt: Date.now(),
       heardSinceLivenessCheck: true,
       hostId,
       localApiPort:
@@ -808,6 +826,14 @@ export class NotificationHub implements DbNotifier {
   hasDaemonForHost(hostId: string): boolean {
     const sessionId = this.daemonSessionIdsByHost.get(hostId);
     return sessionId !== undefined && this.daemonSessions.has(sessionId);
+  }
+
+  getDaemonConnectedAtForHost(hostId: string): number | null {
+    const sessionId = this.daemonSessionIdsByHost.get(hostId);
+    if (sessionId === undefined) {
+      return null;
+    }
+    return this.daemonSessions.get(sessionId)?.connectedAt ?? null;
   }
 
   getDaemonSessionIdForHost(hostId: string): string | null {
@@ -1038,6 +1064,7 @@ export class NotificationHub implements DbNotifier {
     metadata?: ThreadChangeMetadata,
   ): void {
     if (changes.includes("events-appended")) emitPluginThreadEvents(threadId);
+    if (changes.includes("read-state-changed")) emitPluginThreadRead(threadId);
     const message: ThreadChangedMessage = {
       type: "changed",
       entity: "thread",
@@ -1353,6 +1380,10 @@ export class NotificationHub implements DbNotifier {
   }
 
   private notifyClients(message: ServerChangedMessage): void {
+    if (this.clientChangeNotificationsStopped) {
+      this.notifyChangedMessageListeners(message);
+      return;
+    }
     const sockets = new Set<HubSocket>();
     for (const key of subscriptionKeysForMessage(message)) {
       const specificSockets = this.clientSocketsByKey.get(key);

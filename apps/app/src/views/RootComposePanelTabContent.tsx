@@ -1,3 +1,4 @@
+import { PluginDetailTabContent } from "@/components/plugin/plugin-detail-navigation";
 import type { ReactNode } from "react";
 import type { SidebarProject } from "@/hooks/queries/project-queries";
 import { findLocalPathProjectSourceForHost } from "@bb/domain";
@@ -33,12 +34,7 @@ import {
 } from "@/components/plugin/file-opener-tabs";
 import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { useThreadStorageLocation } from "@/hooks/queries/thread-panel-queries";
-import { useCanOpenFileExternally } from "@/hooks/useCanOpenFileExternally";
-import {
-  getRevealInFinderHandler,
-  useLocalOpenTargets,
-} from "@/hooks/useLocalOpenTargets";
-import { useResolvedLiveFileTarget } from "@/hooks/useResolvedLiveFileTarget";
+import { useLiveFileOpenTargets } from "@/hooks/useLiveFileOpenTargets";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { getFilePreviewLineRangeStart } from "@bb/client-core";
 import { resolveAbsoluteFilePath } from "@bb/shared-ui/lib/absolute-file-path";
@@ -124,6 +120,21 @@ export function resolveRootComposeProjectFileRouting({
   };
 }
 
+export function resolveRootComposeHostFileTarget({
+  hostId,
+  environmentHostId,
+  path,
+}: {
+  hostId: string | null;
+  environmentHostId: string | null;
+  path: string;
+}): Extract<ExperimentalLiveFileTarget, { kind: "host" }> | null {
+  const sourceHostId = hostId ?? environmentHostId;
+  return sourceHostId === null
+    ? null
+    : { kind: "host", hostId: sourceHostId, path };
+}
+
 export function RootComposePanelTabContent({
   activeTabId,
   canCreateTerminal,
@@ -155,6 +166,8 @@ export function RootComposePanelTabContent({
   terminalTarget,
 }: RootComposePanelTabContentProps) {
   switch (tab.kind) {
+    case "plugin-detail":
+      return <PluginDetailTabContent detailKey={tab.detailKey} />;
     case "browser":
       return null;
     case "attachment-file-preview":
@@ -362,9 +375,11 @@ function RootComposeFilePreviewTabContent({
   });
   const externalFileTarget: ExperimentalLiveFileTarget | null =
     tab.kind === "host-file-preview"
-      ? environment
-        ? { kind: "host", hostId: environment.hostId, path: tab.path }
-        : null
+      ? resolveRootComposeHostFileTarget({
+          hostId: tab.hostId ?? null,
+          environmentHostId: environment?.hostId ?? null,
+          path: tab.path,
+        })
       : tab.kind === "thread-storage-file-preview"
         ? storageThreadId
           ? {
@@ -384,23 +399,10 @@ function RootComposeFilePreviewTabContent({
                 path: projectPreviewPath,
               }
             : null;
-  const canOpenFileExternally = useCanOpenFileExternally(externalFileTarget);
-  const resolvedFileTarget = useResolvedLiveFileTarget(externalFileTarget, {
-    enabled: externalFileTarget !== null,
-  });
-  const fileOpenContext =
-    resolvedFileTarget.status === "available"
-      ? resolvedFileTarget.openContext
-      : null;
-  const { fileOpenTargets, openPathInFileTarget } = useLocalOpenTargets({
-    enabled: fileOpenContext !== null,
-    ...(fileOpenContext ? { openContext: fileOpenContext } : {}),
-  });
-  const onRevealInFinder = getRevealInFinderHandler({
-    fileOpenTargets,
-    openContext: fileOpenContext,
-    openPathInFileTarget,
-  });
+  const {
+    canOpenExternally: canOpenFileExternally,
+    revealInFinder: onRevealInFinder,
+  } = useLiveFileOpenTargets(externalFileTarget);
   const { openFileExternally } = useAppNavigationHost();
   const hostFileLineNumber = getFilePreviewLineRangeStart({
     lineRange: tab.kind === "host-file-preview" ? tab.lineRange : null,

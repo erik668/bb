@@ -9,6 +9,7 @@ import {
   useRealtimeConnectionState,
 } from "@/app-shell";
 import {
+  isDismissalPushData,
   parsePushNotificationData,
   resolvePushTargetProfile,
   isPushRegistrationAllowed,
@@ -46,9 +47,9 @@ export function PushNotificationsHost() {
 
   useEffect(() => {
     Notifications.setNotificationHandler({
-      handleNotification: async () => ({
+      handleNotification: async (notification) => ({
         shouldShowBanner: false,
-        shouldShowList: true,
+        shouldShowList: !isDismissalPushData(notification.request.content.data),
         shouldPlaySound: false,
         shouldSetBadge: false,
       }),
@@ -61,6 +62,7 @@ export function PushNotificationsHost() {
       const profile = await resolvePushTargetProfile(target, {
         profiles: profilesRef.current,
         activeProfileId: activeProfileIdRef.current,
+        registrations: getPushStore().getSnapshot().registrations,
         hasThread: hasThreadOnServer,
       });
       if (!profile) {

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { makePanelController } from "../fixtures.js";
 import { useEffect, useState } from "react";
 import { cleanup, fireEvent, render, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -568,6 +569,40 @@ describe("loadPluginApp", () => {
         }),
       ),
     ).rejects.toThrow('slots.experimental_appOverlay: duplicate id "office"');
+  });
+
+  it("captures and validates setup guide section registrations", async () => {
+    function Section() {
+      return <li>section</li>;
+    }
+    const captured = await loadPluginApp(
+      definePluginApp((builder) => {
+        builder.slots.internal_DO_NOT_USE_setupGuideSection({
+          id: "connect",
+          component: Section,
+        });
+      }),
+    );
+
+    expect(captured.setupGuideSections).toEqual([
+      { id: "connect", component: Section },
+    ]);
+    await expect(
+      loadPluginApp(
+        definePluginApp((builder) => {
+          builder.slots.internal_DO_NOT_USE_setupGuideSection({
+            id: "connect",
+            component: Section,
+          });
+          builder.slots.internal_DO_NOT_USE_setupGuideSection({
+            id: "connect",
+            component: Section,
+          });
+        }),
+      ),
+    ).rejects.toThrow(
+      'slots.internal_DO_NOT_USE_setupGuideSection: duplicate id "connect"',
+    );
   });
 
   it("captures and validates New thread panel action registrations", async () => {
@@ -1477,11 +1512,11 @@ describe("loadPluginApp", () => {
   });
 
   it("invokes a captured messageAction run with a plugin-authored context", () => {
-    const experimental_panel = {
+    const experimental_panel = makePanelController({
       openTab: () => true,
       toggleTab: () => true,
       close: () => true,
-    };
+    });
     app.messageActions[0]!.run({
       threadId: "thr_main",
       message: {

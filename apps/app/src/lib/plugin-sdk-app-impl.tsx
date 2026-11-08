@@ -8,8 +8,10 @@ import { ProviderIcon } from "@/components/plugin/ProviderIcon";
 import { Icon } from "@bb/shared-ui/icon";
 import type {
   ExperimentalInfoListRowProps,
+  ExperimentalPanelTabIconProps,
   PluginSdkApp,
 } from "@get-bb/plugin-sdk";
+import { useSyncExternalStore } from "react";
 import { PluginBranchPicker } from "@/components/plugin/PluginBranchPicker";
 import {
   usePluginBranches,
@@ -49,7 +51,10 @@ import { PluginThreadTitle } from "@/components/plugin/PluginThreadTitle";
 import { ThreadStatusGlyph } from "@/components/thread/ThreadStatusGlyph";
 import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
+import { ExperimentalFilePreview } from "@/components/plugin/ExperimentalFilePreview";
 import { usePluginId } from "@/components/plugin/plugin-context";
+import { CollapsibleStackCard } from "@/components/promptbox/banner/CollapsibleStackCard";
+import { usePluginThreadExtensionState } from "@/components/plugin/usePluginThreadExtensionState";
 import { useQuestionFormHost } from "@bb/shared-ui/question-form-host";
 import { definePluginApp } from "./plugin-app-definition";
 import {
@@ -72,7 +77,9 @@ import {
   useSettings,
   experimental_useAppPanel,
   experimental_useFixedTabTarget,
+  experimental_usePanelTabs,
 } from "./plugin-sdk-hooks";
+import { useAppNavigationHost } from "./app-navigation-host";
 import {
   useSidebarThreadActions,
   useSidebarThreadDraft,
@@ -95,6 +102,7 @@ import {
   experimental_THREAD_INFO_ROW_GROUPS,
   experimental_THREAD_INFO_SECTION_GROUPS,
 } from "@get-bb/plugin-sdk";
+import { experimental_resolveThreadStatus } from "@get-bb/plugin-sdk/internal/thread-status";
 import {
   ThreadActionsContextMenu,
   ThreadActionsMenu,
@@ -118,6 +126,8 @@ import {
 } from "@/components/secondary-panel/info/info-list";
 import { InfoListRow } from "@bb/shared-ui/info-list-row";
 import { DetailRow } from "@/components/ui/detail-card";
+import { ThreadContextCardRow } from "@/components/plugin/ThreadContextCardRow";
+import { useThreadContextKind } from "@/components/plugin/PluginThreadContextCard";
 import { useTabVisible } from "@/components/secondary-panel/tab-visibility";
 import { useServerChoices } from "@/hooks/useServerChoices";
 import { ThreadRowMetadata } from "@/components/plugin/ThreadRowMetadata";
@@ -140,6 +150,12 @@ function useArchiveEnvironmentThreads(): (
   return useThreadActions().archiveEnvironmentThreads;
 }
 
+function PanelTabIcon({ tabKey }: ExperimentalPanelTabIconProps) {
+  const { panel } = useAppNavigationHost();
+  useSyncExternalStore(panel.subscribeTabs, panel.getTabs, panel.getTabs);
+  return <>{panel.renderTabIcon(tabKey)}</>;
+}
+
 export const pluginSdkAppImplementation = {
   experimental_getApplicationLinkApprovals: applicationLinkApprovals.list,
   experimental_revokeApplicationLinkApproval: applicationLinkApprovals.revoke,
@@ -155,6 +171,8 @@ export const pluginSdkAppImplementation = {
   experimental_useServers: useServerChoices,
   experimental_useAppPanel,
   experimental_useFixedTabTarget,
+  experimental_usePanelTabs,
+  experimental_PanelTabIcon: PanelTabIcon,
   useComposer,
   useComposers,
   experimental_useComposerRenderer: useComposerRendererApi,
@@ -196,10 +214,13 @@ export const pluginSdkAppImplementation = {
   experimental_useBranches: usePluginBranches,
   experimental_useCheckoutState: usePluginCheckoutState,
   experimental_SourceCode: LazyPluginSourceCode,
+  experimental_FilePreview: ExperimentalFilePreview,
   experimental_Diff: LazyPluginDiff,
   experimental_InfoSection: InfoSection,
+  experimental_CollapsibleStackCard: CollapsibleStackCard,
   experimental_ThreadRowMetadata: ThreadRowMetadata,
   experimental_DetailRow: DetailRow,
+  experimental_ThreadContextCardRow: ThreadContextCardRow,
   experimental_InfoList: InfoList,
   experimental_InfoListRow: PluginInfoListRow,
   experimental_useSidebarThreads: useSidebarThreads,
@@ -216,6 +237,8 @@ export const pluginSdkAppImplementation = {
   experimental_THREAD_INFO_SECTION_GROUPS,
   experimental_useSidebarThreadSplit: useSidebarThreadSplit,
   experimental_useExperiment: useExperiment,
+  experimental_useThreadContextKind: useThreadContextKind,
+  experimental_useThreadExtensionState: usePluginThreadExtensionState,
   experimental_useSidebarNavigation: useSidebarNavigation,
   experimental_useSidebarNavigationSplit: useSidebarNavigationSplit,
   experimental_SidebarNavigationIcon: SidebarNavigationIcon,
@@ -227,6 +250,7 @@ export const pluginSdkAppImplementation = {
   useSidebarThreadShortcut,
   ThreadTitle: PluginThreadTitle,
   experimental_ThreadStatusGlyph: ThreadStatusGlyph,
+  experimental_resolveThreadStatus,
   useEnvironmentProviders,
   useSdk,
   experimental_useProviders: useProviders,
