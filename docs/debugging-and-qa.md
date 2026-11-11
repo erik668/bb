@@ -794,6 +794,22 @@ read-only in bb.
 
 ## Prepared Worktree Restarts
 
+For a BB or Electron upgrade, use the
+[`safe-bb-upgrade` skill](../plugins/bb-guide/skills/safe-bb-upgrade/SKILL.md).
+It ships with BB guide and is also discoverable from this repository's
+`.bb/skills/safe-bb-upgrade` entry. The procedure stages integration and complete-stack
+checks before changing the serving checkout, preserves fork customizations, and
+uses an independent foreground activation/recovery runner. Its source-upgrade
+helper requires Python 3.9+ on macOS or Linux.
+
+After updating an installation from this fork, new agent sessions receive the
+skill when BB guide's `skills` and `safeUpgrade` settings are enabled.
+`bb skill install-cli-skills --machine <id-or-name>` copies it to an independent
+agent harness on a selected machine. To bootstrap the procedure before updating
+an older install, read it from a separate fresh checkout and copy its complete
+skill directory into that harness's personal skills root. Keep the old serving
+checkout running throughout staging.
+
 `pnpm start` and `pnpm start:worktree` always run Turbo-backed preparation
 before launching: Turbo rebuilds what changed and restores unchanged artifacts
 from cache, and native modules are repaired when necessary. Add `--dryrun` to
