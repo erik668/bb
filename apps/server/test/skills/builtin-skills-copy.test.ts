@@ -32,6 +32,25 @@ describe("builtin skills copy", () => {
     await expect(
       readFile(path.join(targetPath, "bb-cli", "SKILL.md"), "utf8"),
     ).resolves.toBe(await readBuiltinSkill("bb-cli"));
+    await expect(
+      readFile(path.join(targetPath, "safe-bb-upgrade", "SKILL.md"), "utf8"),
+    ).resolves.toBe(await readBuiltinSkill("safe-bb-upgrade"));
+    await expect(
+      readFile(
+        path.join(targetPath, "safe-bb-upgrade", "scripts", "upgrade_guard.py"),
+        "utf8",
+      ),
+    ).resolves.toBe(
+      await readFile(
+        path.join(
+          resolveBuiltinSkillsRootPath(),
+          "safe-bb-upgrade",
+          "scripts",
+          "upgrade_guard.py",
+        ),
+        "utf8",
+      ),
+    );
   });
 
   it("throws when the sentinel skill is missing beside the module", async () => {

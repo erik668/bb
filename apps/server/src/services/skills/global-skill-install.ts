@@ -17,7 +17,7 @@ import {
 } from "../hosts/online-rpc.js";
 import { resolveServerOwnedSkillCatalogEntries } from "./injected-skills.js";
 
-const GLOBAL_CLI_SKILL_NAMES: readonly string[] = ["bb-cli"];
+const GLOBAL_CLI_SKILL_NAMES: readonly string[] = ["bb-cli", "safe-bb-upgrade"];
 
 const STATUS_TIMEOUT_MS = 5_000;
 

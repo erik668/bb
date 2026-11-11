@@ -86,12 +86,17 @@ Skills (.bb/skills/):
   reports whether each machine is installed, out of date, missing, or unknown
   (disconnected or unreachable).
 
+  The copied skills include `bb-cli` and `safe-bb-upgrade`. The upgrade skill
+  remains available in an independent harness while BB is stopped; its source
+  upgrade helper requires Python 3.9+ on macOS or Linux.
+
   Use the skill-creator skill to author and iterate on skills.
 
 BB guide plugin:
 
   The enabled-by-default BB guide plugin owns the BB introduction and the
-  bb-cli, bb-plugin-authoring, skill-creator, and submit-a-plugin skills. Settings → Installed
+  bb-cli, bb-plugin-authoring, skill-creator, submit-a-plugin, and safe-bb-upgrade
+  skills. Settings → Installed
   plugins → BB guide exposes introduction, a master skills switch, and one
   switch per skill. All default to true. Use:
 
@@ -101,6 +106,7 @@ BB guide plugin:
     bb plugin config bb-guide set pluginAuthoring false
     bb plugin config bb-guide set skillCreator false
     bb plugin config bb-guide set submitPlugin false
+    bb plugin config bb-guide set safeUpgrade false
 
   Changes apply when agent configuration is next assembled. They do not erase
   existing conversation text or disable independently installed copies.

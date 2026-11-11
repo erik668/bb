@@ -41,6 +41,13 @@ export default async function plugin(bb: BbPluginApi) {
         "Prepare and submit a BB plugin to the Community marketplace.",
       default: true,
     },
+    safeUpgrade: {
+      type: "boolean",
+      label: "Safe BB upgrade skill",
+      description:
+        "Stage BB upgrades, preserve fork behavior, and verify activation with an independent recovery runner.",
+      default: true,
+    },
   });
   let current = await settings.get();
   settings.onChange((next) => {
@@ -57,6 +64,7 @@ export default async function plugin(bb: BbPluginApi) {
           ...(current.pluginAuthoring ? ["bb-plugin-authoring"] : []),
           ...(current.skillCreator ? ["skill-creator"] : []),
           ...(current.submitPlugin ? ["submit-a-plugin"] : []),
+          ...(current.safeUpgrade ? ["safe-bb-upgrade"] : []),
         ]
       : [],
   }));

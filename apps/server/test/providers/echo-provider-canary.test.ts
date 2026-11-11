@@ -610,6 +610,7 @@ describe("echo-provider canary: plugin install → server command → runtime �
     ).toEqual([
       "bb-cli",
       "bb-plugin-authoring",
+      "safe-bb-upgrade",
       "skill-creator",
       "submit-a-plugin",
     ]);

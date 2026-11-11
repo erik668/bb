@@ -1069,6 +1069,7 @@ either way.
   plugin releases can go out ahead of a retry scheduled for later (for example
   a provider-retry row waiting hours for a subscription window) and overtake
   it; with it, those rows wait for the retry.
+
 - `threadContextCard` moves a running thread's
   details into the thread context card at the upper-right of its pane: bb's parent
   thread and child threads, the Git plugin's changes, which open the Diff tab,
@@ -1221,11 +1222,16 @@ identity, branding, entry points, or engine ranges. Select an entry with
 ### BB guide
 
 BB guide is installed and enabled by default. Its boolean settings, all
-default `true`, are `introduction` (the BB introduction), `skills` (all four
-bundled skills), and `bbCli`, `pluginAuthoring`, `skillCreator`, and
-`submitPlugin` (individual skills). They apply the next time agent
+default `true`, are `introduction` (the BB introduction), `skills` (all five
+bundled skills), and `bbCli`, `pluginAuthoring`, `skillCreator`, `submitPlugin`,
+and `safeUpgrade` (individual skills). They apply the next time agent
 configuration is assembled. Disabling the plugin removes its introduction and
 skills.
+
+`safeUpgrade` contributes `safe-bb-upgrade` for staged BB/Electron updates with
+preserved customizations and independent activation/recovery. Its foreground
+source-upgrade helper requires Python 3.9+ on macOS or Linux. The skill is also
+included by `bb skill install-cli-skills` for use outside the running BB instance.
 
 ### Claude Code provider
 

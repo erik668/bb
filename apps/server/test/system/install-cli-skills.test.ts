@@ -11,15 +11,15 @@ import { seedHost, seedHostSession } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
 import { resolveServerOwnedSkillCatalogEntries } from "../../src/services/skills/injected-skills.js";
 
-async function writeBuiltinCliSkill(harness: TestAppHarness): Promise<void> {
-  const skillDirectory = join(
-    harness.deps.config.builtinSkillsRootPath,
-    "bb-cli",
-  );
+async function writeBuiltinCliSkill(
+  harness: TestAppHarness,
+  name = "bb-cli",
+): Promise<void> {
+  const skillDirectory = join(harness.deps.config.builtinSkillsRootPath, name);
   await mkdir(skillDirectory, { recursive: true });
   await writeFile(
     join(skillDirectory, "SKILL.md"),
-    "---\nname: bb-cli\ndescription: Control bb from the CLI.\n---\n",
+    `---\nname: ${name}\ndescription: Control bb from an independent harness.\n---\n`,
   );
 }
 
@@ -49,6 +49,48 @@ function installRequest(hostIds: string[]): Request {
 }
 
 describe("install cli skills", () => {
+  it("includes the safe upgrade skill in independent harness installations", async () => {
+    await withTestHarness(async (harness) => {
+      await writeBuiltinCliSkill(harness);
+      await writeBuiltinCliSkill(harness, "safe-bb-upgrade");
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-upgrade",
+      });
+      const responder = registerHostRpcResponder(harness, {
+        hostId: host.id,
+        sessionId: session.id,
+        handle: (request) => {
+          expect(request.command).toMatchObject({
+            type: "host.install_global_skills",
+            skills: [
+              { name: "bb-cli", entryPath: "SKILL.md" },
+              { name: "safe-bb-upgrade", entryPath: "SKILL.md" },
+            ],
+          });
+          return {
+            ok: true,
+            result: {
+              installations: [
+                { name: "bb-cli", path: "/home/u/.agents/skills/bb-cli" },
+                {
+                  name: "safe-bb-upgrade",
+                  path: "/home/u/.agents/skills/safe-bb-upgrade",
+                },
+              ],
+            },
+          };
+        },
+      });
+      const response = await harness.app.request(installRequest([host.id]));
+      expect(response.status).toBe(200);
+      const body = systemInstallCliSkillsResponseSchema.parse(
+        await readJson(response),
+      );
+      expect(body.results[0]).toMatchObject({ ok: true });
+      expect(responder.requests).toHaveLength(1);
+    });
+  });
+
   it("installs the built-in bb-cli tree on every requested machine", async () => {
     await withTestHarness(async (harness) => {
       await writeBuiltinCliSkill(harness);
