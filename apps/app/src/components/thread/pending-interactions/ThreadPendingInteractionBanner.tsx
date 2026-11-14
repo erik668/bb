@@ -1,4 +1,5 @@
 import { PendingInteractionShell } from "./PendingInteractionShell";
+import { PlanReviewDialog } from "./PlanReviewDialog";
 import { useMemo, useState, type ReactNode } from "react";
 import {
   assertNever,
@@ -230,46 +231,68 @@ function PlanReviewRequestBanner({
       interaction,
       threadId,
     });
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
   const { approval } = request;
   const { plan, planFilePath } = request.review;
+  const decisionButtons = (
+    <ApprovalDecisionButtons
+      decisions={approval.availableDecisions}
+      disabled={submitDisabled}
+      loadingDecision={loadingDecision}
+      onDecide={submitDecision}
+      subjectKind="plan"
+    />
+  );
   return (
-    <PendingInteractionShell
-      label="Plan review"
-      title={approval.reason ?? "Ready to code?"}
-      expandedByDefault={!collapsedByDefault}
-      errorMessage={errorMessage}
-      testId="plan-review-banner"
-      footer={
-        <ApprovalDecisionButtons
-          decisions={approval.availableDecisions}
-          disabled={submitDisabled}
-          loadingDecision={loadingDecision}
-          onDecide={submitDecision}
-          subjectKind="plan"
-        />
-      }
-    >
-      {() => (
-        <div
-          className="overflow-hidden rounded-lg border border-border bg-card"
-          data-testid="plan-review-request"
-        >
+    <>
+      <PendingInteractionShell
+        label="Plan review"
+        title={approval.reason ?? "Ready to code?"}
+        expandedByDefault={!collapsedByDefault}
+        errorMessage={errorMessage}
+        testId="plan-review-banner"
+        footer={decisionButtons}
+      >
+        {() => (
           <div
-            className={cn(
-              getDetailScrollMaxHeightClass("base"),
-              "overflow-auto px-3 py-2",
-            )}
+            className="relative overflow-hidden rounded-lg border border-border bg-card"
+            data-testid="plan-review-request"
           >
-            <MarkdownPreview content={plan} className="text-xs" />
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              aria-label="Expand plan"
+              onClick={() => setIsDialogOpen(true)}
+              className="absolute right-1.5 top-1.5 z-10 size-7 bg-card/90 text-muted-foreground hover:text-foreground"
+            >
+              <Icon name="Maximize2" className="size-3.5" />
+            </Button>
+            <div
+              className={cn(
+                getDetailScrollMaxHeightClass("base"),
+                "overflow-auto py-2 pl-3 pr-10",
+              )}
+            >
+              <MarkdownPreview content={plan} className="text-xs" />
+            </div>
+            {planFilePath ? (
+              <p className="break-all border-t border-border px-3 py-2 font-mono text-xs text-muted-foreground">
+                {planFilePath}
+              </p>
+            ) : null}
           </div>
-          {planFilePath ? (
-            <p className="break-all border-t border-border px-3 py-2 font-mono text-xs text-muted-foreground">
-              {planFilePath}
-            </p>
-          ) : null}
-        </div>
-      )}
-    </PendingInteractionShell>
+        )}
+      </PendingInteractionShell>
+      <PlanReviewDialog
+        open={isDialogOpen}
+        onOpenChange={setIsDialogOpen}
+        plan={plan}
+        planFilePath={planFilePath}
+        errorMessage={errorMessage}
+        footer={decisionButtons}
+      />
+    </>
   );
 }
 
