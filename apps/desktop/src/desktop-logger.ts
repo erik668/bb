@@ -1,4 +1,10 @@
-import { appendFileSync, mkdirSync, renameSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  writeSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { DesktopAutoUpdateLogger } from "./desktop-auto-update.js";
 
@@ -18,7 +24,7 @@ export function createDesktopLogger(args: {
 
   function writeStderr(message: string): void {
     try {
-      process.stderr.write(`${message}\n`);
+      writeSync(process.stderr.fd, `${message}\n`);
     } catch {}
   }
 
