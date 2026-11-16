@@ -14,6 +14,7 @@ export const secretRequestPayloadSchema = z.object({
       z.object({
         name: secretNameSchema,
         description: z.string().min(1).nullable(),
+        optional: z.boolean(),
       }),
     )
     .min(1),
@@ -33,3 +34,21 @@ const secretValueSchema = z
 export const secretRequestResponseSchema = z.object({
   values: z.record(secretNameSchema, secretValueSchema),
 });
+
+export type SecretRequestField = z.infer<
+  typeof secretRequestPayloadSchema
+>["fields"][number];
+
+export function compareSubmittedNames(
+  fields: readonly SecretRequestField[],
+  submittedNames: readonly string[],
+): { missing: string[]; unexpected: string[] } {
+  const submitted = new Set(submittedNames);
+  const requested = new Set(fields.map((field) => field.name));
+  return {
+    missing: fields
+      .filter((field) => !field.optional && !submitted.has(field.name))
+      .map((field) => field.name),
+    unexpected: submittedNames.filter((name) => !requested.has(name)),
+  };
+}

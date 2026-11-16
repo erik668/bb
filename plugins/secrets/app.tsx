@@ -51,10 +51,18 @@ function SecretRequestInteraction({
   }
   const payload = parsed.data;
   const submitValues = async () => {
-    const validated = secretRequestResponseSchema.safeParse({ values });
+    const submitted = Object.fromEntries(
+      payload.fields.flatMap((field) => {
+        const value = values[field.name] ?? "";
+        return value === "" && field.optional ? [] : [[field.name, value]];
+      }),
+    );
+    const validated = secretRequestResponseSchema.safeParse({
+      values: submitted,
+    });
     if (!validated.success) {
       setFormError(
-        "Every secret must be a non-empty single-line value no larger than 16 KiB.",
+        "Every required secret must be a non-empty single-line value no larger than 16 KiB.",
       );
       return;
     }
@@ -69,7 +77,7 @@ function SecretRequestInteraction({
     setFormError(null);
     setPendingAction("submit");
     try {
-      await submit({ values });
+      await submit({ values: submitted });
     } catch {
       setPendingAction(null);
     }
@@ -112,13 +120,20 @@ function SecretRequestInteraction({
           return (
             <div key={field.name} className="min-w-0 space-y-1.5">
               <div className="space-y-0.5">
-                <Label
-                  htmlFor={inputId}
-                  className="font-mono text-xs font-semibold text-foreground"
-                  translate="no"
-                >
-                  {field.name}
-                </Label>
+                <div className="flex items-baseline gap-2">
+                  <Label
+                    htmlFor={inputId}
+                    className="font-mono text-xs font-semibold text-foreground"
+                    translate="no"
+                  >
+                    {field.name}
+                  </Label>
+                  {field.optional ? (
+                    <span className="text-xs text-muted-foreground">
+                      Optional
+                    </span>
+                  ) : null}
+                </div>
                 {field.description ? (
                   <p className="text-xs leading-snug text-muted-foreground">
                     {field.description}
@@ -134,7 +149,7 @@ function SecretRequestInteraction({
                   autoCapitalize="none"
                   autoCorrect="off"
                   spellCheck={false}
-                  required
+                  required={!field.optional}
                   value={values[field.name] ?? ""}
                   onChange={(event) =>
                     setValues((current) => ({

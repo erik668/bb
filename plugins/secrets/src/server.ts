@@ -10,15 +10,22 @@ import {
 import { z } from "zod";
 import {
   SECRET_REQUEST_RENDERER_ID,
+  compareSubmittedNames,
   secretNameSchema,
   secretRequestResponseSchema,
+  type SecretRequestField,
 } from "./secret-request.js";
-import { assertNoDuplicateAssignments, reconcileDotenv } from "./dotenv.js";
+import {
+  assertNoDuplicateAssignments,
+  reconcileDotenv,
+  type DotenvReconcileResult,
+} from "./dotenv.js";
 
 interface ParsedRequest {
   names: string[];
   purpose: string | null;
   descriptions: Map<string, string>;
+  optionalNames: Set<string>;
   writeEnv: string;
 }
 
@@ -129,10 +136,32 @@ function parseDescriptions(
   return descriptions;
 }
 
+function parseOptionalNames(
+  entries: readonly string[],
+  names: readonly string[],
+): Set<string> {
+  const optionalNames = new Set<string>();
+  for (const entry of entries) {
+    const name = parseSecretName(entry.trim(), "--optional NAME");
+    if (optionalNames.has(name))
+      cliError(`Duplicate --optional for ${name}.`, "duplicate_optional");
+    if (!names.includes(name)) {
+      cliError(
+        `--optional references unrequested variable ${name}.`,
+        "unrequested_optional",
+        "List the variable as a positional name too.",
+      );
+    }
+    optionalNames.add(name);
+  }
+  return optionalNames;
+}
+
 function parseRequest(input: {
   names: readonly string[];
   purpose: string | undefined;
   describe: readonly string[];
+  optional: readonly string[];
   writeEnv: string;
 }): ParsedRequest {
   const names = input.names.map((name) =>
@@ -155,6 +184,7 @@ function parseRequest(input: {
     names,
     purpose: purpose ?? null,
     descriptions: parseDescriptions(input.describe, names),
+    optionalNames: parseOptionalNames(input.optional, names),
     writeEnv,
   };
 }
@@ -218,6 +248,11 @@ async function runRequest(
   const fileArgs = { hostId: host.id, path: destinationPath };
   let snapshot = await readSnapshot(bb, fileArgs);
   assertNoDuplicateAssignments(snapshot.content, parsed.names);
+  const fields: SecretRequestField[] = parsed.names.map((name) => ({
+    name,
+    description: parsed.descriptions.get(name) ?? null,
+    optional: parsed.optionalNames.has(name),
+  }));
 
   const result = await bb.ui.requestInput(
     {
@@ -230,10 +265,7 @@ async function runRequest(
           kind: "dotenv",
           path: destinationPath,
         },
-        fields: parsed.names.map((name) => ({
-          name,
-          description: parsed.descriptions.get(name) ?? null,
-        })),
+        fields,
       },
       presentation: {
         label: {
@@ -254,7 +286,9 @@ async function runRequest(
           : [];
         return {
           title: clampToLength(
-            `Provided ${names.join(", ")}`,
+            names.length > 0
+              ? `Provided ${names.join(", ")}`
+              : "Left optional secrets blank",
             ROW_TITLE_MAX_LENGTH,
           ),
           detail: [destinationPath, ...names.map((name) => `- ${name}`)].join(
@@ -272,13 +306,23 @@ async function runRequest(
     );
   }
   const response = secretRequestResponseSchema.parse(result.value);
-  const responseNames = Object.keys(response.values).sort();
-  if (responseNames.join("\0") !== [...parsed.names].sort().join("\0")) {
+  const submittedNames = Object.keys(response.values);
+  const { missing, unexpected } = compareSubmittedNames(fields, submittedNames);
+  if (missing.length > 0 || unexpected.length > 0) {
     cliError(
-      "Secret response did not contain exactly the requested variables.",
+      "Secret response must contain every required variable and only requested variables.",
       "unexpected_secret_response",
     );
   }
+  const skipped = parsed.names.filter((name) => !(name in response.values));
+  const successResult = (
+    reconciled: Omit<DotenvReconcileResult, "content">,
+  ): PluginCliResult => ({
+    exitCode: 0,
+    stdout: `${JSON.stringify({ path: destinationPath, names: parsed.names, added: reconciled.added, updated: reconciled.updated, unchanged: reconciled.unchanged, skipped })}\n`,
+  });
+  if (submittedNames.length === 0)
+    return successResult({ added: 0, updated: 0, unchanged: 0 });
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const reconciled = reconcileDotenv(snapshot.content, response.values);
@@ -292,12 +336,7 @@ async function runRequest(
         mode: 0o600,
       }),
     );
-    if (write.outcome === "written") {
-      return {
-        exitCode: 0,
-        stdout: `${JSON.stringify({ path: destinationPath, names: parsed.names, added: reconciled.added, updated: reconciled.updated, unchanged: reconciled.unchanged })}\n`,
-      };
-    }
+    if (write.outcome === "written") return successResult(reconciled);
     if (attempt === 1) {
       cliError(
         "Dotenv file changed twice while secrets were being written; no write was applied.",
@@ -354,6 +393,13 @@ export default function plugin(bb: BbPluginApi) {
             description:
               "Short description of one requested variable, written as NAME=TEXT or as the two-token form NAME TEXT; repeat per variable",
           },
+          optional: {
+            type: "string",
+            repeatable: true,
+            placeholder: "NAME",
+            description:
+              "Mark one requested variable as optional so the user may leave it blank; blank optional variables are not written. Repeat per variable",
+          },
           json: {
             type: "boolean",
             description:
@@ -365,6 +411,7 @@ export default function plugin(bb: BbPluginApi) {
             names: input.positionals.name,
             purpose: input.options.purpose,
             describe: input.options.describe,
+            optional: input.options.optional,
             writeEnv: input.options["write-env"],
           });
           try {

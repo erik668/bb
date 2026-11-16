@@ -83,6 +83,116 @@ describe("secrets plugin server", () => {
     });
   });
 
+  function optionalFieldsHost() {
+    const written: string[] = [];
+    const host = createFakePluginHost({
+      pluginId: "secrets",
+      sdk: {
+        threads: {
+          async get() {
+            return { host: { id: "host-test" } };
+          },
+        },
+        files: {
+          async read() {
+            return {
+              content: "TOKEN=kept\n",
+              contentEncoding: "utf8",
+              sha256: "before",
+            };
+          },
+          async write(args) {
+            written.push(args.content);
+            return { outcome: "written", sha256: "after", sizeBytes: 1 };
+          },
+        },
+      },
+    });
+    plugin(host.bb as unknown as Parameters<typeof plugin>[0]);
+    return Object.assign(host, { written });
+  }
+
+  async function startOptionalRequest(
+    host: ReturnType<typeof optionalFieldsHost>,
+  ) {
+    const command = host.harness.runCli(
+      [
+        "request",
+        "API_KEY",
+        "TOKEN",
+        "--optional",
+        "TOKEN",
+        "--write-env",
+        ".env",
+      ],
+      { threadId: "thr-test", cwd: "/workspace" },
+    );
+    await vi.waitFor(() =>
+      expect(host.harness.pendingInteractions).toHaveLength(1),
+    );
+    return { command, pending: host.harness.pendingInteractions[0]! };
+  }
+
+  it("writes only provided values when an optional field is left blank", async () => {
+    const host = optionalFieldsHost();
+    const { command, pending } = await startOptionalRequest(host);
+    expect(pending.payload).toMatchObject({
+      fields: [
+        { name: "API_KEY", optional: false },
+        { name: "TOKEN", optional: true },
+      ],
+    });
+    host.harness.submitInteraction(pending.id, {
+      values: { API_KEY: "secret-one" },
+    });
+
+    const result = await command;
+    expect(result.exitCode).toBe(0);
+    expect(host.written).toEqual(["TOKEN=kept\nAPI_KEY='secret-one'\n"]);
+    expect(JSON.parse(result.stdout ?? "")).toMatchObject({
+      names: ["API_KEY", "TOKEN"],
+      added: 1,
+      skipped: ["TOKEN"],
+    });
+  });
+
+  it("skips the write when every field is optional and left blank", async () => {
+    const host = optionalFieldsHost();
+    const command = host.harness.runCli(
+      ["request", "TOKEN", "--optional", "TOKEN", "--write-env", ".env"],
+      { threadId: "thr-test", cwd: "/workspace" },
+    );
+    await vi.waitFor(() =>
+      expect(host.harness.pendingInteractions).toHaveLength(1),
+    );
+    const pending = host.harness.pendingInteractions[0]!;
+    expect(await pending.describeSubmission?.({ values: {} })).toMatchObject({
+      title: "Left optional secrets blank",
+    });
+    host.harness.submitInteraction(pending.id, { values: {} });
+
+    const result = await command;
+    expect(result.exitCode).toBe(0);
+    expect(host.written).toEqual([]);
+    expect(JSON.parse(result.stdout ?? "")).toMatchObject({
+      added: 0,
+      skipped: ["TOKEN"],
+    });
+  });
+
+  it("rejects a submission that omits a required value", async () => {
+    const host = optionalFieldsHost();
+    const { command, pending } = await startOptionalRequest(host);
+    host.harness.submitInteraction(pending.id, {
+      values: { TOKEN: "secret-two" },
+    });
+
+    const result = await command;
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("every required variable");
+    expect(host.written).toEqual([]);
+  });
+
   it.each([
     ["/workspace", "/var/plugin/.env", "/var/plugin/.env"],
     ["/workspace", "../.env", "/.env"],
@@ -278,6 +388,30 @@ describe("secrets plugin server", () => {
         "OTHER=text",
       ],
       message: "--describe references unrequested variable OTHER.",
+    },
+    {
+      argv: [
+        "request",
+        "API_KEY",
+        "--write-env",
+        ".env",
+        "--optional",
+        "OTHER",
+      ],
+      message: "--optional references unrequested variable OTHER.",
+    },
+    {
+      argv: [
+        "request",
+        "API_KEY",
+        "--write-env",
+        ".env",
+        "--optional",
+        "API_KEY",
+        "--optional",
+        "API_KEY",
+      ],
+      message: "Duplicate --optional for API_KEY.",
     },
     {
       argv: ["request", "API_KEY", "API_KEY", "--write-env", ".env"],

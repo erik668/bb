@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareSubmittedNames,
   secretRequestPayloadSchema,
   secretRequestResponseSchema,
 } from "./secret-request.js";
@@ -10,14 +11,14 @@ describe("secret-request contracts", () => {
       secretRequestPayloadSchema.safeParse({
         purpose: null,
         destination: { kind: "dotenv", path: "/repo/.env" },
-        fields: [{ name: "API_KEY", description: null }],
+        fields: [{ name: "API_KEY", description: null, optional: false }],
       }).success,
     ).toBe(true);
     expect(
       secretRequestPayloadSchema.safeParse({
         purpose: "x",
         destination: { kind: "dotenv", path: "/repo/.env" },
-        fields: [{ name: "1BAD", description: null }],
+        fields: [{ name: "1BAD", description: null, optional: false }],
       }).success,
     ).toBe(false);
   });
@@ -35,5 +36,20 @@ describe("secret-request contracts", () => {
       secretRequestResponseSchema.safeParse({ values: { API_KEY: "" } })
         .success,
     ).toBe(false);
+  });
+
+  it("requires every non-optional field and rejects unrequested names", () => {
+    const fields = [
+      { name: "API_KEY", description: null, optional: false },
+      { name: "TOKEN", description: null, optional: true },
+    ];
+    expect(compareSubmittedNames(fields, ["API_KEY"])).toEqual({
+      missing: [],
+      unexpected: [],
+    });
+    expect(compareSubmittedNames(fields, ["TOKEN", "OTHER"])).toEqual({
+      missing: ["API_KEY"],
+      unexpected: ["OTHER"],
+    });
   });
 });
