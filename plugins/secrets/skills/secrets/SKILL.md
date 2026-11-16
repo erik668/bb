@@ -17,6 +17,8 @@ bb secret request OPENAI_API_KEY RESEND_API_KEY \
   --write-env .env.local
 ```
 
+Mark a variable `--optional NAME` when the work can proceed without it, such as an optional integration or a value with a usable default. The user may leave optional fields blank; blank variables are not written, and the result lists them under `skipped`. Keep every variable the task cannot run without required.
+
 Always provide the exact `--write-env` destination, a concise purpose, and one short plain-language description per variable. Relative destinations resolve from the CLI working directory; absolute destinations may point anywhere on the thread's host. Never place secret values in argv, prompts, comments, logs, or follow-up messages.
 
 The command blocks until the user submits or cancels the form. Secret values

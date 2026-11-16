@@ -88,7 +88,13 @@ export function Overview() {
           data: {
             purpose: "Connect the demo service",
             destination: { kind: "dotenv", path: "/workspace/.env" },
-            fields: [{ name: "DEMO_API_KEY", description: "Service API key" }],
+            fields: [
+              {
+                name: "DEMO_API_KEY",
+                description: "Service API key",
+                optional: false,
+              },
+            ],
           },
         }}
       />
@@ -188,7 +194,9 @@ const secretsRequest = {
   data: {
     purpose: "Connect the demo service",
     destination: { kind: "dotenv", path: "/workspace/.env" },
-    fields: [{ name: "DEMO_API_KEY", description: "Service API key" }],
+    fields: [
+      { name: "DEMO_API_KEY", description: "Service API key", optional: false },
+    ],
   },
 };
 
@@ -307,6 +315,7 @@ export function ManySecretsInThread() {
               fields: Array.from({ length: 12 }, (_, index) => ({
                 name: `SERVICE_${index + 1}_KEY`,
                 description: `API key from service ${index + 1}`,
+                optional: index >= 8,
               })),
             },
           }}
