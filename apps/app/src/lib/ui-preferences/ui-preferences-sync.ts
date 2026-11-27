@@ -1,15 +1,17 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { SetStateAction, WritableAtom } from "jotai";
 import { getDefaultStore } from "jotai";
-import type {
-  UiPreferenceEntry,
-  UiPreferenceKey,
-  UiPreferenceValue,
+import {
+  getUiPreferenceDefault,
+  type UiPreferenceEntry,
+  type UiPreferenceKey,
+  type UiPreferenceValue,
 } from "@bb/domain";
 import type { UiPreferencesResponse } from "@bb/server-contract";
 import { appToast } from "@/components/ui/app-toast";
 import { invalidateUiPreferences } from "@/hooks/cache-owners/system-cache-effects";
 import { uiPreferencesQueryOptions } from "@/hooks/queries/system-queries";
+import { getMutationErrorMessage } from "@/lib/mutation-errors";
 import { BbHttpError, sdk } from "../sdk";
 
 type JotaiStore = ReturnType<typeof getDefaultStore>;
@@ -22,6 +24,10 @@ type ValueAtom<Key extends UiPreferenceKey> = WritableAtom<
 
 interface RegisteredPreference<Key extends UiPreferenceKey> {
   valueAtom: ValueAtom<Key>;
+  legacy?: {
+    read(): UiPreferenceValue<Key> | null;
+    clear(): void;
+  };
 }
 
 interface PreferenceSyncState<Key extends UiPreferenceKey> {
@@ -105,7 +111,7 @@ export function registerSyncedUiPreference<Key extends UiPreferenceKey>(
   if (context === null) return;
   const cached = getCachedUiPreferences(context.queryClient);
   if (cached !== undefined) {
-    reconcileUiPreference(context, key, registration.valueAtom, cached);
+    reconcileUiPreference(context, key, registration, cached);
   }
 }
 
@@ -129,21 +135,35 @@ export function hasPendingUiPreferenceWrite(key: UiPreferenceKey): boolean {
 
 export function reconcileUiPreferences(response: UiPreferencesResponse): void {
   if (context === null) return;
-  for (const [key, { valueAtom }] of registry) {
-    reconcileUiPreference(context, key, valueAtom, response);
+  for (const [key, registration] of registry) {
+    reconcileUiPreference(context, key, registration, response);
   }
 }
 
 function reconcileUiPreference<Key extends UiPreferenceKey>(
   activeContext: UiPreferencesSyncContext,
   key: Key,
-  valueAtom: ValueAtom<Key>,
+  { valueAtom, legacy }: RegisteredPreference<Key>,
   response: UiPreferencesResponse,
 ): void {
   const state = getSyncState(key);
   if (state.pending !== null || state.inFlight !== null) return;
   const entry = latestEntry(response.preferences[key], state.saved);
   if (entry === undefined) return;
+  const legacyValue = legacy?.read() ?? null;
+  if (legacy !== undefined && legacyValue !== null) {
+    legacy.clear();
+    const defaultValue = getUiPreferenceDefault(key);
+    if (areUiPreferenceValuesEqual(entry.value, defaultValue)) {
+      activeContext.store.set(valueAtom, legacyValue);
+      scheduleUiPreferenceWrite<Key>(key, (current) =>
+        areUiPreferenceValuesEqual(current, defaultValue)
+          ? legacyValue
+          : current,
+      );
+      return;
+    }
+  }
   const cachedEntry = latestEntry(
     getCachedUiPreferences(activeContext.queryClient)?.preferences[key],
     state.saved,
@@ -226,9 +246,11 @@ async function writeUiPreference<Key extends UiPreferenceKey>(
 function notifySyncFailure(error: unknown): void {
   if (syncFailureNotified) return;
   syncFailureNotified = true;
-  appToast.error("Couldn’t sync sidebar preferences", {
-    description:
-      error instanceof Error ? error.message : "Changes stay on this device.",
+  appToast.error("Couldn’t sync UI preferences", {
+    description: getMutationErrorMessage({
+      error,
+      fallbackMessage: "Changes stay on this device.",
+    }),
   });
 }
 

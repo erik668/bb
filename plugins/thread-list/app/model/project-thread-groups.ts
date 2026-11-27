@@ -56,6 +56,7 @@ type ThreadItemComparator = (
 export type ThreadComparator = ((
   left: SidebarThread,
   right: SidebarThread,
+  level?: "root" | "child",
 ) => number) & {
   compareItems?: ThreadItemComparator;
 };
@@ -89,22 +90,19 @@ export function compareByCreatedAtDescending(
   return compareCodepoint(left.id, right.id);
 }
 
-function compareByLatestAttentionAtDescending(
-  left: SidebarThread,
-  right: SidebarThread,
+function latestSortActivityAt(
+  thread: SidebarThread,
+  level: "root" | "child",
 ): number {
-  const latestAttentionAtDelta =
-    right.latestAttentionAt - left.latestAttentionAt;
-  if (latestAttentionAtDelta !== 0) {
-    return latestAttentionAtDelta;
-  }
-
-  return compareByCreatedAtDescending(left, right);
+  return level === "child"
+    ? Math.max(thread.latestAttentionAt, thread.experimental_statusChangedAt)
+    : thread.latestAttentionAt;
 }
 
 export function compareStandardThreads(
   left: SidebarThread,
   right: SidebarThread,
+  level: "root" | "child" = "root",
 ): number {
   const leftIsActive = left.status === "active";
   const rightIsActive = right.status === "active";
@@ -117,7 +115,9 @@ export function compareStandardThreads(
     return compareByCreatedAtDescending(left, right);
   }
 
-  return compareByLatestAttentionAtDescending(left, right);
+  const activityDelta =
+    latestSortActivityAt(right, level) - latestSortActivityAt(left, level);
+  return activityDelta || compareByCreatedAtDescending(left, right);
 }
 
 function representativeThread(item: ProjectThreadItem): SidebarThread {
@@ -161,6 +161,84 @@ export function getProjectThreadItemDescendants(
   });
 }
 
+function hasSameElements<T>(left: readonly T[], right: readonly T[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+const reusableThreadNodes = new WeakMap<SidebarThread, ProjectThreadNode>();
+
+function reuseThreadNode(next: ProjectThreadNode): ProjectThreadNode {
+  const previous = reusableThreadNodes.get(next.thread);
+  if (
+    previous !== undefined &&
+    previous.depth === next.depth &&
+    hasSameElements(previous.children, next.children) &&
+    hasSameElements(previous.stats.hiddenThreads, next.stats.hiddenThreads)
+  ) {
+    return previous;
+  }
+  reusableThreadNodes.set(next.thread, next);
+  return next;
+}
+
+const reusableEnvironmentGroups = new WeakMap<
+  ProjectThreadNode,
+  EnvironmentThreadGroup
+>();
+
+function reuseEnvironmentThreadGroup(
+  next: EnvironmentThreadGroup,
+): EnvironmentThreadGroup {
+  const previous = reusableEnvironmentGroups.get(next.nodes[0]);
+  if (
+    previous !== undefined &&
+    previous.environmentId === next.environmentId &&
+    previous.environmentProviderId === next.environmentProviderId &&
+    hasSameElements(previous.nodes, next.nodes)
+  ) {
+    return previous;
+  }
+  reusableEnvironmentGroups.set(next.nodes[0], next);
+  return next;
+}
+
+const reusableSectionGroups = new WeakMap<
+  ProjectThreadItem,
+  SidebarSectionGroup
+>();
+
+function reuseSectionGroup(next: SidebarSectionGroup): SidebarSectionGroup {
+  const firstItem = next.items[0];
+  if (firstItem === undefined) return next;
+  const previous = reusableSectionGroups.get(firstItem);
+  if (
+    previous !== undefined &&
+    previous.key === next.key &&
+    previous.id === next.id &&
+    previous.name === next.name &&
+    hasSameElements(previous.items, next.items)
+  ) {
+    return previous;
+  }
+  reusableSectionGroups.set(firstItem, next);
+  return next;
+}
+
+const threadItemsByNode = new WeakMap<ProjectThreadNode, ProjectThreadItem>();
+const environmentItemsByGroup = new WeakMap<
+  EnvironmentThreadGroup,
+  ProjectThreadItem
+>();
+const sectionItemsByGroup = new WeakMap<
+  SidebarSectionGroup,
+  Extract<ProjectThreadItem, { kind: "section" }>
+>();
+
 function buildStatsForHiddenThreads(
   threads: readonly SidebarThread[],
 ): ProjectThreadNodeStats {
@@ -173,22 +251,63 @@ function buildEnvironmentThreadGroup(
   nodes: EnvironmentThreadGroupNodes,
 ): EnvironmentThreadGroup {
   const hiddenThreads = nodes.flatMap(getNodeAndDescendantThreads);
-  return {
+  return reuseEnvironmentThreadGroup({
     environmentId,
     environmentProviderId,
     nodes,
     stats: buildStatsForHiddenThreads(hiddenThreads),
-  };
+  });
 }
 
 function buildThreadItem(node: ProjectThreadNode): ProjectThreadItem {
-  return { kind: "thread", node };
+  let item = threadItemsByNode.get(node);
+  if (item === undefined) {
+    item = { kind: "thread", node };
+    threadItemsByNode.set(node, item);
+  }
+  return item;
 }
 
 function buildEnvironmentItem(
   group: EnvironmentThreadGroup,
 ): ProjectThreadItem {
-  return { kind: "environment", group };
+  let item = environmentItemsByGroup.get(group);
+  if (item === undefined) {
+    item = { kind: "environment", group };
+    environmentItemsByGroup.set(group, item);
+  }
+  return item;
+}
+
+export function buildSectionGroupItem(
+  group: SidebarSectionGroup,
+): Extract<ProjectThreadItem, { kind: "section" }> {
+  const reused = reuseSectionGroup(group);
+  let item = sectionItemsByGroup.get(reused);
+  if (item === undefined) {
+    item = { kind: "section", group: reused };
+    sectionItemsByGroup.set(reused, item);
+  }
+  return item;
+}
+
+export function sortEnvironmentGroupNodes(
+  item: ProjectThreadItem,
+  compareThreads: (left: SidebarThread, right: SidebarThread) => number,
+): ProjectThreadItem {
+  if (item.kind !== "environment") return item;
+  const { environmentId, environmentProviderId, nodes } = item.group;
+  const [first, second, ...rest] = [...nodes].sort((left, right) =>
+    compareThreads(left.thread, right.thread),
+  );
+  if (first === undefined || second === undefined) return item;
+  return buildEnvironmentItem(
+    buildEnvironmentThreadGroup(environmentId, environmentProviderId, [
+      first,
+      second,
+      ...rest,
+    ]),
+  );
 }
 
 function buildSortedItems(
@@ -267,19 +386,19 @@ function buildThreadNode({
 
   const children = buildSortedItems(
     childNodes,
-    compareThreads,
+    (left, right) => compareThreads(left, right, "child"),
     groupEnvironmentThreads,
     false,
     thread.environment?.id ?? null,
   );
-  return {
+  return reuseThreadNode({
     thread,
     children,
     depth,
     stats: buildStatsForHiddenThreads(
       getProjectThreadItemDescendants(children),
     ),
-  };
+  });
 }
 
 function isRootThread(
@@ -636,10 +755,9 @@ function bucketIntoSections(
         itemsBySectionId.get(section.id) ?? [],
         compareThreads,
       );
-      return {
-        kind: "section",
-        group: buildSectionGroup(containerId, section, children),
-      };
+      return buildSectionGroupItem(
+        buildSectionGroup(containerId, section, children),
+      );
     },
   );
   const sectionItems = compareThreads.compareItems

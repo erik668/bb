@@ -6,7 +6,6 @@ import {
   type ReasoningLevel,
   type RuntimePermissionPolicy,
   type ServiceTier,
-  buildShellEnvOverrides,
 } from "@get-bb/plugin-sdk/provider-bridge";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,6 +51,7 @@ export type BbThreadStartParams = ThreadStartParams & {
 
 export type BbThreadForkParams = {
   threadId: string;
+  excludeTurns: boolean;
   lastTurnId?: string | null;
   model?: string | null;
   serviceTier?: string | null;
@@ -72,6 +72,7 @@ interface ToCodexPermissionSettingsArgs {
 }
 
 interface BuildCodexConfigArgs {
+  supportsAgentsEnabled: boolean;
   additionalWorkspaceWriteRoots: readonly string[];
   gitWritableRoots: readonly string[];
   options?: CodexSessionOptions;
@@ -608,31 +609,27 @@ export function toCodexUserInput(
   return [...chunks, ...selected.values()];
 }
 
-function buildShellEnvironmentPolicyConfig(
-  envVars?: Record<string, string>,
-): Record<string, string> | undefined {
-  if (!envVars) {
-    return undefined;
-  }
-  const config: Record<string, string> = {};
-  for (const [key, value] of Object.entries(buildShellEnvOverrides(envVars))) {
-    config[`shell_environment_policy.set.${key}`] = value;
-  }
-  return Object.keys(config).length > 0 ? config : undefined;
-}
+const BB_CONTEXT_ENV_NAMES = [
+  "BB_PROJECT_ID",
+  "BB_ENVIRONMENT_ID",
+  "BB_THREAD_STORAGE",
+  "BB_CLI",
+  "BB_SERVER_URL",
+  "BB_HOST_DAEMON_PORT",
+] as const;
 
 export function buildCodexConfig(
   args: BuildCodexConfigArgs,
 ): { [key in string]?: JsonValue } | undefined {
   const config: { [key in string]?: JsonValue } = {};
+  for (const name of BB_CONTEXT_ENV_NAMES) {
+    const value = args.options?.envVars?.[name];
+    if (value !== undefined) {
+      config[`shell_environment_policy.set.${name}`] = value;
+    }
+  }
   if (args.threadId) {
     config["shell_environment_policy.set.BB_THREAD_ID"] = args.threadId;
-  }
-  const shellEnvironmentConfig = buildShellEnvironmentPolicyConfig(
-    args.options?.envVars,
-  );
-  if (shellEnvironmentConfig) {
-    Object.assign(config, shellEnvironmentConfig);
   }
   if (args.options?.reasoningLevel) {
     config["model_reasoning_effort"] = toCodexReasoningEffort(
@@ -640,8 +637,13 @@ export function buildCodexConfig(
     );
   }
   if (args.options?.providerSubagentsEnabled === false) {
-    config["features.multi_agent"] = false;
-    config["features.multi_agent_v2.max_concurrent_threads_per_session"] = 1;
+    if (args.supportsAgentsEnabled) {
+      config["agents.enabled"] = false;
+      config["features.multi_agent_v2"] = false;
+    } else {
+      config["features.multi_agent"] = false;
+      config["features.multi_agent_v2.max_concurrent_threads_per_session"] = 1;
+    }
   }
   config["memories.use_memories"] = args.options?.memoryEnabled ?? true;
   config["memories.generate_memories"] = args.options?.memoryEnabled ?? true;

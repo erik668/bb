@@ -9,6 +9,10 @@ import {
   type InsertEventInput,
 } from "../../src/data/events.js";
 import { upsertHost } from "../../src/data/hosts.js";
+import {
+  getThreadConversationOutlineRecord,
+  upsertThreadConversationOutlineRecord,
+} from "../../src/data/thread-conversation-outlines.js";
 import { createProject } from "../../src/data/projects.js";
 import { migrateNextCompletedEventItemOutput } from "../../src/data/sweeps.js";
 import {
@@ -63,13 +67,22 @@ function pruneThreadEvents(
 }
 
 function expectGenerationBump(
+  db: DbConnection,
   threadId: string,
   bumped: boolean,
   mutate: () => void,
 ): void {
+  upsertThreadConversationOutlineRecord(db, {
+    itemsJson: "[]",
+    projectionKey: "stored",
+    threadId,
+  });
   const before = getThreadEventRewriteGeneration(threadId);
   mutate();
   expect(getThreadEventRewriteGeneration(threadId) !== before).toBe(bumped);
+  expect(getThreadConversationOutlineRecord(db, threadId) === null).toBe(
+    bumped,
+  );
 }
 
 function row(
@@ -108,6 +121,22 @@ function tokenUsage(threadId: string, sequence: number): InsertEventInput {
       modelContextWindow: sequence === 1 ? 200_000 : null,
       total: { totalTokens: sequence * 10 },
     },
+  });
+}
+
+function rateLimits(threadId: string, sequence: number): InsertEventInput {
+  return row(
+    threadId,
+    sequence,
+    "provider/rateLimits/updated",
+    { rateLimits: { providerId: "codex" } },
+    { scope: threadScope() },
+  );
+}
+
+function turnDiff(threadId: string, sequence: number): InsertEventInput {
+  return row(threadId, sequence, "turn/diff/updated", {
+    diff: `diff ${sequence}`,
   });
 }
 
@@ -192,12 +221,12 @@ describe("thread event rewrite generation", () => {
       rewrite: (db, threadId) => deleteSuffix(db, threadId, 2),
     },
     {
-      name: "a usage prune",
-      seed: (threadId) => [tokenUsage(threadId, 1)],
-      noop: (db) => pruneThreadEvents(db, "usage"),
+      name: "a rate-limit snapshot prune",
+      seed: (threadId) => [rateLimits(threadId, 1)],
+      noop: (db) => pruneThreadEvents(db, "rate-limits"),
       between: (threadId) =>
-        [2, 3, 4].map((sequence) => tokenUsage(threadId, sequence)),
-      rewrite: (db) => pruneThreadEvents(db, "usage"),
+        [2, 3, 4].map((sequence) => rateLimits(threadId, sequence)),
+      rewrite: (db) => pruneThreadEvents(db, "rate-limits"),
     },
     {
       name: "a resolved delta prune",
@@ -243,27 +272,49 @@ describe("thread event rewrite generation", () => {
       message(otherThreadId, 1),
     ]);
 
-    expectGenerationBump(threadId, false, () => {
+    expectGenerationBump(db, threadId, false, () => {
       expect(testCase.noop(db, threadId)).toBe(0);
     });
     insertEvents(db, noopNotifier, testCase.between?.(threadId) ?? []);
     const otherBefore = getThreadEventRewriteGeneration(otherThreadId);
-    expectGenerationBump(threadId, true, () => {
+    expectGenerationBump(db, threadId, true, () => {
       expect(testCase.rewrite(db, threadId)).toBeGreaterThan(0);
     });
     expect(getThreadEventRewriteGeneration(otherThreadId)).toBe(otherBefore);
   });
 
+  it.each([
+    {
+      name: "usage",
+      rows: (threadId: string) =>
+        [1, 2, 3, 4].map((sequence) => tokenUsage(threadId, sequence)),
+    },
+    {
+      name: "turn-diffs",
+      rows: (threadId: string) =>
+        [1, 2, 3, 4].map((sequence) => turnDiff(threadId, sequence)),
+    },
+  ] as const)(
+    "does not change when a $name prune removes rows the timeline never reads",
+    ({ name, rows }) => {
+      const { db, threadId } = setup();
+      insertEvents(db, noopNotifier, [...rows(threadId), message(threadId, 5)]);
+      expectGenerationBump(db, threadId, false, () => {
+        expect(pruneThreadEvents(db, name)).toBeGreaterThan(0);
+      });
+    },
+  );
+
   it("changes when a completed output is migrated and not when the scanned output fits", () => {
     const fits = setup();
-    expectGenerationBump(fits.threadId, false, () => {
+    expectGenerationBump(fits.db, fits.threadId, false, () => {
       expect(insertCommandOutput(fits.db, fits.threadId, "small")).toBe(
         "scanned",
       );
     });
 
     const oversized = setup();
-    expectGenerationBump(oversized.threadId, true, () => {
+    expectGenerationBump(oversized.db, oversized.threadId, true, () => {
       expect(
         insertCommandOutput(
           oversized.db,
@@ -276,7 +327,7 @@ describe("thread event rewrite generation", () => {
 
   it("does not change for daemon appends, increasing inserts or ignored duplicates", () => {
     const { db, threadId } = setup();
-    expectGenerationBump(threadId, false, () => {
+    expectGenerationBump(db, threadId, false, () => {
       insertEvents(db, noopNotifier, [
         message(threadId, 1),
         message(threadId, 2),
@@ -312,8 +363,14 @@ describe("thread event rewrite generation", () => {
       message(threadId, 4),
     ]);
     const otherBefore = getThreadEventRewriteGeneration(otherThreadId);
+    const otherOutline = {
+      itemsJson: "[]",
+      projectionKey: "other",
+      threadId: otherThreadId,
+    };
+    upsertThreadConversationOutlineRecord(db, otherOutline);
 
-    expectGenerationBump(threadId, true, () => {
+    expectGenerationBump(db, threadId, true, () => {
       expect(
         insertEvents(db, noopNotifier, [
           message(otherThreadId, 1),
@@ -322,5 +379,9 @@ describe("thread event rewrite generation", () => {
       ).toBe(2);
     });
     expect(getThreadEventRewriteGeneration(otherThreadId)).toBe(otherBefore);
+    expect(getThreadConversationOutlineRecord(db, otherThreadId)).toEqual({
+      itemsJson: otherOutline.itemsJson,
+      projectionKey: otherOutline.projectionKey,
+    });
   });
 });

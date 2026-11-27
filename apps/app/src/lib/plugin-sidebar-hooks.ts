@@ -20,9 +20,11 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { useSidebarThreadShortcut as useHostSidebarThreadShortcut } from "@/components/sidebar/sidebarThreadShortcuts";
 import {
+  resolveThreadTitleDisplayText,
   useThreadTitleMentionResources,
   type ThreadTitleMentionResources,
 } from "@/components/thread/ThreadTitleMentions";
+import { getThreadDisplayTitle } from "./thread-title";
 import {
   usePromptDraftHasInput,
   usePromptDraftInputThreadIds,
@@ -31,7 +33,6 @@ import {
   usePluginThreadRowStatus,
   usePluginThreadRowStatuses,
 } from "./plugin-thread-row-status";
-import { getThreadConversationCollapsedAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { useRetiredSidebarEnvironmentPullRequest } from "./retired-sidebar-pull-request";
 import { useHosts } from "@/hooks/queries/host-queries";
@@ -44,15 +45,16 @@ import {
 } from "@/hooks/mutations/thread-state-mutations";
 import { useRouteNavigate } from "@/components/ui/app-route-anchor";
 import { toPluginSidebarThread } from "./plugin-sidebar-threads";
-import { useSidebarThreadEntries } from "./sidebar-thread-entries";
-import { useSetRootComposeProjectId } from "./root-compose-selection";
-import { openThreadInSplit } from "./split-layout/openThreadInSplit";
 import {
-  getProjectComposeRoutePath,
-  getRootComposeRoutePath,
-  getSettingsProjectRoutePath,
-  getThreadRoutePath,
-} from "./route-paths";
+  useSidebarThreadEntries,
+  useSidebarThreadEntriesStore,
+  useSidebarThreadEntry,
+} from "./sidebar-thread-entries";
+import { openThreadForPlugin } from "./plugin-navigation-hooks";
+import { openNewThread } from "./split-layout/openNewThread";
+import { getProjectComposeRoutePath } from "./route-paths";
+import { useThreadRequests } from "@/lib/thread-requests";
+import { getSettingsTargetPath } from "@/components/settings/settings-sections";
 export { lookupCachedThread, resolveThread } from "./cached-thread.js";
 const EMPTY_THREADS: readonly PluginSidebarThread[] = [];
 const EMPTY_PROJECTS: readonly PluginSidebarProject[] = [];
@@ -78,8 +80,8 @@ function hostNamesFor(
 const pluginSidebarThreadByEntry = new WeakMap<
   ThreadListEntry,
   {
-    hostNamesById: ReadonlyMap<string, string>;
-    titleResources: ThreadTitleMentionResources;
+    hostName: string | null;
+    displayTitle: string;
     thread: PluginSidebarThread;
   }
 >();
@@ -89,20 +91,24 @@ function toPluginSidebarThreadCached(
   hostNamesById: ReadonlyMap<string, string>,
   titleResources: ThreadTitleMentionResources,
 ): PluginSidebarThread {
+  const hostName =
+    entry.environmentHostId === null
+      ? null
+      : (hostNamesById.get(entry.environmentHostId) ?? entry.environmentHostId);
+  const displayTitle = resolveThreadTitleDisplayText(
+    getThreadDisplayTitle(entry),
+    titleResources,
+  );
   const cached = pluginSidebarThreadByEntry.get(entry);
   if (
     cached !== undefined &&
-    cached.hostNamesById === hostNamesById &&
-    cached.titleResources === titleResources
+    cached.hostName === hostName &&
+    cached.displayTitle === displayTitle
   ) {
     return cached.thread;
   }
   const thread = toPluginSidebarThread(entry, hostNamesById, titleResources);
-  pluginSidebarThreadByEntry.set(entry, {
-    hostNamesById,
-    titleResources,
-    thread,
-  });
+  pluginSidebarThreadByEntry.set(entry, { hostName, displayTitle, thread });
   return thread;
 }
 
@@ -188,7 +194,7 @@ export function useSidebarThreads(
         name: project.name,
         isPersonal: project.id === PERSONAL_PROJECT_ID,
         href: getProjectComposeRoutePath(project.id),
-        settingsHref: getSettingsProjectRoutePath(project.id),
+        settingsHref: getSettingsTargetPath({ projectId: project.id }),
       })),
       sections: data.sections,
     };
@@ -205,80 +211,60 @@ export function useSidebarThreads(
   ]);
 }
 
-export function useSidebarThreadEntry(
-  threadId: string,
-): ThreadListEntry | null {
-  return useSidebarThreadEntries().get(threadId) ?? null;
-}
-
 export function useSidebarThreadActions(): PluginSidebarThreadActions {
   const navigate = useRouteNavigate();
   const store = useStore();
   const isCompact = useIsCompactViewport();
-  const setRootComposeProjectId = useSetRootComposeProjectId();
   const hostActions = useThreadActions();
-  const entriesById = useSidebarThreadEntries();
+  const threadRequests = useThreadRequests();
+  const entries = useSidebarThreadEntriesStore();
   const { mutateAsync: pinThreadAsync } = usePinThread();
   const { mutateAsync: unpinThreadAsync } = useUnpinThread();
   const { mutateAsync: updateThreadAsync } = useUpdateThread();
 
   const requireEntry = useCallback(
     (threadId: string): ThreadListEntry => {
-      const entry = entriesById.get(threadId);
-      if (entry === undefined) {
+      const entry = entries.get(threadId);
+      if (entry === null) {
         throw new Error(`Unknown thread: ${threadId}`);
       }
       return entry;
     },
-    [entriesById],
+    [entries],
   );
 
   return useMemo<PluginSidebarThreadActions>(
     () => ({
       open(threadId, options) {
-        const entry = entriesById.get(threadId);
-        if (entry === undefined) return;
-        const { projectId } = entry;
-        if (options?.split) {
-          store.set(getThreadConversationCollapsedAtom(threadId), false);
-          openThreadInSplit({
-            store,
-            navigate,
-            projectId,
-            threadId,
-            isCompact,
-          });
-          return;
-        }
-        store.set(getThreadConversationCollapsedAtom(threadId), false);
-        navigate(getThreadRoutePath({ projectId, threadId }));
+        const entry = entries.get(threadId);
+        if (entry === null) return;
+        openThreadForPlugin({
+          store,
+          navigate,
+          projectId: entry.projectId,
+          threadId,
+          isCompact,
+          split: options?.split ?? false,
+        });
       },
       openNewThread(options) {
-        const projectId = options?.projectId;
-        if (projectId !== undefined) {
-          setRootComposeProjectId(projectId);
-        }
-        const state = {
+        openNewThread({
+          navigate,
+          store,
+          isCompact,
+          ...(options?.projectId !== undefined
+            ? { projectId: options.projectId }
+            : {}),
           placement: options?.experimental_placement ?? {
             sectionId: options?.sectionId ?? null,
             pinned: false,
           },
-          ...(options?.focusPrompt ? { focusPrompt: true } : {}),
-          ...(options?.sectionId !== undefined
-            ? { sectionId: options.sectionId }
-            : {}),
+          ...(options?.focusPrompt === true ? { focusPrompt: true } : {}),
           ...(options?.environmentId !== undefined
-            ? { reuseEnvironmentId: options.environmentId }
+            ? { environmentId: options.environmentId }
             : {}),
-          ...(typeof options?.hostId === "string" &&
-          options.hostId.trim().length > 0
-            ? { newEnvironmentHostId: options.hostId.trim() }
-            : {}),
-        };
-        navigate(
-          getRootComposeRoutePath(),
-          Object.keys(state).length > 0 ? { state } : undefined,
-        );
+          ...(options?.hostId !== undefined ? { hostId: options.hostId } : {}),
+        });
       },
       async setPinned(threadId, pinned) {
         const entry = requireEntry(threadId);
@@ -299,24 +285,24 @@ export function useSidebarThreadActions(): PluginSidebarThreadActions {
         await updateThreadAsync({ id: threadId, title });
       },
       archive(threadId) {
-        hostActions.requestArchive(requireEntry(threadId));
+        void threadRequests.requestArchive([threadId]);
       },
       experimental_archiveEnvironmentThreads(environmentId) {
         return hostActions.archiveEnvironmentThreads(environmentId);
       },
       requestDelete(threadId) {
-        hostActions.requestDelete(requireEntry(threadId));
+        void threadRequests.requestDelete([threadId]);
       },
     }),
     [
-      entriesById,
+      entries,
       hostActions,
       isCompact,
       navigate,
       pinThreadAsync,
       requireEntry,
-      setRootComposeProjectId,
       store,
+      threadRequests,
       unpinThreadAsync,
       updateThreadAsync,
     ],

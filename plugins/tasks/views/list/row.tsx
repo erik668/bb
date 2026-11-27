@@ -1,14 +1,21 @@
-import { memo, useState } from "react";
+import { memo, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type {
   Label,
   Project,
   Task,
   TaskThread,
 } from "../../shared/contract.js";
+import { experimental_matchesShortcutKey as matchesShortcutKey } from "@get-bb/plugin-sdk/app";
 import { Icon } from "@/components/ui/icon";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import type { TaskRowMeta } from "./data.js";
-import { activeWorkLabel, formatDueDate, partitionLabels } from "./lib.js";
+import {
+  activeWorkLabel,
+  formatDueDate,
+  partitionLabels,
+  type SubTaskProgress,
+} from "./lib.js";
 import type { EditFn } from "./property-menus.js";
 import {
   isBareKey,
@@ -91,6 +98,12 @@ function LabelChips({
 
 interface TaskRowProps {
   task: Task;
+  child?: boolean;
+  muted?: boolean;
+  subTasks?: SubTaskProgress;
+  subTasksOpen?: boolean;
+  subTasksLocked?: boolean;
+  onToggleSubTasks?: (taskId: string) => void;
   meta: TaskRowMeta | undefined;
   project: Project | undefined;
   showProject: boolean;
@@ -103,8 +116,61 @@ interface TaskRowProps {
   pending: boolean;
 }
 
+const KEY_TYPOGRAPHY = "text-xs tabular-nums";
+
+export function KeyColumnScope({
+  keys,
+  className,
+  children,
+}: {
+  keys: readonly string[];
+  className: string;
+  children: ReactNode;
+}) {
+  const scopeRef = useRef<HTMLDivElement>(null);
+  const sizerRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const scope = scopeRef.current;
+    const sizer = sizerRef.current;
+    if (scope === null || sizer === null) return;
+    const measure = () => Math.ceil(sizer.getBoundingClientRect().width);
+    const apply = (width: number) => {
+      scope.style.setProperty("--task-key-width", `${width}px`);
+    };
+    apply(measure());
+    return observeSharedResize(sizer, { read: measure, write: apply });
+  }, []);
+  return (
+    <div ref={scopeRef} className={cn("relative", className)}>
+      <div
+        ref={sizerRef}
+        aria-hidden
+        className={cn(
+          "pointer-events-none invisible absolute left-0 top-0 flex h-0 w-max flex-col overflow-hidden",
+          KEY_TYPOGRAPHY,
+        )}
+      >
+        {keys.map((key) => (
+          <span
+            key={key}
+            data-key-sizer={key}
+            className="before:content-[attr(data-key-sizer)]"
+          />
+        ))}
+      </div>
+      {children}
+    </div>
+  );
+}
+
 export const TaskRow = memo(function TaskRow({
   task,
+  child = false,
+  muted = false,
+  subTasks,
+  subTasksOpen = false,
+  subTasksLocked = false,
+  onToggleSubTasks,
   meta,
   project,
   showProject,
@@ -132,7 +198,9 @@ export const TaskRow = memo(function TaskRow({
         className={cn(
           "relative grid w-full grid-cols-[auto_auto_minmax(0,1fr)] items-center gap-x-2 gap-y-1 border-b border-border-hairline px-3.5 py-1.5 text-left transition-opacity hover:bg-state-hover",
           "@md:flex @md:h-[34px] @md:py-0",
+          child && "pl-9",
           pending && "opacity-70",
+          muted && "opacity-50",
         )}
       >
         <button
@@ -141,11 +209,10 @@ export const TaskRow = memo(function TaskRow({
           onClick={() => onOpen(task.key)}
           onKeyDown={(event) => {
             if (!isBareKey(event)) return;
-            const key = event.key.toLowerCase();
-            if (key === "s") {
+            if (matchesShortcutKey(event, "s")) {
               event.preventDefault();
               setOpenMenu("status");
-            } else if (key === "p") {
+            } else if (matchesShortcutKey(event, "p")) {
               event.preventDefault();
               setOpenMenu("priority");
             }
@@ -159,7 +226,13 @@ export const TaskRow = memo(function TaskRow({
           onOpenChange={(next) => setOpenMenu(next ? "priority" : null)}
           className="col-start-1 row-start-2"
         />
-        <span className="col-start-2 row-start-2 min-w-0 truncate text-xs tabular-nums text-subtle-foreground @max-md:max-w-32 @md:w-14 @md:shrink-0">
+        <span
+          title={task.key}
+          className={cn(
+            "col-start-2 row-start-2 min-w-0 truncate text-subtle-foreground @max-md:max-w-32 @md:w-[var(--task-key-width,3.5rem)] @md:shrink-0",
+            KEY_TYPOGRAPHY,
+          )}
+        >
           {task.key}
         </span>
         <StatusEditor
@@ -174,6 +247,22 @@ export const TaskRow = memo(function TaskRow({
         </span>
         <span className="col-start-3 row-start-2 flex min-w-0 items-center gap-1.5 justify-self-end text-xs text-subtle-foreground @max-md:overflow-hidden @md:shrink-0">
           {meta ? <ActiveChip threads={meta.activeThreads} /> : null}
+          {subTasks !== undefined ? (
+            <button
+              type="button"
+              aria-expanded={subTasksOpen}
+              aria-label={`${subTasksOpen ? "Collapse" : "Expand"} sub-tasks of ${task.key}`}
+              disabled={subTasksLocked}
+              onClick={() => onToggleSubTasks?.(task.id)}
+              className={cn(RAIL_CHIP_CLASS, "relative disabled:opacity-70")}
+            >
+              <Icon
+                name={subTasksOpen ? "ChevronDown" : "ChevronRight"}
+                className="size-3"
+              />
+              {subTasks.done}/{subTasks.total}
+            </button>
+          ) : null}
           <LabelChips task={task} labelsById={labelsById} />
           {task.dueDate !== null ? (
             <span className={`${RAIL_CHIP_CLASS} shrink-0 tabular-nums`}>

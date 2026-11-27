@@ -54,6 +54,7 @@ export interface RenderTimelineFixtureArgs {
 }
 
 export interface RenderedTimelineFixture {
+  pendingSteers: TimelineRow[];
   pendingTodos: ThreadTimelinePendingTodos | null;
   events: ThreadEventRow[];
   messages: EventProjectionMessage[];
@@ -748,6 +749,9 @@ export function createTimelineEventFactory(
             exitCode: args.exitCode,
             status: args.status ?? "completed",
             approvalStatus: args.approvalStatus ?? null,
+            ...(args.parentToolCallId
+              ? { parentToolCallId: args.parentToolCallId }
+              : {}),
             ...(args.presentation ? { presentation: args.presentation } : {}),
           },
         },
@@ -783,6 +787,9 @@ export function createTimelineEventFactory(
             exitCode: args.exitCode,
             status: args.status ?? "pending",
             approvalStatus: args.approvalStatus ?? null,
+            ...(args.parentToolCallId
+              ? { parentToolCallId: args.parentToolCallId }
+              : {}),
             ...(args.presentation ? { presentation: args.presentation } : {}),
           },
         },
@@ -1520,6 +1527,7 @@ export function renderTimelineFixture(
     options: {
       ...commonProjectionOptions,
       includeNestedRows,
+      omitSettledDelegationChildRows: false,
     },
   });
   const rows = timeline.rows;
@@ -1561,7 +1569,7 @@ export function renderTimelineFixture(
   }
 
   const messages = flattenEventProjectionMessagesDeep(projection);
-  const text = formatThreadTimelineText(rows, {
+  const text = formatThreadTimelineText([...rows, ...timeline.pendingSteers], {
     color: false,
     verbose: args.verbose ?? true,
   });
@@ -1572,6 +1580,7 @@ export function renderTimelineFixture(
   return {
     events: args.events,
     messages,
+    pendingSteers: timeline.pendingSteers,
     pendingTodos: timeline.pendingTodos,
     projection,
     rows,

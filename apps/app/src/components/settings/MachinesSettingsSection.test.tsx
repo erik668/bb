@@ -114,27 +114,28 @@ function systemConfig(): SystemConfigResponse {
 function stubSidebarBootstrapFetch(): void {
   vi.stubGlobal(
     "fetch",
-    vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          projects: [
-            {
-              id: "proj_1",
-              sources: [
-                { id: "src_1", hostId: "host_primary" },
-                { id: "src_2", hostId: "host_remote" },
-              ],
-              threads: [],
-            },
-            {
-              id: "proj_2",
-              sources: [{ id: "src_3", hostId: "host_primary" }],
-              threads: [],
-            },
-          ],
-        }),
-        { status: 200, headers: { "content-type": "application/json" } },
-      ),
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            projects: [
+              {
+                id: "proj_1",
+                sources: [
+                  { id: "src_1", hostId: "host_primary" },
+                  { id: "src_2", hostId: "host_remote" },
+                ],
+                threads: [],
+              },
+              {
+                id: "proj_2",
+                sources: [{ id: "src_3", hostId: "host_primary" }],
+                threads: [],
+              },
+            ],
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        ),
     ),
   );
 }
@@ -227,13 +228,20 @@ describe("MachinesSettingsSection", () => {
         ...offlineHost.lifecycle,
         phase: "removing" as const,
         message: "Provider credentials expired.",
-        teardown: { status: "failed" as const, attempt: 3 },
+        teardown: {
+          status: "failed" as const,
+          attempt: 3,
+          needsRecovery: false,
+          blockedByEnvironmentId: null,
+        },
       },
     };
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
     vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, failedHost]);
     vi.mocked(sdk.hosts.experimental_retryCleanup).mockResolvedValue({
       ok: true,
+      progress: "in-progress",
+      warnings: [],
     });
     stubSidebarBootstrapFetch();
     renderSection();
@@ -498,7 +506,7 @@ describe("MachinesSettingsSection", () => {
     ).toBeDefined();
     expect(
       screen.getByText(
-        "A new machine has to reach this server over the network. Choose the address it should use.",
+        "A new machine has to reach this server over the network. Set up at least one route for it to get here.",
       ),
     ).toBeDefined();
   });
@@ -512,7 +520,10 @@ describe("MachinesSettingsSection", () => {
         lastRejectedProtocolVersion: HOST_DAEMON_PROTOCOL_VERSION - 1,
       },
     ]);
-    vi.mocked(sdk.hosts.retryUpdate).mockResolvedValue({ ok: true });
+    vi.mocked(sdk.hosts.retryUpdate).mockResolvedValue({
+      ok: true,
+      progress: "complete",
+    });
     stubSidebarBootstrapFetch();
 
     renderSection();
@@ -648,7 +659,11 @@ describe("MachinesSettingsSection", () => {
   it("removes a machine after confirmation", async () => {
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
     vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, offlineHost]);
-    vi.mocked(sdk.hosts.delete).mockResolvedValue({ ok: true });
+    vi.mocked(sdk.hosts.delete).mockResolvedValue({
+      ok: true,
+      progress: "complete",
+      warnings: [],
+    });
     stubSidebarBootstrapFetch();
 
     renderSection();
@@ -678,12 +693,21 @@ describe("MachinesSettingsSection", () => {
         ...offlineHost.lifecycle,
         phase: "removing" as const,
         message: "Host is not connected",
-        teardown: { status: "failed" as const, attempt: 0 },
+        teardown: {
+          status: "failed" as const,
+          attempt: 0,
+          needsRecovery: false,
+          blockedByEnvironmentId: null,
+        },
       },
     };
     vi.mocked(sdk.system.config).mockResolvedValue(systemConfig());
     vi.mocked(sdk.hosts.list).mockResolvedValue([primaryHost, strandedHost]);
-    vi.mocked(sdk.hosts.delete).mockResolvedValue({ ok: true });
+    vi.mocked(sdk.hosts.delete).mockResolvedValue({
+      ok: true,
+      progress: "complete",
+      warnings: [],
+    });
     stubSidebarBootstrapFetch();
 
     renderSection();

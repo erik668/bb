@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { deriveConnectBaseUrl } from "@bb/connect-client";
+import { sliceUtf16Head } from "@bb/text-utils";
 
 export interface MachineCode {
   code: string;
@@ -20,13 +21,20 @@ export async function redeemMachineCode(args: {
   signal: AbortSignal;
   code: string;
   serverUrl: string;
+  deviceName: string | null;
 }): Promise<{ credential: string; machineId: string; serverUrl: string }> {
   const response = await fetch(
     `${deriveConnectBaseUrl(args.serverUrl)}/api/connect/redeem-machine`,
     {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: args.code }),
+      body: JSON.stringify({
+        code: args.code,
+        ...(args.deviceName === null
+          ? {}
+          : { deviceName: sliceUtf16Head(args.deviceName, 128) }),
+        kind: "host",
+      }),
       signal: AbortSignal.any([args.signal, AbortSignal.timeout(10_000)]),
     },
   );

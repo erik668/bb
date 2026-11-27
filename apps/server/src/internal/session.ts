@@ -1,9 +1,11 @@
 import {
   getAppSettings,
   getLatestSessionForHost,
+  getOrCreateServerId,
   getHost,
   listRetiredLoadedEnvironmentIdsOnHost,
   openSession,
+  recordSessionRoute,
   upsertHost,
   updateHost,
 } from "@bb/db";
@@ -20,7 +22,11 @@ import {
 import type { Hono } from "hono";
 import { z } from "zod";
 import type { AppDeps } from "../types.js";
-import { HEARTBEAT_INTERVAL_MS, LEASE_TIMEOUT_MS } from "../constants.js";
+import {
+  HEARTBEAT_INTERVAL_MS,
+  HOST_RECONNECT_GRACE_MS,
+  LEASE_TIMEOUT_MS,
+} from "../constants.js";
 import { ApiError } from "../errors.js";
 import { requirePublicThreadEnvironment } from "../services/lib/entity-lookup.js";
 import {
@@ -31,8 +37,20 @@ import { requireAuthenticatedDaemonSession } from "./session-state.js";
 import { createAttachmentContentResponse } from "../services/projects/attachments.js";
 import { handleHostSessionOpened } from "./session-owner-side-effects.js";
 import { resolveReportedConnectMachineId } from "./hosts.js";
+import {
+  getGateAuthKind,
+  getTrustedRemoteAddress,
+} from "../request-context.js";
+import { isLoopbackAddress } from "@bb/config/loopback";
+import { isServerMachineHost } from "../services/hosts/primary-host.js";
+import {
+  routesForHost,
+  serverAccessProviderForKind,
+} from "../services/machines/server-access.js";
+import type { HostDaemonServerRoutes } from "@bb/host-daemon-contract";
 import type { PluginService } from "../services/plugins/plugin-service.js";
 import { HostEnvironmentSync } from "../services/hosts/host-environment-sync.js";
+import { requestHostDerivedStateRefresh } from "../services/hosts/host-derived-state.js";
 
 const sessionOpenCompatibilitySchema = z
   .object({
@@ -59,22 +77,75 @@ function sessionOpenValidationMessage(error: z.ZodError): string {
   return issue?.message ?? "Invalid request";
 }
 
+const SESSION_OPEN_ROUTE_DEADLINE_MS = 3_000;
+const ROUTE_ACQUISITION_TIMEOUT_MS = 60_000;
+
 export function registerInternalSessionRoutes(
   app: Hono,
   deps: AppDeps,
   plugins: PluginService,
   serverMove: ServerMoveSessionGate,
 ): void {
-  const machineEnvironment = new HostEnvironmentSync(deps);
+  const machineEnvironment = new HostEnvironmentSync(deps, (hostId) =>
+    requestHostDerivedStateRefresh(deps, hostId),
+  );
+  const sentRoutes = new Map<string, string>();
+  const pushRoutes = (hostId: string, serverRoutes: HostDaemonServerRoutes) => {
+    const signature = JSON.stringify(serverRoutes);
+    if (sentRoutes.get(hostId) === signature) return;
+    if (!deps.hub.hasDaemonForHost(hostId)) return;
+    sentRoutes.set(hostId, signature);
+    deps.hub.sendDaemonMessage(hostId, {
+      type: "server-routes.replace",
+      serverRoutes,
+    });
+  };
+  const hostServerRoutes = async (
+    hostId: string,
+    providerDeadlineMs?: number,
+  ): Promise<HostDaemonServerRoutes> => {
+    if (isServerMachineHost(deps, hostId)) {
+      return { serverId: getOrCreateServerId(deps.db), routes: [] };
+    }
+    return routesForHost(deps, {
+      hostId,
+      signal: AbortSignal.timeout(ROUTE_ACQUISITION_TIMEOUT_MS),
+      ...(providerDeadlineMs === undefined
+        ? {}
+        : {
+            providerDeadlineMs,
+            onLateRoutes: (routes: HostDaemonServerRoutes) =>
+              pushRoutes(hostId, routes),
+          }),
+    });
+  };
   deps.hub.onChangedMessage((message) => {
-    const hostIds =
-      message.entity === "system" && message.changes.includes("config-changed")
-        ? deps.hub.listConnectedHostIds()
-        : message.entity === "host" &&
-            message.id &&
-            message.changes.includes("host-connected")
-          ? [message.id]
-          : [];
+    if (
+      message.entity === "system" &&
+      message.changes.includes("config-changed")
+    ) {
+      for (const hostId of deps.hub.listConnectedHostIds()) {
+        void hostServerRoutes(hostId).then(
+          (routes) => pushRoutes(hostId, routes),
+          (error: unknown) =>
+            deps.logger.warn(
+              { hostId, error: error instanceof Error ? error.message : error },
+              "Could not refresh server routes for machine",
+            ),
+        );
+      }
+    }
+  });
+  deps.hub.onChangedMessage((message) => {
+    const configChanged =
+      message.entity === "system" && message.changes.includes("config-changed");
+    const hostIds = configChanged
+      ? deps.hub.listConnectedHostIds()
+      : message.entity === "host" &&
+          message.id &&
+          message.changes.includes("host-connected")
+        ? [message.id]
+        : [];
     if (hostIds.length === 0) return;
     const { idleProviderSessionTimeoutMinutes } = getAppSettings(deps.db);
     for (const hostId of hostIds) {
@@ -188,6 +259,19 @@ export function registerInternalSessionRoutes(
       heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
       leaseTimeoutMs: LEASE_TIMEOUT_MS,
     });
+    recordSessionRoute(deps.db, {
+      sessionId: session.id,
+      route:
+        payload.route ??
+        (getGateAuthKind(context) === "machine"
+          ? serverAccessProviderForKind(deps, "relay")
+          : (() => {
+              const address = getTrustedRemoteAddress(context);
+              return address !== undefined && !isLoopbackAddress(address)
+                ? serverAccessProviderForKind(deps, "local-network")
+                : null;
+            })()),
+    });
     deps.hub.recordDaemonSessionPlatform(session.id, payload.platform);
     deps.hub.recordDaemonSessionLocalApiPort(session.id, payload.localApiPort);
     deps.sharedPorts.recordHostConnectCapability({
@@ -200,6 +284,7 @@ export function registerInternalSessionRoutes(
       activeThreads: payload.activeThreads,
       openThreadWork: payload.openThreadWork,
       hostId: daemon.hostId,
+      turnCommandThreadIds: payload.turnCommandThreadIds,
       undeliveredEventThreadIds: payload.undeliveredEventThreadIds,
       openedSession: session,
       previousSession,
@@ -216,22 +301,23 @@ export function registerInternalSessionRoutes(
       },
     );
 
+    const serverRoutes = await hostServerRoutes(
+      daemon.hostId,
+      SESSION_OPEN_ROUTE_DEADLINE_MS,
+    );
+    sentRoutes.set(daemon.hostId, JSON.stringify(serverRoutes));
+
     return context.json(
       {
         sessionId: session.id,
+        serverRoutes,
         heartbeatIntervalMs: HEARTBEAT_INTERVAL_MS,
         leaseTimeoutMs: LEASE_TIMEOUT_MS,
+        reconnectGraceMs: HOST_RECONNECT_GRACE_MS,
         watchSet: deps.watchInterests.reconcileWatchSetForHost(daemon.hostId),
         connectShares: deps.sharedPorts.reconcileSharedPortsForHost(
           daemon.hostId,
         ),
-        ...(deps.sharedPorts.hostSupportsNextTunnel(daemon.hostId)
-          ? {
-              connectNext: deps.sharedPorts.reconcileNextTunnelForHost(
-                daemon.hostId,
-              ),
-            }
-          : {}),
         pluginHostGenerations: plugins.listHostArtifactGenerations(),
         retiredEnvironmentIds,
         endedInteractiveRequests,

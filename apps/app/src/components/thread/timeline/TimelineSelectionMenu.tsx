@@ -238,8 +238,10 @@ export function TimelineSelectionMenu({
         : createSelectionAnchor(selection, collisionBoundary),
     [selection, collisionBoundary],
   );
-  const virtualAnchorRef = useRef(virtualAnchor);
-  virtualAnchorRef.current = virtualAnchor;
+  const virtualAnchorRef = useMemo(
+    () => ({ current: virtualAnchor }),
+    [virtualAnchor],
+  );
 
   if (!selection) return null;
 
@@ -277,14 +279,15 @@ export function TimelineSelectionMenu({
       <PopoverPrimitive.Portal container={container ?? undefined}>
         <PopoverPrimitive.Content
           {...portalScopeProps}
+          data-touch-selection-passthrough
           side={anchorSide}
           align="center"
           sideOffset={6}
           collisionPadding={SELECTION_MENU_COLLISION_PADDING}
           collisionBoundary={collisionBoundary}
           className={SELECTION_MENU_CONTENT_CLASS}
-          onPointerEnter={() => virtualAnchorRef.current.hold()}
-          onPointerLeave={() => virtualAnchorRef.current.release()}
+          onPointerEnter={() => virtualAnchor.hold()}
+          onPointerLeave={() => virtualAnchor.release()}
           onEscapeKeyDown={() => onDismiss()}
           onOpenAutoFocus={(event) => event.preventDefault()}
           onCloseAutoFocus={(event) => event.preventDefault()}

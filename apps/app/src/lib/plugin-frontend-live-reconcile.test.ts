@@ -19,6 +19,9 @@ function candidate(pluginId: string, hash: string): PluginFrontendCandidate {
       sdkVersion: "0.1.0",
       compatible: true,
       runtimeSlots: [],
+      staticChunkUrls: [],
+      lazyChunkUrls: [],
+      lazyRuntimeSlots: [],
     },
   };
 }
@@ -27,7 +30,10 @@ function deps(
   candidates: () => PluginFrontendCandidate[],
 ): PluginFrontendReconcileDeps {
   return {
-    fetchCandidates: async () => candidates(),
+    fetchCandidates: async () => ({
+      candidates: candidates(),
+      startingPluginIds: [],
+    }),
     importModule: async () => ({ default: definePluginApp(() => {}) }),
     importRetryDelaysMs: [],
     applyCss: () => {},
@@ -37,10 +43,14 @@ function deps(
     resetCrashedSlots: () => {},
     setRegistrations: () => {},
     removeRegistrations: () => {},
+    setLoadingPlugins: () => {},
+    settlePluginLoad: () => {},
     beginSlotBatch: () => () => {},
     flushSlotBatch: () => {},
     warn: () => {},
     priorityPluginIds: () => [],
+    restoredLazyParts: () => [],
+    whenScreenPainted: () => Promise.resolve(),
   };
 }
 

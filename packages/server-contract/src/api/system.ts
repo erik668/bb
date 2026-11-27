@@ -1,5 +1,6 @@
 import { rejectMultipleWorkspaceSelectors } from "./shared.js";
 import { z } from "zod";
+import { operationResponseSchema } from "./operation.js";
 import {
   aiServiceSelectionSchema,
   aiServiceSelectionsSchema,
@@ -18,6 +19,7 @@ import {
   permissionModeSchema,
   pluginThemeMetaSchema,
   providerInfoSchema,
+  serverRouteKindSchema,
 } from "@bb/domain";
 import { providerHealthSchema as providerHealthSchema } from "@bb/provider-bridge-protocol/provider-maintenance";
 import { hostPlatformSchema } from "@bb/host-daemon-contract/local";
@@ -103,6 +105,18 @@ export const systemProvidersQuerySchema = z
   .partial()
   .superRefine(rejectMultipleWorkspaceSelectors);
 export type SystemProvidersQuery = z.infer<typeof systemProvidersQuerySchema>;
+
+export const systemProviderStatesQuerySchema = z
+  .object({
+    ...systemProviderHostQueryFields,
+    capability: z.enum(["usage"]),
+    providerId: z.string().min(1),
+  })
+  .partial()
+  .superRefine(rejectMultipleWorkspaceSelectors);
+export type SystemProviderStatesQuery = z.infer<
+  typeof systemProviderStatesQuerySchema
+>;
 
 export const systemExecutionOptionsQuerySchema = z
   .object({
@@ -237,6 +251,35 @@ const onboardingFailureReasonTelemetrySchema = z.enum([
   "other",
 ]);
 
+const onboardingFailureDetailTelemetrySchema = z.enum([
+  "not_found",
+  "permission",
+  "network",
+  "disk_full",
+  "npm_error",
+  "verification_failed",
+  "unavailable",
+  "in_progress",
+  "signal",
+  "exit_nonzero",
+  "denied",
+  "expired",
+  "login_failed",
+  "rate_limited",
+  "service_unavailable",
+  "account_unavailable",
+  "invalid_code",
+  "expired_code",
+  "already_used",
+  "unauthorized",
+  "profile_unavailable",
+  "superseded",
+  "other",
+]);
+export type OnboardingFailureDetail = z.infer<
+  typeof onboardingFailureDetailTelemetrySchema
+>;
+
 const telemetryResourceIdSchema = z
   .string()
   .regex(/^[a-z0-9][a-z0-9_-]{0,127}$/);
@@ -291,8 +334,11 @@ export const recordTelemetryEventRequestSchema = z.discriminatedUnion("name", [
           succeeded_count: z.number().int().nonnegative().optional(),
           timed_out: z.boolean().optional(),
           unreadable_count: z.number().int().nonnegative().optional(),
+          duration_ms: z.number().int().nonnegative().optional(),
           failure_reason: onboardingFailureReasonTelemetrySchema.optional(),
           failure_stage: z.enum(["sign_in", "pairing", "turn_on"]).optional(),
+          failure_detail: onboardingFailureDetailTelemetrySchema.optional(),
+          exit_code: z.number().int().optional(),
         })
         .strict(),
     })
@@ -325,6 +371,8 @@ export const recordTelemetryEventRequestSchema = z.discriminatedUnion("name", [
           ]),
           resource_id: telemetryResourceIdSchema,
           failure_reason: onboardingFailureReasonTelemetrySchema.optional(),
+          failure_detail: onboardingFailureDetailTelemetrySchema.optional(),
+          exit_code: z.number().int().optional(),
         })
         .strict(),
     })
@@ -445,15 +493,35 @@ export type RecordTelemetryEventRequest = z.infer<
   typeof recordTelemetryEventRequestSchema
 >;
 
-export const setupGuideVariantSchema = z.enum(["control", "new"]);
-export type SetupGuideVariant = z.infer<typeof setupGuideVariantSchema>;
-
 export const systemSetupGuideResponseSchema = z.object({
-  variant: setupGuideVariantSchema,
+  variant: z.literal("new"),
 });
 export type SystemSetupGuideResponse = z.infer<
   typeof systemSetupGuideResponseSchema
 >;
+
+export const serverAccessAvailabilitySchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("available"),
+    serverUrl: z.string().url().optional(),
+  }),
+  z.object({
+    status: z.literal("setup-required"),
+    message: z.string(),
+  }),
+  z.object({ status: z.literal("unavailable"), message: z.string() }),
+]);
+export type ServerAccessAvailability = z.infer<
+  typeof serverAccessAvailabilitySchema
+>;
+
+export const serverRouteSchema = z.object({
+  providerId: z.string().min(1),
+  kind: serverRouteKindSchema,
+  displayName: z.string().min(1),
+  url: z.string().url(),
+});
+export type ServerRoute = z.infer<typeof serverRouteSchema>;
 
 export const serverAccessStatusSchema = z.object({
   providers: z.array(
@@ -462,28 +530,24 @@ export const serverAccessStatusSchema = z.object({
       displayName: z.string(),
       description: z.string(),
       pluginId: z.string().min(1).nullable(),
-      availability: z
-        .discriminatedUnion("status", [
-          z.object({
-            status: z.literal("available"),
-            serverUrl: z.string().url().optional(),
-          }),
-          z.object({
-            status: z.literal("setup-required"),
-            message: z.string(),
-          }),
-          z.object({ status: z.literal("unavailable"), message: z.string() }),
-        ])
-        .nullable(),
+      routeKind: serverRouteKindSchema,
+      availability: serverAccessAvailabilitySchema,
+      urls: z.array(z.string().url()),
     }),
   ),
-  defaultProviderId: z.string(),
   effectiveUrl: z.string().nullable(),
   urlSource: z.enum(["setting", "BB_EXTERNAL_URL"]).nullable(),
+  localNetwork: z.object({
+    bindHost: z.enum(["127.0.0.1", "0.0.0.0"]),
+    addresses: z.array(z.string()),
+    listenerError: z.string().nullable(),
+  }),
 });
 export type ServerAccessStatus = z.infer<typeof serverAccessStatusSchema>;
 
 export const systemConfigResponseSchema = z.object({
+  serverId: z.string().min(1),
+  routes: z.array(serverRouteSchema),
   serverAccess: serverAccessStatusSchema,
   generalSettings: appSettingsSchema.extend({
     showUnhandledProviderEvents: z.boolean().optional(),
@@ -684,9 +748,7 @@ export type SystemAppUpdateAcknowledgeRequest = z.infer<
   typeof systemAppUpdateAcknowledgeRequestSchema
 >;
 
-export const systemConfigReloadResponseSchema = z.object({
-  ok: z.literal(true),
-});
+export const systemConfigReloadResponseSchema = operationResponseSchema;
 
 export const cliSkillMachineStatusSchema = z.enum([
   "installed",
@@ -831,3 +893,9 @@ export const systemProviderEnabledRequestSchema = z
 export type SystemProviderEnabledRequest = z.infer<
   typeof systemProviderEnabledRequestSchema
 >;
+
+export const desktopQuitStatusSchema = z.object({
+  confirmDesktopQuit: z.boolean(),
+  runningAgentCount: z.number().int().nonnegative(),
+});
+export type DesktopQuitStatus = z.infer<typeof desktopQuitStatusSchema>;

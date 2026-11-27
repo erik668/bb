@@ -1,6 +1,5 @@
 import { reportEnvironmentHookProgress } from "../../src/services/environments/environment-hooks.js";
 import {
-  listEvents,
   getEnvironment,
   getHost,
   getLatestSessionForHost,
@@ -38,6 +37,7 @@ import {
   seedSession,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 afterEach(() => {
   clearAllThreadProvisionSchedules();
@@ -186,6 +186,9 @@ describe("composed machine thread lifecycle", () => {
           operationId: clone.command.operationId,
           entry: {
             type: "output",
+            key: "fixture",
+            startedAt: null,
+            metadata: null,
             text: "Receiving objects: 42%",
             status: null,
           },

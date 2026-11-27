@@ -30,8 +30,12 @@ function respond(id, result) {
   send({ jsonrpc: "2.0", id, result });
 }
 
-function respondError(id, code, message) {
-  send({ jsonrpc: "2.0", id, error: { code, message } });
+function respondError(id, code, message, data) {
+  send({
+    jsonrpc: "2.0",
+    id,
+    error: { code, message, ...(data === undefined ? {} : { data }) },
+  });
 }
 
 const ZERO_WORK_PROMPT_TEXT = "/clear";
@@ -58,6 +62,9 @@ const INTERRUPT_BEFORE_START_PROMPT_TEXT = "/interrupt-before-start";
 const INTERRUPTIBLE_PROMPT_TEXT = "/wait-for-interrupt";
 
 const SUBAGENT_THEN_CRASH_PROMPT_TEXT = "/subagent-then-crash";
+
+const BACKGROUND_COMMAND_PROMPT_TEXT = "/background-command";
+const backgroundCommandsByProcessId = new Map();
 
 function firstInputText(input) {
   const first = Array.isArray(input) ? input[0] : undefined;
@@ -218,6 +225,11 @@ if (script?.launchLogPath) {
       args: process.argv.slice(2),
       poolToken: process.env.CODEX_POOL_AUTH_TOKEN ?? null,
       codexHome: process.env.CODEX_HOME ?? null,
+      testEnv: Object.fromEntries(
+        Object.entries(process.env).filter(([name]) =>
+          name.startsWith("CODEX_SIGNATURE_TEST_"),
+        ),
+      ),
     })}\n`,
   );
 }
@@ -374,6 +386,21 @@ function requestFromClient(method, params) {
   });
 }
 
+async function withdrawnRequestFromClient(method, params, withdrawAfterMs) {
+  outboundRequestCounter += 1;
+  const id = `fx-req-${outboundRequestCounter}`;
+  pendingOutboundRequests.set(id, () => {});
+  send({ jsonrpc: "2.0", id, method, params });
+  await new Promise((resolve) => setTimeout(resolve, withdrawAfterMs));
+  if (!pendingOutboundRequests.delete(id)) {
+    return;
+  }
+  notify("serverRequest/resolved", {
+    threadId: params.threadId,
+    requestId: id,
+  });
+}
+
 const turnCursorPath = script?.turnCursorPath ?? null;
 const goalsByThreadId = new Map();
 
@@ -411,6 +438,14 @@ async function runScriptFileTurn(threadId) {
   for (const entry of turn) {
     const params = withThreadId(entry.params ?? {}, threadId);
     if (entry.kind === "request") {
+      if (typeof entry.withdrawAfterMs === "number") {
+        await withdrawnRequestFromClient(
+          entry.method,
+          params,
+          entry.withdrawAfterMs,
+        );
+        continue;
+      }
       await requestFromClient(entry.method, params);
       continue;
     }
@@ -440,7 +475,7 @@ async function handleRequest(message) {
   }
   switch (method) {
     case "initialize":
-      respond(id, {});
+      respond(id, script?.initializeResult ?? {});
       return;
     case "account/rateLimits/read":
       if (script?.rateLimitRead) {
@@ -513,6 +548,20 @@ async function handleRequest(message) {
       return;
     }
     case "thread/resume": {
+      if (script?.resumeProviderMissing) {
+        respondError(id, -32600, "Pool no longer configured", {
+          type: "modelProviderNotConfigured",
+          modelProvider: "bb-account-pool",
+        });
+        return;
+      }
+      if (script?.resumeProviderMismatch) {
+        respondError(id, -32600, "Provider mismatch", {
+          type: "modelProviderMismatch",
+          ...script.resumeProviderMismatch,
+        });
+        return;
+      }
       servesThread = true;
       if (!acquireWriterLock()) {
         logProcessStep("writer-conflict");
@@ -540,6 +589,10 @@ async function handleRequest(message) {
         replayLastTurnUsage(params.threadId);
       }
       respond(id, {
+        modelProvider: script?.resumedModelProvider,
+        ...(script?.resumedSandbox === undefined
+          ? {}
+          : { sandbox: script.resumedSandbox }),
         thread: {
           id: params.threadId,
           ...(script?.resumedDaybreakEnabled === undefined
@@ -575,7 +628,10 @@ async function handleRequest(message) {
       const threadId = replaysUsage
         ? `usage-replay-fork-${processInstanceId}-${threadCounter}`
         : `codex-fx-${processInstanceId}-fork-${threadCounter}`;
-      respond(id, { thread: { id: threadId } });
+      respond(id, {
+        modelProvider: params.modelProvider,
+        thread: { id: threadId },
+      });
 
       if (replaysUsage) {
         replayLastTurnUsage(threadId);
@@ -610,6 +666,39 @@ async function handleRequest(message) {
         setTimeout(() => process.exit(1), 20);
         return;
       }
+      if (firstInputText(params.input) === BACKGROUND_COMMAND_PROMPT_TEXT) {
+        turnCounter += 1;
+        const turnId = `turn-fx-${turnCounter}`;
+        const item = {
+          type: "commandExecution",
+          id: `exec-fx-${turnCounter}`,
+          command: "/bin/zsh -lc 'npm run dev'",
+          cwd: "/tmp",
+          processId: `proc-fx-${turnCounter}`,
+          source: "unifiedExecStartup",
+          status: "inProgress",
+          commandActions: [],
+          aggregatedOutput: null,
+          exitCode: null,
+          durationMs: null,
+        };
+        backgroundCommandsByProcessId.set(item.processId, {
+          threadId: params.threadId,
+          turnId,
+          item,
+        });
+        notify("turn/started", {
+          threadId: params.threadId,
+          turn: { id: turnId, status: "inProgress" },
+        });
+        notify("item/started", { threadId: params.threadId, turnId, item });
+        respond(id, {});
+        notify("turn/completed", {
+          threadId: params.threadId,
+          turn: { id: turnId, status: "completed" },
+        });
+        return;
+      }
       if (firstInputText(params.input) === LATE_TURN_START_PROMPT_TEXT) {
         turnCounter += 1;
         const turnId = `turn-fx-${turnCounter}`;
@@ -635,7 +724,7 @@ async function handleRequest(message) {
             threadId: params.threadId,
             turn: { id: turnId, status: "inProgress" },
           });
-        }, LATE_TURN_START_DELAY_MS);
+        }, script?.lateStartDelayMs ?? LATE_TURN_START_DELAY_MS);
         return;
       }
       if (firstInputText(params.input) === RESPOND_THEN_EXIT_PROMPT_TEXT) {
@@ -683,6 +772,10 @@ async function handleRequest(message) {
       return;
     }
     case "turn/steer":
+      if (script?.steerError) {
+        respondError(id, script.steerError.code, script.steerError.message);
+        return;
+      }
       respond(id, {});
       return;
     case "turn/interrupt": {
@@ -822,6 +915,29 @@ async function handleRequest(message) {
     case "thread/goal/get":
       respond(id, { goal: goalsByThreadId.get(params.threadId) ?? null });
       return;
+    case "thread/backgroundTerminals/terminate": {
+      if (script?.terminateFindsNoTerminal) {
+        respond(id, { terminated: false });
+        return;
+      }
+      const running = backgroundCommandsByProcessId.get(params.processId);
+      backgroundCommandsByProcessId.delete(params.processId);
+      respond(id, { terminated: running !== undefined });
+      if (running !== undefined) {
+        notify("item/completed", {
+          threadId: running.threadId,
+          turnId: running.turnId,
+          item: {
+            ...running.item,
+            status: "failed",
+            aggregatedOutput: "ready\n",
+            exitCode: -1,
+            durationMs: 5,
+          },
+        });
+      }
+      return;
+    }
     case "thread/goal/clear":
       goalsByThreadId.delete(params.threadId);
       if (script?.goalClearError) {

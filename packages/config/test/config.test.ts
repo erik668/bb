@@ -314,29 +314,11 @@ describe("consumer-specific config", () => {
     expect(serverConfig.BB_APP_SURFACE).toBe("web");
     expect(serverConfig.BB_APP_VERSION).toBe("0.0.0-dev");
     expect(serverConfig.BB_EXTERNAL_URL).toBe("");
-    expect(serverConfig.BB_CONNECT_GATE_KEYS_URL).toBe(
-      "https://getbb.app/.well-known/bb-connect-gate-keys.json",
-    );
     expect(serverConfig.featureFlags).toEqual({
       placeholder: false,
       initiatorTelemetry: true,
       timelineWindowEventBudget: 1_500,
     });
-  });
-
-  it("reads and validates the connect gate keys URL override", () => {
-    expect(
-      loadServerConfig({
-        env: createServerRuntimeEnv({
-          BB_CONNECT_GATE_KEYS_URL: "http://127.0.0.1:9999/keys.json",
-        }),
-      }).BB_CONNECT_GATE_KEYS_URL,
-    ).toBe("http://127.0.0.1:9999/keys.json");
-    expect(() =>
-      loadServerConfig({
-        env: createServerRuntimeEnv({ BB_CONNECT_GATE_KEYS_URL: "" }),
-      }),
-    ).toThrow("BB_CONNECT_GATE_KEYS_URL");
   });
 
   it("validates the opt-in performance diagnostics setting", () => {
@@ -350,23 +332,6 @@ describe("consumer-specific config", () => {
         env: createServerRuntimeEnv({ BB_PERF_DIAGNOSTICS: "typo" }),
       }),
     ).toThrow("BB_PERF_DIAGNOSTICS must be a boolean");
-  });
-
-  it("reads the optional setup guide variant override", () => {
-    expect(
-      loadServerConfig({ env: createServerRuntimeEnv({}) })
-        .BB_SETUP_GUIDE_VARIANT,
-    ).toBeUndefined();
-    expect(
-      loadServerConfig({
-        env: createServerRuntimeEnv({ BB_SETUP_GUIDE_VARIANT: "new" }),
-      }).BB_SETUP_GUIDE_VARIANT,
-    ).toBe("new");
-    expect(() =>
-      loadServerConfig({
-        env: createServerRuntimeEnv({ BB_SETUP_GUIDE_VARIANT: "redesign" }),
-      }),
-    ).toThrow("BB_SETUP_GUIDE_VARIANT must be one of control, new");
   });
 
   it("carries the launcher's server launch id only when it is set", () => {

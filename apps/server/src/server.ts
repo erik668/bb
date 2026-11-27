@@ -1,3 +1,8 @@
+import { getOrCreateServerId } from "@bb/db";
+import {
+  refreshServerAccessOrigins,
+  restoreServerAccessOrigins,
+} from "./services/machines/server-access.js";
 import { createPluginUpdateJobs } from "./services/plugins/plugin-update-jobs.js";
 import { registerPluginUpdateJobRoutes } from "./routes/plugin-update-jobs.js";
 import {
@@ -19,20 +24,19 @@ import {
 } from "./install-machine-asset.js";
 import { createNodeWebSocket } from "@hono/node-ws";
 import {
-  declineWebSocketCompression,
+  declineSameMachineWebSocketCompression,
   WEB_SOCKET_COMPRESSION,
 } from "./ws/compression.js";
-import { createGateKeyStore } from "./services/connect-next/gate-keys.js";
-import {
-  createTunnelIngressManager,
-  type TunnelIngressManager,
-} from "./services/connect-next/tunnel-ingress.js";
 import { createHash, randomUUID } from "node:crypto";
 import { readFile, stat } from "node:fs/promises";
 import { performance } from "node:perf_hooks";
 import { extname, join, resolve } from "node:path";
 import { Hono } from "hono";
-import { terminalWebSocketQuerySchema } from "@bb/server-contract";
+import {
+  APP_SHELL_PLUGIN_LIST_ELEMENT_ID,
+  terminalWebSocketQuerySchema,
+  type PluginListResponse,
+} from "@bb/server-contract";
 import { compress } from "hono/compress";
 import { cors } from "hono/cors";
 import type { ServerAppDeps } from "./types.js";
@@ -72,6 +76,8 @@ import {
 } from "./services/plugins/plugin-server-access-registry.js";
 import { setPluginMachineProviderBridge } from "./services/plugins/plugin-machine-provider-registry.js";
 import { invalidateEnvironmentProviderMachineAvailability } from "./services/environments/provider-machine-availability.js";
+import { releasePluginEnvironmentHolds } from "./services/environments/environment-engine.js";
+import { requestHostDerivedStateRefreshForPluginChange } from "./services/hosts/host-derived-state.js";
 import { requestQueuedMessageDispatch } from "./services/threads/queued-message-dispatch.js";
 import { registerInternalEventRoutes } from "./internal/events.js";
 import { registerInternalHostRoutes } from "./internal/hosts.js";
@@ -91,7 +97,6 @@ import {
   resolveRequestAppSurface,
 } from "./request-context.js";
 import { runEventLoopWork } from "./services/system/event-loop-work.js";
-import { setTurnTelemetryDeps } from "./services/system/turn-telemetry.js";
 import { runWithTelemetryRequest } from "./services/system/telemetry.js";
 import {
   onClientSocketClose,
@@ -99,9 +104,8 @@ import {
   onClientSocketOpen,
 } from "./ws/client-protocol.js";
 import {
-  onDaemonSocketClose,
-  onDaemonSocketMessage,
-  onDaemonSocketOpen,
+  createDaemonSocketEvents,
+  endDaemonSessionChannels,
   validateDaemonWebSocket,
 } from "./ws/daemon-protocol.js";
 import { roundDurationMs } from "@bb/process-utils";
@@ -114,7 +118,10 @@ import {
   createBbAppArtifactService,
   type BbAppArtifactService,
 } from "./services/install/bb-app-artifact.js";
-import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
+import {
+  HOST_DAEMON_PROTOCOL_VERSION,
+  HOST_DAEMON_WS_RESUME_FROM_QUERY_PARAM,
+} from "@bb/host-daemon-contract";
 import {
   createPluginCatalogService,
   type PluginCatalogService,
@@ -137,6 +144,7 @@ import { apiJsonCompression } from "./api-response-compression.js";
 import { APP_SURFACE_WEB, type AppSurface } from "@bb/config/app-surface";
 import type { ServerBindHost } from "@bb/config/server";
 import { registerServerMoveRoutes } from "./routes/server-move.js";
+import { registerServerSweepRoutes } from "./routes/server-sweeps.js";
 import {
   INTERNAL_SERVER_MOVE_PENDING_PATH,
   registerInternalServerMoveRoutes,
@@ -169,7 +177,6 @@ interface ServerApp {
   pluginService: PluginService;
   pluginCatalogService: PluginCatalogService;
   serverMove: ServerMoveCoordinator;
-  tunnelIngress: TunnelIngressManager;
 }
 
 interface CloseWebSocketServerArgs {
@@ -210,14 +217,12 @@ interface CreateAppOptions {
   slowApiRequestLogThresholdMs?: number;
   performanceDiagnosticsEnabled?: () => boolean;
   staticDir?: string;
-  tunnelIngressNow?: () => number;
 }
 
 interface StaticResponseHeadersArgs {
   contentEncoding?: string;
   contentLength?: number;
   contentType: string;
-  etag?: string;
   urlPath: string;
 }
 
@@ -231,7 +236,7 @@ const SLOW_API_REQUEST_LOG_THRESHOLD_MS = 1_000;
 const THREAD_EVENT_WAIT_PATH_PATTERN =
   /^\/api\/v1\/threads\/[^/]+\/events\/wait$/u;
 const PLUGIN_APP_ASSET_PATH_PATTERN =
-  /^\/api\/v1\/(?:plugins\/[^/]+\/assets|plugin-app-assets\/[a-f0-9]{16})\/app\.(?:js|css)$/u;
+  /^\/api\/v1\/(?:(?:plugins\/[^/]+\/assets|plugin-app-assets\/[a-f0-9]{16})\/app\.(?:js|css)|plugin-app-assets\/[a-f0-9]{16}\/chunks\/[A-Za-z0-9_-]+\.js)$/u;
 const PRECOMPRESSED_STATIC_FILES = [
   { encoding: "br", extension: ".br" },
   { encoding: "gzip", extension: ".gz" },
@@ -264,9 +269,6 @@ function createStaticResponseHeaders(args: StaticResponseHeadersArgs): Headers {
   const headers = new Headers();
   headers.set("content-type", args.contentType);
   headers.set("cache-control", staticCacheControlForPath(args.urlPath));
-  if (args.etag !== undefined) {
-    headers.set("etag", args.etag);
-  }
   if (args.contentEncoding !== undefined) {
     headers.set("content-encoding", args.contentEncoding);
     headers.set("vary", "Accept-Encoding");
@@ -277,35 +279,9 @@ function createStaticResponseHeaders(args: StaticResponseHeadersArgs): Headers {
   return headers;
 }
 
-const shellEtagCache = new Map<
-  string,
-  { etag: string; mtimeMs: number; size: number }
->();
-
-async function shellEtag(filePath: string): Promise<string | undefined> {
-  try {
-    const fileStat = await stat(filePath);
-    const cached = shellEtagCache.get(filePath);
-    if (
-      cached !== undefined &&
-      cached.size === fileStat.size &&
-      cached.mtimeMs === fileStat.mtimeMs
-    ) {
-      return cached.etag;
-    }
-    const digest = createHash("sha256")
-      .update(await readFile(filePath))
-      .digest("hex");
-    const etag = `W/"${digest.slice(0, 32)}"`;
-    shellEtagCache.set(filePath, {
-      etag,
-      mtimeMs: fileStat.mtimeMs,
-      size: fileStat.size,
-    });
-    return etag;
-  } catch {
-    return undefined;
-  }
+export function renderJsonScriptElement(id: string, value: unknown): string {
+  const json = JSON.stringify(value).replace(/</gu, "\\u003c");
+  return `<script type="application/json" id="${id}">${json}</script>`;
 }
 
 const STATIC_MIME_TYPES: Record<string, string> = {
@@ -323,29 +299,41 @@ const STATIC_MIME_TYPES: Record<string, string> = {
   ".map": "application/json",
 };
 
-export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
+export function registerStaticAppRoutes(
+  app: Hono,
+  staticDir: string,
+  renderShellHead: () => string,
+): void {
   const root = resolve(staticDir);
+  const shellPath = join(root, "index.html");
 
-  const serveStaticAppFile = async (args: {
+  const serveAppShell = async (
+    ifNoneMatchHeader: string | undefined,
+  ): Promise<Response> => {
+    const template = await readFile(shellPath, "utf8");
+    const html = template.replace(
+      "</head>",
+      () => `${renderShellHead()}</head>`,
+    );
+    const etag = `W/"${createHash("sha256").update(html).digest("hex").slice(0, 32)}"`;
+    const headers = new Headers();
+    headers.set("cache-control", STATIC_INDEX_CACHE_CONTROL);
+    headers.set("etag", etag);
+    headers.set("content-security-policy", "frame-ancestors 'none'");
+    headers.set("x-frame-options", "DENY");
+    if (requestMatchesEntityTag(ifNoneMatchHeader, etag)) {
+      return new Response(null, { status: 304, headers });
+    }
+    headers.set("content-type", "text/html");
+    return new Response(html, { headers });
+  };
+
+  const serveStaticFile = async (args: {
     acceptEncodingHeader: string | undefined;
     contentType: string;
     filePath: string;
-    ifNoneMatchHeader: string | undefined;
     urlPath: string;
   }): Promise<Response> => {
-    const etag =
-      args.contentType === "text/html"
-        ? await shellEtag(args.filePath)
-        : undefined;
-    if (
-      etag !== undefined &&
-      requestMatchesEntityTag(args.ifNoneMatchHeader, etag)
-    ) {
-      const headers = new Headers();
-      headers.set("cache-control", staticCacheControlForPath(args.urlPath));
-      headers.set("etag", etag);
-      return new Response(null, { status: 304, headers });
-    }
     const precompressedFile = await findPrecompressedStaticFile({
       acceptEncodingHeader: args.acceptEncodingHeader,
       contentType: args.contentType,
@@ -358,7 +346,6 @@ export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
           contentEncoding: precompressedFile.encoding,
           contentLength: precompressedFile.contentLength,
           contentType: args.contentType,
-          etag,
           urlPath: args.urlPath,
         }),
       });
@@ -367,27 +354,29 @@ export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
     return new Response(content, {
       headers: createStaticResponseHeaders({
         contentType: args.contentType,
-        etag,
         urlPath: args.urlPath,
       }),
     });
   };
 
   app.get("*", async (context) => {
+    const ifNoneMatchHeader = context.req.header("if-none-match");
     const urlPath = context.req.path === "/" ? "/index.html" : context.req.path;
     const filePath = join(root, urlPath);
     if (!filePath.startsWith(root)) {
       return context.notFound();
     }
+    if (filePath === shellPath) {
+      return serveAppShell(ifNoneMatchHeader);
+    }
     try {
       const fileStat = await stat(filePath);
       if (fileStat.isFile()) {
-        return await serveStaticAppFile({
+        return await serveStaticFile({
           acceptEncodingHeader: context.req.header("accept-encoding"),
           contentType:
             STATIC_MIME_TYPES[extname(filePath)] ?? "application/octet-stream",
           filePath,
-          ifNoneMatchHeader: context.req.header("if-none-match"),
           urlPath,
         });
       }
@@ -395,13 +384,7 @@ export function registerStaticAppRoutes(app: Hono, staticDir: string): void {
     if (urlPath.startsWith("/assets/")) {
       return context.notFound();
     }
-    return serveStaticAppFile({
-      acceptEncodingHeader: context.req.header("accept-encoding"),
-      contentType: "text/html",
-      filePath: join(root, "index.html"),
-      ifNoneMatchHeader: context.req.header("if-none-match"),
-      urlPath: "/index.html",
-    });
+    return serveAppShell(ifNoneMatchHeader);
   });
 }
 
@@ -483,18 +466,6 @@ export function createApp(
     app,
   });
   wss.options.perMessageDeflate = WEB_SOCKET_COMPRESSION;
-  const tunnelIngressNow = options?.tunnelIngressNow ?? Date.now;
-  const tunnelIngress = createTunnelIngressManager({
-    app,
-    injectWebSocket,
-    keys: createGateKeyStore({
-      url: () => deps.config.connectGateKeysUrl,
-      logger: deps.logger,
-      now: tunnelIngressNow,
-    }),
-    loopbackOrigin: () => `http://127.0.0.1:${deps.config.serverPort}`,
-    logger: deps.logger,
-  });
   const slowApiRequestLogThresholdMs =
     options?.slowApiRequestLogThresholdMs ?? SLOW_API_REQUEST_LOG_THRESHOLD_MS;
   const bbAppArtifactService =
@@ -526,7 +497,7 @@ export function createApp(
   app.use("*", async (context, next) => {
     const problem = requestHostProblem(context, deps);
     if (problem !== null) {
-      throw new ApiError(problem.status, "forbidden_host", problem.error);
+      throw new ApiError(problem.status, problem.code, problem.error);
     }
     return next();
   });
@@ -581,6 +552,7 @@ export function createApp(
     });
     return context.json({
       ok: true,
+      serverId: getOrCreateServerId(deps.db),
       ...(deps.config.launchId === undefined
         ? {}
         : { launchId: deps.config.launchId }),
@@ -795,6 +767,7 @@ export function createApp(
     db: deps.db,
     hub: deps.hub,
     logger: deps.logger,
+    walCheckpointer: deps.walCheckpointer,
     telemetry: deps.telemetry,
     pendingInteractions: deps.pendingInteractions,
     dataDir: deps.config.dataDir,
@@ -813,13 +786,18 @@ export function createApp(
         }),
       ),
     callPluginHost: (args) => callPluginHostRpc(deps, args),
-    openTunnelIngress: (audience) => tunnelIngress.open(audience),
     disposePluginHost: (args) => disposePluginHostWorkers(deps, args),
-    onSettingsChanged: (pluginId) => {
-      deps.providerNativeRoots.invalidate(pluginId);
+    onSettingsChanged: () => {
+      deps.projectSkillIndexes.clear();
       deps.providerRegistry.forgetAllInstalled();
+      requestHostDerivedStateRefreshForPluginChange(deps);
+    },
+    onPluginsChanged: () => {
+      requestHostDerivedStateRefreshForPluginChange(deps);
+      refreshServerAccessOrigins(deps);
     },
     onPluginUnregistered: (pluginId) => {
+      releasePluginEnvironmentHolds(deps, pluginId);
       requestQueuedMessageDispatch(deps, {
         kind: "plugin-unregistered",
         pluginId,
@@ -843,7 +821,6 @@ export function createApp(
       threadId,
     });
   });
-  setTurnTelemetryDeps(deps);
   setPluginThreadEventEmitter(pluginService.events);
   setPathPluginPreserver(deps.db, (directory) =>
     pluginService.preservePathPluginsInside(directory),
@@ -862,13 +839,15 @@ export function createApp(
     ),
   );
   setServerAccessBridge(pluginService.serverAccessProviders);
+  restoreServerAccessOrigins(deps);
   setServerAccessRecheckHandler(() => {
+    refreshServerAccessOrigins(deps);
     deps.hub.notifySystem(["config-changed"]);
   });
   setEnvironmentProviderRecheckHandler((pluginId) => {
     invalidateEnvironmentProviderMachineAvailability();
     deps.hub.notifySystem(["config-changed"]);
-    void recheckEnvironmentProviderCreations(deps, pluginId);
+    recheckEnvironmentProviderCreations(deps, pluginId);
   });
   // Bridge runtime-config assembly to plugin skills + context (§4.4).
   setPluginAgentContributions(pluginService);
@@ -912,7 +891,7 @@ export function createApp(
     }
     const problem = browserRequestProblem(context, deps);
     if (problem !== null) {
-      throw new ApiError(problem.status, "forbidden_origin", problem.error);
+      throw new ApiError(problem.status, problem.code, problem.error);
     }
     return next();
   });
@@ -933,7 +912,7 @@ export function createApp(
   registerDesktopBrowserRoutes(publicApi, deps);
   registerTerminalRoutes(publicApi, deps);
   registerEnvironmentRoutes(publicApi, deps, pluginService);
-  registerThreadRoutes(publicApi, deps);
+  registerThreadRoutes(publicApi, deps, pluginService);
   registerQueueRoutes(publicApi, deps);
   registerSystemRoutes(publicApi, deps, pluginService);
   registerUiPreferenceRoutes(publicApi, deps);
@@ -960,6 +939,7 @@ export function createApp(
   );
   registerSkillsRegistryRoutes(publicApi, deps);
   registerServerMoveRoutes(publicApi, deps, serverMove);
+  registerServerSweepRoutes(publicApi, deps);
   app.route("/api/v1", publicApi);
   app.use("/api/v1/*", () => {
     throw new ApiError(404, "not_found", "Not found");
@@ -991,12 +971,7 @@ export function createApp(
   ): void => {
     const problem = browserRequestProblem(context, deps);
     if (problem !== null) {
-      throw new ApiError(
-        problem.status,
-        "forbidden_origin",
-        problem.error,
-        false,
-      );
+      throw new ApiError(problem.status, problem.code, problem.error, false);
     }
   };
 
@@ -1017,7 +992,7 @@ export function createApp(
     "/ws/terminals/:terminalId",
     upgradeWebSocket((context) => {
       assertBrowserWebSocketAllowed(context);
-      declineWebSocketCompression(context);
+      declineSameMachineWebSocketCompression(context);
       const terminalId = context.req.param("terminalId");
       if (terminalId === undefined) {
         throw new ApiError(404, "terminal_not_found", "missing terminal id");
@@ -1059,53 +1034,55 @@ export function createApp(
   app.get(
     "/internal/ws",
     upgradeWebSocket(async (context) => {
-      declineWebSocketCompression(context);
-      const websocketContext = await validateDaemonWebSocket(deps, {
+      declineSameMachineWebSocketCompression(context);
+      const target = await validateDaemonWebSocket(deps, {
         authorizationHeader: context.req.header("authorization"),
         protocolHeader: context.req.header("sec-websocket-protocol"),
+        resumeFrom:
+          context.req.query(HOST_DAEMON_WS_RESUME_FROM_QUERY_PARAM) ?? null,
         sessionId: context.req.query("sessionId") ?? null,
       });
+      const events = createDaemonSocketEvents(
+        deps,
+        target,
+        pluginService,
+        serverMove,
+      );
       return {
-        onOpen: (_event, socket) =>
-          onDaemonSocketOpen(deps, {
-            ...websocketContext,
-            socket,
-          }),
-        onMessage: (event, socket) =>
-          onDaemonSocketMessage(
-            deps,
-            {
-              hostId: websocketContext.hostId,
-              raw: event.data,
-              sessionId: websocketContext.sessionId,
-              socket,
-            },
-            pluginService,
-            serverMove,
-          ),
-        onClose: () => onDaemonSocketClose(deps, websocketContext.sessionId),
+        onOpen: (_event, socket) => events.onOpen(socket),
+        onMessage: (event, socket) => events.onMessage(socket, event.data),
+        onClose: (event, socket) => events.onClose(socket, event.reason),
       };
     }),
   );
 
   if (options?.staticDir) {
-    registerStaticAppRoutes(app, options.staticDir);
+    registerStaticAppRoutes(app, options.staticDir, () =>
+      renderJsonScriptElement(APP_SHELL_PLUGIN_LIST_ELEMENT_ID, {
+        plugins: pluginService.list(),
+      } satisfies PluginListResponse),
+    );
   } else {
     app.get("/", (context) => context.text("bb server"));
   }
 
   return {
     app,
-    closeWebSockets: () =>
-      closeWebSocketServer({
+    closeWebSockets: () => {
+      endDaemonSessionChannels(
+        deps.hub,
+        WEB_SOCKET_SHUTDOWN_CODE,
+        WEB_SOCKET_SHUTDOWN_REASON,
+      );
+      return closeWebSocketServer({
         forceCloseAfterMs: WEB_SOCKET_SHUTDOWN_FORCE_CLOSE_MS,
         reason: WEB_SOCKET_SHUTDOWN_REASON,
         server: wss,
-      }),
+      });
+    },
     injectWebSocket,
     pluginService,
     pluginCatalogService,
     serverMove,
-    tunnelIngress,
   };
 }

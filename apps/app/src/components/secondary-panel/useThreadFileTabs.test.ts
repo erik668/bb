@@ -3,7 +3,9 @@
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement, type ReactNode } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { getDefaultStore } from "jotai";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { fileOpenerPreferenceAtom } from "@/lib/file-opener-preference";
 import { getActiveSecondaryPanelTab } from "@bb/client-core";
 import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
 import {
@@ -156,7 +158,9 @@ describe("useThreadFileTabs recently closed tabs", () => {
         terminalSessions: undefined,
       }),
     );
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => {
+      result.current.openTab({ kind: "new-tab" });
+    });
     act(() => {
       result.current.closeTab("new-tab:new-tab:none");
       result.current.closeTab("browser:native-browser:none");
@@ -1014,7 +1018,9 @@ describe("useThreadFileTabs plugin panel tabs", () => {
     };
     act(() => result.current.openPluginPanel(action));
     const originalTab = result.current.activeTab;
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => {
+      result.current.openTab({ kind: "new-tab" });
+    });
     act(() =>
       result.current.openPluginPanel({ ...action, title: "Renamed issue" }),
     );
@@ -1041,12 +1047,16 @@ describe("useThreadFileTabs plugin panel tabs", () => {
         terminalSessions: undefined,
       }),
     );
-    act(() =>
-      result.current.openTab({ kind: "browser", url: "https://example.com" }),
-    );
+    act(() => {
+      result.current.openTab({ kind: "browser", url: "https://example.com" });
+    });
     const originalTab = result.current.activeTab;
-    act(() => result.current.openTab({ kind: "new-tab" }));
-    act(() => result.current.openTab({ kind: "browser", url: "" }));
+    act(() => {
+      result.current.openTab({ kind: "new-tab" });
+    });
+    act(() => {
+      result.current.openTab({ kind: "browser", url: "" });
+    });
 
     expect(result.current.orderedSecondaryFileTabs).toEqual([
       originalTab,
@@ -1127,7 +1137,9 @@ describe("useThreadFileTabs plugin panel tabs", () => {
         terminalSessions: undefined,
       }),
     );
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => {
+      result.current.openTab({ kind: "new-tab" });
+    });
     expect(result.current.activeTab?.kind).toBe("new-tab");
     act(() =>
       result.current.openPluginPanel({
@@ -1177,7 +1189,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1186,8 +1198,8 @@ describe("useThreadFileTabs file opener diversion", () => {
           source: { kind: "working-tree" },
           statusLabel: null,
         },
-      }),
-    );
+      });
+    });
 
     const firstTab = requirePluginPanelTab(result.current.activeTab);
     expect(firstTab).toMatchObject({
@@ -1213,7 +1225,7 @@ describe("useThreadFileTabs file opener diversion", () => {
     expect(result.current.activeWorkspaceFilePath).toBe("notes/todo.md");
 
     const firstTabId = firstTab.id;
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1222,8 +1234,8 @@ describe("useThreadFileTabs file opener diversion", () => {
           source: { kind: "working-tree" },
           statusLabel: null,
         },
-      }),
-    );
+      });
+    });
     const refreshedTab = requirePluginPanelTab(result.current.activeTab);
     expect(refreshedTab.id).toBe(firstTabId);
     expect(refreshedTab.fileOpenerOwner?.tab.lineRange).toEqual({
@@ -1243,7 +1255,7 @@ describe("useThreadFileTabs file opener diversion", () => {
         terminalSessions: undefined,
       }),
     );
-    const open = () =>
+    const open = () => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1253,6 +1265,7 @@ describe("useThreadFileTabs file opener diversion", () => {
           statusLabel: null,
         },
       });
+    };
     act(open);
     const first = requirePluginPanelTab(result.current.activeTab);
     act(open);
@@ -1277,15 +1290,15 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "host-file-preview",
         tab: {
           lineRange: { startLineNumber: 11, endLineNumber: 12 },
           path: "/tmp/readme.md",
         },
-      }),
-    );
+      });
+    });
     expect(
       requirePluginPanelTab(result.current.activeTab).fileOpenerOwner,
     ).toEqual({
@@ -1304,15 +1317,15 @@ describe("useThreadFileTabs file opener diversion", () => {
       endLineNumber: 12,
     });
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "thread-storage-file-preview",
         tab: {
           lineRange: { startLineNumber: 2, endLineNumber: 5 },
           path: "artifacts/report.md",
         },
-      }),
-    );
+      });
+    });
     const storageOpenerTab = requirePluginPanelTab(result.current.activeTab);
     expect(storageOpenerTab.fileOpenerOwner).toEqual({
       kind: "thread-storage-file-preview",
@@ -1342,7 +1355,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1351,12 +1364,12 @@ describe("useThreadFileTabs file opener diversion", () => {
           source: { kind: "head" },
           statusLabel: null,
         },
-      }),
-    );
+      });
+    });
     expect(result.current.activeTab?.kind).toBe("workspace-file-preview");
     expect(result.current.activeWorkspaceFilePath).toBe("notes/todo.md");
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1365,8 +1378,8 @@ describe("useThreadFileTabs file opener diversion", () => {
           source: { kind: "working-tree" },
           statusLabel: null,
         },
-      }),
-    );
+      });
+    });
     expect(result.current.activeTab?.kind).toBe("workspace-file-preview");
     expect(result.current.activeWorkspaceFilePath).toBe("src/index.ts");
   });
@@ -1383,7 +1396,9 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => {
+      result.current.openTab({ kind: "new-tab" });
+    });
     act(() =>
       result.current.selectFileSearchResult({
         source: "workspace",
@@ -1427,7 +1442,9 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() => result.current.openTab({ kind: "new-tab" }));
+    act(() => {
+      result.current.openTab({ kind: "new-tab" });
+    });
     act(() =>
       result.current.selectFileSearchResult({
         source: "thread-storage",
@@ -1464,7 +1481,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1473,17 +1490,15 @@ describe("useThreadFileTabs file opener diversion", () => {
           source: { kind: "working-tree" },
           statusLabel: null,
         },
-      }),
-    );
+      });
+    });
     expect(result.current.activeTab?.kind).toBe("workspace-file-preview");
     expect(result.current.activeWorkspaceFilePath).toBe("notes/todo.md");
   });
 
   it("keeps the built-in preview when Settings pins it", () => {
-    window.localStorage.setItem(
-      "bb.fileOpenerByExtension",
-      JSON.stringify({ md: "__builtin__" }),
-    );
+    getDefaultStore().set(fileOpenerPreferenceAtom, { md: "__builtin__" });
+    onTestFinished(() => getDefaultStore().set(fileOpenerPreferenceAtom, {}));
     registerNotesOpener();
     const { result } = renderThreadHook(() =>
       useThreadFileTabsWithActiveTab({
@@ -1495,7 +1510,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() =>
+    act(() => {
       result.current.openTab({
         kind: "workspace-file-preview",
         tab: {
@@ -1504,8 +1519,8 @@ describe("useThreadFileTabs file opener diversion", () => {
           source: { kind: "working-tree" },
           statusLabel: null,
         },
-      }),
-    );
+      });
+    });
 
     expect(result.current.activeTab?.kind).toBe("workspace-file-preview");
     expect(result.current.activeWorkspaceFilePath).toBe("notes/todo.md");
@@ -1523,7 +1538,7 @@ describe("useThreadFileTabs file opener diversion", () => {
       }),
     );
 
-    act(() =>
+    act(() => {
       result.current.openTab(
         {
           kind: "workspace-file-preview",
@@ -1535,12 +1550,12 @@ describe("useThreadFileTabs file opener diversion", () => {
           },
         },
         { viewer: "builtin" },
-      ),
-    );
+      );
+    });
     expect(result.current.activeTab?.kind).toBe("workspace-file-preview");
     expect(result.current.activeWorkspaceFilePath).toBe("notes/todo.md");
 
-    act(() =>
+    act(() => {
       result.current.openTab(
         {
           kind: "workspace-file-preview",
@@ -1552,8 +1567,8 @@ describe("useThreadFileTabs file opener diversion", () => {
           },
         },
         { viewer: { pluginId: "notes", openerId: "editor" } },
-      ),
-    );
+      );
+    });
     expect(result.current.activeTab).toMatchObject({
       kind: "plugin-panel",
       pluginId: "notes",

@@ -4,7 +4,6 @@ import {
   SERVER_OFFLINE_AFTER_MS,
   ServerCredentialCache,
   isLive,
-  nextTunnelConnected,
   server,
   sha256Hex,
   tunnelConnectedLookup,
@@ -21,6 +20,7 @@ import {
 import {
   invalidateDesktopSessionGrant,
   issueDesktopSessionCookie,
+  recordDesktopSessionUse,
   type DesktopSessionAccount,
 } from "./desktop-session.js";
 import { resolveConnectRuntime } from "./cloud-dev.js";
@@ -118,8 +118,6 @@ export async function listAccountServers(
       lastSeenAt: server.lastSeenAt,
       credentialHash: server.credentialHash,
       revokedAt: server.revokedAt,
-      nextTunnelGate: server.nextTunnelGate,
-      nextTunnelAt: server.nextTunnelAt,
     })
     .from(server)
     .where(eq(server.userId, userId));
@@ -132,14 +130,13 @@ export async function listAccountServers(
       const connected = row.credentialHash != null && row.revokedAt == null;
       const live =
         connected &&
-        (nextTunnelConnected(row, now) ||
-          isLive({
-            lastSeenMs: row.lastSeenAt?.getTime() ?? null,
-            now,
-            offlineAfterMs: SERVER_OFFLINE_AFTER_MS,
-            tunnelConnected:
-              tunnelConnected === null ? null : await tunnelConnected(handle),
-          }));
+        isLive({
+          lastSeenMs: row.lastSeenAt?.getTime() ?? null,
+          now,
+          offlineAfterMs: SERVER_OFFLINE_AFTER_MS,
+          tunnelConnected:
+            tunnelConnected === null ? null : await tunnelConnected(handle),
+        });
       return { handle, name, live };
     }),
   );
@@ -208,10 +205,11 @@ export async function handleCreateDesktopSession(
   if (request.method !== "POST") {
     return methodNotAllowed("POST");
   }
-  const { account, runtime } = await resolveRequestAccount(request, env);
+  const { account, db, runtime } = await resolveRequestAccount(request, env);
   if (!account) {
     return jsonResponse({ error: "unauthorized" }, 401);
   }
+  await recordDesktopSessionUse(account.grant, db);
   const cookie = await issueDesktopSessionCookie(account, {
     baseDomain: env.BASE_DOMAIN,
     name: runtime.desktopSessionCookieName,

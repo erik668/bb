@@ -16,6 +16,7 @@ import {
   branchListQuerySchema,
   isCommaSeparatedIncludeQueryValue,
   pathListIncludeQueryValueSchema,
+  workspacePathSearchFoldersSchema,
 } from "./shared.js";
 
 const localProjectPathRequestSchema = z
@@ -58,6 +59,24 @@ export const createProjectSourceRequestSchema = z.discriminatedUnion("type", [
 ]);
 export type CreateProjectSourceRequest = z.infer<
   typeof createProjectSourceRequestSchema
+>;
+
+export const createProjectSourceFolderRequestSchema = z
+  .object({
+    path: localProjectPathRequestSchema,
+  })
+  .strict();
+export type CreateProjectSourceFolderRequest = z.infer<
+  typeof createProjectSourceFolderRequestSchema
+>;
+
+export const updateProjectSourceFolderRequestSchema = z
+  .object({
+    path: localProjectPathRequestSchema,
+  })
+  .strict();
+export type UpdateProjectSourceFolderRequest = z.infer<
+  typeof updateProjectSourceFolderRequestSchema
 >;
 
 export const createProjectRequestSchema = z.object({
@@ -176,6 +195,7 @@ export const projectPathsQuerySchema = z
     limit: z.string().regex(/^\d+$/).optional(),
     includeFiles: pathListIncludeQueryValueSchema,
     includeDirectories: pathListIncludeQueryValueSchema,
+    folders: workspacePathSearchFoldersSchema.optional(),
   })
   .partial({
     hostId: true,
@@ -194,11 +214,7 @@ export const projectBranchesQuerySchema = branchListQuerySchema
   .strict();
 export type ProjectBranchesQuery = z.infer<typeof projectBranchesQuerySchema>;
 
-export const projectBranchesResponseSchema = projectSourceCheckoutSchema.extend(
-  {
-    defaultWorktreeBaseBranch: z.string().min(1).nullable(),
-  },
-);
+export const projectBranchesResponseSchema = projectSourceCheckoutSchema;
 export type ProjectBranchesResponse = z.infer<
   typeof projectBranchesResponseSchema
 >;
@@ -339,7 +355,7 @@ export const skillSummarySchema = z.object({
   id: installedSkillIdSchema,
   name: z.string(),
   description: z.string().nullable(),
-  provider: skillProviderSchema.nullable(),
+  providers: z.array(skillProviderSchema),
   scope: skillScopeSchema,
   pluginId: z.string().min(1).nullable(),
   filePath: z.string(),

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   useQueryClient,
   type QueryClient,
@@ -14,7 +14,10 @@ import {
   resolveLoadedTimelineSurfaceKey,
   type LoadedTimelineState,
 } from "@bb/client-core";
-import { hasThreadTimelineUnseenEvents } from "@/hooks/cache-owners/thread-timeline-unseen-events";
+import {
+  hasThreadTimelineUnseenEvents,
+  subscribeThreadTimelineUnseenEvents,
+} from "@/hooks/cache-owners/thread-timeline-unseen-events";
 import { useConnectionAwareQueryState } from "@/hooks/queries/connection-aware-query-state";
 import { threadTimelineQueryKey } from "@/hooks/queries/query-keys";
 import { isTransientReadError } from "@/hooks/queries/query-helpers";
@@ -140,6 +143,86 @@ function reconcileLoadedTimeline({
   });
 }
 
+async function loadOlderTimelinePage({
+  latestTimeline,
+  nextOlderCursor,
+  refetchLatestTimeline,
+  setIsLoadingOlderTimelineRows,
+  surfaceKey,
+  threadId,
+  updateLoadedTimeline,
+}: {
+  latestTimeline: ThreadTimelineResponse | undefined;
+  nextOlderCursor: NonNullable<LoadedTimelineState["olderCursor"]>;
+  refetchLatestTimeline: () => Promise<{
+    data: ThreadTimelineResponse | undefined;
+  }>;
+  setIsLoadingOlderTimelineRows: (isLoading: boolean) => void;
+  surfaceKey: string;
+  threadId: string;
+  updateLoadedTimeline: (
+    update: (current: LoadedTimelineState) => LoadedTimelineState,
+  ) => void;
+}): Promise<void> {
+  setIsLoadingOlderTimelineRows(true);
+  try {
+    const response = await sdk.threads.timeline({
+      beforeAnchorId: nextOlderCursor.anchorId,
+      beforeAnchorSeq: String(nextOlderCursor.anchorSeq),
+      deferContent: "true",
+      threadId,
+    });
+    const olderRows = [...response.rows];
+    updateLoadedTimeline((current) => {
+      if (
+        current.surfaceKey !== surfaceKey ||
+        !areTimelinePaginationCursorsEqual({
+          left: current.olderCursor,
+          right: nextOlderCursor,
+        })
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        olderCursor: response.timelinePage.olderCursor,
+        rows: prependOlderTimelineRows({
+          loadedRows: current.rows,
+          olderRows,
+        }),
+      };
+    });
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !isStaleTimelinePaginationCursorError(error)
+    ) {
+      throw error;
+    }
+
+    const latestTimelineResult = await refetchLatestTimeline();
+    const recoveredLatestTimeline = latestTimelineResult.data ?? latestTimeline;
+    updateLoadedTimeline((current) => {
+      if (current.surfaceKey !== surfaceKey) {
+        return current;
+      }
+      if (!recoveredLatestTimeline) {
+        return {
+          ...current,
+          olderCursor: null,
+        };
+      }
+      return recoverLoadedTimelineAfterStaleCursor({
+        current,
+        latestTimeline: recoveredLatestTimeline,
+        surfaceKey,
+      });
+    });
+  } finally {
+    setIsLoadingOlderTimelineRows(false);
+  }
+}
+
 export function useThreadTimelineController({
   enabled = true,
   surfaceKey: explicitSurfaceKey,
@@ -214,74 +297,25 @@ export function useThreadTimelineController({
       ? loadedTimeline.olderCursor
       : null;
   const hasOlderTimelineRows = nextOlderCursor !== null;
-  const loadOlderTimelineRows = useCallback(async (): Promise<void> => {
+  const loadOlderTimelineRows = useCallback((): Promise<void> => {
     if (
       !enabled ||
       !nextOlderCursor ||
       !threadId ||
       isLoadingOlderTimelineRows
     ) {
-      return;
+      return Promise.resolve();
     }
 
-    setIsLoadingOlderTimelineRows(true);
-    try {
-      const response = await sdk.threads.timeline({
-        beforeAnchorId: nextOlderCursor.anchorId,
-        beforeAnchorSeq: String(nextOlderCursor.anchorSeq),
-        deferContent: "true",
-        threadId,
-      });
-      const olderRows = [...response.rows];
-      updateLoadedTimeline((current) => {
-        if (
-          current.surfaceKey !== surfaceKey ||
-          !areTimelinePaginationCursorsEqual({
-            left: current.olderCursor,
-            right: nextOlderCursor,
-          })
-        ) {
-          return current;
-        }
-        return {
-          ...current,
-          olderCursor: response.timelinePage.olderCursor,
-          rows: prependOlderTimelineRows({
-            loadedRows: current.rows,
-            olderRows,
-          }),
-        };
-      });
-    } catch (error) {
-      if (
-        !(error instanceof Error) ||
-        !isStaleTimelinePaginationCursorError(error)
-      ) {
-        throw error;
-      }
-
-      const latestTimelineResult = await refetchLatestTimeline();
-      const recoveredLatestTimeline =
-        latestTimelineResult.data ?? latestTimeline;
-      updateLoadedTimeline((current) => {
-        if (current.surfaceKey !== surfaceKey) {
-          return current;
-        }
-        if (!recoveredLatestTimeline) {
-          return {
-            ...current,
-            olderCursor: null,
-          };
-        }
-        return recoverLoadedTimelineAfterStaleCursor({
-          current,
-          latestTimeline: recoveredLatestTimeline,
-          surfaceKey,
-        });
-      });
-    } finally {
-      setIsLoadingOlderTimelineRows(false);
-    }
+    return loadOlderTimelinePage({
+      latestTimeline,
+      nextOlderCursor,
+      refetchLatestTimeline,
+      setIsLoadingOlderTimelineRows,
+      surfaceKey,
+      threadId,
+      updateLoadedTimeline,
+    });
   }, [
     enabled,
     isLoadingOlderTimelineRows,
@@ -292,10 +326,13 @@ export function useThreadTimelineController({
     threadId,
     updateLoadedTimeline,
   ]);
-  const timelineRows =
+  const loadedRows =
     loadedTimeline.surfaceKey === surfaceKey && loadedTimeline.rows.length > 0
       ? loadedTimeline.rows
       : (latestTimeline?.rows ?? []);
+  const pendingSteers = latestTimeline?.pendingSteers ?? [];
+  const timelineRows =
+    pendingSteers.length === 0 ? loadedRows : [...loadedRows, ...pendingSteers];
   const hasResolvedTimeline =
     latestTimelineQuery.data !== undefined || timelineRows.length > 0;
   const timelineQueryState = useConnectionAwareQueryState({
@@ -309,10 +346,16 @@ export function useThreadTimelineController({
     (!hasResolvedTimeline &&
       (timelineQueryState.status === "loading" ||
         latestTimelineQuery.isFetching));
+  const hasUnseenTimelineEvents = useSyncExternalStore(
+    useCallback(
+      (listener: () => void) =>
+        subscribeThreadTimelineUnseenEvents(queryClient, threadId, listener),
+      [queryClient, threadId],
+    ),
+    () => hasThreadTimelineUnseenEvents(queryClient, threadId),
+  );
   const isCatchingUpTimeline =
-    enabled &&
-    hasThreadTimelineUnseenEvents(queryClient, threadId) &&
-    timelineRows.length > 0;
+    enabled && hasUnseenTimelineEvents && timelineRows.length > 0;
   const timelineError =
     timelineLoading || timelineQueryState.status !== "unavailable"
       ? null

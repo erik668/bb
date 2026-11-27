@@ -1,9 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import type { Environment, JsonValue } from "@bb/domain";
 import { createBbSdk } from "../src/core.js";
 import { createHttpTransport } from "../src/transport-http.js";
-import { ThreadWaitTimeoutError } from "../src/areas/threads.js";
+import {
+  ThreadWaitTimeoutError,
+  type ThreadListArgs,
+} from "../src/areas/threads.js";
+import type { EnvironmentListArgs } from "../src/areas/environments.js";
 import type { FetchImplementation } from "../src/response.js";
 
 interface CapturedRequest {
@@ -31,6 +35,7 @@ function makeEnvironment(overrides: EnvironmentOverrides = {}): Environment {
     projectId: "proj_test",
     hostId: "host_test",
     path: "/workspace",
+    additionalPaths: [],
     isGitRepo: true,
     isWorktree: false,
     baseBranch: null,
@@ -38,12 +43,14 @@ function makeEnvironment(overrides: EnvironmentOverrides = {}): Environment {
     defaultBranch: null,
     mergeBaseBranch: null,
     status: "ready",
+    statusMessage: null,
     environmentProviderId: null,
     environmentProviderSelection: null,
     environmentProviderInstanceKey: null,
     lifecycle: { phase: "active", retireAt: null, teardown: null },
     hostLifecycle: "active",
     managed: false,
+    heldBy: null,
     workspaceProvisionType: null,
     createdAt: 1,
     updatedAt: 2,
@@ -157,6 +164,7 @@ describe("@bb/sdk", () => {
       },
       maxPermissionMode: "full",
       lastSeenAt: 1,
+      route: null,
       lastRejectedProtocolVersion: null,
       createdAt: 1,
       updatedAt: 1,
@@ -224,13 +232,8 @@ describe("@bb/sdk", () => {
     ]);
   });
 
-  it("reads provider installation events through the response instance", async () => {
+  it("waits on the server's install job through dropped and refused polls", async () => {
     const events = [
-      {
-        type: "started",
-        provider: "codex",
-        command: "npm install --global @openai/codex",
-      },
       {
         type: "completed",
         provider: "codex",
@@ -239,29 +242,71 @@ describe("@bb/sdk", () => {
         success: true,
       },
     ];
-    const response = new Response(null, {
-      status: 200,
-      headers: { "content-type": "application/x-ndjson" },
-    });
-    Object.defineProperty(response, "text", {
-      value: async () =>
-        events.map((event) => JSON.stringify(event)).join("\n"),
-    });
+    const base = {
+      id: "job_1",
+      hostId: "host_test",
+      provider: "codex",
+      actionKind: "update",
+      startedAt: 1,
+    };
+    const replies: Array<() => Response> = [
+      () =>
+        jsonResponse({
+          body: { job: { ...base, state: "running" } },
+          status: 202,
+        }),
+      () => {
+        throw new TypeError("Load failed");
+      },
+      () => {
+        throw new TypeError("fetch failed", {
+          cause: Object.assign(new Error("connect ECONNREFUSED"), {
+            code: "ECONNREFUSED",
+          }),
+        });
+      },
+      () => jsonResponse({ body: { job: { ...base, state: "running" } } }),
+      () =>
+        jsonResponse({
+          body: {
+            job: { ...base, state: "completed", finishedAt: 2, events },
+          },
+        }),
+    ];
+    const urls: string[] = [];
     const sdk = createBbSdk({
       transport: createHttpTransport({
         baseUrl: "http://bb.test",
-        fetch: async () => response,
+        fetch: async (input, init) => {
+          urls.push(`${init?.method ?? "GET"} ${String(input)}`);
+          const reply = replies.shift();
+          if (reply === undefined)
+            throw new Error("No queued SDK test response");
+          return reply();
+        },
         runtime: "node",
       }),
     });
 
-    await expect(
-      sdk.hosts.installProviderCli({
+    vi.useFakeTimers();
+    try {
+      const install = sdk.hosts.installProviderCli({
         hostId: "host_test",
         provider: "codex",
-        actionKind: "install",
-      }),
-    ).resolves.toEqual(events);
+        actionKind: "update",
+      });
+      await vi.runAllTimersAsync();
+      await expect(install).resolves.toEqual(events);
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(urls).toEqual([
+      "POST http://bb.test/api/v1/hosts/host_test/provider-clis/install-jobs",
+      "GET http://bb.test/api/v1/hosts/host_test/provider-clis/install-jobs/job_1",
+      "GET http://bb.test/api/v1/hosts/host_test/provider-clis/install-jobs/job_1",
+      "GET http://bb.test/api/v1/hosts/host_test/provider-clis/install-jobs/job_1",
+      "GET http://bb.test/api/v1/hosts/host_test/provider-clis/install-jobs/job_1",
+    ]);
   });
 
   it("sends thread pane presentation actions through the typed transport", async () => {
@@ -333,7 +378,7 @@ describe("@bb/sdk", () => {
     });
 
     await expect(
-      sdk.threads.list({ signal: controller.signal }),
+      sdk.threads.list({ limit: 10, signal: controller.signal }),
     ).resolves.toEqual([]);
     expect(receivedSignal).toBe(controller.signal);
   });
@@ -837,6 +882,7 @@ describe("@bb/sdk", () => {
         hostId: "host_remote",
         projectId: "proj_remote",
         providerId: "acp-remote",
+        selectedModel: "model-remote",
       }),
     ).resolves.toMatchObject({ models: [], providers: [] });
 
@@ -854,7 +900,7 @@ describe("@bb/sdk", () => {
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/system/execution-options?hostId=host_remote&projectId=proj_remote&providerId=acp-remote",
+        url: "http://bb.test/api/v1/system/execution-options?hostId=host_remote&projectId=proj_remote&providerId=acp-remote&selectedModel=model-remote",
       },
     ]);
   });
@@ -968,15 +1014,40 @@ describe("@bb/sdk", () => {
     });
 
     await expect(
-      sdk.threads.list({ archived: true, projectId: "proj_123" }),
+      sdk.threads.list({ archived: true, limit: 50, projectId: "proj_123" }),
     ).resolves.toEqual([]);
 
     expect(queue.requests).toEqual([
       {
         bodyText: undefined,
         method: "GET",
-        url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true",
+        url: "http://bb.test/api/v1/threads?projectId=proj_123&archived=true&limit=50",
       },
+    ]);
+  });
+
+  it("still lists when a plugin built before limit was required passes no arguments", async () => {
+    const queue = createFetchQueue([{ body: [] }, { body: [] }]);
+    const sdk = createBbSdk({
+      transport: createHttpTransport({
+        baseUrl: "http://bb.test",
+        fetch: queue.fetch,
+        runtime: "node",
+      }),
+    });
+    const listThreadsUntyped = sdk.threads.list as (
+      args?: ThreadListArgs,
+    ) => Promise<unknown>;
+    const listEnvironmentsUntyped = sdk.environments.list as (
+      args?: EnvironmentListArgs,
+    ) => Promise<unknown>;
+
+    await expect(listThreadsUntyped()).resolves.toEqual([]);
+    await expect(listEnvironmentsUntyped()).resolves.toEqual([]);
+
+    expect(queue.requests.map((request) => request.url)).toEqual([
+      "http://bb.test/api/v1/threads",
+      "http://bb.test/api/v1/environments",
     ]);
   });
 
@@ -990,12 +1061,12 @@ describe("@bb/sdk", () => {
       }),
     });
 
-    await sdk.threads.list({ threadIds: ["thr_a", "thr_b"] });
-    await sdk.threads.list({ threadIds: [] });
+    await sdk.threads.list({ limit: 200, threadIds: ["thr_a", "thr_b"] });
+    await sdk.threads.list({ limit: 200, threadIds: [] });
 
     expect(queue.requests.map((request) => request.url)).toEqual([
-      "http://bb.test/api/v1/threads?threadIds=thr_a%2Cthr_b",
-      "http://bb.test/api/v1/threads?threadIds=",
+      "http://bb.test/api/v1/threads?threadIds=thr_a%2Cthr_b&limit=200",
+      "http://bb.test/api/v1/threads?threadIds=&limit=200",
     ]);
   });
 
@@ -1393,14 +1464,14 @@ describe("@bb/sdk", () => {
       }),
     });
 
-    await sdk.threads.list({ includeHidden: true });
+    await sdk.threads.list({ includeHidden: true, limit: 10 });
     await sdk.threads.update({
       threadId: "thr_hidden",
       visibility: "hidden",
     });
 
     expect(queue.requests[0]?.url).toBe(
-      "http://bb.test/api/v1/threads?includeHidden=true",
+      "http://bb.test/api/v1/threads?includeHidden=true&limit=10",
     );
     expect(JSON.parse(queue.requests[1]?.bodyText ?? "{}")).toEqual({
       visibility: "hidden",
@@ -1629,7 +1700,7 @@ describe("@bb/sdk", () => {
     const queue = createFetchQueue([
       { body: [] },
       { body: { ok: true, delivery: "sent" } },
-      { body: null, status: 204 },
+      { body: { ok: true, progress: "complete" } },
     ]);
     const sdk = createBbSdk({
       transport: createHttpTransport({
@@ -2171,7 +2242,6 @@ describe("@bb/sdk", () => {
         threadId: "thr_wait",
         status: "idle",
         timeoutMs: 1_000,
-        pollIntervalMs: 1,
       }),
     ).resolves.toMatchObject({
       matched: true,
@@ -2179,9 +2249,11 @@ describe("@bb/sdk", () => {
       threadId: "thr_wait",
     });
 
-    expect(queue.requests.map((request) => request.url)).toEqual([
-      "http://bb.test/api/v1/threads/thr_wait",
-      "http://bb.test/api/v1/threads/thr_wait",
+    expect(
+      queue.requests.map((request) => new URL(request.url).pathname),
+    ).toEqual([
+      "/api/v1/threads/thr_wait",
+      "/api/v1/threads/thr_wait/status/wait",
     ]);
   });
 
@@ -2202,7 +2274,6 @@ describe("@bb/sdk", () => {
         threadId: "thr_wait",
         status: "idle",
         timeoutMs: 0,
-        pollIntervalMs: 1,
       }),
     ).rejects.toBeInstanceOf(ThreadWaitTimeoutError);
   });
@@ -2235,6 +2306,29 @@ describe("@bb/sdk", () => {
               manageable: true,
               registrySkillId: null,
             },
+            {
+              id: `skill_${"b".repeat(64)}`,
+              name: "released-codex-skill",
+              description: null,
+              provider: "codex",
+              scope: "codex-user",
+              pluginId: null,
+              filePath: "/home/u/.codex/skills/released-codex-skill/SKILL.md",
+              manageable: true,
+              registrySkillId: null,
+            },
+            {
+              id: `skill_${"c".repeat(64)}`,
+              name: "shared-skill",
+              description: null,
+              provider: null,
+              providers: ["claude-code", "codex"],
+              scope: "provider-user",
+              pluginId: null,
+              filePath: "/home/u/.agents/skills/shared-skill/SKILL.md",
+              manageable: true,
+              registrySkillId: null,
+            },
           ],
         },
       },
@@ -2246,7 +2340,17 @@ describe("@bb/sdk", () => {
         },
       },
       { body: { stars: 27_053 } },
-      { body: { ok: true, filePath: "/skills/useful-skill/SKILL.md" } },
+      {
+        status: 202,
+        body: {
+          job: {
+            id: "job_1",
+            registrySkillId: registrySkill.id,
+            state: "completed",
+            filePath: "/skills/useful-skill/SKILL.md",
+          },
+        },
+      },
     ]);
     const sdk = createBbSdk({
       transport: createHttpTransport({
@@ -2256,9 +2360,30 @@ describe("@bb/sdk", () => {
       }),
     });
 
-    await expect(
-      sdk.skills.list({ projectId: "proj_123", environmentId: null }),
-    ).resolves.toMatchObject({ skills: [{ name: "local-skill" }] });
+    const listed = await sdk.skills.list({
+      projectId: "proj_123",
+      environmentId: null,
+    });
+    expect(listed).toEqual({
+      skills: [
+        expect.objectContaining({
+          name: "local-skill",
+          provider: null,
+          providers: [],
+        }),
+        expect.objectContaining({
+          name: "released-codex-skill",
+          provider: "codex",
+          providers: ["codex"],
+          scope: "codex-user",
+        }),
+        expect.objectContaining({
+          name: "shared-skill",
+          provider: null,
+          providers: ["claude-code", "codex"],
+        }),
+      ],
+    });
     await expect(sdk.skills.registry.search()).resolves.toMatchObject({
       skills: [registrySkill],
     });
@@ -2292,7 +2417,7 @@ describe("@bb/sdk", () => {
       },
       {
         method: "POST",
-        url: "http://bb.test/api/v1/skills-registry/install",
+        url: "http://bb.test/api/v1/skills-registry/install-jobs",
         bodyText: JSON.stringify({
           registrySkillId: registrySkill.id,
         }),

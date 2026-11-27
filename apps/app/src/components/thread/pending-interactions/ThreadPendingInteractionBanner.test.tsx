@@ -433,11 +433,12 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
       "ResizeObserver",
       class {
         callback: () => void;
-        constructor(callback: () => void) {
-          this.callback = callback;
-          observers.add(callback);
+        constructor(callback: (entries: ResizeObserverEntry[]) => void) {
+          this.callback = () => callback([]);
+          observers.add(this.callback);
         }
         observe() {}
+        unobserve() {}
         disconnect() {
           observers.delete(this.callback);
         }
@@ -479,7 +480,7 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
             >
               <div data-scroll-footer="">
                 <InlinePendingInteractionContext.Provider
-                  value={{ promptShownAbove: "Which path?", close: () => {} }}
+                  value={{ promptShownAbove: "Which path?" }}
                 >
                   {bannerElement(question)}
                 </InlinePendingInteractionContext.Provider>
@@ -663,7 +664,7 @@ describe("ThreadPendingInteractionBanner collapsed strip", () => {
         <QueryClientProvider client={new QueryClient()}>
           <MemoryRouter>
             <InlinePendingInteractionContext.Provider
-              value={{ promptShownAbove, close: () => {} }}
+              value={{ promptShownAbove }}
             >
               {bannerElement(commandApproval)}
             </InlinePendingInteractionContext.Provider>

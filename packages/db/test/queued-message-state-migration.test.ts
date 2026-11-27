@@ -10,6 +10,19 @@ import {
 import {
   dropThreadParentNotificationsColumn,
   dropQueuedMessageDeliveryColumns,
+  dropPluginFailureLabelColumns,
+  dropPluginMarketplaceEnabledColumn,
+  rewindMachineTeardownRecoveryColumns,
+  dropEnvironmentHoldColumns,
+  dropForkHistoryCopyIndex,
+  dropQueuedMessageRecheckAtColumn,
+  dropProjectFolderSchema,
+  dropThreadSearchOrderIndex,
+  rewindThreadFailureKindColumn,
+  rewindThreadPurgeStartedColumn,
+  dropQueuedMessageSourcesAndCompactFirstColumns,
+  dropThreadRunStateTables,
+  dropServerAccessRouteTables,
   dropThreadStatusChangedAtColumn,
   rewindQueuedMessageStateMigration,
 } from "./helpers/rewind.js";
@@ -61,6 +74,19 @@ function rewoundDatabase(): { db: DbConnection; threadId: string } {
   dropThreadParentNotificationsColumn(db);
   dropQueuedMessageDeliveryColumns(db);
   dropThreadStatusChangedAtColumn(db);
+  dropThreadRunStateTables(db);
+  dropServerAccessRouteTables(db);
+  dropPluginFailureLabelColumns(db);
+  rewindMachineTeardownRecoveryColumns(db);
+  dropPluginMarketplaceEnabledColumn(db);
+  dropQueuedMessageRecheckAtColumn(db);
+  dropProjectFolderSchema(db);
+  dropForkHistoryCopyIndex(db);
+  dropEnvironmentHoldColumns(db);
+  dropThreadSearchOrderIndex(db);
+  rewindThreadFailureKindColumn(db);
+  rewindThreadPurgeStartedColumn(db);
+  dropQueuedMessageSourcesAndCompactFirstColumns(db);
   return { db, threadId: thread.id };
 }
 
@@ -169,8 +195,8 @@ const documentedCombinations: readonly {
       sendAt: 9000,
     },
     migrated: {
-      state: "scheduled",
-      sendAt: 9000,
+      state: "waiting",
+      sendAt: null,
       waitingOn: limiter,
       waitHolder: "plugin:limiter",
       failureReason: null,

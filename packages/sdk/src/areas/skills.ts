@@ -3,7 +3,7 @@ import {
   registrySkillEntriesRequestSchema,
   registrySkillEntriesResponseSchema,
   registrySkillInstallRequestSchema,
-  registrySkillInstallResponseSchema,
+  registrySkillInstallJobResponseSchema,
   registryRepositoryStarsSchema,
   registrySkillSchema,
   registrySkillsPageSchema,
@@ -17,7 +17,9 @@ import {
   type SkillContentResponse,
   type SkillFilesResponse,
   type SkillListResponse,
+  type SkillSummary,
 } from "@bb/server-contract";
+import { waitForJob } from "../job-wait.js";
 import { signalRequestArgs, type CreateSdkAreaArgs } from "./common.js";
 
 export interface SkillWorkspaceArgs {
@@ -156,14 +158,33 @@ export function createSkillsArea(args: CreateSdkAreaArgs): SkillsArea {
     },
     async install(input) {
       const body = registrySkillInstallRequestSchema.parse(input);
-      return requestParsed(
-        "/api/v1/skills-registry/install",
-        registrySkillInstallResponseSchema,
+      const path = "/api/v1/skills-registry/install-jobs";
+      const { job: started } = await requestParsed(
+        path,
+        registrySkillInstallJobResponseSchema,
         {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify(body),
         },
+      );
+      const job = await waitForJob({
+        job: started,
+        isActive: (current) => current.state === "running",
+        read: async () =>
+          (
+            await requestParsed(
+              `${path}/${encodeURIComponent(started.id)}`,
+              registrySkillInstallJobResponseSchema,
+            )
+          ).job,
+        intervalMs: 1_000,
+      });
+      if (job.state === "completed") {
+        return { ok: true, filePath: job.filePath };
+      }
+      throw new Error(
+        job.state === "failed" ? job.error : "Skill install did not finish",
       );
     },
     async repositoryStars(input) {
@@ -205,7 +226,14 @@ export function createSkillsArea(args: CreateSdkAreaArgs): SkillsArea {
       );
     },
     async list(input) {
-      return transport.readJson(
+      const response: {
+        skills: Array<
+          Omit<SkillSummary, "providers"> & {
+            providers?: SkillSummary["providers"];
+            provider?: SkillSummary["providers"][number] | null;
+          }
+        >;
+      } = await transport.readJson(
         transport.api.v1.projects[":id"].skills.$get(
           {
             param: { id: input.projectId },
@@ -214,6 +242,16 @@ export function createSkillsArea(args: CreateSdkAreaArgs): SkillsArea {
           ...signalRequestArgs(input.signal),
         ),
       );
+      return {
+        skills: response.skills.map((skill) => ({
+          ...skill,
+          providers:
+            skill.providers ??
+            (skill.provider === null || skill.provider === undefined
+              ? []
+              : [skill.provider]),
+        })),
+      };
     },
     async listFiles(input) {
       return transport.readJson(

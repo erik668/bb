@@ -67,7 +67,20 @@ Slot props contracts (versioned, additive-only):
   form for running, needs-configuration, and degraded plugins. Registration:
   `{ id, title?, description?, component }`; `title` is an optional host-rendered
   section heading and `description` is optional supporting copy rendered with
-  that heading. Use the existing hooks (`useRpc`, `useRealtime`,
+  that heading; put your heading there instead of your own `h3`. Build the
+  body from `npx shadcn add @bb/settings-section`, the primitives bb's own
+  settings pages use: `SettingsList` is the settings card (optional
+  `title`/`description` sub-heading); each `SettingsListItem` takes `title`,
+  `meta` (short facts joined with a middot), `badge`, `description`,
+  `leading` (radio, checkbox, icon), a trailing `control` and an `error`
+  line, and nests child items for per-machine or per-account overrides
+  (show an inherited value in the control, e.g. `Project (2)`).
+  `SettingsListMessage` covers loading, empty and load-error rows, and
+  `SettingsListAction` an "Add …" row at the end of a nested group. Pass
+  `dividers={false}` when items nest, so the nested hairline carries the
+  grouping. For a value picker in a row, put `SETTINGS_INLINE_SELECT_CLASS`
+  on the `SelectTrigger` and `align="end"` on its `SelectContent`. Use the
+  existing hooks (`useRpc`, `useRealtime`,
   `useRealtimeConnectionState`, `useSettings`, `useBbNavigate`, `useBbContext`)
   for data. Enabled plugins appear in the
   settings sidebar when they declare settings descriptors OR register
@@ -95,7 +108,7 @@ Slot props contracts (versioned, additive-only):
   unencoded segments (bb encodes them) — browser back/forward then walks
   panel-internal history (prefer this over hash routing).
   Registration:
-  `{ id, title, icon, path, component, experimental_useBadge?, experimental_usePageTitle?, headerContent?, experimental_sidebar? }`.
+  `{ id, title, icon, path, component, experimental_useBadge?, experimental_usePageTitle?, headerContent?, experimental_sidebar?, experimental_headerTitle?, experimental_hideFromNavigation? }`.
   The host renders your compact plugin icon + `title` into the shared app
   header (the same title bar as Settings pages) with your optional
   `headerContent` component as the header actions on the right — so do not
@@ -105,6 +118,15 @@ Slot props contracts (versioned, additive-only):
   `p-4 md:p-5` and wrap its content in a `mx-auto w-full max-w-3xl space-y-4`
   div. `headerContent` is contained separately: a throw hides the header
   content without breaking the title bar or the panel body.
+  `experimental_headerTitle` receives `{ subPath }` and replaces the icon,
+  `title` and `experimental_usePageTitle` text in the title bar, such as a
+  `project › workspace` breadcrumb; the window title still comes from
+  `experimental_usePageTitle` or `title`, and a throw restores the default
+  title. `experimental_hideFromNavigation: true` keeps the panel out of
+  navigation (rail, list, More and the arrangement) and the command palette;
+  its route still renders with the title bar, App panel and splits, so open
+  it with `useBbNavigate().toPluginPanel(path, { subPath })`, as for a "new
+  chat in this workspace" page that should look like a thread.
 
   BB wraps every plugin page in the same host-owned App panel used by New
   thread and thread pages, with Browser and Terminal tabs (a plugin page has
@@ -159,7 +181,8 @@ Slot props contracts (versioned, additive-only):
   Thread components receive `{ threadId }`; navigation-page components receive
   `{ subPath }`. `availability: "fixed"` pins one non-closable destination.
   `availability: "action"` adds a launcher; its component also receives persisted
-  JSON `params`, and optional `run` receives context plus `experimental_panel`.
+  JSON `params`, and optional `run` receives context plus the
+  [callback context](frontend-hooks-and-ui.md#callback-context).
   Without `run`, selection opens with default params. Matching owner/id/params
   focuses an existing instance; different params open siblings. `useVisible`
   controls the fixed destination or action launcher, and never closes opened
@@ -170,7 +193,8 @@ Slot props contracts (versioned, additive-only):
   thread action tabs. It appears in that screen's right-panel Actions list
   and never appears beside an existing thread. Registration has the same
   `{ id, title, icon?, component, layout?, run? }` shape, but activating it
-  calls `run({ projectId, experimental_panel })` and its component receives
+  calls `run({ projectId, ...callback context })` (see
+  [Callback context](frontend-hooks-and-ui.md#callback-context)) and its component receives
   `{ projectId: string | null, params: JsonValue | null }`; `projectId` is
   null in projectless compose. Panel opening, JSON params, layout, persistence,
   deduplication, the `boolean` return, and error containment otherwise match
@@ -209,7 +233,8 @@ onChange }` — the control the New Thread environment picker renders beside
 - `experimental_sidebarFooter.register` → managed host-rendered icon items in
   the app sidebar footer. Both variants take `{ id, label, icon }`. An action
   adds `{ kind: "action", onActivate }`; its callback receives
-  `openPluginDetails()`. A disclosure adds
+  `openPluginDetails()` plus the
+  [callback context](frontend-hooks-and-ui.md#callback-context). A disclosure adds
   `{ kind: "disclosure", component }`; bb toggles that component above the
   row and passes it only `{ dismiss }`. A disclosure registration returns a
   controller that requests `open`, `close`, or `toggle`; an action registration
@@ -218,7 +243,8 @@ onChange }` — the control the New Thread environment picker renders beside
   Experimental: see `docs/api_to_audit.md`.
 - `sidebarFooterAction` → compatibility API for a host-rendered footer action.
   Registration remains `{ id, title, icon, run }`, and `run` still receives
-  `{ openSettings }`. New plugins should use
+  `{ openSettings }` (the same as `navigate.experimental_toSettings()`) plus the
+  [callback context](frontend-hooks-and-ui.md#callback-context). New plugins should use
   `app.experimental_sidebarFooter.register({ kind: "action", ... })` so actions
   and disclosures share one surface.
 - `experimental_sidebarNavigation` → `{ isCompactViewport, placement,
@@ -230,16 +256,19 @@ experimental_Original }` — draws the sidebar navigation. Registration:
   navigation is active. Read items and host actions
   with `experimental_useSidebarNavigation()`. Exclusive; see
   frontend-sidebar-navigation.md. Experimental: see `docs/api_to_audit.md`.
-- `experimental_threadList`, `experimental_threadRowMetadata`,
+- `experimental_threadList` is covered in frontend-thread-list.md.
+- `experimental_threadRowMetadata`,
   `experimental_threadInfoRow`, `experimental_threadInfoSection`,
   `experimental_threadContextCardRow`, `experimental_threadContextCardSection`,
   `experimental_threadAction` (menu entries and header buttons), and
-  `experimental_browserToolbarAction` are covered in frontend-registration.md.
+  `experimental_browserToolbarAction` are covered in frontend-registration.md;
+  `experimental_threadHeaderRow` and `experimental_threadHeaderTitle` in
+  frontend-thread-header-row.md.
 - `fileOpener` → `{ path: string, source, experimental_lineRange?, Original }` — register as a viewer/editor
   for file extensions: `{ id, title, extensions: ["md"], component }`.
-  Matching files use the first applicable opener in deterministic slot order
-  by default. Users can pin BB's preview or a specific opener per extension
-  under Settings → "File openers", and
+  Exclusive per extension (see exclusive-slots.md):
+  users pick BB's preview or a specific opener per extension in
+  `fileOpener.byExtension` (Settings → Files → File openers), and
   right-clicking a file link in rendered markdown offers a one-off
   "Open with …" choice; matching files opened in the right panel then
   render your component in a plugin tab instead of the built-in preview —
@@ -274,8 +303,9 @@ registered agent provider in picker order, as the same `ProviderInfo` the
 host's composer reads (`id`, `pluginId`, `displayName`, `family`, `icon`,
 `logoUrl`, `available`, `capabilities`, `maintenance`, `extensionKinds`,
 `composerActions`, and the declared `strings`, `reasoningLevels`,
-`serviceTiers`). It reads the host's own cached roster, so
-it costs no extra request. Use it whenever a surface shows a thread's or
+`serviceTiers`). It lists a provider whichever machine has it
+installed, so a remote thread's provider resolves too, and it reads bb's own
+cached provider catalog. Use it whenever a surface shows a thread's or
 automation's provider: never vendor provider names or copy in a plugin.
 
 ```tsx
@@ -317,8 +347,8 @@ app.slots.experimental_tab({
   title: "Issue",
   icon: "FileText",
   component: IssuePanel,
-  run: ({ threadId, experimental_panel }) => {
-    experimental_panel.openTab({
+  run: ({ threadId, panel }) => {
+    panel.openTab({
       tab: { id: "issue", context: { kind: "thread" }, availability: "action" },
       params: { threadId },
     });

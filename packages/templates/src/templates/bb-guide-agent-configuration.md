@@ -95,7 +95,7 @@ Skills (.bb/skills/):
 BB guide plugin:
 
   The enabled-by-default BB guide plugin owns the BB introduction and the
-  bb-cli, bb-plugin-authoring, skill-creator, submit-a-plugin, and safe-bb-upgrade
+  bb-cli, bb-plugin-authoring, skill-creator, publish-a-plugin, and safe-bb-upgrade
   skills. Settings → Installed
   plugins → BB guide exposes introduction, a master skills switch, and one
   switch per skill. All default to true. Use:

@@ -70,19 +70,31 @@
  *                              session/fork responses
  * - FAKE_ACP_IGNORE_CANCEL=1 → never answer a prompt after session/cancel
  * - FAKE_ACP_READY_FILE      → written once the agent process is up
- * - FAKE_ACP_LINGERING_DESCENDANT_PID_FILE
+ * - FAKE_ACP_LINGERING_DESCENDANT_HOLD
  *                            → spawn a descendant that ignores SIGTERM, so
  *                              process-tree cleanup outlasts the agent's exit,
- *                              and write its pid here
+ *                              and run this source in it (a test lifeline)
  * - FAKE_ACP_WRITE_PATH      → target path for the "write-file" prompt
  * - FAKE_ACP_LAUNCH_LOG      → append one line per process launch (used to
  *                              count model-discovery spawns in cache/TTL tests)
  * - FAKE_ACP_PROMPT_LOG      → append one JSON-encoded prompt text per request
  * - FAKE_ACP_PROMPT_ERROR=1  → reject every session/prompt request
+ * - FAKE_ACP_LOST_SESSION_ERROR
+ *                            → JSON-RPC error object; the first launched
+ *                              process rejects every session/prompt with it,
+ *                              as an agent that lost its session does
+ * - FAKE_ACP_LOST_SESSION_FILE
+ *                            → marker that limits the lost session to the
+ *                              first launch
  * - FAKE_ACP_GROK_CONTEXT=1  → advertise Grok model _meta.totalContextTokens
  *                              and prompt-result _meta.usage
  * - FAKE_ACP_COMPACT_STOP_REASON
  *                            → stop reason returned for /compact
+ * - FAKE_ACP_COMPACT_UPDATE_STATUS
+ *                            → during /compact, send compaction_update
+ *                              in_progress, then this status
+ * - FAKE_ACP_COMPACT_UPDATE_ERROR
+ *                            → error text for that terminal update
  * - FAKE_ACP_RESUME_SESSION=1
  *                            → advertise and serve session/resume
  * - FAKE_ACP_ADDITIONAL_DIRECTORIES=1
@@ -100,26 +112,43 @@
  * Prompt texts that script agent-initiated work after the turn has ended:
  * - "then-unprompted-stream"     → message chunks and a finished tool call
  * - "then-unprompted-permission" → a permission request, then its outcome
+ * - "then-unprompted-ask-form"   → a form question after the turn ended
  * - "then-unprompted-open-tool"  → a tool call that stays in progress
+ * - "then-unprompted-compaction" → a compaction_update in_progress, then
+ *                                  completed
+ * - "then-unprompted-finished-compaction"
+ *                                → a completed update followed by stale progress
  * - "hang-with-open-command"     → start a command, then hang until cancelled
  *                                  without ever closing it (Cursor's shape)
  * - "stop-reason:<reason>"       → end the turn with that stop reason
  * - "advertise-commands"         → advertise two slash commands, twice
  * - "ask-form"                   → ask a two-field form question
  * - "ask-form-too-large"         → ask a form with more fields than bb shows
+ * - "request-permission-reject-only"
+ *                                → ask permission offering only reject options
  */
 
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
-import { appendFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 
 const failLoad = process.env.FAKE_ACP_FAIL_LOAD === "1";
 const loadSession = process.env.FAKE_ACP_LOAD_SESSION === "1" || failLoad;
 const forkSession = process.env.FAKE_ACP_FORK_SESSION === "1";
+const closeSession = process.env.FAKE_ACP_CLOSE_SESSION === "1";
 const deleteSession = process.env.FAKE_ACP_DELETE_SESSION === "1";
 const additionalDirectories =
   process.env.FAKE_ACP_ADDITIONAL_DIRECTORIES === "1";
 const forkReuseSourceId = process.env.FAKE_ACP_FORK_REUSE_SOURCE_ID === "1";
+const forkIdOnly = process.env.FAKE_ACP_FORK_ID_ONLY === "1";
+const resumeIdOnly = process.env.FAKE_ACP_RESUME_ID_ONLY === "1";
+let forkSerial = 0;
 const usageOnLoad = process.env.FAKE_ACP_USAGE_ON_LOAD === "1";
 const usageSessionId = process.env.FAKE_ACP_USAGE_SESSION_ID;
 const modelConfig = process.env.FAKE_ACP_MODEL_CONFIG === "1";
@@ -144,6 +173,15 @@ const modelConfigReply = process.env.FAKE_ACP_MODEL_CONFIG_REPLY;
 const cursorParameterizedModels =
   process.env.FAKE_ACP_CURSOR_PARAMETERIZED_MODELS === "1";
 const requestLog = process.env.FAKE_ACP_REQUEST_LOG;
+
+function logPermissionResult(outcome) {
+  if (requestLog) {
+    appendFileSync(
+      requestLog,
+      `${JSON.stringify({ permissionResult: outcome })}\n`,
+    );
+  }
+}
 const hangInitialize = process.env.FAKE_ACP_HANG_INITIALIZE === "1";
 const authMethods = (process.env.FAKE_ACP_AUTH_METHODS ?? "")
   .split(",")
@@ -179,6 +217,33 @@ if (process.argv.includes("--list-models")) {
   process.exit(0);
 }
 
+const apiIndex = process.argv.indexOf("api");
+if (apiIndex !== -1) {
+  const statePath = process.env.FAKE_ACP_OPENCODE_PERMISSIONS_FILE;
+  const [method, , flag, body] = process.argv.slice(apiIndex + 1);
+  appendFileSync(
+    process.env.FAKE_ACP_OPENCODE_API_LOG,
+    `${process.argv.slice(apiIndex + 1, apiIndex + 3).join(" ")}\n`,
+  );
+  if (process.env.FAKE_ACP_KILL_AGENT_DURING_API === "1" && method === "GET") {
+    process.kill(
+      Number(readFileSync(process.env.FAKE_ACP_READY_FILE, "utf8")),
+      "SIGKILL",
+    );
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500);
+  }
+  if (method === "PATCH" && flag === "-d") {
+    writeFileSync(statePath, JSON.stringify(JSON.parse(body).permissions));
+  } else {
+    process.stdout.write(
+      JSON.stringify({
+        data: { permissions: JSON.parse(readFileSync(statePath, "utf8")) },
+      }),
+    );
+  }
+  process.exit(0);
+}
+
 if (process.argv.slice(-3, -1).join(" ") === "session delete") {
   if (process.env.FAKE_ACP_SESSION_DELETE_LOG) {
     appendFileSync(
@@ -196,6 +261,7 @@ const fakeModels = [
 ];
 
 let activePromptId = null;
+let permissionRequestCount = 0;
 let stuckAfterCancel = false;
 let nextAgentRequestId = 1000;
 let selectedModel = process.env.FAKE_ACP_INITIAL_MODEL ?? "fake/default";
@@ -222,20 +288,16 @@ process.on("SIGTERM", () => {
   process.exit(0);
 });
 
-if (process.env.FAKE_ACP_LINGERING_DESCENDANT_PID_FILE) {
+if (process.env.FAKE_ACP_LINGERING_DESCENDANT_HOLD) {
   spawn(
     process.execPath,
     [
       "-e",
       [
         "process.on('SIGTERM', () => {});",
-        "const fs = require('node:fs');",
-        "const pidFile = process.argv[1];",
-        "fs.writeFileSync(pidFile + '.tmp', String(process.pid));",
-        "fs.renameSync(pidFile + '.tmp', pidFile);",
+        process.env.FAKE_ACP_LINGERING_DESCENDANT_HOLD,
         "setInterval(() => {}, 1000);",
       ].join(" "),
-      process.env.FAKE_ACP_LINGERING_DESCENDANT_PID_FILE,
     ],
     { stdio: "ignore" },
   );
@@ -251,8 +313,27 @@ if (process.env.FAKE_ACP_LAUNCH_LOG) {
   appendFileSync(process.env.FAKE_ACP_LAUNCH_LOG, `launch ${process.pid}\n`);
 }
 
+let lostSessionError = null;
+if (
+  process.env.FAKE_ACP_LOST_SESSION_ERROR &&
+  process.env.FAKE_ACP_LOST_SESSION_FILE &&
+  !existsSync(process.env.FAKE_ACP_LOST_SESSION_FILE)
+) {
+  writeFileSync(process.env.FAKE_ACP_LOST_SESSION_FILE, "");
+  lostSessionError = JSON.parse(process.env.FAKE_ACP_LOST_SESSION_ERROR);
+}
+
 function send(message) {
   process.stdout.write(JSON.stringify(message) + "\n");
+}
+
+function compactionUpdate(compactionId, status, error) {
+  return {
+    sessionUpdate: "compaction_update",
+    compactionId,
+    status,
+    ...(error === undefined ? {} : { error }),
+  };
 }
 
 function notifyUpdate(update, targetSessionId = activeSessionId) {
@@ -562,6 +643,12 @@ async function handlePrompt(message) {
     return;
   }
 
+  if (lostSessionError !== null) {
+    activePromptId = null;
+    send({ jsonrpc: "2.0", id: message.id, error: lostSessionError });
+    return;
+  }
+
   if (process.env.FAKE_ACP_PROMPT_ERROR === "1") {
     activePromptId = null;
     send({
@@ -578,6 +665,31 @@ async function handlePrompt(message) {
     if (compactMessage !== undefined) {
       notifyUpdate(messageChunk(compactMessage));
     }
+    const compactUpdateStatus = process.env.FAKE_ACP_COMPACT_UPDATE_STATUS;
+    if (compactUpdateStatus !== undefined) {
+      notifyUpdate(compactionUpdate("cmp-manual", "in_progress"));
+      notifyUpdate(
+        compactionUpdate(
+          "cmp-manual",
+          compactUpdateStatus,
+          process.env.FAKE_ACP_COMPACT_UPDATE_ERROR,
+        ),
+      );
+    }
+  } else if (text.includes("then-unprompted-finished-compaction")) {
+    notifyUpdate(messageChunk("prompted reply"));
+    setTimeout(() => {
+      notifyUpdate(compactionUpdate("cmp-finished", "completed"));
+      notifyUpdate(compactionUpdate("cmp-finished", "in_progress"));
+    }, UNPROMPTED_DELAY_MS);
+  } else if (text.includes("then-unprompted-compaction")) {
+    notifyUpdate(messageChunk("prompted reply"));
+    setTimeout(() => {
+      notifyUpdate(compactionUpdate("cmp-idle", "in_progress"));
+      setTimeout(() => {
+        notifyUpdate(compactionUpdate("cmp-idle", "completed"));
+      }, UNPROMPTED_DELAY_MS * 4);
+    }, UNPROMPTED_DELAY_MS);
   } else if (text.includes("request-external-directory-permission")) {
     // opencode's external_directory permission: the running edit tool asks
     // with the generic kind "other", a bare directory title, and
@@ -621,29 +733,39 @@ async function handlePrompt(message) {
     }
     notifyUpdate(messageChunk(`permission:${outcome}`));
   } else if (text.includes("request-permission")) {
+    permissionRequestCount += 1;
+    const toolCallId = `perm-tool-${permissionRequestCount}`;
+    const command =
+      /request-permission:(\S+)/.exec(text)?.[1] ?? "rm -rf /tmp/scratch";
     notifyUpdate({
       sessionUpdate: "tool_call",
-      toolCallId: "perm-tool-1",
+      toolCallId,
       title: "Run rm",
       kind: "execute",
       status: "pending",
-      rawInput: { command: "rm -rf /tmp/scratch" },
+      rawInput: { command },
     });
     let outcome = "cancelled";
     try {
       const result = await requestClient("session/request_permission", {
         sessionId: activeSessionId,
         toolCall: {
-          toolCallId: "perm-tool-1",
+          toolCallId,
           title: "Run rm",
           kind: "execute",
-          rawInput: { command: "rm -rf /tmp/scratch" },
+          rawInput: { command },
         },
-        options: [
-          { optionId: "yes", name: "Allow", kind: "allow_once" },
-          { optionId: "always", name: "Always allow", kind: "allow_always" },
-          { optionId: "no", name: "Deny", kind: "reject_once" },
-        ],
+        options: text.includes("request-permission-reject-only")
+          ? [{ optionId: "no", name: "Deny", kind: "reject_once" }]
+          : [
+              { optionId: "yes", name: "Allow", kind: "allow_once" },
+              {
+                optionId: "always",
+                name: "Always allow",
+                kind: "allow_always",
+              },
+              { optionId: "no", name: "Deny", kind: "reject_once" },
+            ],
       });
       outcome =
         result?.outcome?.outcome === "selected"
@@ -652,6 +774,7 @@ async function handlePrompt(message) {
     } catch {
       outcome = "error";
     }
+    logPermissionResult(outcome);
     notifyUpdate(messageChunk(`permission:${outcome}`));
   } else if (text.includes("permission-probe")) {
     let wrote = false;
@@ -716,14 +839,38 @@ async function handlePrompt(message) {
       }).then(
         (result) => {
           const outcome = result?.outcome;
-          notifyUpdate(
-            messageChunk(
-              `permission:${outcome?.outcome === "selected" ? outcome.optionId : (outcome?.outcome ?? "none")}`,
-            ),
-          );
+          const text = `${outcome?.outcome === "selected" ? outcome.optionId : (outcome?.outcome ?? "none")}`;
+          logPermissionResult(text);
+          notifyUpdate(messageChunk(`permission:${text}`));
         },
-        () => notifyUpdate(messageChunk("permission:error")),
+        () => {
+          logPermissionResult("error");
+          notifyUpdate(messageChunk("permission:error"));
+        },
       );
+    }, UNPROMPTED_DELAY_MS);
+  } else if (text.includes("then-unprompted-ask-form")) {
+    notifyUpdate(messageChunk("prompted reply"));
+    setTimeout(() => {
+      void requestClient("elicitation/create", {
+        sessionId: activeSessionId,
+        mode: "form",
+        message: "Which environment?",
+        requestedSchema: {
+          type: "object",
+          properties: { target: { type: "string", enum: ["staging", "prod"] } },
+          required: ["target"],
+        },
+      })
+        .catch((error) => ({ error: String(error) }))
+        .then((result) => {
+          if (requestLog) {
+            appendFileSync(
+              requestLog,
+              `${JSON.stringify({ elicitationResult: result })}\n`,
+            );
+          }
+        });
     }, UNPROMPTED_DELAY_MS);
   } else if (text.includes("advertise-commands")) {
     const availableCommands = [
@@ -908,12 +1055,14 @@ async function handleMessage(message) {
             promptCapabilities: { image: false },
             ...(forkSession ||
             resumeSession ||
+            closeSession ||
             deleteSession ||
             additionalDirectories
               ? {
                   sessionCapabilities: {
                     ...(forkSession ? { fork: {} } : {}),
                     ...(resumeSession ? { resume: {} } : {}),
+                    ...(closeSession ? { close: {} } : {}),
                     ...(deleteSession ? { delete: {} } : {}),
                     ...(additionalDirectories
                       ? { additionalDirectories: {} }
@@ -922,6 +1071,14 @@ async function handleMessage(message) {
                 }
               : {}),
           },
+          ...(process.env.FAKE_ACP_AGENT_VERSION
+            ? {
+                agentInfo: {
+                  name: "Fake ACP",
+                  version: process.env.FAKE_ACP_AGENT_VERSION,
+                },
+              }
+            : {}),
           ...(authMethods.length > 0
             ? {
                 authMethods: [
@@ -1002,6 +1159,17 @@ async function handleMessage(message) {
         );
       }
       return;
+    case "session/close":
+      if (closeSession) {
+        send({ jsonrpc: "2.0", id: message.id, result: {} });
+      } else {
+        send({
+          jsonrpc: "2.0",
+          id: message.id,
+          error: { code: -32601, message: "Unknown method session/close" },
+        });
+      }
+      return;
     case "session/delete":
       if (deleteSession) {
         send({ jsonrpc: "2.0", id: message.id, result: {} });
@@ -1014,6 +1182,13 @@ async function handleMessage(message) {
       }
       return;
     case "session/load":
+      if (
+        process.env.FAKE_ACP_EXIT_ON_FIRST_LOAD &&
+        !existsSync(process.env.FAKE_ACP_EXIT_ON_FIRST_LOAD)
+      ) {
+        writeFileSync(process.env.FAKE_ACP_EXIT_ON_FIRST_LOAD, "");
+        process.exit(1);
+      }
       if (!requireAuthenticated(message)) {
         return;
       }
@@ -1057,7 +1232,11 @@ async function handleMessage(message) {
       }
       captureMcpServers(message);
       activeSessionId = message.params?.sessionId;
-      send({ jsonrpc: "2.0", id: message.id, result: configState() });
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: resumeIdOnly ? {} : configState(),
+      });
       return;
     case "session/fork":
       if (!requireAuthenticated(message)) {
@@ -1079,11 +1258,11 @@ async function handleMessage(message) {
       }
       activeSessionId = forkReuseSourceId
         ? message.params.sessionId
-        : `fake-fork-${process.pid}`;
+        : `fake-fork-${process.pid}-${++forkSerial}`;
       captureMcpServers(message);
       sendSessionResponse(message, {
         sessionId: activeSessionId,
-        ...configState(),
+        ...(forkIdOnly ? {} : configState()),
       });
       return;
     case "session/set_model": {

@@ -1,8 +1,7 @@
-import type { TunnelIngressLease } from "../connect-next/tunnel-ingress.js";
 import type { EnvironmentRemoval } from "@bb/domain";
 import type { MachineEnrollmentService } from "../machines/machine-services.js";
 import type { AiServiceRegistry } from "../ai/ai-service-registry.js";
-import type { DbConnection, HostRow } from "@bb/db";
+import type { DbConnection, HostRow, WalCheckpointer } from "@bb/db";
 import type {
   DynamicTool,
   PendingInteraction,
@@ -75,9 +74,6 @@ export interface PluginServiceDeps {
     | "validateSharedPortDeclaration"
     | "replaceDeclarationsForOwner"
     | "clearDeclarationsForOwner"
-    | "setNextTunnelConfig"
-    | "listNextTunnelStatuses"
-    | "onNextTunnelStatusChange"
   >;
   ensureSharedPortTunnel?: (
     hostId: string,
@@ -86,6 +82,7 @@ export interface PluginServiceDeps {
   pluginHostArtifacts?: PluginHostArtifactRegistry;
   aiServices: AiServiceRegistry;
   onSettingsChanged?: (pluginId: string) => void;
+  onPluginsChanged?: () => void;
   /**
    * Fired after a plugin stops being a registered owner — disabled or
    * uninstalled, but *not* reloaded. Core state keyed by `plugin:<id>` (queue
@@ -110,6 +107,7 @@ export interface PluginServiceDeps {
     | "onWatchedTargets"
   >;
   logger: ServerLogger;
+  walCheckpointer?: Pick<WalCheckpointer, "attach" | "detach">;
   telemetry: TelemetryService;
   pendingInteractions?: Pick<
     import("../interactions/pending-interactions.js").PendingInteractionLifecycle,
@@ -125,6 +123,7 @@ export interface PluginServiceDeps {
   retiredBundledPlugins?: readonly RetiredBundledPlugin[];
   watchBuiltinPluginSources?: boolean;
   loadTimeoutMs?: number;
+  preparationTimeoutMs?: number;
   /** How long an install waits for `bb.onInstall` handlers. Defaults to 30s. */
   installHandlerTimeoutMs?: number;
   serviceStopTimeoutMs?: number;
@@ -167,7 +166,6 @@ export interface PluginServiceDeps {
     pluginId: string;
     generation: string;
   }) => Promise<void>;
-  openTunnelIngress?: (audience: string) => Promise<TunnelIngressLease>;
 }
 
 export interface PluginAgentToolContribution {

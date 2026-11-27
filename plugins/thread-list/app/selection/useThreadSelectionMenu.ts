@@ -1,17 +1,12 @@
-import { useMemo, useRef } from "react";
-import type {
-  PluginThreadActionsInlineItem,
-  PluginThreadActionTarget,
-} from "@get-bb/plugin-sdk/app";
+import { useMemo, useRef, useSyncExternalStore } from "react";
+import type { PluginThreadActionsInlineItem } from "@get-bb/plugin-sdk/app";
 import type { SidebarThread } from "../model/sidebar-thread.js";
-import { useSidebarData } from "../model/use-sidebar-data.js";
-import { toThreadActionTarget } from "../rows/threadActionTarget.js";
 import { useThreadSelectionStore } from "./threadSelection.js";
 
 const SELECTION_GROUP = "5_selection";
 
 export interface ThreadSelectionMenu {
-  selection: readonly PluginThreadActionTarget[];
+  selection: readonly SidebarThread[];
   inline: readonly PluginThreadActionsInlineItem[];
   onEscapeKeyDown: () => void;
   onCloseAutoFocus: (event: Event) => void;
@@ -21,19 +16,10 @@ export function useThreadSelectionMenu(
   threadIds: readonly string[] | null,
 ): ThreadSelectionMenu | null {
   const store = useThreadSelectionStore();
-  const { projects } = useSidebarData();
   const dismissedWithEscape = useRef(false);
-  const selection = useMemo(() => {
-    if (threadIds === null) return null;
-    const byId = new Map<string, SidebarThread>();
-    for (const project of projects) {
-      for (const thread of project.threads) byId.set(thread.id, thread);
-    }
-    return threadIds.flatMap((threadId) => {
-      const thread = byId.get(threadId);
-      return thread === undefined ? [] : [toThreadActionTarget(thread)];
-    });
-  }, [projects, threadIds]);
+  const selection = useSyncExternalStore(store.subscribe, () =>
+    threadIds === null ? null : store.getSelectionThreads(),
+  );
   return useMemo(
     () =>
       selection === null

@@ -34,6 +34,13 @@ import {
   type PluginPackageLayoutMigration,
 } from "@bb/templates/plugin-scaffold";
 import { action, CliExitError } from "../action.js";
+import {
+  outputJson,
+  printJsonResult,
+  reportCommandResult,
+  type CommandFailure,
+  type JsonOutputOptions,
+} from "../command-result.js";
 import { cliFetch, createCliBbSdk } from "../client.js";
 import { resolveContextThreadId } from "../context-env.js";
 import {
@@ -50,8 +57,8 @@ import {
 import { runPluginCliCommand } from "../plugin-cli-proxy.js";
 import { resolveBbCliVersion } from "../version.js";
 
-import { outputJson, type JsonOutputOptions } from "./helpers.js";
 import { renderBorderlessTable } from "../table.js";
+import { sliceUtf16Head } from "@bb/text-utils";
 
 interface NewPluginTarget {
   packageName: string;
@@ -291,16 +298,16 @@ async function requirePluginManifest(
 ): Promise<z.infer<typeof pluginManifestSchema>> {
   const manifest = await readPluginManifest(rootDir);
   if (!manifest) {
-    console.error(
+    throw new CliExitError(
       `No readable package.json in ${rootDir} — run from a plugin directory or pass its path.`,
+      1,
     );
-    process.exit(1);
   }
   if (typeof manifest.bb?.server !== "string") {
-    console.error(
+    throw new CliExitError(
       `${rootDir} is not a bb plugin — package.json has no "bb.server" entry.`,
+      1,
     );
-    process.exit(1);
   }
   return manifest;
 }
@@ -500,7 +507,7 @@ async function callPlugins(
     parsed = text ? JSON.parse(text) : {};
   } catch {
     throw new Error(
-      `Unexpected response from /api/v1/plugins${path} (${response.status}): ${text.slice(0, 200)}`,
+      `Unexpected response from /api/v1/plugins${path} (${response.status}): ${sliceUtf16Head(text, 200)}`,
     );
   }
   if (!response.ok && ![400, 404, 422].includes(response.status)) {
@@ -516,6 +523,25 @@ const UPDATE_STATUS_LABELS: Record<PluginUpdateResult["outcome"], string> = {
   incompatible: "incompatible",
   unavailable: "unavailable",
 };
+
+function rangeUpgradeCommand(id: string, range: string): string {
+  return `bb plugin update ${id} --range '${range}'`;
+}
+
+function rangeUpgradeNote(result: PluginUpdateResult): string | null {
+  const upgrade = result.rangeUpgrade;
+  if (upgrade === undefined) return null;
+  const outside = `${result.id}: ${upgrade.candidate.label} is outside your saved range ${upgrade.currentRange}`;
+  if (upgrade.reasons.length > 0) {
+    return `${outside}, but it does not run on this bb: ${upgrade.reasons.join("; ")}.`;
+  }
+  const listed =
+    upgrade.basis === "catalog"
+      ? `; its marketplace now lists ${upgrade.range}`
+      : "";
+  const breaking = upgrade.breaking ? " It may include breaking changes." : "";
+  return `${outside}${listed}.${breaking} Review it with \`${rangeUpgradeCommand(result.id, upgrade.range)}\`.`;
+}
 
 function blockedSummary(result: PluginUpdateResult): string {
   if (!result.blocked) return "—";
@@ -533,24 +559,108 @@ async function confirmPluginAction(
 ): Promise<void> {
   if (yes) return;
   if (!process.stdin.isTTY) {
-    console.error(refusal);
-    process.exit(1);
+    throw new CliExitError(refusal, 1);
   }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const answer = (await rl.question(`${prompt} [y/N] `)).trim().toLowerCase();
   rl.close();
   if (answer !== "y" && answer !== "yes") {
-    console.log("Aborted.");
-    process.exit(1);
+    throw new CliExitError("Aborted.", 1, { code: "aborted", hint: null });
   }
+}
+
+async function changePluginRange(args: {
+  sdk: ReturnType<typeof createCliBbSdk>;
+  id: string;
+  range: string;
+  yes: boolean;
+  wait: boolean;
+}): Promise<void> {
+  const [result] = await args.sdk.plugins.checkUpdates({ pluginId: args.id });
+  const offered =
+    result?.rangeUpgrade?.range === args.range
+      ? result.rangeUpgrade
+      : undefined;
+  if (offered !== undefined && offered.reasons.length > 0) {
+    exitWithError({
+      error: `${args.id}: ${offered.candidate.label} does not run on this bb: ${offered.reasons.join("; ")}`,
+    });
+  }
+  const installed = result?.installed.display ?? args.id;
+  console.log(
+    offered === undefined
+      ? `${args.id}: change the saved range to ${args.range} and install the newest compatible release it admits (installed: ${installed}). Plugins are full-trust code.`
+      : `${args.id}: ${installed} → ${offered.candidate.display}, changing the saved range ${offered.currentRange} → ${offered.range}. Plugins are full-trust code.`,
+  );
+  if (offered?.breaking === true) {
+    console.log(
+      `${offered.candidate.label} may include breaking changes. Settings, secrets, schedules, and data are kept, and bb restores the previous release and range if it fails to start.`,
+    );
+  }
+  await confirmPluginAction(
+    "Change the range and update?",
+    "Refusing to change the range without confirmation — re-run with --yes.",
+    args.yes,
+  );
+  const request = {
+    pluginId: args.id,
+    range: args.range,
+    ...(offered === undefined
+      ? {}
+      : { expectedVersion: offered.candidate.version }),
+  };
+  if (!args.wait) {
+    const job = await args.sdk.plugins.experimental_startUpdate(request);
+    console.log(
+      `Updating ${job.displayName} in the background (job ${job.id}).`,
+    );
+    console.log(`Follow it with \`bb plugin update-jobs ${job.id}\`.`);
+    return;
+  }
+  let mutation: PluginApplyUpdateResult;
+  try {
+    mutation = await args.sdk.plugins.applyUpdate(request);
+  } catch (error) {
+    exitWithError({ error: sdkErrorMessage(error) });
+  }
+  reportCommandResult({}, mutation, {
+    text: [
+      mutation.applied
+        ? `${args.id}: now follows ${args.range}; updated and activated ${mutation.from.display} → ${mutation.to?.display ?? args.range}.`
+        : `${args.id}: ${mutation.outcome}${mutation.detail ? ` — ${mutation.detail}` : ""}; the saved range is unchanged.`,
+    ],
+    failure: pluginUpdateRollbackFailure(
+      mutation.outcome === "rolled-back" ? [args.id] : [],
+    ),
+  });
+}
+
+function pluginUpdateRollbackFailure(
+  pluginIds: readonly string[],
+): CommandFailure | null {
+  if (pluginIds.length === 0) return null;
+  return {
+    message: `The update of ${pluginIds.join(", ")} failed to start and was rolled back to the previous version.`,
+    code: "plugin_update_rolled_back",
+    hint: null,
+  };
 }
 
 function outputMutationJson(
   opts: JsonOutputOptions,
-  result: { ok: boolean },
+  result: { ok: boolean; error?: string },
 ): boolean {
-  if (!outputJson(opts, result)) return false;
-  if (!result.ok) process.exit(1);
+  if (!opts.json) return false;
+  reportCommandResult(opts, result, {
+    text: [],
+    failure: result.ok
+      ? null
+      : {
+          message: result.error ?? "Command failed",
+          code: "plugin_command_failed",
+          hint: null,
+        },
+  });
   return true;
 }
 
@@ -721,16 +831,15 @@ function installPlanSummary(plan: PluginCatalogInstallPlan): string {
   if (plan.kind === "bundled") {
     return `Installing ${plan.displayName}, bundled with BB (${plan.source})`;
   }
-  if (plan.official) {
-    return `Installing ${plan.displayName} from the ${plan.marketplaceDisplayName} marketplace, reviewed by BB (${plan.source})`;
-  }
   const author =
     plan.author.url === null
       ? plan.author.name
       : `${plan.author.name} (${plan.author.url})`;
   return [
     `Installing ${plan.displayName} (${plan.entryId}@${plan.marketplace})`,
-    `  marketplace: ${plan.marketplaceDisplayName} — a third-party marketplace, not reviewed by BB`,
+    plan.official
+      ? `  marketplace: ${plan.marketplaceDisplayName} — ships with BB, not reviewed by BB`
+      : `  marketplace: ${plan.marketplaceDisplayName} — a third-party marketplace, not reviewed by BB`,
     `  author: ${author}`,
     ...resolvedSourceLines(plan.resolvedSource),
   ].join("\n");
@@ -774,8 +883,7 @@ function printPlugin(plugin: PluginEntry): void {
 }
 
 function exitWithError(result: { error?: string }): never {
-  console.error(result.error ?? "Command failed");
-  process.exit(1);
+  throw new CliExitError(result.error ?? "Command failed", 1);
 }
 
 function sdkErrorMessage(error: unknown): string {
@@ -826,14 +934,16 @@ function parseSettingValue(
   if (descriptor.type === "boolean") {
     if (raw === "true") return true;
     if (raw === "false") return false;
-    console.error(`Setting "${key}" is a boolean — pass true or false.`);
-    process.exit(1);
+    throw new CliExitError(
+      `Setting "${key}" is a boolean — pass true or false.`,
+      1,
+    );
   }
   if (descriptor.type === "select" && !descriptor.options?.includes(raw)) {
-    console.error(
+    throw new CliExitError(
       `Setting "${key}" must be one of: ${descriptor.options?.join(", ") ?? ""}`,
+      1,
     );
-    process.exit(1);
   }
   if (descriptor.type === "number") {
     let value: unknown;
@@ -843,8 +953,10 @@ function parseSettingValue(
       value = undefined;
     }
     if (typeof value === "number" && Number.isFinite(value)) return value;
-    console.error(`Setting "${key}" is a number — pass a finite number.`);
-    process.exit(1);
+    throw new CliExitError(
+      `Setting "${key}" is a number — pass a finite number.`,
+      1,
+    );
   }
   return raw;
 }
@@ -923,11 +1035,7 @@ export function registerPluginCommands(
               }
               throw error;
             });
-          if (opts.json) {
-            outputJson(opts, result);
-            return;
-          }
-          console.log(JSON.stringify(result, null, 2));
+          printJsonResult(result);
         },
       ),
     );
@@ -972,7 +1080,7 @@ export function registerPluginCommands(
   plugin
     .command("search <query>")
     .description(
-      "Search every plugin the store lists: the plugins bundled with the app, the reserved bb-community marketplace catalog BB reviews, and any third-party marketplace added on this host. The Marketplace column names the source; only bb-community is reviewed by BB",
+      "Search every plugin the store lists: the plugins bundled with the app, the reserved bb-community marketplace catalog, and any third-party marketplace added on this host. The Marketplace column names the source; BB does not review bb-community or third-party listings",
     )
     .option("--json", "Output JSON")
     .action(
@@ -982,7 +1090,11 @@ export function registerPluginCommands(
           outputJson(opts, results);
           return;
         }
-        const showMarketplace = results.some((result) => !result.official);
+        const showMarketplace = results.some(
+          (result) =>
+            !result.official ||
+            result.listings.some((listing) => !listing.official),
+        );
         const now = Date.now();
         const badges = results.map((result) =>
           pluginInstallBadgeLabel(pluginInstallBadge(result, now)),
@@ -992,7 +1104,15 @@ export function registerPluginCommands(
           result.displayName,
           result.description,
           result.category ?? "Uncategorized",
-          ...(showMarketplace ? [result.marketplaceDisplayName] : []),
+          ...(showMarketplace
+            ? [
+                result.listings.length === 0
+                  ? result.marketplaceDisplayName
+                  : result.listings
+                      .map((listing) => listing.marketplaceDisplayName)
+                      .join(", "),
+              ]
+            : []),
           ...(showInstalls ? [badges[index]] : []),
           result.installed
             ? "✓ installed"
@@ -1103,7 +1223,7 @@ export function registerPluginCommands(
   plugin
     .command("install <source>")
     .description(
-      "Install a catalog entry by name or <entry>@<marketplace>, a Git repository URL, a local path, builtin:<name>, git:<url>[@<ref|semver-range>], or npm:<name>@<version>. A catalog entry from a third-party marketplace is not reviewed by BB, so its confirmation names the marketplace, the author, and the exact resolved source (managed sources validate engines ranges and build artifacts; bundled plugin ids are reserved)",
+      "Install a catalog entry by name or <entry>@<marketplace>, a Git repository URL, a local path, builtin:<name>, git:<url>[@<ref|semver-range>], or npm:<name>@<version>. A catalog entry from bb-community or a third-party marketplace is not reviewed by BB, so its confirmation names the marketplace, the author, and the exact resolved source (managed sources validate engines ranges and build artifacts; bundled plugin ids are reserved)",
     )
     .option(
       "--subdirectory <path>",
@@ -1225,9 +1345,7 @@ export function registerPluginCommands(
                       ? {
                           entryId: intent.plan.entryId,
                           marketplace: intent.plan.marketplace,
-                          ...(intent.plan.official
-                            ? {}
-                            : { confirmedSource: intent.plan.resolvedSource }),
+                          confirmedSource: intent.plan.resolvedSource,
                         }
                       : { entryId: intent.plan.entryId },
                 };
@@ -1252,13 +1370,30 @@ export function registerPluginCommands(
             request.kind === "source"
               ? await plugins.install(request.args)
               : await plugins.catalog.install(request.args);
-          const result = { ok: true as const, plugin };
-          if (opts.json) {
-            outputJson(opts, result);
-            return;
-          }
-          console.log("Installed:");
-          printPlugin(plugin);
+          const loadError =
+            plugin.status === "error"
+              ? (plugin.statusDetail ?? `plugin "${plugin.id}" failed to load`)
+              : null;
+          reportCommandResult(
+            opts,
+            loadError === null
+              ? { ok: true as const, plugin }
+              : { ok: false as const, plugin, error: loadError },
+            {
+              text: () => {
+                console.log("Installed:");
+                printPlugin(plugin);
+              },
+              failure:
+                loadError === null
+                  ? null
+                  : {
+                      message: loadError,
+                      code: "plugin_load_failed",
+                      hint: null,
+                    },
+            },
+          );
         },
       ),
     );
@@ -1341,7 +1476,7 @@ export function registerPluginCommands(
           result.installed.display,
           result.candidate?.display ?? "—",
           blockedSummary(result),
-          `${UPDATE_STATUS_LABELS[result.outcome]}${result.devMode ? " [dev build: engines.bb not enforced]" : ""}`,
+          `${UPDATE_STATUS_LABELS[result.outcome]}${result.rangeUpgrade === undefined ? "" : ` · ${result.rangeUpgrade.candidate.label} outside range`}${result.devMode ? " [dev build: engines.bb not enforced]" : ""}`,
         ]);
         console.log(
           renderBorderlessTable(
@@ -1359,6 +1494,10 @@ export function registerPluginCommands(
             rows,
           ),
         );
+        const notes = results
+          .map(rangeUpgradeNote)
+          .filter((note) => note !== null);
+        if (notes.length > 0) console.log(`\n${notes.join("\n")}`);
       }),
     );
 
@@ -1415,6 +1554,10 @@ export function registerPluginCommands(
     )
     .option("--no-wait", "Start background updates and return their job IDs")
     .option("--all", "Update every plugin with a compatible update")
+    .option(
+      "--range <range>",
+      "Change one plugin's saved version range and install the newest compatible release it admits; bb refuses ranges that would downgrade",
+    )
     .option("--yes", "Skip confirmation prompts")
     .action(
       action(
@@ -1422,15 +1565,34 @@ export function registerPluginCommands(
           id: string | undefined,
           opts: {
             all?: boolean;
+            range?: string;
             yes?: boolean;
             wait?: boolean;
           },
         ) => {
           if ((id === undefined) === !opts.all) {
-            console.error("Specify exactly one plugin id or --all.");
-            process.exit(1);
+            throw new CliExitError(
+              "Specify exactly one plugin id or --all.",
+              1,
+            );
           }
           const sdk = createCliBbSdk(getUrl());
+          if (opts.range !== undefined) {
+            if (id === undefined) {
+              throw new CliExitError(
+                "--range changes one plugin; pass its id.",
+                1,
+              );
+            }
+            await changePluginRange({
+              sdk,
+              id,
+              range: opts.range,
+              yes: opts.yes === true,
+              wait: opts.wait !== false,
+            });
+            return;
+          }
           const results = await sdk.plugins.checkUpdates(
             id === undefined ? {} : { pluginId: id },
           );
@@ -1441,6 +1603,7 @@ export function registerPluginCommands(
               sources.set(entry.id, entry.sourceDisplay);
           }
 
+          const rolledBack: string[] = [];
           for (const result of results) {
             const source = sources.get(result.id) ?? "unknown source";
             const detail = updateDetail(result);
@@ -1449,7 +1612,7 @@ export function registerPluginCommands(
             if (!shouldAttempt) {
               if (result.outcome === "pinned") {
                 console.log(
-                  `${result.id}: skipped — pinned${detail ? ` (${detail})` : ""}; remove and reinstall with a tracking npm range, git branch, or git semver range to receive updates (remove deletes the plugin's settings, secrets, and schedules). A local path plugin updates with \`bb plugin reload\`; move it with \`bb plugin install path:<new directory>\`.`,
+                  `${result.id}: skipped — pinned${detail ? ` (${detail})` : ""}; remove and reinstall with a tracking npm range, git branch, or git semver range to receive updates (remove deletes the plugin's settings, secrets, stored files, and schedules). A local path plugin updates with \`bb plugin reload\`; move it with \`bb plugin install path:<new directory>\`.`,
                 );
               } else if (result.outcome === "incompatible") {
                 console.log(
@@ -1464,6 +1627,8 @@ export function registerPluginCommands(
                   `${result.id}: current (${result.installed.display}).`,
                 );
               }
+              const note = rangeUpgradeNote(result);
+              if (note !== null) console.log(note);
               continue;
             }
 
@@ -1507,7 +1672,12 @@ export function registerPluginCommands(
                 `${result.id}: ${mutation.outcome}${mutation.detail ? ` — ${mutation.detail}` : ""}`,
               );
             }
+            if (mutation.outcome === "rolled-back") rolledBack.push(result.id);
           }
+          reportCommandResult({}, results, {
+            text: [],
+            failure: pluginUpdateRollbackFailure(rolledBack),
+          });
         },
       ),
     );
@@ -1521,10 +1691,10 @@ export function registerPluginCommands(
       action(async (name: string) => {
         const target = resolveNewPluginTarget(name);
         if (target === null) {
-          console.error(
+          throw new CliExitError(
             `Invalid or reserved plugin name "${name}" — use a non-core name, bb-plugin-name, or @scope/bb-plugin-name.`,
+            1,
           );
-          process.exit(1);
         }
         const creationTelemetry = recordPluginCreationStarted(getUrl);
         const { directoryName, packageName } = target;
@@ -1563,8 +1733,7 @@ export function registerPluginCommands(
         const hasApp = typeof manifest.bb?.app === "string";
         const layout = await resolvePluginSdkLayout(rootDir);
         if (layout.kind === "vendored") {
-          console.error(LEGACY_PLUGIN_SDK_LAYOUT_MESSAGE);
-          process.exit(1);
+          throw new CliExitError(LEGACY_PLUGIN_SDK_LAYOUT_MESSAGE, 1);
         }
         if (layout.kind === "package") {
           const [installImport] = await findPluginSdkInstallImports(rootDir);
@@ -1586,15 +1755,17 @@ export function registerPluginCommands(
               return;
             }
             const sdkPinFix = describePendingSdkPin(pending, installImport);
-            if (sdkPinFix !== null) console.error(sdkPinFix);
-            for (const shim of pending.shimmedTypePins) {
-              console.error(
-                shim.movedFromDependencies
-                  ? `Move "${shim.name}" from dependencies to devDependencies at ${shim.to} — bb shims it at runtime and never bundles it (\`bb plugin types\` does it for you).`
-                  : `Set "${shim.name}" to ${shim.to} in devDependencies — the version this bb shims at runtime (\`bb plugin types\` does it for you).`,
-              );
-            }
-            process.exit(1);
+            throw new CliExitError(
+              [
+                ...(sdkPinFix === null ? [] : [sdkPinFix]),
+                ...pending.shimmedTypePins.map((shim) =>
+                  shim.movedFromDependencies
+                    ? `Move "${shim.name}" from dependencies to devDependencies at ${shim.to} — bb shims it at runtime and never bundles it (\`bb plugin types\` does it for you).`
+                    : `Set "${shim.name}" to ${shim.to} in devDependencies — the version this bb shims at runtime (\`bb plugin types\` does it for you).`,
+                ),
+              ].join("\n"),
+              1,
+            );
           }
           const changed = await setPluginSdkPin({
             rootDir,
@@ -1683,10 +1854,10 @@ export function registerPluginCommands(
           dryRun: true,
         });
         if (!samePlan(plan, confirmedPlan)) {
-          console.error(
+          throw new CliExitError(
             "The plugin changed while awaiting confirmation — nothing was written. Re-run `bb plugin migrate` to see the current plan.",
+            1,
           );
-          process.exit(1);
         }
         const applied = await migratePluginToPackageLayout({
           rootDir,
@@ -1709,7 +1880,7 @@ export function registerPluginCommands(
   plugin
     .command("build [path]")
     .description(
-      "Compile the plugin into dist/: the bb.server backend bundle (server.js, server.meta.json), plus, when declared, the bb.app frontend bundle (app.js, app.css, app.meta.json) and the self-contained bb.host daemon bundle (host.js, host.js.map, host.meta.json) — which carries the plugin's host RPC entry, its provider bridge, or both; each *.meta.json stamps SDK/identity metadata; no server required",
+      "Compile the plugin into dist/: the bb.server backend bundle (server.js, server.meta.json), plus, when declared, the bb.app frontend bundle (app.js, chunks/ for dynamic imports, app.css, app.meta.json) and the self-contained bb.host daemon bundle (host.js, host.js.map, host.meta.json) — which carries the plugin's host RPC entry, its provider bridge, or both; each *.meta.json stamps SDK/identity metadata; no server required",
     )
     .action(
       action(async (path: string | undefined) => {
@@ -1728,7 +1899,7 @@ export function registerPluginCommands(
           const app = await buildPluginApp(rootDir, bbVersion, toolchain);
           for (const warning of app.migrationWarnings)
             console.warn(`warning: ${warning}`);
-          files.push(app.jsPath, app.cssPath, app.metaPath);
+          files.push(app.jsPath, ...app.chunkPaths, app.cssPath, app.metaPath);
         }
         if (hasHost) {
           const host = await buildPluginHost(rootDir, bbVersion, toolchain);
@@ -1738,6 +1909,48 @@ export function registerPluginCommands(
           console.log(relative(process.cwd(), file));
         }
       }),
+    );
+
+  plugin
+    .command("publish [dir]")
+    .description(
+      "Check a plugin directory (default: cwd) against the public marketplace's listing rules — manifest, id, bbMarketplace category and screenshots, icon, PLUGIN_OVERVIEW.md, keywords, release tag, GitHub topic or npm tarball, and the live catalog — then print the exact steps to get listed. Listing is self-service: add the bb-plugin topic (GitHub) or keyword (npm), then push a semver tag or npm publish. Never pushes, tags, or publishes",
+    )
+    .requiredOption(
+      "--check",
+      "Run the checks (required; bb never publishes for you)",
+    )
+    .addOption(
+      new Option(
+        "--source <kind>",
+        "Check as a GitHub repository or an npm package (default: github when the repo has a github.com remote, else npm)",
+      ).choices(["github", "npm"]),
+    )
+    .option(
+      "--offline",
+      "Skip the live catalog, reserved ids, GitHub, and npm registry lookups",
+    )
+    .option("--json", "Output JSON")
+    .action(
+      action(
+        async (
+          dir: string | undefined,
+          opts: JsonOutputOptions & {
+            check: true;
+            source?: "github" | "npm";
+            offline?: boolean;
+          },
+        ) => {
+          const { runPublishCheckCommand } =
+            await import("../plugin-publish/command.js");
+          await runPublishCheckCommand({
+            directory: resolve(process.cwd(), dir ?? "."),
+            source: opts.source ?? null,
+            offline: opts.offline === true,
+            json: opts.json === true,
+          });
+        },
+      ),
     );
 
   plugin
@@ -1759,10 +1972,10 @@ export function registerPluginCommands(
             candidate.rootDir === rootDir || candidate.rootDir === realDir,
         );
         if (!entry) {
-          console.error(
+          throw new CliExitError(
             `This directory is not installed as a plugin — run \`bb plugin install ${path ?? "."}\` first, then re-run \`bb plugin dev\`.`,
+            1,
           );
-          process.exit(1);
         }
         const loop = createPluginDevLoop({
           pluginId: entry.id,
@@ -1867,27 +2080,13 @@ export function registerPluginCommands(
       .option("--json", "Output JSON")
       .action(
         action(async (id: string, opts: JsonOutputOptions) => {
-          const response = pluginMutationResponseSchema.parse(
+          const result = pluginMutationResponseSchema.parse(
             await callPlugins(
               getUrl(),
               `/${encodeURIComponent(id)}/${name}`,
               "POST",
             ),
           );
-          const failedPlugin =
-            name === "enable" &&
-            response.plugin?.enabled === true &&
-            response.plugin.status === "error"
-              ? response.plugin
-              : null;
-          const result = failedPlugin
-            ? {
-                ...response,
-                ok: false,
-                error:
-                  failedPlugin.statusDetail ?? `plugin "${id}" failed to load`,
-              }
-            : response;
           if (outputMutationJson(opts, result)) return;
           if (result.plugin) printPlugin(result.plugin);
           if (!result.ok || !result.plugin) exitWithError(result);
@@ -1915,13 +2114,17 @@ export function registerPluginCommands(
               });
         const result = updated ?? (await plugins.experimental_getSafeMode());
         const problems = updated?.problems ?? [];
-        if (opts.json) {
-          outputJson(opts, result);
-        } else {
-          console.log(`Plugin safe mode is ${result.enabled ? "on" : "off"}.`);
-          for (const problem of problems) console.error(problem);
-        }
-        if (problems.length > 0) process.exit(1);
+        reportCommandResult(opts, result, {
+          text: [`Plugin safe mode is ${result.enabled ? "on" : "off"}.`],
+          failure:
+            problems.length === 0
+              ? null
+              : {
+                  message: problems.join("\n"),
+                  code: "plugin_start_failed",
+                  hint: null,
+                },
+        });
       }),
     );
 
@@ -2005,27 +2208,29 @@ export function registerPluginCommands(
             return;
           }
           if (actionName !== "set" && actionName !== "unset") {
-            console.error(
+            throw new CliExitError(
               `Unknown action "${actionName}" — use "set" or "unset".`,
+              1,
             );
-            process.exit(1);
           }
           if (
             key === undefined ||
             (actionName === "set" && value === undefined)
           ) {
-            console.error(
+            throw new CliExitError(
               actionName === "set"
                 ? "Usage: bb plugin config <id> set <key> <value>"
                 : "Usage: bb plugin config <id> unset <key>",
+              1,
             );
-            process.exit(1);
           }
           let parsedValue: string | number | boolean | null = null;
           if (actionName === "set") {
             if (value === undefined) {
-              console.error("Usage: bb plugin config <id> set <key> <value>");
-              process.exit(1);
+              throw new CliExitError(
+                "Usage: bb plugin config <id> set <key> <value>",
+                1,
+              );
             }
             const current = pluginSettingsResultSchema.parse(
               await callPlugins(getUrl(), settingsPath, "GET"),
@@ -2034,10 +2239,10 @@ export function registerPluginCommands(
             const descriptor = current.schema[key];
             if (!descriptor) {
               const known = Object.keys(current.schema).join(", ");
-              console.error(
+              throw new CliExitError(
                 `Unknown setting "${key}"${known ? ` — known settings: ${known}` : ""}`,
+                1,
               );
-              process.exit(1);
             }
             if (valueIsOption && descriptor.type !== "number") {
               command.error(`error: unknown option '${value}'`);
@@ -2097,7 +2302,9 @@ export function registerPluginCommands(
 
   plugin
     .command("logs <id>")
-    .description("Print a plugin's log (bb.log output)")
+    .description(
+      "Print a plugin's log: bb.log output plus its load, handler, service and host-worker failures",
+    )
     .option("-n, --lines <count>", "Number of lines to show", "100")
     .option("-f, --follow", "Poll for new lines every second (Ctrl+C to stop)")
     .action(
@@ -2135,7 +2342,7 @@ export function registerPluginCommands(
     .command("remove <id>")
     .alias("uninstall")
     .description(
-      "Remove an installed plugin and delete its settings, secrets, and schedules (git:/npm: managed files are deleted; local path sources stay on disk). To move a local plugin to another directory, install the new path instead",
+      "Remove an installed plugin and delete its settings, secrets, stored files, and schedules (git:/npm: managed files are deleted; local path sources stay on disk). To move a local plugin to another directory, install the new path instead",
     )
     .option("--json", "Output JSON")
     .addOption(new Option("--yes").hideHelp())

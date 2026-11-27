@@ -28,9 +28,6 @@ export const LEGACY_PLUGIN_SDK_APP_SPECIFIER = "@bb/plugin-sdk/app";
  */
 export const SHARED_UI_ICON_SPECIFIER = "@bb/shared-ui/icon";
 
-export const SHARED_UI_QUESTION_FORM_HOST_SPECIFIER =
-  "@bb/shared-ui/question-form-host";
-
 export const SHARED_UI_VOICE_INPUT_TEXTAREA_SPECIFIER =
   "@bb/shared-ui/voice-input-textarea";
 
@@ -96,13 +93,18 @@ export const RUNTIME_SLOT_BY_SPECIFIER = Object.freeze({
   "tailwind-merge": "tailwindMerge",
   "class-variance-authority": "classVarianceAuthority",
   [SHARED_UI_ICON_SPECIFIER]: "sharedUiIcon",
-  [SHARED_UI_QUESTION_FORM_HOST_SPECIFIER]: "questionFormHost",
   [SHARED_UI_VOICE_INPUT_TEXTAREA_SPECIFIER]: "voiceInputTextarea",
 });
 
 export const VERSIONED_RUNTIME_SLOT_BY_SPECIFIER = Object.freeze({
   zod: "zod",
 });
+
+export const HOST_LOADED_RUNTIME_SLOTS = Object.freeze([
+  "pierreDiffs",
+  "pierreDiffsReact",
+  "zod",
+]);
 
 /** The npm package owning a specifier: `react/jsx-runtime` → `react`. */
 function packageNameOf(specifier) {

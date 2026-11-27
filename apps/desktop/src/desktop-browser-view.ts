@@ -66,6 +66,7 @@ import {
   evaluatePopupRate,
   isAllowedBrowserUrl,
 } from "./desktop-browser-policy.js";
+import { sliceUtf16Head } from "@bb/text-utils";
 
 const HIDDEN_PAGE_LIMIT = 4;
 const HIDDEN_PAGE_IDLE_MS = 5 * 60_000;
@@ -88,7 +89,7 @@ const RENDERER_RECOVERY_DELAY_MS = 250;
 const RENDERER_RECOVERY_MAX_ATTEMPTS = 2;
 
 function truncate(value: string, max: number): string {
-  return value.length > max ? value.slice(0, max) : value;
+  return sliceUtf16Head(value, max);
 }
 
 function clampPopupDimension(
@@ -296,7 +297,6 @@ interface CreateEntryArgs {
   hostWindow: DesktopBrowserHostWindow;
   tabId: string;
   threadId: string;
-  backgroundThrottling: boolean;
 }
 
 interface HostWindowViewportBoundsArgs {
@@ -581,7 +581,7 @@ export function createDesktopBrowserViewManager(
       !leasedPages.has(webContents) &&
       (!downloadingPages.has(webContents) || discarded) &&
       !webContents.debugger.isAttached() &&
-      webContents.navigationHistory.length() > 0
+      webContents.navigationHistory.getAllEntries().length > 0
     );
   }
 
@@ -633,7 +633,6 @@ export function createDesktopBrowserViewManager(
       hostWindow: cold.hostWindow,
       tabId: cold.state.tabId,
       threadId: cold.threadId,
-      backgroundThrottling: !cold.agentOwned,
     });
     entry.agentOwned = cold.agentOwned;
     entry.generation = cold.generation;
@@ -1284,7 +1283,7 @@ export function createDesktopBrowserViewManager(
     const view = new WebContentsView({
       webPreferences: {
         ...hardenedWebPreferences(),
-        backgroundThrottling: args.backgroundThrottling,
+        backgroundThrottling: true,
         ...(pagePreloadPath === null ? {} : { preload: pagePreloadPath }),
       },
     });
@@ -1582,7 +1581,6 @@ export function createDesktopBrowserViewManager(
       const entry = createEntry({
         ...request,
         desiredBounds: { x: 0, y: 0, ...request.viewport },
-        backgroundThrottling: false,
       });
       entry.agentOwned = true;
       applyEntryDesiredBounds(entry, request.hostWindow);
@@ -1724,7 +1722,6 @@ export function createDesktopBrowserViewManager(
           hostWindow,
           tabId: request.tabId,
           threadId: request.threadId,
-          backgroundThrottling: true,
         });
       setEntryDesiredBounds({ bounds: request.bounds, entry, hostWindow });
       setEntryVisible(entry, request.visible);

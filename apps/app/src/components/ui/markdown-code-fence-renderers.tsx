@@ -4,7 +4,6 @@ import {
   useContext,
   useLayoutEffect,
   useMemo,
-  useReducer,
   useRef,
   useState,
   type ReactNode,
@@ -18,6 +17,7 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { visit } from "unist-util-visit";
 import { PluginSlotMount } from "@/components/plugin/PluginSlotMount.js";
+import type { ExclusiveBootState } from "@/lib/plugin-replacement-preference";
 import { resolveCodeFenceRendererRegistry } from "@/lib/plugin-slot-resolvers.js";
 import type { PluginCodeFenceRendererSlot } from "@/lib/plugin-slots.js";
 import {
@@ -45,18 +45,16 @@ interface RemarkCodeFenceRenderersFile {
 
 export function buildCodeFenceRendererRegistry(
   slots: readonly PluginCodeFenceRendererSlot[],
-  options?: { warn?: (message: string) => void },
+  picks: Readonly<Record<string, string>>,
+  boot: ExclusiveBootState,
 ): CodeFenceRendererRegistry {
-  const warn = options?.warn ?? ((message: string) => console.warn(message));
   const registry = new Map<string, PluginCodeFenceRendererSlot>();
-  for (const [language, resolved] of resolveCodeFenceRendererRegistry(slots)) {
-    if (resolved.status === "collision") {
-      warn(
-        `[plugin] code fence language "${language}" claimed by multiple plugins (${resolved.pluginIds.join(", ")}); rendering BB's code block`,
-      );
-      continue;
-    }
-    registry.set(language, resolved.slot);
+  for (const [language, resolved] of resolveCodeFenceRendererRegistry(
+    slots,
+    picks,
+    boot,
+  )) {
+    if (resolved.status === "ok") registry.set(language, resolved.slot);
   }
   return registry;
 }
@@ -135,6 +133,18 @@ interface CodeFenceHost {
 
 const CodeFenceHostContext = createContext<CodeFenceHost | null>(null);
 
+export function WithoutCodeFenceRenderers({
+  children,
+}: {
+  children: ReactNode;
+}) {
+  return (
+    <CodeFenceHostContext.Provider value={null}>
+      {children}
+    </CodeFenceHostContext.Provider>
+  );
+}
+
 const CodeFenceOriginalContext = createContext<ReactNode>(null);
 
 function CodeFenceOriginal() {
@@ -176,6 +186,14 @@ interface CodeFenceRendererHostProps {
   streaming: boolean;
 }
 
+function orderCodeFenceEntries(
+  entries: ReadonlyMap<number, CodeFenceEntry>,
+): CodeFenceEntry[] {
+  return [...entries.values()].sort(
+    (left, right) => left.offset - right.offset,
+  );
+}
+
 export function CodeFenceRendererHost({
   children,
   message,
@@ -184,10 +202,11 @@ export function CodeFenceRendererHost({
 }: CodeFenceRendererHostProps) {
   const [entries] = useState(() => new Map<number, CodeFenceEntry>());
   const parkingRef = useRef<HTMLDivElement>(null);
-  const [, rerender] = useReducer((revision: number) => revision + 1, 0);
+  const [ordered, setOrdered] = useState<readonly CodeFenceEntry[]>([]);
 
-  const host = useMemo(
-    (): CodeFenceHost => ({
+  const host = useMemo((): CodeFenceHost => {
+    const rerender = () => setOrdered(orderCodeFenceEntries(entries));
+    return {
       registry,
       attach(offset, placeholder) {
         let entry = entries.get(offset);
@@ -238,13 +257,9 @@ export function CodeFenceRendererHost({
           rerender();
         }
       },
-    }),
-    [entries, registry],
-  );
+    };
+  }, [entries, registry]);
 
-  const ordered = [...entries.values()].sort(
-    (left, right) => left.offset - right.offset,
-  );
   const ordinals = new Map<string, number>();
   const mounts: ReactNode[] = [];
   for (const entry of ordered) {

@@ -81,8 +81,11 @@ export interface DesktopBrowserWindow extends StatefulBrowserWindow {
   loadURL(url: string): Promise<void>;
   maximize(): void;
   on(
+    eventName: "close",
+    listener: (event: { preventDefault(): void }) => void,
+  ): void;
+  on(
     eventName:
-      | "close"
       | "closed"
       | "enter-full-screen"
       | "leave-full-screen"
@@ -121,6 +124,7 @@ interface CreateDesktopWindowFactoryArgs {
   shouldUseDarkColors(): boolean;
   openExternalUrl(args: OpenExternalUrlArgs): void;
   onWindowCreated(browserWindow: DesktopBrowserWindow): void;
+  shouldCloseWindow(): boolean;
   preloadPath: string;
   userDataPath: string;
 }
@@ -231,12 +235,21 @@ function createWindowOptions(
   };
 }
 
+const NET_ERROR_ABORTED = -3;
+
+function isAbortedLoad(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "errno" in error &&
+    error.errno === NET_ERROR_ABORTED
+  );
+}
+
 async function loadUrlIntoWindow(args: LoadUrlIntoWindowArgs): Promise<void> {
   try {
     await args.browserWindow.loadURL(args.url);
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (message.includes("ERR_ABORTED")) {
+    if (isAbortedLoad(error)) {
       return;
     }
     throw error;
@@ -374,7 +387,11 @@ export function createDesktopWindowFactory(
       ] as const) {
         browserWindow.on(event, saveOnChange);
       }
-      browserWindow.on("close", () => {
+      browserWindow.on("close", (event) => {
+        if (!args.shouldCloseWindow()) {
+          event.preventDefault();
+          return;
+        }
         closing = true;
         if (args.isQuitting()) return;
         clearSaveTimer();

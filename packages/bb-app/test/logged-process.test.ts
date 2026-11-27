@@ -75,6 +75,71 @@ describe("spawnLoggedProcess", () => {
     },
   );
 
+  it("keeps the spawned pid and IPC channel when the child runs under a scheduling wrapper", async () => {
+    const child = spawnLoggedProcess({
+      command: process.execPath,
+      args: [
+        "-e",
+        `process.send({ pid: process.pid });
+         process.once("message", (message) => {
+           process.send({ echo: message });
+           process.disconnect();
+         });`,
+      ],
+      env: process.env,
+      ipc: true,
+      logDir: scratchDir(),
+      logName: "server",
+    });
+    const messages: unknown[] = [];
+    child.on("message", (message) => {
+      messages.push(message);
+      if (messages.length === 1) child.send("ping");
+    });
+
+    expect(await waitForExit(child)).toBe(0);
+    expect(messages).toEqual([{ pid: child.pid }, { echo: "ping" }]);
+  });
+
+  it.runIf(process.platform === "darwin")(
+    "wraps the resolved command in app scheduling",
+    async () => {
+      const child = spawnLoggedProcess({
+        command: process.execPath,
+        args: ["-e", ""],
+        env: process.env,
+        logDir: scratchDir(),
+        logName: "server",
+      });
+      expect(await waitForExit(child)).toBe(0);
+      expect(child.spawnfile).toBe("/usr/sbin/taskpolicy");
+      expect(child.spawnargs.slice(1, 3)).toEqual(["-a", process.execPath]);
+    },
+  );
+
+  it.runIf(process.platform === "darwin")(
+    "keeps the loopback proxy bypass for a proxied child under app scheduling",
+    async () => {
+      const logDir = scratchDir();
+      const child = spawnLoggedProcess({
+        command: process.execPath,
+        args: ["--use-env-proxy", "-e", "console.log(process.env.NO_PROXY)"],
+        env: {
+          ...process.env,
+          HTTPS_PROXY: "http://proxy.invalid:3128",
+          NO_PROXY: "example.com",
+        },
+        logDir,
+        logName: "server",
+      });
+      expect(await waitForExit(child)).toBe(0);
+      expect(child.spawnfile).toBe("/usr/sbin/taskpolicy");
+      expect(
+        readFileSync(join(logDir, "server-stdio.log"), "utf8").split("\n")[0],
+      ).toBe("example.com,localhost,127.0.0.1,::1,[::1]");
+    },
+  );
+
   it("preserves output across child restarts, including early failures", async () => {
     const logDir = scratchDir();
     for (const message of ["first startup", "second startup"]) {

@@ -1,12 +1,14 @@
 import { useState, type ComponentProps, type ReactNode } from "react";
-import { Skeleton } from "@bb/shared-ui/skeleton";
 import { COARSE_POINTER_HEADER_ICON_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { PluginHomepageSections } from "@/components/plugin/PluginHomepageSections";
 import { usePluginComposerHost } from "@/components/plugin/plugin-composer-host";
 import { SecondaryPanelLayout } from "@/components/secondary-panel/SecondaryPanelLayout";
 import { secondaryPanelWidthPercentAtom } from "@/components/secondary-panel/threadSecondaryPanelAtoms";
-import { LazyThreadSecondaryPanel } from "@/components/secondary-panel/lazySecondaryPanelComponents";
+import {
+  LazyThreadSecondaryPanel,
+  ThreadSecondaryPanelDrawerPlaceholder,
+} from "@/components/secondary-panel/lazySecondaryPanelComponents";
 import {
   CHROME_ROW_HEIGHT_CLASS,
   getBbDesktopInfo,
@@ -43,10 +45,11 @@ export function useRootComposePinnedPanelToggleBoxClassName(): string {
 type RootSecondaryPanelProps = Omit<
   ComponentProps<typeof LazyThreadSecondaryPanel>,
   | "renderBrowserDeck"
-  | "drawerFallback"
   | "isConversationCollapsed"
   | "onToggleConversationCollapse"
   | "renderAsDrawer"
+  | "drawerFallback"
+  | "threadInfo"
   | "showNewTabButton"
 > & {
   renderBrowserDeck?: (args: {
@@ -64,20 +67,8 @@ interface RootComposeSecondaryContentProps {
   contentClassName?: string;
   isSecondaryPanelOpen: boolean;
   onToggleSecondaryPanel: () => void;
+  projectId: string | null;
   secondaryPanel: RootSecondaryPanelProps;
-}
-
-function DrawerPanelLoadingSkeleton() {
-  return (
-    <div
-      data-testid="drawer-panel-loading-skeleton"
-      className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4"
-    >
-      <Skeleton className="h-8 w-40 rounded-md" />
-      <Skeleton className="h-24 w-full rounded-md" />
-      <Skeleton className="h-24 w-full rounded-md" />
-    </div>
-  );
 }
 
 export function RootComposeSecondaryContent({
@@ -87,6 +78,7 @@ export function RootComposeSecondaryContent({
   contentClassName,
   isSecondaryPanelOpen,
   onToggleSecondaryPanel,
+  projectId,
   secondaryPanel,
 }: RootComposeSecondaryContentProps) {
   const paneContext = useOptionalPaneContext();
@@ -99,6 +91,12 @@ export function RootComposeSecondaryContent({
   const rendersWindowDragStrip =
     usesDesktopChrome && paneContext?.isTopRow !== false;
   const { renderBrowserDeck, ...threadSecondaryPanelProps } = secondaryPanel;
+  const drawerFallback = (
+    <ThreadSecondaryPanelDrawerPlaceholder
+      activeTab={threadSecondaryPanelProps.activeTab}
+      threadInfo={null}
+    />
+  );
 
   const mainContent = (
     <div className="relative flex h-full min-h-0 flex-1 flex-col overflow-hidden pt-(--bb-window-frame-top)">
@@ -128,7 +126,7 @@ export function RootComposeSecondaryContent({
         isCompact={isCompactHomeLayout}
         composer={children}
         compactScrollContent={compactScrollContent}
-        homepageSections={<PluginHomepageSections />}
+        homepageSections={<PluginHomepageSections projectId={projectId} />}
         wideContentClassName={contentClassName}
       />
     </div>
@@ -144,7 +142,7 @@ export function RootComposeSecondaryContent({
         resetKey="new-thread"
         contentKey="new-thread"
         drawerLabel="Right panel"
-        drawerFallback={<DrawerPanelLoadingSkeleton />}
+        drawerFallback={drawerFallback}
         mainPanelId="root-compose-main-panel"
         main={mainContent}
         composerHost={composerHost}
@@ -157,7 +155,8 @@ export function RootComposeSecondaryContent({
         }) => (
           <LazyThreadSecondaryPanel
             {...threadSecondaryPanelProps}
-            drawerFallback={<DrawerPanelLoadingSkeleton />}
+            threadInfo={null}
+            drawerFallback={drawerFallback}
             renderBrowserDeck={(activeBrowserTabId, pane) =>
               renderBrowserDeck?.({
                 activeBrowserTabId,

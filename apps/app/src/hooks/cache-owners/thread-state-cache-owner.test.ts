@@ -86,13 +86,66 @@ function makeSidebarNavigation(
 }
 
 describe("thread state cache owner", () => {
+  it("updates child activity live and preserves it when read state arrives", () => {
+    const { queryClient } = createQueryClientTestHarness();
+    const child = makeThreadListEntry({
+      parentThreadId: "parent",
+      status: "active",
+      runtime: { displayStatus: "active", failure: null },
+      latestAttentionAt: 10,
+      statusChangedAt: 20,
+      updatedAt: 20,
+    });
+    const listKey = threadListQueryKey({
+      archived: false,
+      projectId: child.projectId,
+    });
+    queryClient.setQueryData(listKey, [child]);
+    queryClient.setQueryData(
+      sidebarNavigationQueryKey(),
+      makeSidebarNavigation([child]),
+    );
+    updateCachedThreadListStatusState(queryClient, child.id, {
+      status: "idle",
+      runtime: { displayStatus: "idle", failure: null },
+      activity: child.activity,
+      latestAttentionAt: 10,
+      statusChangedAt: 30,
+      updatedAt: 30,
+    });
+    applyThreadReadStateResult({
+      queryClient,
+      thread: makeThreadWithRuntime({
+        ...child,
+        status: "idle",
+        runtime: { displayStatus: "idle", failure: null },
+        lastReadAt: 40,
+        updatedAt: 40,
+      }),
+    });
+    const expected = {
+      status: "idle",
+      latestAttentionAt: 10,
+      statusChangedAt: 30,
+      lastReadAt: 40,
+    };
+    expect(
+      queryClient.getQueryData<ThreadListEntry[]>(listKey)?.[0],
+    ).toMatchObject(expected);
+    expect(
+      queryClient.getQueryData<SidebarBootstrapResponse>(
+        sidebarNavigationQueryKey(),
+      )?.projects[0]?.threads[0],
+    ).toMatchObject(expected);
+  });
+
   it.each([null, 100])(
     "preserves a follow-up's active state when a delayed read acknowledgement arrives (%s)",
     async (lastReadAt) => {
       const { queryClient } = createQueryClientTestHarness();
       const original = makeThreadListEntry({
         status: "idle",
-        runtime: { displayStatus: "idle" },
+        runtime: { displayStatus: "idle", failure: null },
         lastReadAt: 10,
       });
       const listKey = threadListQueryKey({
@@ -453,7 +506,7 @@ function seedConcurrentThreadCaches() {
   });
   const original = makeThreadListEntry({
     status: "idle",
-    runtime: { displayStatus: "idle" },
+    runtime: { displayStatus: "idle", failure: null },
     title: "Original",
     sectionId: "old",
     updatedAt: 10,
@@ -487,7 +540,7 @@ it.each(["rename", "reorder", "batch"])(
     const current = makeThreadListEntry({
       ...original,
       status: "active",
-      runtime: { displayStatus: "active" },
+      runtime: { displayStatus: "active", failure: null },
       updatedAt: 30,
       sectionId: "new",
       lastReadAt: 25,
@@ -570,7 +623,7 @@ it.each(["single", "batch"])(
         title: "Pending",
         sectionId: "later-edit",
         status: "active",
-        runtime: { displayStatus: "active" },
+        runtime: { displayStatus: "active", failure: null },
         updatedAt: 30,
       }),
       [sibling],
@@ -601,13 +654,14 @@ it("preserves concurrent state when an older status event reaches detail and sid
     makeThreadListEntry({
       ...original,
       status: "active",
-      runtime: { displayStatus: "active" },
+      runtime: { displayStatus: "active", failure: null },
       updatedAt: 30,
     }),
   );
   const stale = {
+    statusChangedAt: 20,
     status: "idle" as const,
-    runtime: { displayStatus: "idle" as const },
+    runtime: { displayStatus: "idle" as const, failure: null },
     latestAttentionAt: 20,
     activity: original.activity,
     updatedAt: 20,
@@ -617,7 +671,7 @@ it("preserves concurrent state when an older status event reaches detail and sid
   for (const thread of read())
     expect(thread).toMatchObject({
       status: "active",
-      runtime: { displayStatus: "active" },
+      runtime: { displayStatus: "active", failure: null },
       updatedAt: 30,
     });
 });

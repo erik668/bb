@@ -26,9 +26,11 @@ const originalScroll = Object.getOwnPropertyDescriptor(
 );
 
 class TestResizeObserver {
-  constructor(private readonly callback: () => void) {}
+  constructor(
+    private readonly callback: (entries: ResizeObserverEntry[]) => void,
+  ) {}
   observe() {
-    this.callback();
+    this.callback([]);
   }
   disconnect() {}
   unobserve() {}
@@ -127,7 +129,12 @@ function render(
       pluginId: "prompt-library",
       context: { projectId: "proj_a", threadId: "thr_1" },
       composer: {
-        scope: options.scope ?? { kind: "thread", threadId: "thr_1" },
+        scope: options.scope ?? {
+          kind: "thread",
+          threadId: "thr_1",
+          projectId: "proj_test",
+          environmentId: null,
+        },
         text: options.draft ?? "",
       },
       rpc: { search, star, unstar, markUsed, setTitle, recordInsertion },

@@ -283,7 +283,6 @@
 
   [data-sidebar-sticky-stack]
     [data-sidebar-sticky-tier].bb-sidebar-accent-row:is(
-      :hover,
       :has([data-state="open"]),
       :has([data-sidebar-rename-anchor]:focus-visible),
       :has([data-row-actions-customize]),
@@ -292,6 +291,17 @@
     background-image:
       linear-gradient(var(--sidebar-accent), var(--sidebar-accent)),
       linear-gradient(var(--sidebar), var(--sidebar));
+  }
+
+  @media (hover: hover) {
+    [data-sidebar-sticky-stack]
+      [data-sidebar-sticky-tier].bb-sidebar-accent-row:hover:not(
+        [data-sidebar-touch-armed="true"]
+      ) {
+      background-image:
+        linear-gradient(var(--sidebar-accent), var(--sidebar-accent)),
+        linear-gradient(var(--sidebar), var(--sidebar));
+    }
   }
 
   .bb-sidebar-hover-actions {
@@ -328,6 +338,25 @@
       --bb-sidebar-hover-actions-inset,
       calc(var(--spacing) * 7.5)
     );
+  }
+
+  .bb-sidebar-hover-actions-collapse {
+    position: relative;
+  }
+
+  @media (hover: hover) {
+    .bb-sidebar-hover-actions-collapse {
+      position: absolute;
+    }
+  }
+
+  .bb-sidebar-hover-actions-row:is(:hover, :has(:focus-visible))
+    .bb-sidebar-hover-actions-collapse,
+  .bb-sidebar-hover-actions-row:has(
+      .bb-sidebar-hover-actions[data-sidebar-hover-actions-open="true"]
+    )
+    .bb-sidebar-hover-actions-collapse {
+    position: relative;
   }
 
   @media (hover: hover) {
@@ -972,6 +1001,11 @@
   initial-value: 256px;
 }
 
+@property --secondary-swipe-width {
+  syntax: "*";
+  inherits: false;
+}
+
 body.sidebar-resizing [data-sidebar="gap"],
 body.sidebar-resizing [data-sidebar="panel"] {
   transition-duration: 0ms !important;
@@ -1099,4 +1133,3 @@ body.sidebar-resizing [data-sidebar="panel"] {
 [data-panel-group]:has([data-resize-handle-active]) [data-panel] {
   transition-property: opacity;
 }
-

@@ -6,7 +6,8 @@ Router, NativeWind v5).
 Status: a native shell around the web interface (#2515). `app/webview.tsx`
 loads the active server's web app in `react-native-webview` and talks to it
 over `@bb/mobile-bridge` (handshake, haptics, app-icon badge, share, open
-external links, open native screens, save files on iOS). Threads, projects, plugins and server
+external links, open native screens, save files on iOS). The shell locks
+page zoom so a pinch or double-tap cannot scale the UI. Threads, projects, plugins and server
 settings run in the page. The native screens cover what the page cannot
 own: first-run pairing (Direct URL and bb connect QR / code enrollment),
 saved servers, This device settings (appearance, haptics, notifications,
@@ -311,21 +312,21 @@ server the phone cannot reach, so the shell never loads a dead origin; it
 does not use the harness backend.
 `shell-connect.yaml` drives bb connect end to end against the stub apex +
 gate (`pnpm --filter @bb/integration-tests e2e:mobile-connect-stub`, see
-"bb connect" below): manual code entry with the handle and the self-hosted
-apex → enrolled screen (session signed in, account servers listed) → Done →
-the shell through the gate (cookie on fetch and on `/ws`) → the stub expires
-the session (the app re-mints and reconnects by itself) → the stub revokes
-the machine ("needs to be paired again" banner) → "Sign in again" re-pairs
-the same profile with a new code. The flow needs the stub started with
+"bb connect" below). It enters the self-hosted apex and server handle in the
+first-run form, submits an expired code with the server field's Go key, and
+corrects the code in place. It checks the saved profiles in native Servers
+settings, opens a thread after the stub expires the session, and verifies that
+the same machine received a replacement session.
+After the stub revokes the machine, **Pair again** re-pairs the saved profile.
+The flow needs the stub started with
 `BB_MOBILE_E2E_SIMULATOR=<udid>` once (it installs its root certificate in
 that simulator) and drives the stub through `e2e/scripts/connect-stub-control.js`
 (plain-HTTP control port 42997).
 Flows open `bb://` links through `subflows/open-bb-link.yaml` and pair through
 `subflows/pair-direct-server.yaml`; `src/lib/e2e/mobile-e2e-flows.test.ts`
 enforces both.
-Flows dismiss the keyboard by tapping a static label ("Server URL",
-"Pairing code"): Maestro's `hideKeyboard` looks for a Return/Done key and the
-Add server and connect fields use "next".
+The direct pairing and re-pairing steps tap a static label to dismiss the
+keyboard.
 Flows cold-start the dev client (`stopApp`) because a warm reload keeps the
 last deep link as the initial URL. Without `EXPO_PUBLIC_BB_E2E=1`, open `bb://e2e/reset`
 (dev builds) to return the simulator to first run.
@@ -447,7 +448,7 @@ as the first argument drives a dev client through Metro instead.
   Servers offers "Sign in again" from the long-press menu for connect
   profiles and shows a mode pill (`bb connect` / `direct`) plus `@handle`.
   "Remove" only forgets the profile locally: the phone stays listed under
-  Machines in the getbb.app dashboard until revoked there (the copy says so).
+  Devices in the getbb.app dashboard until removed there (the copy says so).
 - Stub for e2e (`tests/integration/mobile-e2e/connect-stub.ts`,
   `pnpm --filter @bb/integration-tests e2e:mobile-connect-stub`): plays the
   apex and the gate on one TLS port (`https://localhost:42998` /
@@ -524,7 +525,7 @@ iOS keeps its existing APNs registration behavior.
   when no hint matches. The shell accepts a bridge `badge` message
   (`useShellBridge` → `updateAppBadgeCount`), and `AppBadgeSync` writes that
   count on background; the web app does not send it yet.
-- Read elsewhere (`dismissReadNotifications` experiment): once a thread the
+- Read elsewhere: once a thread the
   server notified about is read on any client, the server sends each device a
   silent push (`_contentAvailable` on iOS, a data-only message on Android;
   data `{"kind":"dismiss","threadId":"…"}`).

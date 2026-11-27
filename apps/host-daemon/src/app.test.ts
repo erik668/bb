@@ -11,6 +11,7 @@ import {
 import {
   hostDaemonEventBatchRequestSchema,
   hostDaemonInteractiveInterruptRequestSchema,
+  hostDaemonInteractiveWithdrawRequestSchema,
   type HostDaemonInteractiveRequestKey,
   type HostDaemonInteractiveRequestResponse,
   type HostDaemonContributedEnvEntry,
@@ -30,6 +31,7 @@ import {
   type HostDaemonApp,
 } from "./app.js";
 import type { HostDaemonLogger } from "./logger.js";
+import { ServerRouteResolver } from "./server-routes.js";
 import type {
   RuntimeManagerReapIdleProviderSessionsArgs,
   RuntimeManagerReapIdleProviderSessionsResult,
@@ -77,6 +79,15 @@ interface HostDaemonAppFixture {
 type StartIdleProviderSessionReaperArgsForTest = Parameters<
   typeof startIdleProviderSessionReaper
 >[0];
+
+function testRoutes(): ServerRouteResolver {
+  return new ServerRouteResolver({
+    anchorUrl: "http://127.0.0.1:3334",
+    anchorHeaders: {},
+    persisted: null,
+    logger: createLogger(),
+  });
+}
 
 function createLogger() {
   return {
@@ -142,7 +153,9 @@ function createFetchRecorder(
           },
           heartbeatIntervalMs: 30000,
           leaseTimeoutMs: 90000,
+          reconnectGraceMs: 90000,
           retiredEnvironmentIds: args.retiredEnvironmentIds ?? [],
+          serverRoutes: { serverId: "srv_test", routes: [] },
           endedInteractiveRequests:
             sessionOpenCount > 1
               ? (args.endedInteractiveRequestsOnReconnect ?? [])
@@ -179,6 +192,9 @@ function createFetchRecorder(
           status: "pending",
         };
       return Response.json(response);
+    }
+    if (url.pathname === "/internal/session/interactive-request/withdraw") {
+      return Response.json({ ok: true, interactionId: "pint_app_test" });
     }
     if (url.pathname === "/internal/session/interactive-request/interrupt") {
       const scripted = args.interruptResponses?.[interruptCount];
@@ -276,6 +292,9 @@ function createFakeRuntime(): AgentRuntime {
     async clearThreadGoal() {
       return { cleared: true };
     },
+    async stopBackgroundTask() {
+      return { stopped: true };
+    },
     async renameThread() {},
     async archiveThread() {},
     async unarchiveThread() {},
@@ -306,6 +325,9 @@ function createFakeRuntime(): AgentRuntime {
     getActiveTurnId() {
       return null;
     },
+    getActiveTurnRequestIds() {
+      return [];
+    },
     async waitForActiveTurn() {
       return null;
     },
@@ -326,6 +348,9 @@ function createFakeRuntime(): AgentRuntime {
     },
     listOpenBackgroundWork() {
       return [];
+    },
+    async reconfigureSkillRoots() {
+      return { appliedToEveryProvider: false };
     },
     async shutdown() {},
   };
@@ -402,7 +427,7 @@ async function createAppFixture(
   const runtimeOptions: RuntimeOptionsRef = { current: null };
   const app = await createHostDaemonApp({
     dataDir,
-    serverUrl: "http://127.0.0.1:3334",
+    routes: testRoutes(),
     hostKey: "host-key-app-test",
     hostId: "host-app-test",
     hostName: "App Test Host",
@@ -469,12 +494,25 @@ describe("createHostDaemonApp", () => {
         "configured",
       );
       if (!socket) throw new Error("Expected daemon socket");
-      socket.onmessage?.({
-        data: JSON.stringify({
-          type: "machine-environment.replace",
-          environment: { revision: 1, entries: [] },
-        }),
-      });
+      const invalidateMaintenance = vi.spyOn(
+        app.runtimeManager,
+        "invalidateProviderMaintenanceRuntime",
+      );
+      const replaceMachineEnvironment = (seq: number) =>
+        socket?.onmessage?.({
+          data: JSON.stringify({
+            seq,
+            ack: 0,
+            message: {
+              type: "machine-environment.replace",
+              environment: { revision: seq, entries: [] },
+            },
+          }),
+        });
+      replaceMachineEnvironment(1);
+      expect(invalidateMaintenance).toHaveBeenCalledOnce();
+      replaceMachineEnvironment(2);
+      expect(invalidateMaintenance).toHaveBeenCalledOnce();
       expect(process.env.MACHINE_DAEMON_TEST).toBe("original");
       expect(readChild()).toBe("original");
       expect(app.runtimeManager.getShellEnv()).not.toHaveProperty(
@@ -501,15 +539,23 @@ describe("createHostDaemonApp", () => {
     await app.daemon.start();
     if (socket === undefined) throw new Error("Expected daemon socket");
 
-    socket.onmessage?.({ data: JSON.stringify({ type: "machine.shutdown" }) });
+    socket.onmessage?.({
+      data: JSON.stringify({
+        seq: 1,
+        ack: 0,
+        message: { type: "machine.shutdown" },
+      }),
+    });
     await app.daemon.waitUntilStopped();
 
     await expect(
       fs.access(path.join(dataDir, MACHINE_SUSPENSION_MARKER)),
     ).resolves.toBeUndefined();
-    expect(socket.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: "machine.shutdown-ack" }),
-    );
+    expect(
+      vi
+        .mocked(socket.send)
+        .mock.calls.map(([frame]) => JSON.parse(String(frame)).message),
+    ).toContainEqual({ type: "machine.shutdown-ack" });
     expect(exitProcess).toHaveBeenCalledWith(0);
   });
 
@@ -547,7 +593,7 @@ describe("createHostDaemonApp", () => {
     }));
     const app = await createHostDaemonApp({
       dataDir,
-      serverUrl: "http://127.0.0.1:3334",
+      routes: testRoutes(),
       hostKey: "host-key-app-test",
       hostId: "host-app-test",
       hostName: "App Test Host",
@@ -654,7 +700,7 @@ describe("createHostDaemonApp", () => {
     }));
     const app = await createHostDaemonApp({
       dataDir,
-      serverUrl: "http://127.0.0.1:3334",
+      routes: testRoutes(),
       hostKey: "host-key-app-test",
       hostId: "host-app-test",
       hostName: "App Test Host",
@@ -722,6 +768,7 @@ describe("createHostDaemonApp", () => {
     {
       command: {
         type: "provider.list_commands",
+        contributedEnv: [],
         providerId: "codex",
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
         cwd: "/tmp/worktree",
@@ -753,6 +800,7 @@ describe("createHostDaemonApp", () => {
         type: "provider.health",
         providerId: "codex",
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
+        contributedEnv: [],
       },
       method: "providerHealth",
       waitsForFreshShellEnv: true,
@@ -762,6 +810,7 @@ describe("createHostDaemonApp", () => {
         type: "provider.installation.status",
         providerId: "codex",
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
+        contributedEnv: [],
       },
       method: "providerInstallationStatus",
       waitsForFreshShellEnv: true,
@@ -769,6 +818,7 @@ describe("createHostDaemonApp", () => {
     {
       command: {
         type: "provider.installation.run",
+        contributedEnv: [],
         providerId: "codex",
         action: "install",
         bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
@@ -813,7 +863,7 @@ describe("createHostDaemonApp", () => {
     };
     const app = await createHostDaemonApp({
       dataDir,
-      serverUrl: "http://127.0.0.1:3334",
+      routes: testRoutes(),
       hostKey: "host-key-app-test",
       hostId: "host-app-test",
       hostName: "App Test Host",
@@ -901,6 +951,7 @@ describe("createHostDaemonApp", () => {
         requestId: "first-env-list-commands",
         command: {
           type: "provider.list_commands",
+          contributedEnv: [],
           providerId: "codex",
           bridgeLaunch: DISPATCH_TEST_BRIDGE_LAUNCH,
           cwd: "/tmp/worktree",
@@ -1117,7 +1168,10 @@ describe("createHostDaemonApp", () => {
       if (!options?.onInteractiveRequest) {
         throw new Error("Expected runtime callbacks to be captured");
       }
-      const pending = options.onInteractiveRequest(request);
+      const pending = options.onInteractiveRequest(
+        request,
+        new AbortController().signal,
+      );
       const rejection = expect(pending).rejects.toMatchObject({
         code: "interactive_request_ended",
       });
@@ -1178,7 +1232,7 @@ describe("createHostDaemonApp", () => {
     } satisfies HostWatcher;
     const app = await createHostDaemonApp({
       dataDir,
-      serverUrl: "http://127.0.0.1:3334",
+      routes: testRoutes(),
       hostKey: "host-key-retired-env",
       hostId: "host-retired-env",
       hostName: "Retired Environment Host",
@@ -1345,7 +1399,10 @@ describe("createHostDaemonApp", () => {
       }
 
       const request = createCommandApprovalRequest();
-      const pending = options.onInteractiveRequest(request);
+      const pending = options.onInteractiveRequest(
+        request,
+        new AbortController().signal,
+      );
       await vi.waitFor(() => {
         expect(
           fetchRecorder.requests.filter(
@@ -1399,6 +1456,71 @@ describe("createHostDaemonApp", () => {
         providerId: "codex",
         threadIds: [request.threadId],
         reason: 'Provider "codex" exited while awaiting user interaction',
+      });
+    } finally {
+      await app.daemon.shutdown("test", 0);
+    }
+  });
+
+  it("tells the server to close an interactive request the provider withdraws", async () => {
+    const { app, fetchRecorder, runtimeOptions } = await createAppFixture();
+    try {
+      const workspacePath = await makeTempDir("bb-host-daemon-app-workspace-");
+      await app.connection.start();
+      await app.runtimeManager.ensureEnvironment({
+        environmentId: "env-app-interactive",
+        workspacePath,
+      });
+      const options = runtimeOptions.current;
+      if (!options?.onInteractiveRequest) {
+        throw new Error("Expected runtime callbacks to be captured");
+      }
+
+      const request = createCommandApprovalRequest();
+      const provider = new AbortController();
+      const pending = options.onInteractiveRequest(request, provider.signal);
+      await vi.waitFor(() => {
+        expect(
+          fetchRecorder.requests.filter(
+            (record) =>
+              record.pathname === "/internal/session/interactive-request",
+          ),
+        ).toHaveLength(1);
+      });
+
+      provider.abort();
+      await expect(pending).rejects.toMatchObject({
+        code: "interactive_request_withdrawn",
+      });
+      await vi.waitFor(() => {
+        expect(
+          fetchRecorder.requests.filter(
+            (record) =>
+              record.pathname ===
+              "/internal/session/interactive-request/withdraw",
+          ),
+        ).toHaveLength(1);
+      });
+      const withdrawRequest = fetchRecorder.requests.find(
+        (record) =>
+          record.pathname === "/internal/session/interactive-request/withdraw",
+      );
+      if (!withdrawRequest?.body) {
+        throw new Error("Expected interactive withdraw request body");
+      }
+      expect(
+        hostDaemonInteractiveWithdrawRequestSchema.parse(
+          JSON.parse(withdrawRequest.body),
+        ),
+      ).toEqual({
+        sessionId: "session-app-test",
+        request: {
+          threadId: request.threadId,
+          providerId: request.providerId,
+          providerThreadId: request.providerThreadId,
+          providerRequestId: request.providerRequestId,
+        },
+        reason: "The agent stopped waiting for this answer",
       });
     } finally {
       await app.daemon.shutdown("test", 0);
@@ -1622,9 +1744,9 @@ describe("createHostDaemonApp", () => {
       }
 
       const request = createCommandApprovalRequest();
-      await expect(options.onInteractiveRequest(request)).rejects.toThrow(
-        "registration transport failed",
-      );
+      await expect(
+        options.onInteractiveRequest(request, new AbortController().signal),
+      ).rejects.toThrow("registration transport failed");
 
       expect(logger.error).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -1664,9 +1786,9 @@ describe("createHostDaemonApp", () => {
       }
 
       const request = createCommandApprovalRequest();
-      await expect(options.onInteractiveRequest(request)).rejects.toThrow(
-        "Ask User Question feature is disabled",
-      );
+      await expect(
+        options.onInteractiveRequest(request, new AbortController().signal),
+      ).rejects.toThrow("Ask User Question feature is disabled");
 
       expect(logger.warn).toHaveBeenCalledWith(
         expect.objectContaining({

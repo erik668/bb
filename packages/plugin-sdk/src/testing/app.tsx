@@ -25,8 +25,11 @@ import {
 } from "react";
 import { act, render, type RenderResult } from "@testing-library/react";
 import {
+  type ExperimentalLazyComponent,
   type ExperimentalPageTitle,
+  type ExperimentalThreadRequests,
   type BbContext,
+  type ExperimentalPluginPanelPage,
   type BbNavigate,
   type BranchesState,
   type ComposerCustomization,
@@ -61,6 +64,8 @@ import {
   type PluginComposerThreadRowStatus,
   type PluginFileOpenerRegistration,
   type PluginHomepageSectionRegistration,
+  type PluginCommandRegistration,
+  type ExperimentalComposerCommandRegistration,
   type PluginMessageActionRegistration,
   type ExperimentalMessageMetadataRegistration,
   type PluginMessageDirectiveRegistration,
@@ -78,6 +83,7 @@ import {
   type ExperimentalVoiceRecordingBarProps,
   type ExperimentalFailedVoiceRecordingsProps,
   type ExperimentalShortcutHintProps,
+  type ExperimentalShortcutPresentation,
   type ExperimentalImageLightboxProps,
   type ExperimentalPromptMentionIconProps,
   type ExperimentalPromptMentionClipboardPill,
@@ -104,19 +110,30 @@ import {
   type PluginSidebarThreadShortcut,
   type PluginSidebarThreadSplit,
   type PluginProvidersState,
+  type ExperimentalThreadState,
+  type ExperimentalEnvironmentState,
+  type ExperimentalThreadStorageFilesState,
   type PluginSidebarThreadsState,
   type PluginSourceCodeRendererRegistration,
   type ExperimentalThreadContextSegmentRegistration,
   type ExperimentalCollapsibleStackCardProps,
   type ExperimentalThreadInfoRowRegistration,
   type ExperimentalThreadInfoSectionRegistration,
+  type ExperimentalThreadHeaderRowRegistration,
+  type ExperimentalThreadRailRegistration,
+  type ExperimentalThreadRailOutlineRegistration,
+  type ExperimentalConversationOutline,
+  type ExperimentalConversationOutlineItem,
+  type ExperimentalTimelineViewport,
+  type ExperimentalThreadHeaderTitleRegistration,
   type ExperimentalThreadContextCardRowRegistration,
-  type ExperimentalThreadContextCardSectionRegistration,
   type ExperimentalThreadContextKind,
   type ExperimentalThreadContextCardRowProps,
   type ExperimentalPanelTabIconProps,
   type ExperimentalPanelTabs,
   type ExperimentalInfoSectionProps,
+  type ExperimentalThreadTabProps,
+  type ExperimentalSearchPickerOptionsArgs,
   type ExperimentalDetailRowProps,
   type ExperimentalInfoListProps,
   type ExperimentalInfoListRowProps,
@@ -129,7 +146,6 @@ import {
   type ExperimentalThreadRowMetadataLineProps,
   type ExperimentalThreadRowMetadataRegistration,
   type PluginThreadActionsOptions,
-  type PluginThreadActionTarget,
   type ExperimentalPluginBrowserToolbarActionRegistration,
   type PluginThreadListRegistration,
   type PluginRpcContract,
@@ -140,6 +156,7 @@ import {
   type UrlLinkProps,
   type ExperimentalFileLinkProps,
   type ExperimentalFileOpenOptions,
+  type ExperimentalSettingsTarget,
   type ExperimentalFilePreviewFile,
   type ExperimentalFilePreviewOptions,
   type ExperimentalFilePreviewProps,
@@ -162,9 +179,18 @@ import {
   type SourceCodeProps,
   type JsonValue,
 } from "@get-bb/plugin-sdk";
+import { matchesAppShortcutKey } from "@bb/domain";
+import {
+  assertTestMessageSeq,
+  assertTestSettingsTarget,
+  testSettingsHref,
+  testThreadHref,
+} from "./navigation-hrefs.js";
+import { sliceUtf16Head } from "@bb/text-utils";
 import { isComposerDraftEmpty } from "../internal/composer-view.js";
 import {
   appendComposerDraft,
+  composerDraftFromInsertParts,
   createComposerHandleBinding,
   reconcileComposerMentions,
   type ComposerHandleTarget,
@@ -180,6 +206,7 @@ import {
 } from "../thread-info-groups.js";
 import {
   collectPluginAppRegistrations,
+  type CollectedPluginCommandRegistration,
   type CollectedPluginProviderIconRegistration,
   type CollectedExperimentalSidebarFooterItem,
 } from "../internal/plugin-app-collector.js";
@@ -263,6 +290,10 @@ export type NavigateCall =
   | {
       method: "experimental_openTerminal";
       options: Parameters<BbNavigate["experimental_openTerminal"]>[0];
+    }
+  | {
+      method: "experimental_toSettings";
+      target?: ExperimentalSettingsTarget;
     };
 
 interface RetiredActionTabOpenOptions {
@@ -363,6 +394,7 @@ interface SlotEnv {
   navigateCalls: NavigateCall[];
   appPanel: ExperimentalPanelController;
   panelTabs: ExperimentalPanelTabs;
+  commandShortcuts: Readonly<Record<string, ExperimentalShortcutPresentation>>;
   fixedTabTarget: TestFixedTabTargetStore;
   composer: TestComposerStore;
   composerLog: ComposerLog;
@@ -372,10 +404,16 @@ interface SlotEnv {
   sidebarNavigation: ExperimentalSidebarNavigationState;
   sidebarNavigationCalls: SidebarNavigationCall[];
   environmentArchiveCalls: string[];
+  threadRequestCalls: ExperimentalThreadRequestCall[];
   threadActions: TestThreadActionsResolver;
   threadBulkActions: TestThreadBulkActionsResolver;
   threadActionRegistrations: readonly PluginThreadActionRegistrationInfo[];
   sidebarDraftThreadIds: ReadonlySet<string>;
+  threadStates: ReadonlyMap<string, ExperimentalThreadState>;
+  conversationOutlines: Readonly<Record<string, TestConversationOutlines>>;
+  timelineViewport: ExperimentalTimelineViewport | null;
+  environmentStates: ReadonlyMap<string, ExperimentalEnvironmentState>;
+  threadStorageFiles: ReadonlyMap<string, ExperimentalThreadStorageFilesState>;
   experiments: ReadonlySet<string>;
   threadContextKind: ExperimentalThreadContextKind;
   threadExtensionStates: Readonly<
@@ -415,14 +453,15 @@ interface TestFixedTabTargetStore {
  * What `experimental_useThreadActions(thread)` returns in a test, in menu
  * order; the host's own actions are not emulated. `requestRename` is the
  * caller's rename editor (a no-op when it passed none), for entries whose
- * `run` renames. The fake applies `keys`. Omitted → an empty list. The fake
+ * `run` renames. `thread` is what the plugin passed, as the host reads only
+ * its `id`. The fake applies `keys`. Omitted → an empty list. The fake
  * `experimental_ThreadActionsMenu` opens on a trigger click and the fake
  * context menu on right-click; each lists these entries and its `inline`
  * items as `menuitem` buttons, and closes after one runs (calling
  * `onOpenChange(false)` and `onCloseAutoFocus`).
  */
 export type TestThreadActionsResolver = (
-  thread: PluginThreadActionTarget,
+  thread: { id: string },
   options: { requestRename(threadId: string): void },
 ) => readonly PluginThreadActionEntry[];
 
@@ -435,8 +474,14 @@ export type TestThreadActionsResolver = (
  * an empty list.
  */
 export type TestThreadBulkActionsResolver = (
-  threads: readonly PluginThreadActionTarget[],
+  threads: readonly { id: string }[],
 ) => readonly PluginThreadActionEntry[];
+
+/** One recorded `experimental_useThreadRequests()` call. */
+export interface ExperimentalThreadRequestCall {
+  method: keyof ExperimentalThreadRequests;
+  threadIds: string[];
+}
 
 /** @internal One recorded `experimental_useSidebarThreadActions()` call; kept for plugins built against older SDKs. */
 export interface SidebarActionCall {
@@ -619,7 +664,7 @@ function noRenameEditor(): void {}
 
 function useTestThreadActions(
   hook: string,
-  thread: PluginThreadActionTarget,
+  thread: { id: string },
   options?: PluginThreadActionsOptions,
 ): readonly PluginThreadActionEntry[] {
   const entries = useSlotEnv(hook).threadActions(thread, {
@@ -641,7 +686,7 @@ function TestThreadActionsMenuItems({
   onClose,
 }: {
   hook: string;
-  thread: PluginThreadActionTarget;
+  thread: { id: string };
   inline?: PluginThreadActionsMenuProps["inline"];
   requestRename?: (threadId: string) => void;
   onClose: () => void;
@@ -844,6 +889,26 @@ function TestThreadActionsContextMenu({
     </div>
   );
 }
+
+/** A thread's outline items per role, for `conversationOutlines`. */
+export interface TestConversationOutlines {
+  user?: readonly ExperimentalConversationOutlineItem[];
+  assistant?: readonly ExperimentalConversationOutlineItem[];
+}
+
+const NO_OUTLINE_ITEMS: readonly ExperimentalConversationOutlineItem[] =
+  Object.freeze([]);
+
+const NOT_FOUND_THREAD: ExperimentalThreadState = Object.freeze({
+  status: "notFound",
+  thread: null,
+});
+const NOT_FOUND_ENVIRONMENT: ExperimentalEnvironmentState = Object.freeze({
+  status: "notFound",
+  environment: null,
+});
+const LOADING_THREAD_STORAGE_FILES: ExperimentalThreadStorageFilesState =
+  Object.freeze({ status: "loading", files: null });
 
 function useSlotEnv(hook: string): SlotEnv {
   const env = useContext(SlotEnvContext);
@@ -1061,7 +1126,14 @@ function TestNewThreadComposer({
   draftKey,
   onSubmit,
 }: NewThreadComposerProps) {
-  const [text, setText] = useState(initialPrompt ?? "");
+  const [text, setText] = useState(() =>
+    typeof initialPrompt === "string" || initialPrompt === undefined
+      ? (initialPrompt ?? "")
+      : composerDraftFromInsertParts(initialPrompt, {
+          pluginId: "test-plugin",
+          mentionText: testComposerMentionText,
+        }).text,
+  );
   return (
     <div
       data-testid="bb-new-thread-composer"
@@ -1432,8 +1504,13 @@ function TestPluginIcon({ className }: ExperimentalPluginIconProps) {
 function TestThreadTitleText({
   title,
   className,
+  tooltip = false,
 }: ExperimentalThreadTitleTextProps) {
-  return <span className={className}>{title}</span>;
+  return (
+    <span className={className} title={tooltip ? title : undefined}>
+      {title}
+    </span>
+  );
 }
 
 /**
@@ -1459,7 +1536,10 @@ function TestVoiceInputTextarea({
  * the target path, with the plugin's Preview body drawn from the file the
  * `filePreview` option returns for the target (nothing when it returns null).
  */
-function TestFilePreview({ target, renderPreview }: ExperimentalFilePreviewProps) {
+function TestFilePreview({
+  target,
+  renderPreview,
+}: ExperimentalFilePreviewProps) {
   const file = useSlotEnv("experimental_FilePreview").filePreview(target);
   return (
     <div data-testid="bb-file-preview" data-path={target.path}>
@@ -1546,6 +1626,30 @@ function TestInfoSection({
       {children}
     </section>
   );
+}
+
+/**
+ * Stand-in for bb's fuzzy picker search: keeps, in order, the options whose
+ * label or an alias contains the query, ignoring case.
+ */
+function testSearchPickerOptions<Option>({
+  options,
+  query,
+  getLabel,
+  getAliases,
+}: ExperimentalSearchPickerOptionsArgs<Option>): readonly Option[] {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return options;
+  return options.filter((option) =>
+    [getLabel(option), ...(getAliases?.(option) ?? [])].some((text) =>
+      text.toLowerCase().includes(needle),
+    ),
+  );
+}
+
+/** Stand-in for bb's thread Info body; bb renders the registered rows and sections. */
+function TestThreadInfo({ threadId }: ExperimentalThreadTabProps) {
+  return <section aria-label="Thread info" data-thread-id={threadId} />;
 }
 
 /** Stand-in for bb's collapsible stack card; always shows its body. */
@@ -1680,7 +1784,13 @@ type TestClipboard = (
   content: ExperimentalClipboardContent,
 ) => Promise<boolean>;
 
+type TestErrorToast = Parameters<
+  PluginSdkApp["experimental_showErrorToast"]
+>[0];
+
 let activeClipboard: TestClipboard | null = null;
+let activeErrorToasts: TestErrorToast[] | null = null;
+let loadingWithServers = false;
 
 function captureClipboardWrites(
   result: TestClipboard | undefined,
@@ -1693,7 +1803,38 @@ function captureClipboardWrites(
   return writes;
 }
 
+function captureErrorToasts(): TestErrorToast[] {
+  const toasts: TestErrorToast[] = [];
+  activeErrorToasts = toasts;
+  return toasts;
+}
+
+const startedTestLazyLoads: Promise<unknown>[] = [];
+
+function testLazy<T extends React.ComponentType<any>>(
+  load: () => Promise<{ default: T }>,
+): ExperimentalLazyComponent<React.ComponentProps<T>> {
+  type P = React.ComponentProps<T>;
+  let loaded: React.ComponentType<P> | null = null;
+  const pending = load().then((module) => {
+    const component: React.ComponentType<P> = module.default;
+    loaded = component;
+    return { default: component };
+  });
+  pending.catch(() => {});
+  startedTestLazyLoads.push(pending);
+  const Suspending = React.lazy(() => pending);
+  function TestLazy(props: P) {
+    const [View] = React.useState<React.ComponentType<P>>(
+      () => loaded ?? Suspending,
+    );
+    return <View {...props} />;
+  }
+  return TestLazy;
+}
+
 const testPluginSdkApp = {
+  experimental_lazy: testLazy,
   experimental_getApplicationLinkApprovals: async (): Promise<string[]> => [],
   experimental_revokeApplicationLinkApproval: async (
     _scheme: string | null,
@@ -1822,6 +1963,15 @@ const testPluginSdkApp = {
     );
     return composer.apiList;
   },
+  experimental_useActiveComposer(): PluginComposerApi | null {
+    const composer = useSlotEnv("experimental_useActiveComposer").composer;
+    useSyncExternalStore(
+      composer.subscribe,
+      composer.getVersionSnapshot,
+      composer.getVersionSnapshot,
+    );
+    return composer.api;
+  },
   ThreadChat: TestThreadChat,
   Markdown: TestMarkdown,
   experimental_FileLink: TestFileLink,
@@ -1860,6 +2010,18 @@ const testPluginSdkApp = {
   experimental_VoiceRecordingBar: TestVoiceRecordingBar,
   experimental_FailedVoiceRecordings: TestFailedVoiceRecordings,
   experimental_ShortcutHint: TestShortcutHint,
+  experimental_useCommandShortcut(
+    commandId: string,
+  ): ExperimentalShortcutPresentation | null {
+    return (
+      useSlotEnv("experimental_useCommandShortcut").commandShortcuts[
+        commandId
+      ] ?? null
+    );
+  },
+  experimental_matchesShortcutKey: matchesAppShortcutKey,
+  experimental_sliceUtf16Head: sliceUtf16Head,
+  experimental_searchPickerOptions: testSearchPickerOptions,
   experimental_ImageLightbox: TestImageLightbox,
   experimental_PromptMentionIcon: TestPromptMentionIcon,
   experimental_describePromptMention(
@@ -1892,6 +2054,7 @@ const testPluginSdkApp = {
   experimental_FilePreview: TestFilePreview,
   experimental_Diff: TestDiff,
   experimental_InfoSection: TestInfoSection,
+  experimental_ThreadInfo: TestThreadInfo,
   experimental_CollapsibleStackCard: TestCollapsibleStackCard,
   experimental_DetailRow: TestDetailRow,
   experimental_ThreadContextCardRow: TestThreadContextCardRow,
@@ -1900,6 +2063,44 @@ const testPluginSdkApp = {
   experimental_InfoListRow: TestInfoListRow,
   experimental_useSidebarThreads(): PluginSidebarThreadsState {
     return useSlotEnv("experimental_useSidebarThreads").sidebarThreads;
+  },
+  experimental_useThread(threadId): ExperimentalThreadState {
+    return (
+      useSlotEnv("experimental_useThread").threadStates.get(threadId) ??
+      NOT_FOUND_THREAD
+    );
+  },
+  experimental_useConversationOutline(
+    threadId,
+    role,
+    options,
+  ): ExperimentalConversationOutline {
+    const outlines = useSlotEnv("experimental_useConversationOutline")
+      .conversationOutlines[threadId];
+    const items = outlines?.[role] ?? NO_OUTLINE_ITEMS;
+    return options?.enabled === false
+      ? { status: "loading", items: NO_OUTLINE_ITEMS }
+      : { status: "ready", items };
+  },
+  experimental_useTimelineViewport(): ExperimentalTimelineViewport | null {
+    return useSlotEnv("experimental_useTimelineViewport").timelineViewport;
+  },
+  experimental_useThreadStorageFiles(
+    threadId,
+    options,
+  ): ExperimentalThreadStorageFilesState {
+    const states = useSlotEnv(
+      "experimental_useThreadStorageFiles",
+    ).threadStorageFiles;
+    if (options?.enabled === false) return LOADING_THREAD_STORAGE_FILES;
+    return states.get(threadId) ?? LOADING_THREAD_STORAGE_FILES;
+  },
+  experimental_useEnvironment(environmentId): ExperimentalEnvironmentState {
+    return (
+      useSlotEnv("experimental_useEnvironment").environmentStates.get(
+        environmentId,
+      ) ?? NOT_FOUND_ENVIRONMENT
+    );
   },
   experimental_useProviders(): PluginProvidersState {
     return useSlotEnv("experimental_useProviders").providers;
@@ -1920,10 +2121,16 @@ const testPluginSdkApp = {
   experimental_useServers(): ExperimentalServers | null {
     return useSlotEnv("experimental_useServers").servers;
   },
+  experimental_hasServers(): boolean {
+    return loadingWithServers;
+  },
   experimental_copyToClipboard(
     content: ExperimentalClipboardContent,
   ): Promise<boolean> {
     return activeClipboard?.(content) ?? Promise.resolve(true);
+  },
+  experimental_showErrorToast(options: TestErrorToast): void {
+    activeErrorToasts?.push({ ...options });
   },
   experimental_saveFile(): Promise<ExperimentalSaveFileOutcome> {
     return Promise.resolve("started");
@@ -1932,13 +2139,29 @@ const testPluginSdkApp = {
     return useSlotEnv("experimental_useSidebarThreadActions").sidebarActions;
   },
   experimental_useThreadActions(
-    thread: PluginThreadActionTarget,
+    thread: { id: string },
     options?: PluginThreadActionsOptions,
   ): readonly PluginThreadActionEntry[] {
     return useTestThreadActions(
       "experimental_useThreadActions",
       thread,
       options,
+    );
+  },
+  experimental_useThreadRequests(): ExperimentalThreadRequests {
+    const calls = useSlotEnv(
+      "experimental_useThreadRequests",
+    ).threadRequestCalls;
+    return useMemo(
+      () => ({
+        async requestArchive(threadIds) {
+          calls.push({ method: "requestArchive", threadIds: [...threadIds] });
+        },
+        async requestDelete(threadIds) {
+          calls.push({ method: "requestDelete", threadIds: [...threadIds] });
+        },
+      }),
+      [calls],
     );
   },
   experimental_useArchiveEnvironmentThreads(): (
@@ -1997,18 +2220,24 @@ const testPluginSdkApp = {
   experimental_SidebarNavigationIcon: TestSidebarNavigationIcon,
   experimental_useSidebarThreadSplit(threadId): PluginSidebarThreadSplit {
     const env = useSlotEnv("experimental_useSidebarThreadSplit");
-    return useMemo(
-      () => ({
+    return useMemo(() => {
+      const panes =
+        env.sidebarSplitLayout?.panes.map((pane) => ({
+          paneId: pane.paneId,
+          rect: pane.rect,
+          isMe: pane.threadId === threadId,
+          isFocused: pane.isFocused,
+        })) ?? [];
+      return {
         splitProps: {
           onPointerDown: () => {
             env.sidebarActionCalls.push({ method: "open", threadId });
           },
         },
         isAvailable: true,
-        layout: null,
-      }),
-      [env, threadId],
-    );
+        layout: panes.some((pane) => pane.isMe) ? { panes } : null,
+      };
+    }, [env, threadId]);
   },
   useSidebarThreadDraft(threadId): PluginSidebarThreadDraftState {
     const env = useSlotEnv("useSidebarThreadDraft");
@@ -2124,6 +2353,10 @@ export function installTestPluginRuntime(): void {
 // ---------------------------------------------------------------------------
 
 export interface CapturedPluginApp {
+  /** `app.commands.register` registrations, after the host's validation. */
+  commands: PluginCommandRegistration[];
+  /** `app.composer.experimental_registerCommand` registrations, after the host's validation. */
+  composerCommands: ExperimentalComposerCommandRegistration[];
   homepageSections: PluginHomepageSectionRegistration[];
   settingsSections: PluginSettingsSectionRegistration[];
   appOverlays: ExperimentalAppOverlayRegistration[];
@@ -2143,8 +2376,12 @@ export interface CapturedPluginApp {
   threadInfoRows: ExperimentalThreadInfoRowRegistration[];
   threadRowMetadata: ExperimentalThreadRowMetadataRegistration<unknown>[];
   threadInfoSections: ExperimentalThreadInfoSectionRegistration[];
+  threadHeaderRows: ExperimentalThreadHeaderRowRegistration[];
+  threadHeaderTitles: ExperimentalThreadHeaderTitleRegistration[];
+  threadRails: ExperimentalThreadRailRegistration[];
+  threadRailOutlines: ExperimentalThreadRailOutlineRegistration[];
   threadContextCardRows: ExperimentalThreadContextCardRowRegistration[];
-  threadContextCardSections: ExperimentalThreadContextCardSectionRegistration[];
+  threadContextCardSections: import("../internal/plugin-app-registration-collector.js").CollectedThreadContextCardSectionRegistration[];
   threadActions: PluginThreadActionRegistration<unknown>[];
   browserToolbarActions: ExperimentalPluginBrowserToolbarActionRegistration[];
   fileOpeners: PluginFileOpenerRegistration[];
@@ -2170,16 +2407,27 @@ export type PluginAppSource =
   | PluginAppModule
   | (() => Promise<PluginAppDefinition | PluginAppModule>);
 
+export interface LoadPluginAppOptions {
+  /**
+   * Answer for `experimental_hasServers()` while the app definition runs.
+   * Omitted → false, as in a web browser.
+   */
+  hasServers?: boolean;
+}
+
 /**
  * Install the test runtime, resolve the plugin app definition, and capture
  * its slot registrations. Pass the imported module, its default export, or a
- * thunk (`() => import("../app.tsx")`).
+ * thunk (`() => import("../app.tsx")`). Waits for the chunks its
+ * `experimental_lazy` components start loading, so slots render loaded.
  */
 export async function loadPluginApp(
   source: PluginAppSource,
+  options: LoadPluginAppOptions = {},
 ): Promise<CapturedPluginApp> {
   installTestPluginRuntime();
   const resolved = typeof source === "function" ? await source() : source;
+  await Promise.allSettled(startedTestLazyLoads.splice(0));
   const definition = isPluginAppDefinition(resolved)
     ? resolved
     : (resolved as PluginAppModule).default;
@@ -2188,7 +2436,37 @@ export async function loadPluginApp(
       "the bundle's default export is not definePluginApp(...) from @get-bb/plugin-sdk/app",
     );
   }
-  return collectPluginAppRegistrations(definition);
+  loadingWithServers = options.hasServers ?? false;
+  try {
+    const collected = collectPluginAppRegistrations(definition);
+    return {
+      ...collected,
+      ...capturedCommands(collected.commandPaletteActions),
+    };
+  } finally {
+    loadingWithServers = false;
+  }
+}
+
+function capturedCommands(
+  collected: readonly CollectedPluginCommandRegistration[],
+): Pick<CapturedPluginApp, "commands" | "composerCommands"> {
+  const commands: PluginCommandRegistration[] = [];
+  const composerCommands: ExperimentalComposerCommandRegistration[] = [];
+  for (const command of collected) {
+    const shortcut =
+      command.defaultShortcut === null
+        ? {}
+        : { defaultShortcut: command.defaultShortcut };
+    if (command.target === "app") {
+      const { target: _target, defaultShortcut: _shortcut, ...rest } = command;
+      commands.push({ ...rest, ...shortcut });
+    } else {
+      const { target: _target, defaultShortcut: _shortcut, ...rest } = command;
+      composerCommands.push({ ...rest, ...shortcut });
+    }
+  }
+  return { commands, composerCommands };
 }
 
 export interface ContentScriptTestMountOptions {
@@ -2223,6 +2501,8 @@ export interface MountedPluginContentScripts {
     getThreadRowStatus(threadId: string): PluginComposerThreadRowStatus | null;
     /** Every `experimental_copyToClipboard()` write, in order. */
     readonly experimental_clipboardWrites: readonly ExperimentalClipboardContent[];
+    /** Every `experimental_showErrorToast()` call, in order. */
+    readonly experimental_errorToasts: readonly TestErrorToast[];
   };
   lifecycle: {
     /** Abort, then run returned cleanup functions once in reverse order. */
@@ -2250,6 +2530,7 @@ export async function mountPluginContentScripts(
   const experimental_clipboardWrites = captureClipboardWrites(
     options.experimental_copyToClipboard,
   );
+  const experimental_errorToasts = captureErrorToasts();
   let disposed = false;
   const setThreadRowStatus = (threadId: unknown, status: unknown): void => {
     if (controller.signal.aborted) return;
@@ -2336,6 +2617,7 @@ export async function mountPluginContentScripts(
         return status === undefined ? null : { ...status };
       },
       experimental_clipboardWrites,
+      experimental_errorToasts,
     },
     lifecycle: { dispose },
   };
@@ -2366,8 +2648,12 @@ export interface RenderSlotOptions<
   experimental_rpcContract?: NoInfer<Contract>;
   /** `useSettings()` values; omitted → `{ values: undefined, isLoading: false }`. */
   settings?: Record<string, string | number | boolean>;
-  /** `useBbContext()` selection; both default to null. */
-  context?: { projectId?: string | null; threadId?: string | null };
+  /** `useBbContext()` selection; each defaults to null. */
+  context?: {
+    projectId?: string | null;
+    threadId?: string | null;
+    experimental_pluginPanel?: ExperimentalPluginPanelPage | null;
+  };
   /** `experimental_usePluginId()` value; defaults to `test-plugin`. */
   pluginId?: string;
   /** Initial `useRealtimeConnectionState()` value; defaults to `connected`. */
@@ -2377,6 +2663,11 @@ export interface RenderSlotOptions<
     text?: string;
     /** Mention pills already in `text`, with ranges into it. */
     mentions?: readonly ComposerMention[];
+    /**
+     * Omitted → a `thread` scope for `context.threadId` (project
+     * `context.projectId` or `project-test`, no environment), otherwise a
+     * `new-thread` scope for `context.projectId`.
+     */
     scope?: PluginComposerScope;
     attachmentCount?: number;
     attachments?: readonly ComposerAttachment[];
@@ -2422,6 +2713,31 @@ export interface RenderSlotOptions<
    * report as holding an unsent draft. Omitted → none.
    */
   sidebarDraftThreadIds?: readonly string[];
+  /**
+   * What `experimental_useThread(id)` reports per thread id. Omitted ids
+   * report `notFound`.
+   */
+  threads?: Readonly<Record<string, ExperimentalThreadState>>;
+  /**
+   * What `experimental_useConversationOutline(id, role)` reports per thread
+   * id and role, always `ready`; with `enabled: false` it reports `loading`
+   * and no items. Omitted → no items.
+   */
+  conversationOutlines?: Readonly<Record<string, TestConversationOutlines>>;
+  /** What `experimental_useTimelineViewport()` reports. Omitted → null. */
+  timelineViewport?: ExperimentalTimelineViewport;
+  /**
+   * What `experimental_useEnvironment(id)` reports per environment id.
+   * Omitted ids report `notFound`.
+   */
+  environments?: Readonly<Record<string, ExperimentalEnvironmentState>>;
+  /**
+   * What `experimental_useThreadStorageFiles(threadId)` reports per thread
+   * id. Omitted ids, and calls with `{ enabled: false }`, stay `loading`.
+   */
+  threadStorageFiles?: Readonly<
+    Record<string, ExperimentalThreadStorageFilesState>
+  >;
   /** Experiment keys `experimental_useExperiment()` reports as on. Omitted → none. */
   experiments?: readonly string[];
   /** What `experimental_useThreadContextKind()` reports. Omitted → `banner`. */
@@ -2515,8 +2831,8 @@ export interface RenderSlotOptions<
   tabVisible?: boolean;
   /**
    * Answer for `experimental_useServers()`. Omitted → null, as in a web
-   * browser. Pass `{ status, servers, switchTo }` to act as bb Desktop or the
-   * mobile app.
+   * browser. Pass `{ status, servers, switchTo, addServer, accountSignIn }` to
+   * act as bb Desktop or the mobile app.
    */
   servers?: ExperimentalServers | null;
   /** Host acceptance for `useBbNavigate().experimental_openTerminal`. */
@@ -2535,6 +2851,13 @@ export interface RenderSlotOptions<
    */
   experimental_panelTabs?: ExperimentalPanelTabs;
   /**
+   * What `experimental_useCommandShortcut(id)` returns, by this plugin's
+   * command id. An omitted id → null, as for an unbound command.
+   */
+  experimental_commandShortcuts?: Readonly<
+    Record<string, ExperimentalShortcutPresentation>
+  >;
+  /**
    * Initial session target visible to `experimental_useFixedTabTarget`.
    * Omit `panelId` for a thread fixed tab.
    */
@@ -2548,13 +2871,19 @@ export interface RenderSlotOptions<
 /** Host-originated inputs a slot test can drive deterministically. */
 export interface RenderedSlotBehaviorDrivers {
   /**
-   * Push a realtime event to `useRealtime(channel, …)` subscribers, wrapped
-   * in act. The payload is JSON-round-tripped like `bb.realtime.publish`.
+   * Invalidate the plugin's cached `useRpc` reads carrying any of `tags`, as a
+   * backend `bb.rpc.experimental_invalidate` does, wrapped in act. `null`
+   * invalidates every read, like `experimental_invalidateAll`. `pluginId`
+   * defaults to the rendered plugin.
    */
   experimental_invalidateRpc(
     tags: readonly string[] | null,
     pluginId?: string,
   ): Promise<void>;
+  /**
+   * Push a realtime event to `useRealtime(channel, …)` subscribers, wrapped
+   * in act. The payload is JSON-round-tripped like `bb.realtime.publish`.
+   */
   emitRealtime(channel: string, payload: unknown): Promise<void>;
   /** Drive the lifecycle of the same connection used by realtime events. */
   setRealtimeConnectionState(
@@ -2588,10 +2917,14 @@ export interface RenderedSlotInspectionState {
    * call, in order.
    */
   readonly experimental_environmentArchiveCalls: string[];
+  /** Every `experimental_useThreadRequests()` call, in order. */
+  readonly experimental_threadRequestCalls: ExperimentalThreadRequestCall[];
   /** Every `useSdk()` call, in order, as `"<area>.<method>"`. */
   readonly sdkCalls: SdkCall[];
   /** Every `experimental_copyToClipboard()` write, in order. */
   readonly experimental_clipboardWrites: ExperimentalClipboardContent[];
+  /** Every `experimental_showErrorToast()` call, in order. */
+  readonly experimental_errorToasts: TestErrorToast[];
   /** Everything written through `useComposer()`. */
   readonly composer: ComposerLog;
 }
@@ -2994,9 +3327,19 @@ export function renderSlot<
     },
   };
   const environmentArchiveCalls: string[] = [];
+  const threadRequestCalls: ExperimentalThreadRequestCall[] = [];
   const sidebarDraftThreadIds: ReadonlySet<string> = new Set(
     options.sidebarDraftThreadIds ?? [],
   );
+  const threadStates: ReadonlyMap<string, ExperimentalThreadState> = new Map(
+    Object.entries(options.threads ?? {}),
+  );
+  const environmentStates: ReadonlyMap<string, ExperimentalEnvironmentState> =
+    new Map(Object.entries(options.environments ?? {}));
+  const threadStorageFiles: ReadonlyMap<
+    string,
+    ExperimentalThreadStorageFilesState
+  > = new Map(Object.entries(options.threadStorageFiles ?? {}));
   const sidebarRowStatuses = new Map(
     Object.entries(options.sidebarRowStatuses ?? {}),
   );
@@ -3030,6 +3373,7 @@ export function renderSlot<
   const experimental_clipboardWrites = captureClipboardWrites(
     options.experimental_copyToClipboard,
   );
+  const experimental_errorToasts = captureErrorToasts();
   const sidebarActions: PluginSidebarThreadActions = {
     open(threadId, openOptions) {
       sidebarActionCalls.push({
@@ -3070,6 +3414,7 @@ export function renderSlot<
     openThreadPanel(options: RetiredActionTabOpenOptions): boolean;
   } = {
     toThread(threadId, threadOptions) {
+      assertTestMessageSeq(threadOptions?.messageSeq);
       navigateCalls.push({
         method: "toThread",
         threadId,
@@ -3132,6 +3477,19 @@ export function renderSlot<
       });
       return options.openTerminal?.(terminalOptions) ?? false;
     },
+    experimental_toSettings(target) {
+      assertTestSettingsTarget(target);
+      navigateCalls.push({
+        method: "experimental_toSettings",
+        ...(target !== undefined ? { target } : {}),
+      });
+    },
+    experimental_threadHref(threadId, hrefOptions) {
+      return testThreadHref(threadId, hrefOptions);
+    },
+    experimental_settingsHref(target) {
+      return testSettingsHref(target, options.pluginId ?? "test-plugin");
+    },
   };
 
   const projectId = options.context?.projectId ?? null;
@@ -3139,7 +3497,12 @@ export function renderSlot<
   let composerScope: PluginComposerScope =
     options.composer?.scope ??
     (threadId !== null
-      ? { kind: "thread", threadId }
+      ? {
+          kind: "thread",
+          threadId,
+          projectId: projectId ?? "project-test",
+          environmentId: null,
+        }
       : { kind: "new-thread", projectId });
   let composerSelection: ComposerSelection | null =
     composerScope.kind === "queued-message"
@@ -3410,9 +3773,16 @@ export function renderSlot<
     realtimeHandlers,
     realtimeConnection,
     settingsState: { values: options.settings, isLoading: false },
-    bbContext: { projectId, threadId },
+    bbContext: {
+      projectId,
+      threadId,
+      experimental_pluginPanel:
+        options.context?.experimental_pluginPanel ?? null,
+    },
     pluginId: options.pluginId ?? "test-plugin",
     questionFormHost: {
+      density: "default",
+      promptShownAbove: null,
       shortcuts: new Map(),
       actionShortcuts: new Map(),
       registerChoiceHandler: () => () => {},
@@ -3422,6 +3792,7 @@ export function renderSlot<
     navigateCalls,
     appPanel,
     panelTabs: options.experimental_panelTabs ?? NO_PANEL_TABS,
+    commandShortcuts: options.experimental_commandShortcuts ?? {},
     fixedTabTarget,
     composer,
     composerLog,
@@ -3431,11 +3802,17 @@ export function renderSlot<
     sidebarNavigation,
     sidebarNavigationCalls,
     environmentArchiveCalls,
+    threadRequestCalls,
     threadActions: options.threadActions ?? NO_THREAD_ACTIONS,
     threadBulkActions: options.threadBulkActions ?? NO_THREAD_BULK_ACTIONS,
     threadActionRegistrations:
       options.threadActionRegistrations ?? NO_THREAD_ACTION_REGISTRATIONS,
     sidebarDraftThreadIds,
+    threadStates,
+    conversationOutlines: options.conversationOutlines ?? {},
+    timelineViewport: options.timelineViewport ?? null,
+    environmentStates,
+    threadStorageFiles,
     experiments: new Set(options.experiments ?? []),
     threadContextKind: options.threadContextKind ?? "banner",
     threadExtensionStates: options.threadExtensionStates ?? {},
@@ -3573,8 +3950,10 @@ export function renderSlot<
     sidebarActionCalls,
     sidebarNavigationCalls,
     experimental_environmentArchiveCalls: environmentArchiveCalls,
+    experimental_threadRequestCalls: threadRequestCalls,
     sdkCalls,
     experimental_clipboardWrites,
+    experimental_errorToasts,
     composer: composerLog,
     behavior: {
       experimental_invalidateRpc,
@@ -3594,8 +3973,10 @@ export function renderSlot<
       sidebarActionCalls,
       sidebarNavigationCalls,
       experimental_environmentArchiveCalls: environmentArchiveCalls,
+      experimental_threadRequestCalls: threadRequestCalls,
       sdkCalls,
       experimental_clipboardWrites,
+      experimental_errorToasts,
       composer: composerLog,
     },
     get experimental_pageTitle() {

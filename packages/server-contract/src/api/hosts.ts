@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { operationResponseSchema } from "./operation.js";
 import {
   hostTypeSchema,
   jsonValueSchema,
@@ -6,6 +7,7 @@ import {
 } from "@bb/domain";
 import {
   pathsExistRequestSchema,
+  providerCliInstallActionKindSchema,
   providerCliInstallEventSchema,
   providerCliInstallRequestSchema,
   type PathsExistRequest,
@@ -127,10 +129,13 @@ export type UpdateHostPermissionCeilingRequest = z.infer<
   typeof updateHostPermissionCeilingRequestSchema
 >;
 
-export const hostActionResponseSchema = z
-  .object({ ok: z.literal(true) })
-  .strict();
+export const hostActionResponseSchema = operationResponseSchema;
 export type HostActionResponse = z.infer<typeof hostActionResponseSchema>;
+
+export const hostRemovalResponseSchema = operationResponseSchema
+  .extend({ warnings: z.array(z.string().min(1)) })
+  .strict();
+export type HostRemovalResponse = z.infer<typeof hostRemovalResponseSchema>;
 
 export const hostRetryUpdateResponseSchema = hostActionResponseSchema;
 export type HostRetryUpdateResponse = z.infer<
@@ -167,11 +172,54 @@ export type HostProviderCliInstallRequest = ProviderCliInstallRequest;
 export const hostProviderCliInstallEventSchema = providerCliInstallEventSchema;
 export type HostProviderCliInstallEvent = ProviderCliInstallEvent;
 
+const hostProviderCliInstallJobFields = {
+  id: z.string().min(1),
+  hostId: z.string().min(1),
+  provider: z.string().min(1),
+  actionKind: providerCliInstallActionKindSchema,
+  startedAt: z.number(),
+};
+export const hostProviderCliInstallJobSchema = z.discriminatedUnion("state", [
+  z.object({ ...hostProviderCliInstallJobFields, state: z.literal("running") }),
+  z.object({
+    ...hostProviderCliInstallJobFields,
+    state: z.literal("completed"),
+    finishedAt: z.number(),
+    events: z.array(providerCliInstallEventSchema),
+  }),
+  z.object({
+    ...hostProviderCliInstallJobFields,
+    state: z.literal("failed"),
+    finishedAt: z.number(),
+    error: z.string(),
+  }),
+]);
+export type HostProviderCliInstallJob = z.infer<
+  typeof hostProviderCliInstallJobSchema
+>;
+export const hostProviderCliInstallJobResponseSchema = z.object({
+  job: hostProviderCliInstallJobSchema,
+});
+export type HostProviderCliInstallJobResponse = z.infer<
+  typeof hostProviderCliInstallJobResponseSchema
+>;
+export const hostProviderCliInstallJobListResponseSchema = z.object({
+  jobs: z.array(hostProviderCliInstallJobSchema),
+});
+export type HostProviderCliInstallJobListResponse = z.infer<
+  typeof hostProviderCliInstallJobListResponseSchema
+>;
+
 export const hostListQuerySchema = z.object({
   includeCreating: z.enum(["true", "false"]).optional(),
   type: hostTypeSchema.optional(),
 });
 export type HostListQuery = z.input<typeof hostListQuerySchema>;
+
+export const hostGetQuerySchema = z.object({
+  includeRemoved: z.enum(["true", "false"]).optional(),
+});
+export type HostGetQuery = z.input<typeof hostGetQuerySchema>;
 
 export const hostDeleteQuerySchema = z.object({
   force: z.enum(["true", "false"]).optional(),

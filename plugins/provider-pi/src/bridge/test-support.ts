@@ -1,5 +1,4 @@
-import { ChildProcess } from "node:child_process";
-import { channel } from "node:diagnostics_channel";
+import type { ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { vi } from "vitest";
 import { z } from "zod";
 import { experimental_createBridgeJsonRpcTestHarness as createBridgeJsonRpcTestHarness } from "@get-bb/plugin-sdk/provider-bridge/testing";
+import { experimental_trackChildProcesses } from "@get-bb/plugin-sdk/testing";
 import type {
   BridgeJsonRpcId,
   BridgeJsonRpcObject,
@@ -75,6 +75,14 @@ export interface FakePiBridgeHarness {
   teardown(): Promise<void>;
 }
 
+function fakePiPids(children: readonly ChildProcess[]): number[] {
+  return children.flatMap((child) =>
+    child.spawnargs.includes(fakePiPath) && child.pid !== undefined
+      ? [child.pid]
+      : [],
+  );
+}
+
 export async function startFakePiBridge(
   options: StartFakePiBridgeOptions,
 ): Promise<FakePiBridgeHarness> {
@@ -91,18 +99,7 @@ export async function startFakePiBridge(
     vi.stubEnv("FAKE_PI_PROCESS_LOG", processLogPath);
   }
   const harness = createBridgeJsonRpcTestHarness(handleLine);
-  const children: ChildProcess[] = [];
-  const childProcessChannel = channel("child_process");
-  const onChildProcess = (message: unknown): void => {
-    if (
-      typeof message === "object" &&
-      message !== null &&
-      "process" in message &&
-      message.process instanceof ChildProcess
-    ) {
-      children.push(message.process);
-    }
-  };
+  const children = experimental_trackChildProcesses();
   let nextHarnessRequestId = FIRST_HARNESS_REQUEST_ID;
   const bridge: FakePiBridgeHarness = {
     workspaceDir,
@@ -171,23 +168,18 @@ export async function startFakePiBridge(
       const lines = existsSync(processLogPath)
         ? readFileSync(processLogPath, "utf8").split("\n").filter(Boolean)
         : [];
-      const spawned: number[] = [];
-      const exited: number[] = [];
-      for (const line of lines) {
+      const spawned = lines.flatMap((line) => {
         const [step, pid] = line.split(":");
-        (step === "spawn" ? spawned : exited).push(Number(pid));
-      }
+        return step === "spawn" ? [Number(pid)] : [];
+      });
+      const running = new Set(bridge.runningChildPids());
+      const exited = fakePiPids(children.children).filter(
+        (pid) => !running.has(pid),
+      );
       return { spawned, exited };
     },
     runningChildPids() {
-      return children.flatMap((child) =>
-        child.spawnargs.includes(fakePiPath) &&
-        child.pid !== undefined &&
-        child.exitCode === null &&
-        child.signalCode === null
-          ? [child.pid]
-          : [],
-      );
+      return fakePiPids(children.running());
     },
     async teardown() {
       try {
@@ -197,7 +189,7 @@ export async function startFakePiBridge(
           "fake Pi processes to exit",
         );
       } finally {
-        childProcessChannel.unsubscribe(onChildProcess);
+        children.dispose();
         harness.restore();
         vi.unstubAllEnvs();
         await rm(workspaceDir, {
@@ -209,7 +201,6 @@ export async function startFakePiBridge(
       }
     },
   };
-  childProcessChannel.subscribe(onChildProcess);
   if (options.initialize) {
     try {
       await bridge.request(INITIALIZE_ID, "initialize", {

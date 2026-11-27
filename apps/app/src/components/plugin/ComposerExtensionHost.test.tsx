@@ -38,7 +38,12 @@ function RendererProbe() {
 function Harness({ hasHost = true }: { hasHost?: boolean }) {
   const host = useMemo<PluginComposerHost>(
     () => ({
-      scope: { kind: "thread", threadId: "thr_test" },
+      scope: {
+        kind: "thread",
+        threadId: "thr_test",
+        projectId: "proj_test",
+        environmentId: null,
+      },
       textEffectKey: "thread/thr_test",
       getCurrent: () => draft,
       subscribeDraft: () => () => {},
@@ -51,7 +56,6 @@ function Harness({ hasHost = true }: { hasHost?: boolean }) {
     () => ({
       scope: host.scope,
       layout: "expanded" as const,
-      draft: { text: draft.text, isEmpty: false, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
     }),
     [host.scope],
@@ -59,6 +63,7 @@ function Harness({ hasHost = true }: { hasHost?: boolean }) {
   const controller = useComposerExtensionController({
     host: hasHost ? host : null,
     view,
+    draft: host,
     collapseIfFocused: mocks.collapseIfFocused,
     focusDefault: mocks.focusDefault,
   });

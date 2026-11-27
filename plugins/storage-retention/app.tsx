@@ -13,6 +13,7 @@ import {
   experimental_copyToClipboard,
   useBbNavigate,
   useRealtime,
+  useRealtimeConnectionState,
   useRpc,
   useSdk,
   type PluginNavPanelProps,
@@ -29,6 +30,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Icon } from "@/components/ui/icon";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -45,8 +47,24 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
-import type { EntryCleanupInput } from "./src/storage-types.js";
-import type { storageRpc, State, Policy } from "./src/contract.js";
+import type {
+  EntryCleanup,
+  EntryCleanupInput,
+  EntryCleanupStatus,
+} from "./src/storage-types.js";
+import { describeLeftoverCleanup } from "./src/leftover-cleanup.js";
+import {
+  needsForce,
+  selectExternalWorktrees,
+} from "./src/worktree-selection.js";
+import type {
+  storageRpc,
+  State,
+  Policy,
+  ColdThread,
+  ColdThreadCursor,
+  ColdThreadList,
+} from "./src/contract.js";
 import {
   LARGE_FILE_MIN_BYTES,
   LARGE_FILE_NUDGE_MIN_BYTES,
@@ -60,6 +78,7 @@ type Machine = Awaited<
 >[number];
 const PANEL = "storage";
 const ARCHIVE_PRESETS = [7, 14, 30, 60, 90, 180, 365];
+const COLD_STORE_PRESETS = [7, 14, 30, 60, 90];
 const DELETE_PRESETS = [7, 30, 90, 180, 365];
 function bytes(value: number) {
   if (value < 1024) return `${value} B`;
@@ -138,9 +157,9 @@ function useStorageSuccessToast(): NotifySuccess {
     batch.count++;
     batch.titles.add(title);
     batch.freedBytes =
-      batch.freedBytes === null && completion.freedBytes === null
+      batch.freedBytes === null || completion.freedBytes === null
         ? null
-        : (batch.freedBytes ?? 0) + (completion.freedBytes ?? 0);
+        : batch.freedBytes + completion.freedBytes;
     batch.removedInstances =
       batch.removedInstances === null || completion.removedInstances === null
         ? null
@@ -187,7 +206,10 @@ function cleanupFeedback(
       "Couldn’t delete development data",
     ],
     orphans: ["Orphaned files deleted", "Couldn’t delete orphaned files"],
-    worktrees: ["Checkout cleanup retried", "Couldn’t clean up checkouts"],
+    worktrees: [
+      "Leftover worktree cleanup finished",
+      "Couldn’t clean up leftover worktrees",
+    ],
     externalWorktrees: ["Worktrees removed", "Couldn’t remove worktrees"],
     largeFileCleanup: [
       "Large archived files deleted",
@@ -207,12 +229,26 @@ function cleanupFeedback(
     id: `storage:${hostId ?? "all"}:${kind}`,
   };
 }
+type WaitForEntryCleanup = (
+  id: string,
+) => Promise<Extract<EntryCleanupStatus, { state: "completed" }>["result"]>;
+type RequestScan = <T>(hostIds: string[], work: () => Promise<T>) => Promise<T>;
 type StorageData = {
+  request: number;
   state: State;
   hosts: Hosts;
+  entryCleanups: EntryCleanup[];
   machines: Record<string, Machine>;
   primaryHostId: string | null;
+  coldStorage: ColdThreadList;
 };
+
+const COLD_STORAGE_SUMMARY = {
+  projectId: null,
+  search: null,
+  limit: 1,
+  after: null,
+} as const;
 
 function StoragePanel(props: PluginNavPanelProps) {
   const rpc = useRpc<typeof storageRpc>();
@@ -230,21 +266,27 @@ function StoragePanel(props: PluginNavPanelProps) {
     const revision = stateRevision.current;
     const request = ++refreshRevision.current;
     try {
-      const [state, reports, machines, config] = await Promise.all([
-        rpc.call("state", null),
-        rpc.call("hosts", null),
-        sdk.hosts.list({ type: "persistent" }),
-        sdk.system.config(),
-      ]);
+      const [state, reports, machines, config, coldStorage] = await Promise.all(
+        [
+          rpc.call("state", null),
+          rpc.call("hosts", null),
+          sdk.hosts.list({ type: "persistent" }),
+          sdk.system.config(),
+          rpc.call("coldThreads", COLD_STORAGE_SUMMARY),
+        ],
+      );
       if (request !== refreshRevision.current) return;
       setData((current) => ({
         state:
           revision === stateRevision.current || current === null
             ? state
             : current.state,
+        request,
         hosts: reports.hosts,
+        entryCleanups: reports.entryCleanups,
         machines: Object.fromEntries(machines.map((host) => [host.id, host])),
         primaryHostId: config.primaryHostId,
+        coldStorage,
       }));
       setLoadError(null);
     } catch (error) {
@@ -254,24 +296,37 @@ function StoragePanel(props: PluginNavPanelProps) {
   const previousScans = useRef(
     new Map<string, { scannedAt: number | undefined; status: string }>(),
   );
+  const requestedScans = useRef(new Set<string>());
+  const requestScan = useCallback<RequestScan>(async (hostIds, work) => {
+    for (const id of hostIds) requestedScans.current.add(id);
+    try {
+      return await work();
+    } catch (error) {
+      for (const id of hostIds) requestedScans.current.delete(id);
+      throw error;
+    }
+  }, []);
   const previousJobs = useRef(new Map<string, string>());
   const observedHosts = useRef(new Set<string>());
   const previousRemovals = useRef(new Map<string, Map<string, string>>());
   useEffect(() => {
     for (const host of data?.hosts ?? []) {
       const previousScan = previousScans.current.get(host.hostId);
-      if (previousScan) {
+      if (previousScan && requestedScans.current.has(host.hostId)) {
         const description = data?.machines[host.hostId]?.name ?? host.hostId;
-        if (host.scan.state === "failed" && previousScan.status !== "failed")
+        if (host.scan.state === "failed" && previousScan.status !== "failed") {
+          requestedScans.current.delete(host.hostId);
           toast.error("Storage scan failed", {
             description: `${description} · ${host.scan.message}`,
           });
-        else if (
+        } else if (
           host.scan.state === "idle" &&
           host.report &&
           previousScan.scannedAt !== host.report.scannedAt
-        )
+        ) {
+          requestedScans.current.delete(host.hostId);
           notifySuccess("Storage scan completed", description);
+        }
       }
       previousScans.current.set(host.hostId, {
         scannedAt: host.report?.scannedAt,
@@ -311,8 +366,17 @@ function StoragePanel(props: PluginNavPanelProps) {
             });
           if (job.state === "completed")
             notifySuccess(feedback.completed, {
-              description: `${machine} · ${"message" in job ? job.message : `${bytes(job.clearedBytes)} freed`}`,
-              freedBytes: "clearedBytes" in job ? job.clearedBytes : null,
+              description: `${machine} · ${
+                "message" in job
+                  ? `${job.message}${job.freedBytes ? ` · ${bytes(job.freedBytes)} freed` : ""}`
+                  : `${bytes(job.clearedBytes)} freed`
+              }`,
+              freedBytes:
+                "clearedBytes" in job
+                  ? job.clearedBytes
+                  : "freedBytes" in job
+                    ? job.freedBytes
+                    : null,
               removedInstances: null,
             });
         }
@@ -346,11 +410,7 @@ function StoragePanel(props: PluginNavPanelProps) {
       observedHosts.current.add(host.hostId);
     }
   }, [data, notifySuccess]);
-  useEffect(() => {
-    void refresh();
-  }, [refresh]);
-  useRealtime("changed", refresh);
-  useRealtime("policy-changed", async () => {
+  const refreshPolicy = async () => {
     const revision = stateRevision.current;
     try {
       const state = await rpc.call("state", null);
@@ -360,17 +420,90 @@ function StoragePanel(props: PluginNavPanelProps) {
         description: message(error),
       });
     }
-  });
-  useEffect(
-    () =>
-      sdk.subscribe({
-        event: "realtime:connection",
-        callback: (event) => {
-          if (event.state === "connected" && event.reconnected) void refresh();
-        },
-      }),
-    [sdk, refresh],
+  };
+  const entryWaiters = useRef(
+    new Map<
+      string,
+      { after: number; settle: (status: EntryCleanupStatus | null) => void }
+    >(),
   );
+  const waitForEntryCleanup = useCallback<WaitForEntryCleanup>(
+    (id) =>
+      new Promise((resolve, reject) => {
+        entryWaiters.current.set(id, {
+          after: refreshRevision.current + 1,
+          settle: (status) => {
+            if (status === null)
+              reject(
+                new Error(
+                  "Storage was restarted before this cleanup finished. Scan the machine to see what was removed",
+                ),
+              );
+            else if (status.state === "failed")
+              reject(new Error(status.message));
+            else if (status.state === "completed") resolve(status.result);
+          },
+        });
+        void refresh();
+      }),
+    [refresh],
+  );
+  useEffect(() => {
+    if (data === null) return;
+    for (const [id, waiter] of entryWaiters.current) {
+      const entry = data.entryCleanups.find((cleanup) => cleanup.id === id);
+      if (
+        entry
+          ? entry.status.state !== "completed" &&
+            entry.status.state !== "failed"
+          : data.request < waiter.after
+      )
+        continue;
+      entryWaiters.current.delete(id);
+      waiter.settle(entry?.status ?? null);
+    }
+  }, [data]);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+  useRealtime("changed", () => {
+    void refresh();
+  });
+  useRealtime("policy-changed", () => {
+    void refreshPolicy();
+  });
+  const coldStorageChanges = useColdStorageChanges();
+  const coldSummaryRequest = useRef(0);
+  useEffect(() => {
+    if (coldStorageChanges === 0) return;
+    const timer = setTimeout(() => {
+      const request = ++coldSummaryRequest.current;
+      rpc
+        .call("coldThreads", COLD_STORAGE_SUMMARY)
+        .then((coldStorage) => {
+          if (request !== coldSummaryRequest.current) return;
+          setData((current) =>
+            current === null ? current : { ...current, coldStorage },
+          );
+        })
+        .catch((error: unknown) => {
+          if (request !== coldSummaryRequest.current) return;
+          toast.error("Couldn’t load cold storage", {
+            description: message(error),
+          });
+        });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [rpc, coldStorageChanges]);
+  const connection = useRealtimeConnectionState();
+  const previousConnection = useRef(connection);
+  useEffect(() => {
+    const previous = previousConnection.current;
+    previousConnection.current = connection;
+    if (previous === "reconnecting" && connection === "connected")
+      void refresh();
+  }, [connection, refresh]);
+  if (props.subPath === COLD_STORAGE_PATH) return <ColdStoragePage />;
   return (
     <StoragePage
       key={props.subPath}
@@ -378,8 +511,10 @@ function StoragePanel(props: PluginNavPanelProps) {
       data={data}
       loadError={loadError}
       refresh={refresh}
+      waitForEntryCleanup={waitForEntryCleanup}
       notifySuccess={notifySuccess}
       updateState={updateState}
+      requestScan={requestScan}
     />
   );
 }
@@ -389,15 +524,19 @@ function StoragePage({
   data,
   loadError,
   refresh,
+  waitForEntryCleanup,
   updateState,
   notifySuccess,
+  requestScan,
 }: {
   hostId: string | null;
   data: StorageData | null;
   loadError: string | null;
   refresh: () => Promise<void>;
+  waitForEntryCleanup: WaitForEntryCleanup;
   updateState: (state: State) => void;
   notifySuccess: NotifySuccess;
+  requestScan: RequestScan;
 }) {
   const rpc = useRpc<typeof storageRpc>();
   const navigate = useBbNavigate();
@@ -435,8 +574,17 @@ function StoragePage({
         busyActions.add(worktreeRemovalToastId(host.hostId, removal.path));
     }
   }
+  for (const { target, status } of data?.entryCleanups ?? []) {
+    if (status.state !== "queued" && status.state !== "running") continue;
+    busyActions.add(
+      target.kind === "thread"
+        ? `storage:thread:${target.threadId}`
+        : developmentToastId(target.hostId, target.names),
+    );
+  }
   const cleanupBusy = (kind: string) =>
     busyActions.has(`storage:${hostId ?? "all"}:${kind}`);
+  const [unusedForDays, setUnusedForDays] = useState<number | null>(7);
   const [expandedThreadsHostId, setExpandedThreadsHostId] = useState<
     string | null
   >(null);
@@ -447,6 +595,10 @@ function StoragePage({
     detail: string;
     action: string;
     run: () => Promise<string | CleanupCompletion>;
+    alternative?: {
+      action: string;
+      run: () => Promise<string | CleanupCompletion>;
+    };
     feedback: ActionFeedback;
   } | null>(null);
   function setCleanup(value: typeof cleanup) {
@@ -488,12 +640,7 @@ function StoragePage({
   }
   async function runEntryCleanup(input: EntryCleanupInput) {
     const { id } = await rpc.call("startEntryCleanup", input);
-    for (;;) {
-      const status = await rpc.call("entryCleanup", { id });
-      if (status.state === "failed") throw new Error(status.message);
-      if (status.state === "completed") return status.result;
-      await new Promise((resolve) => setTimeout(resolve, 500));
-    }
+    return waitForEntryCleanup(id);
   }
   async function removeDevelopment(input: {
     hostId: string;
@@ -514,6 +661,7 @@ function StoragePage({
     updateState(next);
     const description = {
       archiveAfterDays: "Archive inactive threads",
+      coldStoreAfterDays: "Move archived threads to cold storage",
       deleteAfterDays: "Delete archived threads",
       deleteStorageOnArchive: "Delete thread storage on archive",
       deleteDevDataOnCheckoutRemoval:
@@ -556,6 +704,7 @@ function StoragePage({
   const retentionOn =
     state !== null &&
     (state.policy.archiveAfterDays !== null ||
+      state.policy.coldStoreAfterDays !== null ||
       state.policy.deleteAfterDays !== null);
   const report = detail?.report;
   const missingDev =
@@ -567,6 +716,9 @@ function StoragePage({
       (total, worktree) => total + worktree.sizeBytes,
       0,
     ) ?? 0;
+  const unusedWorktrees = report
+    ? externalWorktreeSelection(report.externalWorktrees, unusedForDays)
+    : null;
   const missingDevBytes = missingDev.reduce(
     (total, entry) => total + entry.sizeBytes,
     0,
@@ -644,6 +796,7 @@ function StoragePage({
           },
         ]
       : [];
+  const cleanupAlternative = cleanup?.alternative;
   const cleanupConfirmation = cleanup && (
     <div
       role="region"
@@ -667,6 +820,26 @@ function StoragePage({
         >
           Cancel
         </Button>
+        {cleanupAlternative && (
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={offline || busyActions.has(cleanup.feedback.id ?? "")}
+            onClick={() =>
+              void perform(
+                async () => {
+                  const done = await cleanupAlternative.run();
+                  setCleanup(null);
+                  return done;
+                },
+                cleanup.feedback,
+                (done) => done,
+              )
+            }
+          >
+            {cleanupAlternative.action}
+          </Button>
+        )}
         <Button
           variant="destructive"
           size="sm"
@@ -754,7 +927,11 @@ function StoragePage({
                 className="shrink-0"
                 disabled={scanning || offline || !detail}
                 onClick={() =>
-                  void perform(() => rpc.call("scanHost", { hostId }))
+                  void perform(() =>
+                    requestScan([hostId], () =>
+                      rpc.call("scanHost", { hostId }),
+                    ),
+                  )
                 }
               >
                 <Icon
@@ -959,26 +1136,54 @@ function StoragePage({
                     <CleanupRow
                       title="Leftover worktrees"
                       size={report.leftoverWorktreeBytes}
-                      description="Checkouts BB could not remove after their threads were archived. BB retries automatically."
-                      action="Retry cleanup"
+                      description="Checkouts of archived threads that BB hasn’t removed yet. BB keeps retrying, and removes interrupted ones once nothing is running in them and they have no uncommitted changes."
+                      action="Clean up"
                       busy={cleanupBusy("worktrees")}
                       disabled={locked || report.leftoverWorktrees.length === 0}
-                      onAction={() =>
-                        void perform(
-                          async () => {
-                            await rpc.call("startCleanup", {
+                      onAction={() => {
+                        const changed = report.leftoverWorktrees.filter(
+                          (worktree) =>
+                            worktree.cleanup.state === "uncommittedChanges",
+                        );
+                        const start = (includeUncommitted: boolean) =>
+                          rpc
+                            .call("startCleanup", {
                               kind: "worktrees",
-                              hostId,
-                            });
-                          },
-                          cleanupFeedback(
-                            "worktrees",
-                            hostId,
-                            machine?.name ?? hostId ?? "Machine",
-                          ),
-                        )
-                      }
+                              hostId: report.hostId,
+                              includeUncommitted,
+                            })
+                            .then(() => "Checkout cleanup started.");
+                        const feedback = cleanupFeedback(
+                          "worktrees",
+                          report.hostId,
+                          machine?.name ?? report.hostId,
+                        );
+                        if (changed.length === 0) {
+                          void perform(() => start(false), feedback);
+                          return;
+                        }
+                        const total = report.leftoverWorktrees.length;
+                        setCleanup({
+                          key: "leftover-worktrees",
+                          feedback,
+                          action:
+                            changed.length === total
+                              ? `Remove ${plural(total, "checkout")}`
+                              : `Remove all ${total}`,
+                          title: `Remove ${plural(total, "leftover checkout")} (${bytes(report.leftoverWorktreeBytes)})?`,
+                          detail: `${changed.length === total ? (total === 1 ? "It has" : "They all have") : `${changed.length} of them ${changed.length === 1 ? "has" : "have"}`} uncommitted changes, which are lost if removed. Their branches are kept. This can’t be undone.`,
+                          ...(changed.length < total && {
+                            alternative: {
+                              action: `Keep the ${changed.length} with changes`,
+                              run: () => start(false),
+                            },
+                          }),
+                          run: () => start(true),
+                        });
+                      }}
                     >
+                      {cleanup?.key === "leftover-worktrees" &&
+                        cleanupConfirmation}
                       {report.leftoverWorktrees.length > 0 && (
                         <details className="text-xs text-muted-foreground">
                           <summary className="cursor-pointer">
@@ -996,9 +1201,8 @@ function StoragePage({
                               >
                                 <p className="break-all">{worktree.path}</p>
                                 <p className="mt-1 text-muted-foreground">
-                                  {bytes(worktree.sizeBytes)}
-                                  {worktree.teardownMessage &&
-                                    ` · ${worktree.teardownMessage}`}
+                                  {bytes(worktree.sizeBytes)} ·{" "}
+                                  {describeLeftoverCleanup(worktree.cleanup)}
                                 </p>
                               </div>
                             ))}
@@ -1009,11 +1213,34 @@ function StoragePage({
                     <CleanupRow
                       title="Worktrees created outside BB"
                       size={externalBytes}
-                      description="Git worktrees of your projects that BB didn’t create, such as ones agents added with git worktree add. Removing them keeps their branches. Bulk removal keeps worktrees with uncommitted changes, locked worktrees, and detached worktrees with commits on no branch; remove those one at a time."
+                      description="Git worktrees of your projects that BB didn’t create, such as ones agents added with git worktree add. Removing them keeps their branches."
                       action="Remove worktrees"
                       busy={cleanupBusy("externalWorktrees")}
-                      disabled={locked || report.externalWorktrees.length === 0}
-                      onAction={() =>
+                      disabled={
+                        locked ||
+                        unusedWorktrees === null ||
+                        unusedWorktrees.selected.length === 0
+                      }
+                      onAction={() => {
+                        if (unusedWorktrees === null) return;
+                        const { selected, forced } = unusedWorktrees;
+                        const start = (force: boolean) =>
+                          rpc
+                            .call("startCleanup", {
+                              kind: "externalWorktrees",
+                              hostId: report.hostId,
+                              paths: (force
+                                ? selected
+                                : selected.filter(
+                                    (worktree) => !needsForce(worktree),
+                                  )
+                              )
+                                .slice(0, 500)
+                                .map((worktree) => worktree.path),
+                              force,
+                            })
+                            .then(() => "Worktree removal started.");
+                        const safeCount = selected.length - forced.length;
                         setCleanup({
                           key: "external-worktrees",
                           feedback: cleanupFeedback(
@@ -1021,22 +1248,75 @@ function StoragePage({
                             report.hostId,
                             machine?.name ?? report.hostId,
                           ),
-                          action: "Remove worktrees",
-                          title: `Remove ${plural(report.externalWorktrees.length, "worktree")} created outside BB (${bytes(externalBytes)})?`,
-                          detail:
-                            "Delete these checkouts, including ignored files such as dependencies, build output, and local env files. Branches and commits stay in the repository. Worktrees with uncommitted changes, locked worktrees, and detached worktrees with commits on no branch are kept; remove those one at a time. Make sure no agent is still working in them. This can’t be undone.",
-                          run: async () => {
-                            await rpc.call("startCleanup", {
-                              kind: "externalWorktrees",
-                              hostId: report.hostId,
-                            });
-                            return "Worktree removal started in the background.";
-                          },
-                        })
-                      }
+                          action:
+                            forced.length === 0
+                              ? `Remove ${plural(selected.length, "worktree")}`
+                              : `Remove all ${selected.length}`,
+                          title: `Remove ${plural(selected.length, "worktree")}${unusedForDays === null ? "" : ` not used in ${duration(unusedForDays)}`} (${bytes(unusedWorktrees.bytes)})?`,
+                          detail: [
+                            "Delete these checkouts, including ignored files such as dependencies, build output, and local env files. Branches and commits on branches stay in the repository.",
+                            forced.length > 0 &&
+                              `${forced.length === selected.length ? (selected.length === 1 ? "It has" : "They all have") : `${forced.length} of them ${forced.length === 1 ? "has" : "have"}`} uncommitted changes, a lock, or commits on no branch; that work is lost if removed.`,
+                            "Make sure no agent is still working in them. This can’t be undone.",
+                          ]
+                            .filter(Boolean)
+                            .join(" "),
+                          ...(forced.length > 0 &&
+                            safeCount > 0 && {
+                              alternative: {
+                                action: `Keep the ${forced.length} with changes`,
+                                run: () => start(false),
+                              },
+                            }),
+                          run: () => start(forced.length > 0),
+                        });
+                      }}
                     >
                       {cleanup?.key === "external-worktrees" &&
                         cleanupConfirmation}
+                      {report.externalWorktrees.length > 0 &&
+                        unusedWorktrees && (
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+                            <span>Not used in</span>
+                            <Select
+                              value={
+                                unusedForDays === null
+                                  ? "any"
+                                  : String(unusedForDays)
+                              }
+                              onValueChange={(next) => {
+                                setUnusedForDays(
+                                  next === "any" ? null : Number(next),
+                                );
+                                setCleanup(null);
+                              }}
+                            >
+                              <SelectTrigger
+                                aria-label="Not used in"
+                                className="h-7 w-32"
+                              >
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {UNUSED_FOR_OPTIONS.map((days) => (
+                                  <SelectItem key={days} value={String(days)}>
+                                    {duration(days)}
+                                  </SelectItem>
+                                ))}
+                                <SelectItem value="any">Any time</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <span>
+                              {plural(
+                                unusedWorktrees.selected.length,
+                                "worktree",
+                              )}{" "}
+                              · {bytes(unusedWorktrees.bytes)}
+                              {unusedWorktrees.forced.length > 0 &&
+                                ` · ${unusedWorktrees.forced.length} with uncommitted changes`}
+                            </span>
+                          </div>
+                        )}
                       {report.externalWorktrees.length > 0 && (
                         <ExternalWorktrees
                           worktrees={report.externalWorktrees}
@@ -1053,7 +1333,12 @@ function StoragePage({
                               worktreeRemovalToastId(report.hostId, path),
                             )
                           }
-                          rowDisabled={locked}
+                          rowDisabled={
+                            locked ||
+                            busyActions.has(
+                              `storage:${report.hostId}:externalWorktrees`,
+                            )
+                          }
                           confirmationKey={cleanup?.key ?? null}
                           confirmation={cleanupConfirmation}
                           onRemove={(worktree, label) => {
@@ -1182,6 +1467,11 @@ function StoragePage({
                               ]}
                               onOpen={() => navigate.toThread(thread.threadId)}
                             />
+                            {thread.heldWorkspace && (
+                              <p className="text-xs leading-snug text-muted-foreground">
+                                {heldWorkspaceExplanation(thread.heldWorkspace)}
+                              </p>
+                            )}
                           </div>
                           <div className="flex h-5 shrink-0 items-center gap-2">
                             <span className="text-xs tabular-nums text-muted-foreground">
@@ -1193,7 +1483,11 @@ function StoragePage({
                               )}
                               label="Clear files"
                               target={thread.title}
-                              disabled={locked || thread.running}
+                              disabled={
+                                locked ||
+                                thread.running ||
+                                thread.heldWorkspace !== null
+                              }
                               onClick={() =>
                                 void runRowAction(
                                   thread.threadId,
@@ -1242,7 +1536,7 @@ function StoragePage({
                     rowDisabled={locked}
                     confirmationKey={cleanup?.key ?? null}
                     confirmation={cleanupConfirmation}
-                    onRemoveSelected={(entries) => {
+                    onRemoveSelected={(entries, key) => {
                       const size = entries.reduce(
                         (total, entry) => total + entry.sizeBytes,
                         0,
@@ -1251,7 +1545,7 @@ function StoragePage({
                         (entry) => entry.running,
                       ).length;
                       setCleanup({
-                        key: "dev-selected",
+                        key,
                         feedback: {
                           id: developmentToastId(
                             report.hostId,
@@ -1403,7 +1697,12 @@ function StoragePage({
                     size="sm"
                     disabled={scannable.length === 0 || scanningAll}
                     onClick={() =>
-                      void perform(() => rpc.call("scanAll", null))
+                      void perform(() =>
+                        requestScan(
+                          scannable.map((host) => host.hostId),
+                          () => rpc.call("scanAll", null),
+                        ),
+                      )
                     }
                   >
                     <Icon
@@ -1441,7 +1740,10 @@ function StoragePage({
                     }
                     onScan={() =>
                       void perform(
-                        () => rpc.call("scanHost", { hostId: host.hostId }),
+                        () =>
+                          requestScan([host.hostId], () =>
+                            rpc.call("scanHost", { hostId: host.hostId }),
+                          ),
                         {
                           id: `scan:${host.hostId}`,
                           background: true,
@@ -1457,10 +1759,19 @@ function StoragePage({
                 ))}
               </div>
             </section>
+            {data && (
+              <ColdStorageSummary
+                summary={data.coldStorage}
+                policyOn={state?.policy.coldStoreAfterDays != null}
+                onOpen={() =>
+                  navigate.toPluginPanel(PANEL, { subPath: COLD_STORAGE_PATH })
+                }
+              />
+            )}
             <section className="space-y-3">
               <SectionHeading
                 title="Automatic retention"
-                description="Archive or delete inactive threads across all projects. Changes save automatically."
+                description="Archive, move to cold storage or delete inactive threads across all projects. Changes save automatically."
                 badge={retentionOn ? "Checks hourly" : "Off"}
               />
               <div
@@ -1470,7 +1781,8 @@ function StoragePage({
                 <Icon name="Pin" className="mt-px size-3.5 shrink-0" />
                 <p>
                   <span className="text-foreground">
-                    Pinned threads are never archived or deleted.
+                    Pinned threads are never archived, moved to cold storage or
+                    deleted.
                   </span>{" "}
                   Automation targets aren’t protected on their own, so pin the
                   ones you want to keep.
@@ -1489,6 +1801,16 @@ function StoragePage({
                     }
                   />
                   <RetentionField
+                    label="Move archived threads to cold storage"
+                    description="After this long in the archive, move them out of bb's database into files kept by this plugin. Restore them from Cold storage above."
+                    presets={COLD_STORE_PRESETS}
+                    value={policy.coldStoreAfterDays}
+                    disabled={savingSetting}
+                    onChange={(value) =>
+                      void saveSetting("coldStoreAfterDays", value)
+                    }
+                  />
+                  <RetentionField
                     label="Delete archived threads"
                     description="Permanently, after this long in the archive."
                     presets={DELETE_PRESETS}
@@ -1504,8 +1826,9 @@ function StoragePage({
                         Delete thread storage on archive
                       </span>
                       <span className="block text-xs text-muted-foreground">
-                        Permanently remove files after archiving. Conversations
-                        and uploaded attachments are kept. Pinned threads are
+                        Permanently remove files after archiving, including
+                        threads that are already archived. Conversations and
+                        uploaded attachments are kept. Pinned threads are
                         skipped.
                       </span>
                     </span>
@@ -1545,7 +1868,7 @@ function StoragePage({
                     <div className="px-4 py-2.5">
                       <p className="text-xs text-muted-foreground">
                         {state.lastRun
-                          ? `Last checked ${ago(state.lastRun.ranAt)} · ${state.lastRun.archivedCount} archived · ${state.lastRun.deletedCount} deleted${state.lastRun.failedCount ? ` · ${state.lastRun.failedCount} failed` : ""}`
+                          ? `Last checked ${ago(state.lastRun.ranAt)} · ${state.lastRun.archivedCount} archived · ${state.lastRun.coldStoredCount} moved to cold storage · ${state.lastRun.deletedCount} deleted${state.lastRun.failedCount ? ` · ${state.lastRun.failedCount} failed` : ""}`
                           : "The first check runs within the hour."}
                       </p>
                     </div>
@@ -1555,6 +1878,362 @@ function StoragePage({
             </section>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+const COLD_STORAGE_PATH = "cold-storage";
+const COLD_STORAGE_PAGE = 50;
+const TEXT_BUTTON =
+  "rounded-sm text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring";
+
+interface LoadedColdThreads {
+  search: string | null;
+  list: ColdThreadList;
+}
+
+function coldThreadCursor(entry: ColdThread): ColdThreadCursor {
+  return { storedAt: entry.storedAt, threadId: entry.threadId };
+}
+
+function sortsAfter(entry: ColdThread, cursor: ColdThreadCursor): boolean {
+  if (cursor.storedAt === null) {
+    return entry.storedAt !== null || entry.threadId < cursor.threadId;
+  }
+  return (
+    entry.storedAt !== null &&
+    (entry.storedAt < cursor.storedAt ||
+      (entry.storedAt === cursor.storedAt && entry.threadId < cursor.threadId))
+  );
+}
+
+function useColdStorageChanges(): number {
+  const [changes, setChanges] = useState(0);
+  useRealtime("cold-storage-changed", () => {
+    setChanges((count) => count + 1);
+  });
+  return changes;
+}
+
+function ColdStorageSummary({
+  summary,
+  policyOn,
+  onOpen,
+}: {
+  summary: ColdThreadList;
+  policyOn: boolean;
+  onOpen: () => void;
+}) {
+  if (summary.totalCount === 0 && !policyOn) return null;
+  const details = [
+    ...(summary.lastStoredAt === null
+      ? ["Nothing moved yet"]
+      : [`Last moved ${ago(summary.lastStoredAt)}`]),
+    ...(summary.movingCount > 0 ? [`${summary.movingCount} moving`] : []),
+  ];
+  return (
+    <section className="space-y-3">
+      <SectionHeading title="Cold storage" />
+      <div
+        role="note"
+        className="flex items-start gap-2 rounded-lg border border-border bg-muted/40 px-3 py-2.5 text-xs leading-snug text-subtle-foreground"
+      >
+        <Icon name="Info" className="mt-px size-3.5 shrink-0" />
+        <p>
+          <span className="text-foreground">
+            Cold storage moves archived threads out of bb’s database into
+            compressed files.
+          </span>{" "}
+          That keeps bb fast as your history grows. Moved threads leave your
+          archive and search; restoring one brings it back with its full
+          history.
+        </p>
+      </div>
+      <div className="overflow-hidden rounded-lg border border-border bg-card">
+        <button
+          type="button"
+          className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+          onClick={onOpen}
+        >
+          <span className="min-w-0 flex-1 space-y-1">
+            <span className="flex min-w-0 items-center gap-1.5">
+              <Icon
+                name="Archive"
+                className="size-3.5 shrink-0 text-subtle-foreground"
+              />
+              <span className="truncate text-sm font-medium">
+                {plural(summary.totalCount, "thread")}
+              </span>
+            </span>
+            <span className="block text-xs text-subtle-foreground/75">
+              {details.join(" · ")}
+            </span>
+          </span>
+          <span className="text-sm font-medium tabular-nums">
+            {bytes(summary.totalBytes)}
+          </span>
+          <Icon
+            name="ChevronRight"
+            className="size-4 shrink-0 text-muted-foreground"
+          />
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function ColdStoragePage() {
+  const rpc = useRpc<typeof storageRpc>();
+  const navigate = useBbNavigate();
+  const changes = useColdStorageChanges();
+  const [searchText, setSearchText] = useState("");
+  const [search, setSearch] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<LoadedColdThreads | null>(null);
+  const latestRequest = useRef(0);
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchText.trim() || null), 250);
+    return () => clearTimeout(timer);
+  }, [searchText]);
+  const fetchPage = useCallback(
+    (after: ColdThreadCursor | null) =>
+      rpc.call("coldThreads", {
+        projectId: null,
+        search,
+        limit: COLD_STORAGE_PAGE,
+        after,
+      }),
+    [rpc, search],
+  );
+  const refresh = useCallback(async () => {
+    const request = ++latestRequest.current;
+    try {
+      const first = await fetchPage(null);
+      if (request !== latestRequest.current) return;
+      setLoaded((current) => {
+        const last = first.threads.at(-1);
+        if (
+          current === null ||
+          current.search !== search ||
+          !first.hasMore ||
+          last === undefined ||
+          current.list.threads.length <= COLD_STORAGE_PAGE
+        ) {
+          return { search, list: first };
+        }
+        const shown = new Set(first.threads.map((entry) => entry.threadId));
+        const rest = current.list.threads.filter(
+          (entry) =>
+            !shown.has(entry.threadId) &&
+            sortsAfter(entry, coldThreadCursor(last)),
+        );
+        return {
+          search,
+          list: {
+            ...first,
+            threads: [...first.threads, ...rest],
+            hasMore: current.list.hasMore,
+          },
+        };
+      });
+    } catch (error) {
+      if (request !== latestRequest.current) return;
+      toast.error("Couldn’t load cold storage", {
+        description: message(error),
+      });
+    }
+  }, [fetchPage, search]);
+  const seenChanges = useRef(changes);
+  useEffect(() => {
+    const changed = changes !== seenChanges.current;
+    seenChanges.current = changes;
+    const timer = setTimeout(() => void refresh(), changed ? 200 : 0);
+    return () => clearTimeout(timer);
+  }, [refresh, changes]);
+  const showMore = async (current: LoadedColdThreads) => {
+    const last = current.list.threads.at(-1);
+    if (last === undefined) return;
+    try {
+      const page = await fetchPage(coldThreadCursor(last));
+      setLoaded((latest) => {
+        if (latest === null || latest.search !== current.search) return latest;
+        const shown = new Set(
+          latest.list.threads.map((entry) => entry.threadId),
+        );
+        return {
+          search: latest.search,
+          list: {
+            ...page,
+            threads: [
+              ...latest.list.threads,
+              ...page.threads.filter((entry) => !shown.has(entry.threadId)),
+            ],
+          },
+        };
+      });
+    } catch (error) {
+      toast.error("Couldn’t load cold storage", {
+        description: message(error),
+      });
+    }
+  };
+  const drop = (entry: ColdThread) =>
+    setLoaded((current) =>
+      current === null
+        ? current
+        : {
+            search: current.search,
+            list: {
+              ...current.list,
+              threads: current.list.threads.filter(
+                (shown) => shown.threadId !== entry.threadId,
+              ),
+              totalCount: Math.max(0, current.list.totalCount - 1),
+              totalBytes: Math.max(
+                0,
+                current.list.totalBytes - entry.fileBytes,
+              ),
+            },
+          },
+    );
+  const restore = async (entry: ColdThread) => {
+    const title = entry.title ?? "Untitled thread";
+    try {
+      await rpc.call("restoreColdThread", { threadId: entry.threadId });
+      drop(entry);
+      toast.success("Thread restored", {
+        description: title,
+        action: {
+          label: "Open",
+          onClick: () => navigate.toThread(entry.threadId),
+        },
+      });
+    } catch (error) {
+      toast.error("Couldn’t restore thread", {
+        description: `${title} · ${message(error)}`,
+      });
+    }
+  };
+  const remove = async (entry: ColdThread) => {
+    const title = entry.title ?? "Untitled thread";
+    try {
+      await rpc.call("deleteColdThread", { threadId: entry.threadId });
+      drop(entry);
+      toast.success("Thread deleted from cold storage", { description: title });
+    } catch (error) {
+      toast.error("Couldn’t delete thread from cold storage", {
+        description: `${title} · ${message(error)}`,
+      });
+    }
+  };
+  if (loaded === null) {
+    return (
+      <div className="h-full w-full overflow-y-auto">
+        <div className="mx-auto w-full max-w-3xl px-4 pb-10 pt-4 md:px-5 md:pt-5">
+          <DelayedLoading>
+            <Skeleton className="h-40 w-full rounded-lg" />
+          </DelayedLoading>
+        </div>
+      </div>
+    );
+  }
+  const { list } = loaded;
+  const remaining = list.totalCount - list.threads.length;
+  return (
+    <div className="h-full w-full overflow-y-auto">
+      <div className="mx-auto w-full max-w-3xl space-y-6 px-4 pb-10 pt-4 md:px-5 md:pt-5">
+        <header className="space-y-3">
+          <button
+            className="inline-flex items-center gap-1.5 text-xs leading-snug text-subtle-foreground/75 hover:text-foreground"
+            onClick={() => navigate.toPluginPanel(PANEL)}
+          >
+            <Icon name="ArrowLeft" className="size-4" />
+            All storage
+          </button>
+          <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-end">
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                <h1 className="text-base font-semibold">Cold storage</h1>
+                <Pill>
+                  {`${
+                    loaded.search === null
+                      ? plural(list.totalCount, "thread")
+                      : plural(list.totalCount, "match", "matches")
+                  } · ${bytes(list.totalBytes)}`}
+                </Pill>
+              </div>
+              <p className="mt-0.5 text-xs leading-snug text-subtle-foreground/75">
+                Archived threads moved out of bb’s database into files.
+                Restoring one brings it back to the archive with its full
+                history.
+              </p>
+            </div>
+            <Input
+              type="search"
+              value={searchText}
+              onChange={(event) => setSearchText(event.target.value)}
+              placeholder="Search titles"
+              aria-label="Search cold storage"
+              className="h-8 w-full sm:w-56"
+            />
+          </div>
+        </header>
+        <section className="space-y-3">
+          <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+            {list.threads.length === 0 && (
+              <p className="px-4 py-3 text-sm text-subtle-foreground">
+                {loaded.search === null
+                  ? "Nothing in cold storage yet. Threads moved by the cold storage policy or bb storage cold-store show up here."
+                  : `No threads in cold storage match “${loaded.search}”.`}
+              </p>
+            )}
+            {list.threads.map((entry) => (
+              <div
+                key={entry.threadId}
+                className="flex min-h-14 items-center gap-3 px-4 py-2.5"
+              >
+                <div className="min-w-0 flex-1">
+                  <span className="block truncate text-sm">
+                    {entry.title ?? "Untitled thread"}
+                  </span>
+                  <span className="mt-0.5 block truncate text-xs text-subtle-foreground">
+                    {entry.state === "stored" && entry.storedAt !== null
+                      ? `Moved ${ago(entry.storedAt)} · ${bytes(entry.fileBytes)}`
+                      : "Moving…"}
+                  </span>
+                </div>
+                {entry.state === "stored" && (
+                  <>
+                    <Button
+                      type="button"
+                      variant="secondary"
+                      onClick={() => void restore(entry)}
+                    >
+                      Restore
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      aria-label={`Delete ${entry.title ?? "thread"} from cold storage permanently`}
+                      onClick={() => void remove(entry)}
+                    >
+                      <Icon name="Trash2" className="size-4" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+          {list.hasMore && remaining > 0 && (
+            <button
+              type="button"
+              className={TEXT_BUTTON}
+              onClick={() => void showMore(loaded)}
+            >
+              {`Show ${Math.min(COLD_STORAGE_PAGE, remaining).toLocaleString()} more`}
+            </button>
+          )}
+        </section>
       </div>
     </div>
   );
@@ -2112,16 +2791,19 @@ function ExternalWorktrees({
                         )}
                       </p>
                       <p className="break-all">{worktree.path}</p>
+                      {worktree.origin === "removedEnvironment" && (
+                        <p>Left over from a BB environment that was removed</p>
+                      )}
                       {warnings.length > 0 && (
                         <p className="text-foreground">
                           {warnings.join(" · ")}
                         </p>
                       )}
-                      {(worktree.lastActivityAt !== null || thread) && (
+                      {(worktree.lastUsedAt !== null || thread) && (
                         <p>
-                          {worktree.lastActivityAt !== null &&
-                            `Last git activity ${ago(worktree.lastActivityAt)}`}
-                          {worktree.lastActivityAt !== null && thread && " · "}
+                          {worktree.lastUsedAt !== null &&
+                            `Last used ${ago(worktree.lastUsedAt)}`}
+                          {worktree.lastUsedAt !== null && thread && " · "}
                           {thread && (
                             <button
                               className="hover:text-foreground hover:underline"
@@ -2225,6 +2907,36 @@ function developerEntryLabel(entry: DeveloperEntry) {
 }
 
 const PREVIEW_COUNT = 5;
+const UNUSED_FOR_OPTIONS = [7, 14, 30, 90];
+function heldWorkspaceExplanation(held: {
+  path: string;
+  threadTitles: string[];
+}) {
+  const folder = held.path.split(/[\\/]/).filter(Boolean).at(-1) ?? held.path;
+  const [first] = held.threadTitles;
+  if (first === undefined)
+    return `Can’t be cleared: its ${folder} checkout belongs to an environment that is being kept open. Delete that environment first.`;
+  const users =
+    held.threadTitles.length === 1
+      ? `“${first}”`
+      : `“${first}” and ${plural(held.threadTitles.length - 1, "other thread")}`;
+  return `Can’t be cleared: its ${folder} checkout is still used by ${users}. Archive or move that work first.`;
+}
+function externalWorktreeSelection(
+  worktrees: ExternalWorktree[],
+  unusedForDays: number | null,
+) {
+  const selected = selectExternalWorktrees(
+    worktrees,
+    unusedForDays,
+    Date.now(),
+  );
+  return {
+    selected,
+    forced: selected.filter(needsForce),
+    bytes: selected.reduce((total, worktree) => total + worktree.sizeBytes, 0),
+  };
+}
 
 function ShowMoreToggle({
   expanded,
@@ -2268,7 +2980,7 @@ function DeveloperStorage({
   confirmationKey: string | null;
   confirmation: ReactNode;
   onRemove: (entry: DeveloperEntry, label: string) => void;
-  onRemoveSelected: (entries: DeveloperEntry[]) => void;
+  onRemoveSelected: (entries: DeveloperEntry[], key: string) => void;
 }) {
   const navigate = useBbNavigate();
   const [expandedGroups, setExpandedGroups] = useState<ReadonlySet<string>>(
@@ -2319,9 +3031,20 @@ function DeveloperStorage({
             : storage.entries;
   const groups = [
     {
+      title: "Archived threads",
+      description: "Every linked thread is archived",
+      entries: filtered.filter(
+        (entry) =>
+          entry.threads.length > 0 &&
+          entry.threads.every((thread) => thread.archived),
+      ),
+    },
+    {
       title: "Linked threads",
       description: null,
-      entries: filtered.filter((entry) => entry.threads.length > 0),
+      entries: filtered.filter((entry) =>
+        entry.threads.some((thread) => !thread.archived),
+      ),
     },
     {
       title: "Other instances",
@@ -2423,7 +3146,9 @@ function DeveloperStorage({
                   variant="outline"
                   size="sm"
                   disabled={rowDisabled}
-                  onClick={() => onRemoveSelected(selectedEntries)}
+                  onClick={() =>
+                    onRemoveSelected(selectedEntries, "dev-selected")
+                  }
                 >
                   Remove selected
                 </Button>
@@ -2457,7 +3182,7 @@ function DeveloperStorage({
                     }
                     disabled={selectable(group.entries).length === 0}
                   />
-                  <h3 className="text-xs font-medium text-muted-foreground">
+                  <h3 className="min-w-0 flex-1 text-xs font-medium text-muted-foreground">
                     {group.title}{" "}
                     <span className="font-normal tabular-nums text-muted-foreground">
                       ({group.entries.length.toLocaleString()})
@@ -2469,7 +3194,27 @@ function DeveloperStorage({
                       </span>
                     )}
                   </h3>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    aria-label={`Remove all ${group.title.toLowerCase()}`}
+                    disabled={
+                      rowDisabled || selectable(group.entries).length === 0
+                    }
+                    onClick={() =>
+                      onRemoveSelected(
+                        selectable(group.entries),
+                        `dev-group:${group.title}`,
+                      )
+                    }
+                  >
+                    Remove all
+                  </Button>
                 </div>
+                {confirmationKey === `dev-group:${group.title}` && (
+                  <div className="mt-2">{confirmation}</div>
+                )}
                 <div className="mt-2 space-y-3">
                   {(expandedGroups.has(group.title)
                     ? group.entries

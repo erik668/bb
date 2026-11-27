@@ -18,7 +18,7 @@ import {
   SidebarThreadListHarness,
   stubPluginRpcFetch,
 } from "@/test/fixtures/sidebar-thread-list";
-import { PluginThreadList } from "./PluginThreadList";
+import { SidebarThreadListContent } from "./PluginThreadList";
 
 const BENCH_ENABLED = process.env.BB_SIDEBAR_BENCH === "1";
 const THREAD_COUNT = Number(process.env.BB_SIDEBAR_BENCH_THREADS ?? 3000);
@@ -264,6 +264,7 @@ async function runScenario(
           status: iteration % 2 === 0 ? "active" : "idle",
           runtime: {
             displayStatus: iteration % 2 === 0 ? "active" : "idle",
+            failure: null,
           },
           activity: {
             activeWorkflowCount: 0,
@@ -272,6 +273,7 @@ async function runScenario(
             activePlanModeCount: 0,
           },
           latestAttentionAt: 5_000_000 + iteration,
+          statusChangedAt: 5_000_000 + iteration,
           updatedAt: 5_000_000 + iteration,
         });
       }),
@@ -373,7 +375,10 @@ describe.skipIf(!BENCH_ENABLED)("sidebar thread list benchmark", () => {
               coreRegistrations={CORE_THREAD_ACTIONS}
               requestRename={() => {}}
             />
-            <PluginThreadList replacement={replacement} onNavigate={() => {}} />
+            <SidebarThreadListContent
+              replacement={replacement}
+              onNavigate={() => {}}
+            />
           </>,
         ),
       );

@@ -39,7 +39,7 @@ describe("buildAcpModelListParams", () => {
       }),
       {
         parameterizedModelPicker: false,
-        reasoningProbePriorityModelIds: [],
+        envVars: {},
       },
     );
 
@@ -57,7 +57,6 @@ describe("buildAcpModelListParams", () => {
         envVars: { CUSTOM_AGENT_TOKEN: "token" },
       },
       primaryModels: ["model-a"],
-      reasoningProbePriorityModelIds: [],
       parameterizedModelPicker: false,
     });
   });
@@ -81,14 +80,13 @@ describe("buildAcpModelListParams", () => {
         }),
         {
           parameterizedModelPicker: false,
-          reasoningProbePriorityModelIds: [],
+          envVars: {},
         },
       ),
     ).toEqual({
       agent: { command: "custom-agent", args: ["serve"] },
       optionsAgent: { command: "custom-agent", args: ["serve"] },
       primaryModels: [],
-      reasoningProbePriorityModelIds: [],
       parameterizedModelPicker: false,
       reasoningCli,
     });
@@ -113,7 +111,7 @@ describe("buildAcpModelListParams", () => {
         }),
         {
           parameterizedModelPicker: false,
-          reasoningProbePriorityModelIds: [],
+          envVars: {},
         },
       );
 
@@ -121,13 +119,12 @@ describe("buildAcpModelListParams", () => {
         agent: { command: "custom-agent", args: ["serve"] },
         optionsAgent: { command: "custom-agent", args: ["serve"] },
         primaryModels: [],
-        reasoningProbePriorityModelIds: [],
         parameterizedModelPicker: false,
       });
       expect(params).not.toHaveProperty("listCommand");
     },
   );
-  it("discovers parameterized Cursor session models with Grok first", () => {
+  it("discovers parameterized Cursor session models", () => {
     expect(
       buildAcpModelListParams(
         launchSpecFor({
@@ -138,8 +135,8 @@ describe("buildAcpModelListParams", () => {
         }),
         {
           parameterizedModelPicker: true,
+          envVars: {},
           primaryModels: ["default", "composer-2.5", "grok-4.6"],
-          reasoningProbePriorityModelIds: ["grok-4.6", "grok-4.5"],
         },
       ),
     ).toEqual({
@@ -147,7 +144,6 @@ describe("buildAcpModelListParams", () => {
       optionsAgent: { command: "cursor-agent", args: ["acp"] },
       parameterizedModelPicker: true,
       primaryModels: ["default", "composer-2.5", "grok-4.6"],
-      reasoningProbePriorityModelIds: ["grok-4.6", "grok-4.5"],
     });
   });
 });

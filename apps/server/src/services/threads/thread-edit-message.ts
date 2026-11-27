@@ -1,20 +1,25 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, isNull, lt, sql } from "drizzle-orm";
 import {
   deleteThreadEventSuffixInTransaction,
   deleteQueuedRetriesForThreadEventSuffixInTransaction,
-  events,
+  findLastRootStoredTurnStarted,
+  findLatestEditableUserTurnRequestRow,
+  findStoredEditMessageOperationRow,
+  findStoredEventRow,
   getActivePendingInteractionForThread,
   getHighWaterMarks,
   getThread,
   hasClaimedQueuedThreadMessages,
   hasRootStoredTurnStarted,
+  listStoredTurnCompletedRowsByTurnIds,
+  listStoredTurnInputAcceptedRowsByClientRequestIds,
   classifyStoredProviderThreadClaim,
   wouldRemoveSharedProviderSessionClaim,
   listOpenBackgroundTaskItemRowsForThread,
   listThreadEventSuffixBackgroundSettlementRows,
   type AppendStoredThreadEventArgs,
   type DbQueryConnection,
+  type QueuedThreadMessageRow,
 } from "@bb/db";
 import {
   threadScope,
@@ -53,6 +58,8 @@ import {
 } from "../hosts/live-command.js";
 import { resolveMessageSenderThreadId } from "./thread-send.js";
 import { attemptDispatch } from "./dispatch-attempt.js";
+import { emitPluginMessageCancelled } from "../plugins/plugin-thread-events.js";
+import { toThreadQueuedMessage } from "./thread-queued-messages.js";
 import {
   requestThreadStopForCurrentState,
   stopThreadForCurrentState,
@@ -76,13 +83,6 @@ interface EditableTurn {
   requestSequence: number;
   sourceProviderThreadId: string | null;
 }
-
-const TURN_REQUEST_ROW_COLUMNS = {
-  data: events.data,
-  sequence: events.sequence,
-  threadId: events.threadId,
-  type: events.type,
-};
 
 function conflict(message: string): never {
   throw new ApiError(409, "invalid_request", message);
@@ -109,19 +109,7 @@ function findCommittedOperation(
   db: DbQueryConnection,
   args: { operationId: string; threadId: string },
 ): { fingerprint: string; requestSequence: number } | null {
-  const row = db
-    .select()
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, args.threadId),
-        eq(events.type, "system/operation"),
-        sql`json_extract(${events.data}, '$.operation') = 'edit_message'`,
-        sql`json_extract(${events.data}, '$.operationId') = ${args.operationId}`,
-      ),
-    )
-    .limit(1)
-    .get();
+  const row = findStoredEditMessageOperationRow(db, args);
   if (!row) return null;
   const event = parseStoredEvent(row);
   if (event.type !== "system/operation") return null;
@@ -152,7 +140,7 @@ async function stopThreadBeforeMessageEdit(
   await ensureHostSessionReadyForWork(deps, {
     hostId: args.environment.hostId,
   });
-  requestThreadStopForCurrentState(deps, thread, args.environment);
+  requestThreadStopForCurrentState(deps, thread);
 
   const deadline = Date.now() + EDIT_MESSAGE_STOP_TIMEOUT_MS;
   while (true) {
@@ -170,7 +158,7 @@ async function stopThreadBeforeMessageEdit(
       waiter.cancel();
       return thread;
     }
-    if (!(await waiter.promise)) {
+    if ((await waiter.promise) === null) {
       conflict("The thread did not stop before the message edit timed out");
     }
   }
@@ -181,19 +169,10 @@ function getTurnCompletion(
   threadId: string,
   turnId: string,
 ): Extract<ThreadEvent, { type: "turn/completed" }> | null {
-  const row = db
-    .select()
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, threadId),
-        eq(events.type, "turn/completed"),
-        eq(events.turnId, turnId),
-      ),
-    )
-    .orderBy(desc(events.sequence))
-    .limit(1)
-    .get();
+  const row = listStoredTurnCompletedRowsByTurnIds(db, {
+    threadId,
+    turnIds: [turnId],
+  }).at(-1);
   if (!row) return null;
   const event = parseStoredEvent(row);
   return event.type === "turn/completed" ? event : null;
@@ -234,19 +213,11 @@ function resolveEditableTurnCandidate(
     conflict("Grouped messages cannot be edited yet");
   }
 
-  const acceptedRows = db
-    .select({ sequence: events.sequence, turnId: events.turnId })
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, thread.id),
-        eq(events.type, "turn/input/accepted"),
-        sql`json_extract(${events.data}, '$.clientRequestId') = ${request.requestId}`,
-      ),
-    )
-    .orderBy(events.sequence)
-    .limit(2)
-    .all();
+  const acceptedRows = listStoredTurnInputAcceptedRowsByClientRequestIds(db, {
+    afterSequence: requestRow.sequence,
+    clientRequestIds: [request.requestId],
+    threadId: thread.id,
+  });
   const accepted = acceptedRows.length === 1 ? acceptedRows[0] : undefined;
   if (!accepted?.turnId) {
     conflict("The selected request was not accepted into exactly one turn");
@@ -260,20 +231,10 @@ function resolveEditableTurnCandidate(
   ) {
     conflict("The selected message does not belong to a root turn");
   }
-  const precedingTurn = db
-    .select({ turnId: events.turnId })
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, thread.id),
-        eq(events.type, "turn/started"),
-        lt(events.sequence, requestRow.sequence),
-        isNull(events.parentToolCallId),
-      ),
-    )
-    .orderBy(desc(events.sequence))
-    .limit(1)
-    .get();
+  const precedingTurn = findLastRootStoredTurnStarted(db, {
+    atOrBeforeSequence: requestRow.sequence - 1,
+    threadId: thread.id,
+  });
   const precedingTurnId = precedingTurn?.turnId ?? null;
   const precedingCompletion =
     precedingTurnId === null
@@ -351,39 +312,25 @@ function resolveEditableTurn(
   }
 
   if (requestSequence !== undefined) {
-    const requestRow = db
-      .select(TURN_REQUEST_ROW_COLUMNS)
-      .from(events)
-      .where(
-        and(
-          eq(events.threadId, thread.id),
-          eq(events.type, "client/turn/requested"),
-          eq(events.sequence, requestSequence),
-        ),
-      )
-      .limit(1)
-      .get();
-    if (requestRow !== undefined) {
+    const requestRow = findStoredEventRow(db, {
+      afterSequence: requestSequence - 1,
+      threadId: thread.id,
+      type: "client/turn/requested",
+    });
+    if (requestRow?.sequence === requestSequence) {
       return resolveEditableTurnCandidate(db, thread, requestRow);
     }
     conflict("The thread has no editable user message");
   }
 
-  const requestRows = db
-    .select(TURN_REQUEST_ROW_COLUMNS)
-    .from(events)
-    .where(
-      and(
-        eq(events.threadId, thread.id),
-        eq(events.type, "client/turn/requested"),
-        sql`json_extract(${events.data}, '$.initiator') = 'user'`,
-        sql`json_extract(${events.data}, '$.senderThreadId') IS NULL`,
-        sql`json_extract(${events.data}, '$.target.kind') IN ('new-turn', 'thread-start')`,
-      ),
-    )
-    .orderBy(desc(events.sequence))
-    .all();
-  for (const requestRow of requestRows) {
+  let beforeSequence: number | null = null;
+  while (true) {
+    const requestRow = findLatestEditableUserTurnRequestRow(db, {
+      beforeSequence,
+      threadId: thread.id,
+    });
+    if (requestRow === null) break;
+    beforeSequence = requestRow.sequence;
     try {
       return resolveEditableTurnCandidate(db, thread, requestRow);
     } catch (error) {
@@ -616,7 +563,7 @@ export async function editThreadMessage(
     expectedRequestSequence: _expectedRequestSequence,
     ...sendPayload
   } = args.payload;
-  let cancelledRetryCount = 0;
+  let cancelledRetries: QueuedThreadMessageRow[] = [];
   try {
     await attemptDispatch(deps, {
       thread: editableThread,
@@ -684,7 +631,7 @@ export async function editThreadMessage(
               },
             },
           });
-          cancelledRetryCount =
+          cancelledRetries =
             deleteQueuedRetriesForThreadEventSuffixInTransaction(tx, {
               cutoffSequence: target.requestSequence,
               oldMaxSequence: target.oldMaxSequence,
@@ -716,7 +663,7 @@ export async function editThreadMessage(
       editableThread.id,
       [
         "history-rewritten",
-        ...(cancelledRetryCount > 0 ? ["queue-changed" as const] : []),
+        ...(cancelledRetries.length > 0 ? ["queue-changed" as const] : []),
       ],
       {
         projectId: editableThread.projectId,
@@ -736,6 +683,9 @@ export async function editThreadMessage(
       operationId: args.payload.operationId,
       requestSequence: concurrentCommit.requestSequence,
     };
+  }
+  for (const retry of cancelledRetries) {
+    emitPluginMessageCancelled(toThreadQueuedMessage(retry));
   }
   return {
     ok: true,

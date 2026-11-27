@@ -8,15 +8,11 @@
       "source": "./src/index.ts",
       "types": "./src/index.ts",
       "default": "./src/index.ts"
-    },
-    "./next": {
-      "source": "./src/next.ts",
-      "types": "./src/next.ts",
-      "default": "./src/next.ts"
     }
   },
   "scripts": {
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts"
   },
   "devDependencies": {

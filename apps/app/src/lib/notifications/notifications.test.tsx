@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   cleanup,
@@ -8,7 +8,6 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { toast as sonnerToast } from "sonner";
 import { AppToasterView } from "@/components/AppToasterView";
 import { AppToastContent, appToast } from "@/components/ui/app-toast";
 import { createPluginToast } from "./plugin-toast";
@@ -18,8 +17,9 @@ import {
   resetNotificationStore,
 } from "./notification-store";
 
-beforeEach(() => {
+afterEach(() => {
   cleanup();
+  appToast.dismiss();
   vi.restoreAllMocks();
   resetNotificationStore();
 });
@@ -41,7 +41,7 @@ describe("toast history", () => {
 
   it("renders and records plugin toasts through core's toast", async () => {
     render(<AppToasterView />);
-    const toast = createPluginToast(sonnerToast);
+    const toast = createPluginToast();
 
     act(() => {
       toast.error("Sandbox boot failed", { description: "exit code 1" });
@@ -73,6 +73,9 @@ describe("toast history", () => {
     await waitFor(() => expect(screen.getByText("Deployed v2")).toBeDefined());
     act(() => {
       toast.dismiss();
+    });
+    await waitFor(() => {
+      expect(screen.queryAllByTestId("app-toast-title")).toHaveLength(0);
     });
   });
 });

@@ -37,6 +37,7 @@ function buildTimeline(
     options: {
       completedTurnDisplay: "collapse",
       includeNestedRows: options.includeNestedRows ?? true,
+      omitSettledDelegationChildRows: false,
       includeDiagnosticOperations: false,
       summarizeShellCommands: true,
       isLatestPage: true,
@@ -399,7 +400,7 @@ describe("background task timeline projection", () => {
       (row) => row.kind === "turn" && row.turnId === "turn-1",
     );
     expect(spawningTurnRow).toMatchObject({
-      sourceSeqStart: 1,
+      sourceSeqStart: 2,
       sourceSeqEnd: 3,
     });
 
@@ -758,10 +759,9 @@ describe("background task timeline projection", () => {
       },
       2,
     );
-    const whileForeground = buildTimeline(
-      [turnStarted("turn-1", 1), started],
-      { includeNestedRows: false },
-    );
+    const whileForeground = buildTimeline([turnStarted("turn-1", 1), started], {
+      includeNestedRows: false,
+    });
     expect(whileForeground.activeBackgroundCommands).toEqual([]);
 
     const afterBackgrounding = buildTimeline(
@@ -1174,6 +1174,79 @@ describe("background task timeline projection", () => {
     expect(timeline.activeBackgroundCommands.map((row) => row.itemId)).toEqual([
       "task:nested-wait",
     ]);
+  });
+
+  it("keeps a command running while its background task runs past the turn, then settles it with the task", () => {
+    const commandStarted = withMeta(
+      {
+        type: "item/started",
+        threadId: "thread-1",
+        providerThreadId: "provider-1",
+        scope: turnScope("turn-1"),
+        item: {
+          type: "commandExecution",
+          id: "exec-dev-server",
+          command: "npm run dev",
+          cwd: "/tmp",
+          status: "pending",
+          approvalStatus: null,
+        },
+      },
+      2,
+    );
+    const taskStarted = withMeta(
+      {
+        type: "item/started",
+        threadId: "thread-1",
+        providerThreadId: "provider-1",
+        scope: turnScope("turn-1"),
+        item: bashTaskItem({
+          status: "pending",
+          taskStatus: "running",
+          id: "background-exec-dev-server",
+          description: "npm run dev",
+          parentToolCallId: "exec-dev-server",
+        }),
+      },
+      3,
+    );
+    const commandStatus = (events: ThreadEventWithMeta[]) =>
+      buildTimelineRows(events)
+        .flatMap((row) => (row.kind === "turn" ? (row.children ?? []) : [row]))
+        .find((row) => row.kind === "work" && row.workKind === "command");
+
+    expect(
+      commandStatus([
+        turnStarted("turn-1", 1),
+        commandStarted,
+        taskStarted,
+        turnCompleted("turn-1", 4),
+      ]),
+    ).toMatchObject({ status: "pending" });
+    expect(
+      commandStatus([
+        turnStarted("turn-1", 1),
+        commandStarted,
+        taskStarted,
+        turnCompleted("turn-1", 4),
+        withMeta(
+          {
+            type: "item/backgroundTask/completed",
+            threadId: "thread-1",
+            providerThreadId: "provider-1",
+            scope: threadScope(),
+            item: bashTaskItem({
+              status: "interrupted",
+              taskStatus: "stopped",
+              id: "background-exec-dev-server",
+              description: "npm run dev",
+              parentToolCallId: "exec-dev-server",
+            }),
+          },
+          5,
+        ),
+      ]),
+    ).toMatchObject({ status: "interrupted" });
   });
 
   it("hides skip_transcript tasks from the timeline", () => {

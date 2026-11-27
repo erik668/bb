@@ -13,7 +13,7 @@ import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import { Input } from "@bb/shared-ui/input";
 import { Pill } from "@bb/shared-ui/pill";
-import { ThreadUnarchiveButton } from "@/components/thread/ThreadUnarchiveButton";
+import { ThreadUnarchiveButton } from "@bb/shared-ui/thread-unarchive-button";
 import { useUnarchiveThread } from "@/hooks/mutations/thread-state-mutations";
 import {
   hasThreadSearchableQuery,
@@ -23,7 +23,7 @@ import {
 } from "@/hooks/queries/thread-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import type { ArchivedThreadsKindFilter } from "@/hooks/queries/query-keys";
-import { getThreadRoutePath } from "@/lib/route-paths";
+import { getThreadLocationPath } from "@/lib/route-paths";
 import { formatRelativeTime } from "@/lib/relative-time";
 import { getThreadDisplayTitle } from "@/lib/thread-title";
 import {
@@ -256,7 +256,7 @@ export function ArchivedThreadsSettingsSection() {
                   >
                     <Link
                       className="min-w-0 flex-1"
-                      to={getThreadRoutePath({
+                      to={getThreadLocationPath({
                         projectId: thread.projectId,
                         threadId: thread.id,
                       })}
@@ -310,7 +310,7 @@ export function ArchivedThreadsSettingsSection() {
           variant="ghost"
           className="h-9 w-full text-sm font-normal text-muted-foreground"
           disabled={archivedThreadsQuery.isFetchingNextPage}
-          onClick={() => archivedThreadsQuery.fetchNextPage()}
+          onClick={() => void archivedThreadsQuery.fetchNextPage()}
         >
           {archivedThreadsQuery.isFetchingNextPage ? "Loading…" : "Load more"}
         </Button>

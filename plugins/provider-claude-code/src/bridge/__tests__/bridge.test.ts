@@ -10,7 +10,15 @@ import {
 import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 import { z } from "zod";
 import type {
   CanUseTool,
@@ -20,6 +28,7 @@ import type {
 import {
   BRIDGE_INBOUND_REQUEST_METHODS,
   BRIDGE_JSON_RPC_ERRORS,
+  BRIDGE_NOTIFICATION_METHODS,
   type JsonValue,
   type RuntimePermissionPolicy,
   type RuntimePermissionScope,
@@ -101,6 +110,7 @@ interface ControlledClaudeQuery {
   interrupt: ReturnType<typeof vi.fn>;
   setModel: ReturnType<typeof vi.fn>;
   setPermissionMode: ReturnType<typeof vi.fn>;
+  stopTask: ReturnType<typeof vi.fn>;
   supportedCommands: ReturnType<typeof vi.fn>;
   [Symbol.asyncIterator](): AsyncIterator<SDKMessage>;
 }
@@ -321,6 +331,7 @@ function createControlledClaudeQuery(): ControlledClaudeQuery {
     interrupt: vi.fn().mockResolvedValue(undefined),
     setModel: vi.fn().mockResolvedValue(undefined),
     setPermissionMode: vi.fn().mockResolvedValue(undefined),
+    stopTask: vi.fn().mockResolvedValue(undefined),
     supportedCommands: vi.fn().mockResolvedValue([]),
     [Symbol.asyncIterator]() {
       return iterator;
@@ -433,6 +444,26 @@ function createAuthenticationErrorMessage(sessionId: string): SDKMessage {
     },
     parent_tool_use_id: null,
     uuid: "00000000-0000-4000-8000-000000000002",
+    session_id: sessionId,
+  };
+}
+
+function createSystemInitMessage(sessionId: string): SDKMessage {
+  return {
+    type: "system",
+    subtype: "init",
+    apiKeySource: "none",
+    claude_code_version: "2.1.322",
+    cwd: "/tmp/worktree",
+    tools: [],
+    mcp_servers: [],
+    model: "claude-opus-5-5",
+    permissionMode: "default",
+    slash_commands: [],
+    output_style: "default",
+    skills: [],
+    plugins: [],
+    uuid: "00000000-0000-4000-8000-000000000003",
     session_id: sessionId,
   };
 }
@@ -678,6 +709,18 @@ async function forwardAskUserQuestion({
     resultPromise,
   };
 }
+
+const sharedWorktreeRoot = mkdtempSync(
+  join(tmpdir(), "bb-claude-shared-worktree-"),
+);
+const otherWorktreeRoot = mkdtempSync(
+  join(tmpdir(), "bb-claude-other-worktree-"),
+);
+
+afterAll(() => {
+  rmSync(sharedWorktreeRoot, { recursive: true, force: true });
+  rmSync(otherWorktreeRoot, { recursive: true, force: true });
+});
 
 describe("bridge", () => {
   beforeEach(() => {
@@ -974,11 +1017,13 @@ describe("bridge", () => {
       );
       await readNextPrompt(getLatestQueryCall());
       await bridge.waitForResponse(2);
+      live.emit(createSystemInitMessage(providerThreadId));
       live.emit(createSuccessfulResultMessage(providerThreadId));
       await bridge.flushWork();
-      expect(reports).toHaveLength(1);
-      expect(reports[0].getContextUsage).toHaveBeenCalledOnce();
-      const reportOptions = contextQueryMock.mock.calls[0][0].options;
+      expect(reports).toHaveLength(2);
+      expect(reports[0].close).toHaveBeenCalledOnce();
+      expect(reports[1].getContextUsage).toHaveBeenCalledOnce();
+      const reportOptions = contextQueryMock.mock.calls[1][0].options;
       expect(reportOptions).toMatchObject({
         resume: providerThreadId,
         forkSession: true,
@@ -1008,8 +1053,8 @@ describe("bridge", () => {
 
       live.emit(createSuccessfulResultMessage(providerThreadId));
       await bridge.flushWork();
-      expect(reports[0].close).toHaveBeenCalledOnce();
-      expect(reports).toHaveLength(2);
+      expect(reports[1].close).toHaveBeenCalledOnce();
+      expect(reports).toHaveLength(3);
       expect(
         assembleCapturedThreadEvents(bridge.messages, "claude-code").filter(
           (event) => event.type === "turn/completed",
@@ -1179,7 +1224,10 @@ describe("bridge", () => {
     });
 
     try {
-      bridge.sendRequest(1, "commands/list", { cwd: "/tmp/commands-project" });
+      bridge.sendRequest(1, "commands/list", {
+        envVars: {},
+        cwd: "/tmp/commands-project",
+      });
       const response = await bridge.waitForResponse(1);
 
       expect(response.result).toEqual({
@@ -1207,7 +1255,7 @@ describe("bridge", () => {
     });
 
     try {
-      bridge.sendRequest(1, "model/list", {});
+      bridge.sendRequest(1, "model/list", { envVars: {} });
       const missing = await bridge.waitForResponse(1);
 
       expect(missing.error?.code).toBe(
@@ -1223,11 +1271,56 @@ describe("bridge", () => {
           .mockRejectedValue(new Error("Claude SDK stream closed")),
         close: vi.fn(),
       });
-      bridge.sendRequest(2, "model/list", {});
+      bridge.sendRequest(2, "model/list", { envVars: {} });
       const other = await bridge.waitForResponse(2);
 
       expect(other.error?.code).toBe(BRIDGE_JSON_RPC_ERRORS.BRIDGE_ERROR);
       expect(other.error?.message).toBe("Claude SDK stream closed");
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("lists models with each request's contributed environment", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    queryMock.mockImplementation(() => ({
+      initializationResult: vi.fn().mockResolvedValue({
+        models: [
+          {
+            value: "sonnet",
+            resolvedModel: "claude-sonnet-5",
+            displayName: "Sonnet",
+            description: "Sonnet 5",
+          },
+        ],
+      }),
+      close: vi.fn(),
+    }));
+    const pooled = {
+      ANTHROPIC_BASE_URL: "http://127.0.0.1:1/model-list-env-test",
+      ANTHROPIC_AUTH_TOKEN: "pool-token",
+    };
+
+    try {
+      bridge.sendRequest(1, "model/list", { envVars: pooled });
+      expect((await bridge.waitForResponse(1)).error).toBeUndefined();
+      bridge.sendRequest(2, "model/list", { envVars: pooled });
+      expect((await bridge.waitForResponse(2)).error).toBeUndefined();
+      bridge.sendRequest(3, "model/list", {
+        envVars: { ...pooled, ANTHROPIC_AUTH_TOKEN: "other-token" },
+      });
+      expect((await bridge.waitForResponse(3)).error).toBeUndefined();
+
+      const probeEnvs = queryMock.mock.calls.map(
+        (call) => call[0]?.options.env,
+      );
+      expect(probeEnvs).toEqual([
+        expect.objectContaining(pooled),
+        expect.objectContaining({
+          ...pooled,
+          ANTHROPIC_AUTH_TOKEN: "other-token",
+        }),
+      ]);
     } finally {
       bridge.restore();
     }
@@ -1752,6 +1845,7 @@ describe("bridge", () => {
   });
 
   it("leaves the Claude sandbox off when the sandbox setting is disabled", () => {
+    const worktreeGitDir = mkdtempSync(join(tmpdir(), "bb-claude-roots-"));
     const options = buildSessionOptions(
       {
         chromeEnabled: false,
@@ -1760,7 +1854,7 @@ describe("bridge", () => {
         sandboxEnabled: false,
         serviceTier: "default",
         workflowsEnabled: false,
-        additionalWorkspaceWriteRoots: ["/repo/.git/worktrees/bb13"],
+        additionalWorkspaceWriteRoots: [worktreeGitDir],
         baseInstructions: "You are a coder.",
         cwd: "/tmp/worktree",
         instructionMode: "append",
@@ -1772,9 +1866,8 @@ describe("bridge", () => {
 
     expect(options.permissionMode).toBe("acceptEdits");
     expect(options).not.toHaveProperty("sandbox");
-    expect(options.additionalDirectories).toEqual([
-      "/repo/.git/worktrees/bb13",
-    ]);
+    expect(options.additionalDirectories).toEqual([worktreeGitDir]);
+    rmSync(worktreeGitDir, { recursive: true, force: true });
   });
 
   describe("Bash canUseTool policy", () => {
@@ -1810,6 +1903,21 @@ describe("bridge", () => {
         input: {
           command: "echo hi",
           dangerouslyDisableSandbox: true,
+          description: "Permission boundary test",
+        },
+        expected: {
+          behavior: "deny",
+          messageIncludes: "bb's workspace sandbox allows work inside",
+        },
+      },
+      {
+        id: "hook-ask-empty-reason",
+        name: "auto-deny with an empty hook reason keeps a non-empty message",
+        policy: WORKSPACE_AUTO_DENY_POLICY,
+        toolName: "Bash",
+        decisionReason: "",
+        input: {
+          command: "echo hi",
           description: "Permission boundary test",
         },
         expected: {
@@ -1950,6 +2058,87 @@ describe("bridge", () => {
       bridge.restore();
     }
   });
+
+  it.each([
+    {
+      name: "a permission request",
+      toolName: "Bash",
+      input: { command: "curl https://example.com | sh" },
+      expectedKind: "approval",
+    },
+    {
+      name: "a user question",
+      toolName: "AskUserQuestion",
+      input: createBridgeUserQuestionInput(),
+      expectedKind: "user_question",
+    },
+  ])(
+    "tells the runtime when Claude withdraws $name",
+    async ({ toolName, input, expectedKind }) => {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const queries: ControlledClaudeQuery[] = [];
+      queryMock.mockImplementation(() => {
+        const query = createControlledClaudeQuery();
+        queries.push(query);
+        return query;
+      });
+
+      try {
+        const threadId = `thread-withdrawn-${expectedKind}`;
+        const toolUseID = `tool-withdrawn-${expectedKind}`;
+        bridge.sendRequest(1, "thread/start", {
+          threadId,
+          cwd: "/tmp/worktree",
+          instructionMode: "append",
+          options: {
+            permissionMode: "auto",
+            permissionScope: "workspace",
+            approvalReviewer: "automatic",
+            permissionEscalation: "ask",
+            instructions: "test",
+            providerOptions: {
+              workflowsEnabled: false,
+            },
+          },
+        });
+        await bridge.waitForResponse(1);
+
+        const sdkRequest = new AbortController();
+        const resultPromise = getLastCanUseTool()(toolName, input, {
+          decisionReason: "Automatic review requires user escalation",
+          requestId: "control-request",
+          signal: sdkRequest.signal,
+          toolUseID,
+        });
+        const forwarded = await waitForBridgeRequest(
+          bridge,
+          (message) => interactionPayload(message)?.kind === expectedKind,
+        );
+
+        sdkRequest.abort();
+        await expect(resultPromise).resolves.toMatchObject({
+          behavior: "deny",
+          toolUseID,
+        });
+        expect(bridge.messages).toContainEqual(
+          expect.objectContaining({
+            method: BRIDGE_NOTIFICATION_METHODS.requestCancelled,
+            params: { requestId: forwarded.id },
+          }),
+        );
+
+        await stopBridgeThread({ bridge, queries, threadId });
+        expect(
+          bridge.messages.filter(
+            (message) =>
+              message.method === BRIDGE_NOTIFICATION_METHODS.requestCancelled,
+          ),
+        ).toHaveLength(1);
+      } finally {
+        bridge.restore();
+      }
+    },
+  );
 
   it("forwards a sandbox network ask with a grantable network permission", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
@@ -2546,7 +2735,7 @@ describe("bridge", () => {
           threadId,
           input: [{ type: "text", text: "change permission roots" }],
           providerOptions: {
-            additionalWorkspaceWriteRoots: ["/tmp/shared-worktree"],
+            additionalWorkspaceWriteRoots: [sharedWorktreeRoot],
           },
         }),
       );
@@ -2790,7 +2979,7 @@ describe("bridge", () => {
               workflowsEnabled: false,
               claudeCodePermissionMode: "plan",
               sandboxEnabled: true,
-              additionalWorkspaceWriteRoots: ["/tmp/shared-worktree"],
+              additionalWorkspaceWriteRoots: [sharedWorktreeRoot],
             },
           },
         });
@@ -2809,7 +2998,7 @@ describe("bridge", () => {
           providerOptions: {
             workflowsEnabled: false,
             sandboxEnabled: true,
-            additionalWorkspaceWriteRoots: ["/tmp/shared-worktree"],
+            additionalWorkspaceWriteRoots: [sharedWorktreeRoot],
           },
         };
         bridge.sendRequest(10, "turn/start", {
@@ -2836,17 +3025,17 @@ describe("bridge", () => {
             expect(getLatestQueryOptions()).toMatchObject({
               sandbox: {
                 enabled: true,
-                filesystem: { allowWrite: ["/tmp/shared-worktree"] },
+                filesystem: { allowWrite: [sharedWorktreeRoot] },
               },
-              additionalDirectories: ["/tmp/shared-worktree"],
+              additionalDirectories: [sharedWorktreeRoot],
             });
           } else
             expect(queries[0]?.applyFlagSettings).toHaveBeenLastCalledWith({
               sandbox: expect.objectContaining({
                 enabled: true,
-                filesystem: { allowWrite: ["/tmp/shared-worktree"] },
+                filesystem: { allowWrite: [sharedWorktreeRoot] },
               }),
-              permissions: { additionalDirectories: ["/tmp/shared-worktree"] },
+              permissions: { additionalDirectories: [sharedWorktreeRoot] },
             });
           expect(queries[0]?.setPermissionMode).not.toHaveBeenCalled();
         }
@@ -2928,10 +3117,10 @@ describe("bridge", () => {
               sandbox: sandboxEnabled
                 ? expect.objectContaining({
                     enabled: true,
-                    filesystem: { allowWrite: ["/tmp/shared-worktree"] },
+                    filesystem: { allowWrite: [sharedWorktreeRoot] },
                   })
                 : { enabled: false },
-              permissions: { additionalDirectories: ["/tmp/shared-worktree"] },
+              permissions: { additionalDirectories: [sharedWorktreeRoot] },
             });
             expect(queries).toHaveLength(1);
             await readNextPrompt(getLatestQueryCall());
@@ -2977,7 +3166,7 @@ describe("bridge", () => {
           mentions: [skillMention(4, "$", "review")],
         },
       ],
-      expected: "/review Use  but keep $PATH and $review",
+      expected: "/review Use review but keep $PATH and $review",
     },
     {
       name: "an embedded slash skill",
@@ -2988,7 +3177,18 @@ describe("bridge", () => {
           mentions: [skillMention(11, "/", "review")],
         },
       ],
-      expected: "/review Please use  on this",
+      expected: "/review Please use review on this",
+    },
+    {
+      name: "a trailing dollar skill",
+      input: [
+        {
+          type: "text",
+          text: "use the $review",
+          mentions: [skillMention(8, "$", "review")],
+        },
+      ],
+      expected: "/review use the review",
     },
     {
       name: "a leading dollar skill",
@@ -3011,7 +3211,7 @@ describe("bridge", () => {
           mentions: [skillMention(0, "$", "review")],
         },
       ],
-      expected: "/review Inspect this fixture.\n",
+      expected: "/review Inspect this fixture.\nreview",
     },
     {
       name: "several selected skills",
@@ -3476,7 +3676,8 @@ describe("bridge", () => {
         ),
       ).resolves.toMatchObject({
         behavior: "deny",
-        message: "Invalid AskUserQuestion input",
+        message:
+          "The user did not answer: bb could not show the question (the AskUserQuestion input is invalid).",
       });
       expect(
         bridge.messages.some((message) => isUserQuestionInteraction(message)),
@@ -3519,7 +3720,8 @@ describe("bridge", () => {
 
       await expect(resultPromise).resolves.toMatchObject({
         behavior: "deny",
-        message: "No interactive request handler is configured",
+        message:
+          "The user did not answer: bb stopped waiting for the answer (No interactive request handler is configured).",
         toolUseID,
       });
 
@@ -3557,7 +3759,9 @@ describe("bridge", () => {
 
       await expect(resultPromise).resolves.toMatchObject({
         behavior: "deny",
-        message: "Invalid interactive response payload",
+        message: expect.stringContaining(
+          "The user did not answer: the answer did not fit the question (Missing answer",
+        ),
         toolUseID,
       });
 
@@ -3598,7 +3802,8 @@ describe("bridge", () => {
 
       await expect(resultPromise).resolves.toMatchObject({
         behavior: "deny",
-        message: "Invalid interactive response payload",
+        message:
+          "The user did not answer: bb could not read the answer it received.",
         toolUseID,
       });
 
@@ -3683,7 +3888,7 @@ describe("bridge", () => {
       close,
     });
 
-    await expect(listClaudeCodeBridgeModels()).rejects.toThrow(
+    await expect(listClaudeCodeBridgeModels(process.env)).rejects.toThrow(
       "Claude Code reported no models.",
     );
     expect(close).toHaveBeenCalledOnce();
@@ -3744,7 +3949,7 @@ describe("bridge", () => {
       close,
     });
 
-    await expect(listClaudeCodeBridgeModels()).rejects.toThrow(
+    await expect(listClaudeCodeBridgeModels(process.env)).rejects.toThrow(
       "temporary discovery failure",
     );
     expect(queryMock).toHaveBeenCalledOnce();
@@ -3915,7 +4120,7 @@ describe("bridge", () => {
     }
   });
 
-  it("passes thread/start additional workspace-write roots to Claude SDK options", async () => {
+  it("passes thread/start write roots to the Claude sandbox and only directories to --add-dir", async () => {
     const bridge = createBridgeJsonRpcTestHarness(handleLine);
     const queries: ControlledClaudeQuery[] = [];
     queryMock.mockImplementation(() => {
@@ -3923,6 +4128,12 @@ describe("bridge", () => {
       queries.push(query);
       return query;
     });
+    const rootsDir = mkdtempSync(join(tmpdir(), "bb-claude-roots-"));
+    const worktreeGitDir = join(rootsDir, "worktrees", "bb13");
+    const objectsDir = join(rootsDir, "objects");
+    const packedRefsLock = join(rootsDir, "packed-refs.lock");
+    mkdirSync(worktreeGitDir, { recursive: true });
+    mkdirSync(objectsDir);
 
     try {
       bridge.sendRequest(1, "thread/start", {
@@ -3938,8 +4149,9 @@ describe("bridge", () => {
           providerOptions: {
             workflowsEnabled: false,
             additionalWorkspaceWriteRoots: [
-              "/repo/.git/worktrees/bb13",
-              "/repo/.git/objects",
+              worktreeGitDir,
+              objectsDir,
+              packedRefsLock,
             ],
           },
         },
@@ -3950,13 +4162,10 @@ describe("bridge", () => {
         expect.objectContaining({
           options: expect.objectContaining({
             permissionMode: "acceptEdits",
-            additionalDirectories: [
-              "/repo/.git/worktrees/bb13",
-              "/repo/.git/objects",
-            ],
+            additionalDirectories: [worktreeGitDir, objectsDir],
             sandbox: expect.objectContaining({
               filesystem: {
-                allowWrite: ["/repo/.git/worktrees/bb13", "/repo/.git/objects"],
+                allowWrite: [worktreeGitDir, objectsDir, packedRefsLock],
               },
             }),
           }),
@@ -3974,6 +4183,7 @@ describe("bridge", () => {
       await bridge.waitForResponse(2);
     } finally {
       bridge.restore();
+      rmSync(rootsDir, { recursive: true, force: true });
     }
   });
 
@@ -3985,6 +4195,11 @@ describe("bridge", () => {
       queries.push(query);
       return query;
     });
+    const rootsDir = mkdtempSync(join(tmpdir(), "bb-claude-roots-"));
+    const worktreeGitDir = join(rootsDir, "worktrees", "bb13");
+    const objectsDir = join(rootsDir, "objects");
+    mkdirSync(worktreeGitDir, { recursive: true });
+    mkdirSync(objectsDir);
 
     try {
       bridge.sendRequest(1, "thread/resume", {
@@ -3999,10 +4214,7 @@ describe("bridge", () => {
           permissionEscalation: "deny",
           providerOptions: {
             workflowsEnabled: false,
-            additionalWorkspaceWriteRoots: [
-              "/repo/.git/worktrees/bb13",
-              "/repo/.git/objects",
-            ],
+            additionalWorkspaceWriteRoots: [worktreeGitDir, objectsDir],
           },
         },
       });
@@ -4012,13 +4224,10 @@ describe("bridge", () => {
         expect.objectContaining({
           options: expect.objectContaining({
             permissionMode: "auto",
-            additionalDirectories: [
-              "/repo/.git/worktrees/bb13",
-              "/repo/.git/objects",
-            ],
+            additionalDirectories: [worktreeGitDir, objectsDir],
             sandbox: expect.objectContaining({
               filesystem: {
-                allowWrite: ["/repo/.git/worktrees/bb13", "/repo/.git/objects"],
+                allowWrite: [worktreeGitDir, objectsDir],
               },
             }),
           }),
@@ -4036,6 +4245,66 @@ describe("bridge", () => {
       await bridge.waitForResponse(2);
     } finally {
       bridge.restore();
+      rmSync(rootsDir, { recursive: true, force: true });
+    }
+  });
+
+  it("rebuilds the session before the next turn when a writable folder is removed", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+    const rootsDir = mkdtempSync(join(tmpdir(), "bb-claude-roots-"));
+    const extraFolder = join(rootsDir, "api");
+    const threadStorage = join(rootsDir, "storage");
+    mkdirSync(extraFolder);
+    mkdirSync(threadStorage);
+    const threadId = "thread-folder-removed";
+
+    try {
+      bridge.sendRequest(1, "thread/start", {
+        threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: canonicalOptions({
+          providerOptions: {
+            additionalWorkspaceWriteRoots: [extraFolder, threadStorage],
+          },
+        }),
+      });
+      await bridge.waitForResponse(1);
+      expect(queries).toHaveLength(1);
+
+      bridge.sendRequest(10, "turn/start", {
+        ...canonicalTurnParams({
+          threadId,
+          input: [{ type: "text", text: "Continue without the api folder" }],
+        }),
+        options: canonicalOptions({
+          providerOptions: { additionalWorkspaceWriteRoots: [threadStorage] },
+        }),
+      });
+      await bridge.flushWork();
+
+      expect(queries).toHaveLength(2);
+      expect(getLatestQueryOptions()).toMatchObject({
+        resume: expect.any(String),
+        additionalDirectories: [threadStorage],
+        sandbox: expect.objectContaining({
+          filesystem: { allowWrite: [threadStorage] },
+        }),
+      });
+      await readNextPrompt(getLatestQueryCall());
+      await bridge.waitForResponse(10);
+
+      await stopBridgeThread({ bridge, queries: queries.slice(-1), threadId });
+    } finally {
+      queries.forEach((query) => query.finish());
+      bridge.restore();
+      rmSync(rootsDir, { recursive: true, force: true });
     }
   });
 
@@ -4271,6 +4540,70 @@ describe("bridge", () => {
     }
   });
 
+  it("keeps the resumed session id when Claude fails before announcing a session", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+    const threadId = "thread-failed-startup";
+    const savedSessionId = "saved-session";
+    try {
+      sendResumeThread({
+        bridge,
+        requestId: 1,
+        threadId,
+        providerThreadId: savedSessionId,
+      });
+      await bridge.waitForResponse(1);
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          providerThreadId: savedSessionId,
+          input: [{ type: "text", text: "first" }],
+        }),
+      );
+      await readNextPrompt(getLatestQueryCall());
+      await bridge.waitForResponse(2);
+      queries[0]?.emit({
+        type: "result",
+        subtype: "error_during_execution",
+        duration_ms: 0,
+        duration_api_ms: 0,
+        is_error: true,
+        num_turns: 0,
+        stop_reason: null,
+        total_cost_usd: 0,
+        usage: createResultUsage(),
+        modelUsage: {},
+        permission_denials: [],
+        errors: ["organization settings unavailable"],
+        uuid: "00000000-0000-4000-8000-000000000005",
+        session_id: "unsaved-session",
+      });
+      await bridge.flushWork();
+      expect(
+        bridge.messages.filter(
+          (message) => message.method === "thread/identity",
+        ),
+      ).not.toContainEqual(
+        expect.objectContaining({
+          params: expect.objectContaining({
+            providerThreadId: "unsaved-session",
+          }),
+        }),
+      );
+      expect(contextQueryMock).not.toHaveBeenCalled();
+    } finally {
+      queries.forEach((query) => query.finish());
+      bridge.restore();
+    }
+  });
+
   it.each(["chromeEnabled", "disable1MContext", "artifactsEnabled"])(
     "restarts the Claude process before the next turn when %s changes",
     async (setting) => {
@@ -4326,6 +4659,7 @@ describe("bridge", () => {
         await readNextPrompt(getLatestQueryCall());
         await bridge.waitForResponse(2);
         expect(queries).toHaveLength(1);
+        queries[0]?.emit(createSystemInitMessage(providerThreadId));
         queries[0]?.emit(createSuccessfulResultMessage(providerThreadId));
         await bridge.flushWork();
 
@@ -4407,7 +4741,7 @@ describe("bridge", () => {
         providerOptions: {
           workflowsEnabled: false,
           sandboxEnabled: true,
-          additionalWorkspaceWriteRoots: ["/tmp/shared-worktree"],
+          additionalWorkspaceWriteRoots: [sharedWorktreeRoot],
         },
       });
 
@@ -4434,6 +4768,7 @@ describe("bridge", () => {
         await readNextPrompt(getLatestQueryCall());
         await bridge.waitForResponse(2);
         if (method === "turn/start") {
+          queries[0]?.emit(createSystemInitMessage(providerThreadId));
           queries[0]?.emit(createSuccessfulResultMessage(providerThreadId));
           await bridge.flushWork();
         }
@@ -4450,7 +4785,10 @@ describe("bridge", () => {
             providerOptions: {
               workflowsEnabled: false,
               sandboxEnabled: true,
-              additionalWorkspaceWriteRoots: ["/tmp/other-worktree"],
+              additionalWorkspaceWriteRoots: [
+                sharedWorktreeRoot,
+                otherWorktreeRoot,
+              ],
             },
           },
         });
@@ -4499,10 +4837,10 @@ describe("bridge", () => {
                 ? { enabled: false }
                 : expect.objectContaining({
                     enabled: true,
-                    filesystem: { allowWrite: ["/tmp/shared-worktree"] },
+                    filesystem: { allowWrite: [sharedWorktreeRoot] },
                   }),
               permissions: {
-                additionalDirectories: full ? [] : ["/tmp/shared-worktree"],
+                additionalDirectories: full ? [] : [sharedWorktreeRoot],
               },
             });
           }
@@ -4910,6 +5248,7 @@ describe("bridge", () => {
             if (hookEnabled) expect(outputs).not.toContainEqual(denial);
             else expect(outputs).toContainEqual(denial);
           }
+          queries[index]?.emit(createSystemInitMessage(providerThreadId));
           queries[index]?.emit(createSuccessfulResultMessage(providerThreadId));
           await bridge.flushWork();
         }
@@ -5504,6 +5843,72 @@ describe("bridge", () => {
         activeTurnId: null,
       });
       await bridge.waitForResponse(3);
+    } finally {
+      bridge.restore();
+    }
+  });
+
+  it("stops one background command through the Claude SDK", async () => {
+    const bridge = createBridgeJsonRpcTestHarness(handleLine);
+    const queries: ControlledClaudeQuery[] = [];
+    queryMock.mockImplementation(() => {
+      const query = createControlledClaudeQuery();
+      queries.push(query);
+      return query;
+    });
+
+    try {
+      const threadId = "thread-stop-one-background-command";
+      bridge.sendRequest(1, "thread/start", {
+        threadId,
+        cwd: "/tmp/worktree",
+        instructionMode: "append",
+        options: canonicalOptions({}),
+      });
+      const providerThreadId = getProviderThreadIdFromResult(
+        await bridge.waitForResponse(1),
+      );
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          providerThreadId,
+          input: [{ type: "text", text: "Serve the docs in the background" }],
+        }),
+      );
+      await readNextPrompt(getLatestQueryCall());
+      await bridge.waitForResponse(2);
+      queries[0]?.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "b2z037fen",
+        description: "Serve the docs",
+        task_type: "local_bash",
+        uuid: "00000000-0000-4000-8000-000000000003",
+        session_id: providerThreadId,
+      });
+      queries[0]?.emit(createSuccessfulResultMessage(providerThreadId));
+      await bridge.flushWork();
+
+      bridge.sendRequest(3, "thread/backgroundTask/stop", {
+        threadId,
+        providerThreadId,
+        familyId: "b2z037fen",
+      });
+      expect(await bridge.waitForResponse(3)).toMatchObject({ result: {} });
+      expect(queries[0]?.stopTask).toHaveBeenCalledExactlyOnceWith("b2z037fen");
+      expect(queries[0]?.close).not.toHaveBeenCalled();
+
+      bridge.sendRequest(4, "thread/stop", {
+        threadId,
+        providerThreadId,
+        intent: "interrupt",
+        activeTurnId: null,
+      });
+      await bridge.flushWork();
+      queries[0]?.finish();
+      await bridge.waitForResponse(4);
     } finally {
       bridge.restore();
     }
@@ -6124,6 +6529,279 @@ describe("bridge", () => {
       }
     },
   );
+
+  describe("a steer the SDK has not consumed when its SDK turn ends", () => {
+    function replayOf(prompt: SDKUserMessage): SDKMessage {
+      if (prompt.uuid === undefined) {
+        throw new Error("Expected the bridge to stamp prompt uuids");
+      }
+      return {
+        ...prompt,
+        uuid: prompt.uuid,
+        session_id: "session-1",
+        isReplay: true,
+      };
+    }
+
+    function assistantText(text: string): SDKMessage {
+      return {
+        type: "assistant",
+        message: {
+          id: `message-${text}`,
+          type: "message",
+          role: "assistant",
+          container: null,
+          content: [{ type: "text", text, citations: null }],
+          context_management: null,
+          model: "claude-sonnet-5",
+          stop_details: null,
+          stop_reason: "end_turn",
+          stop_sequence: null,
+          usage: createResultUsage(),
+        },
+        parent_tool_use_id: null,
+        uuid: randomUUID(),
+        session_id: "session-1",
+      };
+    }
+
+    function resultFor(prompts: SDKUserMessage[]): SDKMessage {
+      const result = createSuccessfulResultMessage("session-1");
+      if (result.type !== "result") {
+        throw new Error("Expected a result message");
+      }
+      return {
+        ...result,
+        user_message_uuids: prompts.flatMap((prompt) =>
+          prompt.uuid === undefined ? [] : [prompt.uuid],
+        ),
+      };
+    }
+
+    async function startTurnAndSteer(threadId: string) {
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const query = createControlledClaudeQuery();
+      queryMock.mockImplementation(() => query);
+      await startBridgeThread({ bridge, threadId });
+      const call = getLatestQueryCall();
+
+      bridge.sendRequest(
+        2,
+        "turn/start",
+        canonicalTurnParams({
+          threadId,
+          input: [{ type: "text", text: "Reply one", mentions: [] }],
+        }),
+      );
+      const first = await readNextPrompt(call);
+      await bridge.waitForResponse(2);
+      query.emit(replayOf(first));
+      query.emit(assistantText("one"));
+
+      bridge.sendRequest(3, "turn/steer", {
+        ...canonicalTurnParams({
+          threadId,
+          expectedTurnId: "turn-1",
+          input: [{ type: "text", text: "Reply two", mentions: [] }],
+        }),
+        clientRequestId: "creq_abcdefghjm",
+      });
+      const steer = await readNextPrompt(call);
+      await bridge.waitForResponse(3);
+      return { bridge, first, query, steer };
+    }
+
+    function turnEvents(bridge: BridgeJsonRpcTestHarness) {
+      const events = assembleCapturedThreadEvents(
+        bridge.messages,
+        "claude-code",
+      );
+      return {
+        completed: events.filter((event) => event.type === "turn/completed"),
+        events,
+        started: events.filter((event) => event.type === "turn/started"),
+      };
+    }
+
+    it("keeps the turn open through the SDK turn that answers the steer", async () => {
+      const threadId = "thread-steer-runs-as-next-sdk-turn";
+      const { bridge, first, query, steer } = await startTurnAndSteer(threadId);
+      try {
+        query.emit(resultFor([first]));
+        await bridge.flushWork();
+        expect(turnEvents(bridge).completed).toEqual([]);
+
+        query.emit(replayOf(steer));
+        query.emit(assistantText("two"));
+        query.emit(resultFor([steer]));
+        await bridge.flushWork();
+
+        const { completed, events, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+        expect(
+          events.flatMap((event) =>
+            event.type === "item/completed" &&
+            event.item.type === "agentMessage"
+              ? [{ scope: event.scope, text: event.item.text }]
+              : [],
+          ),
+        ).toEqual([
+          { scope: started[0]?.scope, text: "one" },
+          { scope: started[0]?.scope, text: "two" },
+        ]);
+
+        bridge.sendRequest(
+          4,
+          "turn/start",
+          canonicalTurnParams({
+            threadId,
+            input: [{ type: "text", text: "Reply three", mentions: [] }],
+          }),
+        );
+        const next = await readNextPrompt(getLatestQueryCall());
+        await bridge.waitForResponse(4);
+        query.emit(replayOf(next));
+        query.emit(assistantText("three"));
+        query.emit(resultFor([next]));
+        await bridge.flushWork();
+
+        const after = turnEvents(bridge);
+        expect(after.started).toHaveLength(2);
+        expect(after.completed.map((event) => event.scope)).toEqual(
+          after.started.map((event) => event.scope),
+        );
+        expect(after.events).toContainEqual(
+          expect.objectContaining({
+            type: "item/completed",
+            scope: after.started[1]?.scope,
+            item: expect.objectContaining({ text: "three" }),
+          }),
+        );
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+
+    it("completes the turn on the first result from a CLI that reports no consumed prompts", async () => {
+      const threadId = "thread-steer-without-consumption-reports";
+      const bridge = createBridgeJsonRpcTestHarness(handleLine);
+      const query = createControlledClaudeQuery();
+      queryMock.mockImplementation(() => query);
+      try {
+        await startBridgeThread({ bridge, threadId });
+        const call = getLatestQueryCall();
+        bridge.sendRequest(
+          2,
+          "turn/start",
+          canonicalTurnParams({
+            threadId,
+            input: [{ type: "text", text: "Reply one", mentions: [] }],
+          }),
+        );
+        await readNextPrompt(call);
+        await bridge.waitForResponse(2);
+        query.emit(assistantText("one"));
+        bridge.sendRequest(3, "turn/steer", {
+          ...canonicalTurnParams({
+            threadId,
+            expectedTurnId: "turn-1",
+            input: [{ type: "text", text: "Reply two", mentions: [] }],
+          }),
+          clientRequestId: "creq_abcdefghjm",
+        });
+        await readNextPrompt(call);
+        await bridge.waitForResponse(3);
+        query.emit(assistantText("two"));
+        query.emit(createSuccessfulResultMessage("session-1"));
+        await bridge.flushWork();
+
+        const { completed, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+
+    it("completes the turn on the one result when the SDK folds the steer into the running turn", async () => {
+      const threadId = "thread-steer-folded-into-sdk-turn";
+      const { bridge, first, query, steer } = await startTurnAndSteer(threadId);
+      try {
+        query.emit(replayOf(steer));
+        query.emit(assistantText("two"));
+        query.emit(resultFor([first, steer]));
+        await bridge.flushWork();
+
+        const { completed, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+
+    it("keeps the turn open through a task-notification result that lands before the steer runs", async () => {
+      const threadId = "thread-steer-behind-task-notification";
+      const { bridge, first, query, steer } = await startTurnAndSteer(threadId);
+      try {
+        query.emit(resultFor([first]));
+        const notificationResult = createSuccessfulResultMessage("session-1");
+        if (notificationResult.type !== "result") {
+          throw new Error("Expected a result message");
+        }
+        query.emit(assistantText("background task finished"));
+        query.emit({
+          ...notificationResult,
+          origin: { kind: "task-notification" },
+        });
+        await bridge.flushWork();
+        expect(turnEvents(bridge).completed).toEqual([]);
+
+        query.emit(replayOf(steer));
+        query.emit(assistantText("two"));
+        query.emit(resultFor([steer]));
+        await bridge.flushWork();
+
+        const { completed, events, started } = turnEvents(bridge);
+        expect(started).toHaveLength(1);
+        expect(completed).toEqual([
+          expect.objectContaining({
+            scope: started[0]?.scope,
+            status: "completed",
+          }),
+        ]);
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "item/completed",
+            scope: started[0]?.scope,
+            item: expect.objectContaining({ text: "two" }),
+          }),
+        );
+      } finally {
+        await stopBridgeThread({ bridge, queries: [query], threadId });
+        bridge.restore();
+      }
+    });
+  });
 
   it.each([
     { method: "turn/start", name: "turn start" },

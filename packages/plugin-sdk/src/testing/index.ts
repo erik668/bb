@@ -18,7 +18,6 @@ export {
   type FakeLogLevel,
   type FakeMentionProviderRecord,
   type ExperimentalFakeHostRpcCall,
-  type InternalDoNotUseFakeTunnelIngress,
   type FakePluginHarness,
   type FakePluginHost,
   type FakePluginBehaviorDrivers,
@@ -43,6 +42,9 @@ export {
   makeThreadResponse,
   makeTurnFailedEvent,
   makePanelController as experimental_makePanelController,
+  makeActionContext as experimental_makeActionContext,
+  type ExperimentalActionContextCall,
+  type ExperimentalActionContextFixture,
 } from "./fixtures.js";
 export {
   scanPublicSdkOnly as experimental_scanPublicSdkOnly,
@@ -50,3 +52,12 @@ export {
   type PublicSdkOnlyScanOptions,
   type PublicSdkOnlyViolation,
 } from "./public-sdk-only.js";
+export {
+  experimental_createDescendantPipe,
+  experimental_createProcessLifeline,
+  experimental_trackChildProcesses,
+  type ExperimentalChildProcessTracker,
+  type ExperimentalDescendantPipe,
+  type ExperimentalLifelineHolder,
+  type ExperimentalProcessLifeline,
+} from "./processes.js";

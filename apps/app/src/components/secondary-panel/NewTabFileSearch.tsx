@@ -34,7 +34,7 @@ import {
 import {
   getFileNameFromPath,
   resolveRightPanelFileIconName,
-} from "./rightPanelFileVisuals";
+} from "@bb/shared-ui/right-panel-file-visuals";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { AppCommandShortcutHint } from "@/components/commands/AppCommandShortcutHint";
 import { useAppCommandShortcut } from "@/components/commands/AppCommandProvider";
@@ -50,6 +50,7 @@ import {
   NewTabActions,
   type NewTabAction,
 } from "./NewTabActions";
+import { isNonImeKey } from "@bb/shared-ui/lib/ime-keyboard";
 
 export interface NewTabFileSearchProps {
   projectId: string | undefined;
@@ -540,6 +541,13 @@ export function NewTabFileSearch({
   const navigableEntriesKey = navigableEntries
     .map(getFileSearchEntryId)
     .join("\n");
+  const [activeIndexEntriesKey, setActiveIndexEntriesKey] = useState<
+    string | null
+  >(null);
+  if (activeIndexEntriesKey !== navigableEntriesKey) {
+    setActiveIndexEntriesKey(navigableEntriesKey);
+    setActiveIndex(navigableEntriesKey.length > 0 ? 0 : -1);
+  }
   const activeEntry = useMemo(
     () =>
       activeIndex >= 0 && activeIndex < navigableEntries.length
@@ -577,10 +585,6 @@ export function NewTabFileSearch({
     });
     onAutoFocusHandled();
   }, [autoFocus, isPointerCoarse, onAutoFocusHandled]);
-
-  useEffect(() => {
-    setActiveIndex(navigableEntriesKey.length > 0 ? 0 : -1);
-  }, [navigableEntriesKey]);
 
   const handleFileSelect = useCallback(
     (suggestion: FilePathSearchSuggestion) => {
@@ -620,7 +624,7 @@ export function NewTabFileSearch({
         return;
       }
 
-      if (event.key === "Enter" && activeEntry) {
+      if (isNonImeKey(event, "Enter") && activeEntry) {
         event.preventDefault();
         if (activeEntry.kind === "action") {
           activeEntry.action.onSelect();

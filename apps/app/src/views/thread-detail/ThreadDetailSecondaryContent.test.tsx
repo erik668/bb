@@ -5,8 +5,6 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
-import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import {
   usePluginComposerHost,
   usePluginComposerHostDraft,
@@ -17,6 +15,7 @@ import {
   getPromptDraftAccessor,
   usePromptDraftStorage,
 } from "@/hooks/usePromptDraftStorage";
+import type { ThreadSecondaryPanelProps } from "@/components/secondary-panel/ThreadSecondaryPanel";
 import { ThreadDetailSecondaryContent } from "./ThreadDetailSecondaryContent";
 import {
   DefaultPaneContextProvider,
@@ -30,7 +29,6 @@ type ThreadDetailSecondaryContentProps = ComponentProps<
 >;
 
 const secondaryPanelMockState = vi.hoisted(() => ({
-  renderActualPanel: false,
   renderBrowserDeck: undefined as
     | ((
         activeBrowserTabId: string,
@@ -57,88 +55,53 @@ vi.mock("@/components/ui/sidebar.js", () => ({
   useIsSidebarFramed: () => false,
 }));
 
-const { useThreadsMock } = vi.hoisted(() => ({
-  useThreadsMock: vi.fn((..._args: unknown[]) => ({ data: [] })),
+vi.mock("jotai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("jotai")>()),
+  useAtomValue: () => 50,
 }));
-
-vi.mock("@/hooks/queries/thread-queries", () => ({
-  useThreads: useThreadsMock,
-}));
-
-vi.mock("jotai", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("jotai")>();
-  return {
-    ...actual,
-    useAtomValue: (atom: Parameters<typeof actual.useAtomValue>[0]) =>
-      secondaryPanelMockState.renderActualPanel
-        ? actual.useAtomValue(atom)
-        : 50,
-  };
-});
 
 vi.mock(
   "react-resizable-panels",
   () => import("@/test/react-resizable-panels-stub"),
 );
 
-vi.mock(
-  "@/components/secondary-panel/ThreadMetadataContent",
-  async (importOriginal) => {
-    const React = await import("react");
-    const actual =
-      await importOriginal<
-        typeof import("@/components/secondary-panel/ThreadMetadataContent")
-      >();
-
-    return {
-      ...actual,
-      ThreadMetadataCard: ({
-        children,
-      }: ComponentProps<typeof actual.ThreadMetadataCard>) =>
-        React.createElement(
-          "div",
-          { "data-testid": "metadata-card" },
-          children,
-        ),
-      ThreadMetadataContent: (
-        _props: ComponentProps<typeof actual.ThreadMetadataContent>,
-      ) => React.createElement("div", { "data-testid": "metadata-content" }),
-      hasAnyThreadMetadata: () => false,
-    };
-  },
-);
-
-vi.mock(
-  "@/components/secondary-panel/ThreadSecondaryPanel",
-  async (importOriginal) => {
-    const React = await import("react");
-    const actual =
-      await importOriginal<
-        typeof import("@/components/secondary-panel/ThreadSecondaryPanel")
-      >();
-
-    const ThreadSecondaryPanel = (
-      props: ComponentProps<typeof actual.ThreadSecondaryPanel>,
-    ) => {
-      const { renderBrowserDeck, metadataContent, renderAsDrawer } = props;
-      if (secondaryPanelMockState.renderActualPanel) {
-        return React.createElement(actual.ThreadSecondaryPanel, props);
-      }
+vi.mock("@/components/secondary-panel/ThreadSecondaryPanel", async () => {
+  const React = await import("react");
+  return {
+    ThreadSecondaryPanel: ({
+      renderBrowserDeck,
+      renderAsDrawer,
+    }: ThreadSecondaryPanelProps) => {
       secondaryPanelMockState.renderBrowserDeck = renderBrowserDeck;
-      return React.createElement(
-        "section",
-        {
-          "data-testid": renderAsDrawer
-            ? "drawer-secondary-panel"
-            : "inline-secondary-panel",
-        },
-        metadataContent,
-      );
-    };
+      return React.createElement("section", {
+        "data-testid": renderAsDrawer
+          ? "drawer-secondary-panel"
+          : "inline-secondary-panel",
+      });
+    },
+  };
+});
 
-    return { ...actual, ThreadSecondaryPanel };
-  },
-);
+vi.mock("@/components/secondary-panel/BrowserTabDeck", () => ({
+  BrowserTabDeck: () => null,
+}));
+vi.mock("@/components/secondary-panel/FilePreview", () => ({
+  FilePreview: () => null,
+}));
+vi.mock("@/components/secondary-panel/NewTabPage", () => ({
+  NewTabPage: () => null,
+}));
+vi.mock("@/components/secondary-panel/ThreadSecondaryPanelTabContent", () => ({
+  AttachmentFilePreviewTabContent: () => null,
+  HostFilePreviewTabContent: () => null,
+  HostScopedFilePreviewTabContent: () => null,
+  ProjectFilePreviewTabContent: () => null,
+  ThreadStorageFilePreviewTabContent: () => null,
+  WorkspaceFilePreviewTabContent: () => null,
+}));
+vi.mock("@/components/thread/terminal/ThreadTerminalPanel", () => ({
+  ThreadTerminalPanel: () => null,
+}));
 
 const { timelinePaneRenders } = vi.hoisted(() => ({
   timelinePaneRenders: vi.fn(),
@@ -178,7 +141,12 @@ function FooterComposerHostPublisher({ threadId }: { threadId: string }) {
   });
   const host = useMemo<PluginComposerHost>(
     () => ({
-      scope: { kind: "thread", threadId },
+      scope: {
+        kind: "thread",
+        threadId,
+        projectId: "proj_test",
+        environmentId: null,
+      },
       textEffectKey: promptDraft.storageKey,
       getCurrent: promptDraft.getCurrent,
       subscribeDraft: promptDraft.subscribe,
@@ -202,43 +170,13 @@ function FooterComposerDraftProbe() {
   return <div data-testid="footer-composer-draft">{draft?.text ?? ""}</div>;
 }
 
-function makeThread(): ThreadDetailSecondaryContentProps["metadata"]["thread"] {
-  return {
-    archivedAt: null,
-    createdAt: 0,
-    deletedAt: null,
-    environmentId: null,
-    id: "thread-1",
-    lastReadAt: null,
-    latestAttentionAt: 0,
-    parentThreadId: null,
-    pinnedAt: null,
-    projectId: "proj-test",
-    providerId: "codex",
-    lifecycleOwnerThreadId: null,
-    sourceThreadId: null,
-    originKind: null,
-    originPluginId: null,
-    visibility: "visible",
-    parentNotifications: "auto",
-    status: "idle",
-    stopRequestedAt: null,
-    title: null,
-    titleFallback: "Test thread",
-    sectionId: null,
-    updatedAt: 0,
-  } as ThreadDetailSecondaryContentProps["metadata"]["thread"];
-}
-
 function createProps(
-  isMetadataLoading = false,
   isConversationCollapsed = false,
 ): ThreadDetailSecondaryContentProps {
   return {
     header: <div data-testid="header" />,
     isBoundedPane: false,
     isConversationCollapsed,
-    isMetadataLoading,
     isSecondaryPanelOpen: true,
     main: (
       <TimelinePaneProbe
@@ -246,33 +184,8 @@ function createProps(
         threadId="thread-1"
       />
     ),
-    metadata: {
-      canAssignToParent: false,
-      canTakeOverThread: false,
-      environment: null,
-      environmentProvisioningFailure: false,
-      threadEnvironmentState: null,
-      environmentDisplayHost: { locality: "local", identity: null },
-      isLoadingMergeBaseBranchOptions: false,
-      mergeBaseBranchOptions: undefined,
-      onAssignParent: noop,
-      onParentSelectorOpenChange: noop,
-      onRetryParentThreads: noop,
-      onMergeBaseBranchChange: noop,
-      parentThreadProjectId: null,
-      parentThreadDisplayName: null,
-      parentThreads: [],
-      isLoadingParentThreads: false,
-      isParentThreadsError: false,
-      projectId: "proj-test",
-      threadEnvironmentId: null,
-      selectedMergeBaseBranch: undefined,
-      thread: makeThread(),
-      threadSchedules: [],
-      updateThreadPending: false,
-      workspaceStatus: undefined,
-      workspaceStatusError: null,
-    } as ThreadDetailSecondaryContentProps["metadata"],
+    threadId: "thread-1",
+    environment: null,
     onToggleConversationCollapse: noop,
     onToggleSecondaryPanel: noop,
     renderHostedPanel: (panel) => panel,
@@ -291,16 +204,10 @@ function createProps(
   };
 }
 
-function renderThreadDetail(
-  hosted: boolean,
-  isMetadataLoading = false,
-  isConversationCollapsed = false,
-) {
+function renderThreadDetail(hosted: boolean, isConversationCollapsed = false) {
   const content = (
     <CompactViewportOverrideProvider isCompactViewport={false}>
-      <ThreadDetailSecondaryContent
-        {...createProps(isMetadataLoading, isConversationCollapsed)}
-      />
+      <ThreadDetailSecondaryContent {...createProps(isConversationCollapsed)} />
     </CompactViewportOverrideProvider>
   );
   if (!hosted) {
@@ -339,16 +246,14 @@ function renderThreadDetail(
 afterEach(() => {
   cleanup();
   publishedHostedPanel = null;
-  secondaryPanelMockState.renderActualPanel = false;
   secondaryPanelMockState.renderBrowserDeck = undefined;
   timelinePaneRenders.mockClear();
-  useThreadsMock.mockClear();
   window.localStorage.clear();
 });
 
 describe("ThreadDetailSecondaryContent", () => {
   it("publishes the hosted panel and keeps the header interactive while the main pane is collapsed", () => {
-    renderThreadDetail(true, false, true);
+    renderThreadDetail(true, true);
 
     expect(screen.getByTestId("header").closest("[inert]")).toBeNull();
     expect(
@@ -363,44 +268,10 @@ describe("ThreadDetailSecondaryContent", () => {
     });
   });
 
-  it("keeps the panel's own hide control for the inline thread panel", async () => {
-    secondaryPanelMockState.renderActualPanel = true;
-    const { wrapper: QueryWrapper } = createQueryClientTestHarness();
-    render(
-      <QueryWrapper>
-        <TooltipProvider>
-          <MemoryRouter>
-            <DefaultPaneContextProvider
-              paneId="main"
-              onRequestClose={null}
-              navigateInPane={noop}
-            >
-              <CompactViewportOverrideProvider isCompactViewport={false}>
-                <ThreadDetailSecondaryContent {...createProps()} />
-              </CompactViewportOverrideProvider>
-            </DefaultPaneContextProvider>
-          </MemoryRouter>
-        </TooltipProvider>
-      </QueryWrapper>,
-    );
-
-    expect(
-      await screen.findByRole(
-        "button",
-        { name: "Hide right panel" },
-        { timeout: 5_000 },
-      ),
-    ).not.toBeNull();
-  });
-
   it("keeps the thread header inside the timeline column beside the panel", async () => {
     renderThreadDetail(false);
 
-    const sidePanel = await screen.findByTestId(
-      "inline-secondary-panel",
-      {},
-      { timeout: 5_000 },
-    );
+    const sidePanel = await screen.findByTestId("inline-secondary-panel");
     const timelinePanel = screen.getByTestId("panel");
     const panelGroup = screen.getByTestId("panel-group");
     expect(timelinePanel.contains(screen.getByTestId("header"))).toBe(true);
@@ -408,17 +279,6 @@ describe("ThreadDetailSecondaryContent", () => {
     expect(panelGroup.contains(timelinePanel)).toBe(true);
     expect(panelGroup.contains(sidePanel)).toBe(true);
     expect(timelinePanel.contains(screen.getByTestId("footer"))).toBe(true);
-    expect(sidePanel.textContent).toContain("No thread details available.");
-  });
-
-  it("keeps the thread metadata loading presentation in the panel", async () => {
-    renderThreadDetail(false, true);
-
-    expect(
-      (await screen.findByTestId("inline-secondary-panel")).contains(
-        screen.getByTestId("metadata-card"),
-      ),
-    ).toBe(true);
   });
 
   it("pins a split browser pane to its tab and gates native commands by pane focus", async () => {
@@ -446,7 +306,7 @@ describe("ThreadDetailSecondaryContent", () => {
     if (panelBrowserDeck === undefined) return;
 
     const onFocusPane = vi.fn();
-    panelBrowserDeck("browser-split", {
+    void panelBrowserDeck("browser-split", {
       isFocused: true,
       isOpen: true,
       onFocusPane,
@@ -458,7 +318,7 @@ describe("ThreadDetailSecondaryContent", () => {
       onNativeFocus: onFocusPane,
     });
 
-    panelBrowserDeck("browser-split", {
+    void panelBrowserDeck("browser-split", {
       isFocused: false,
       isOpen: true,
       onFocusPane,
@@ -487,11 +347,7 @@ describe("ThreadDetailSecondaryContent", () => {
       </MemoryRouter>,
     );
 
-    const sidePanel = await screen.findByTestId(
-      "inline-secondary-panel",
-      {},
-      { timeout: 5_000 },
-    );
+    const sidePanel = await screen.findByTestId("inline-secondary-panel");
     const panelGroup = screen.getByTestId("panel-group");
 
     const nextProps = createProps();
@@ -501,10 +357,7 @@ describe("ThreadDetailSecondaryContent", () => {
         threadId="thread-2"
       />
     );
-    nextProps.metadata = {
-      ...nextProps.metadata,
-      thread: { ...nextProps.metadata.thread, id: "thread-2" },
-    };
+    nextProps.threadId = "thread-2";
     rerender(
       <MemoryRouter>
         <DefaultPaneContextProvider
@@ -524,54 +377,6 @@ describe("ThreadDetailSecondaryContent", () => {
     expect(
       screen.getByTestId("thread-timeline-pane").getAttribute("data-thread-id"),
     ).toBe("thread-2");
-  });
-
-  it("only requests the forks list while the secondary panel is open", () => {
-    const props = createProps();
-    const { rerender } = render(
-      <MemoryRouter>
-        <DefaultPaneContextProvider
-          paneId="main"
-          onRequestClose={null}
-          navigateInPane={noop}
-        >
-          <CompactViewportOverrideProvider isCompactViewport={false}>
-            <ThreadDetailSecondaryContent
-              {...props}
-              isSecondaryPanelOpen={false}
-            />
-          </CompactViewportOverrideProvider>
-        </DefaultPaneContextProvider>
-      </MemoryRouter>,
-    );
-
-    expect(useThreadsMock).toHaveBeenLastCalledWith(
-      {
-        projectId: "proj-test",
-        sourceThreadId: "thread-1",
-        originKind: "fork",
-        archived: false,
-      },
-      { enabled: false },
-    );
-
-    rerender(
-      <MemoryRouter>
-        <DefaultPaneContextProvider
-          paneId="main"
-          onRequestClose={null}
-          navigateInPane={noop}
-        >
-          <CompactViewportOverrideProvider isCompactViewport={false}>
-            <ThreadDetailSecondaryContent {...props} isSecondaryPanelOpen />
-          </CompactViewportOverrideProvider>
-        </DefaultPaneContextProvider>
-      </MemoryRouter>,
-    );
-
-    expect(useThreadsMock).toHaveBeenLastCalledWith(expect.anything(), {
-      enabled: true,
-    });
   });
 
   it("does not re-render the timeline pane while the composer draft changes", async () => {
@@ -596,7 +401,7 @@ describe("ThreadDetailSecondaryContent", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByTestId("inline-secondary-panel", {}, { timeout: 5_000 });
+    await screen.findByTestId("inline-secondary-panel");
     expect(screen.getByTestId("footer-composer-draft").textContent).toBe("");
     const paneRendersAfterMount = timelinePaneRenders.mock.calls.length;
 

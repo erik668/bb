@@ -34,6 +34,7 @@ vi.mock("@/components/commands/AppCommandProvider", () => ({
     dispatch: () => false,
     isCommandAvailable: () => false,
   }),
+  useIsAppCommandAvailable: () => false,
   useIsAppCommandModifierHeld: () => false,
 }));
 
@@ -48,7 +49,6 @@ vi.mock("@/hooks/queries/system-queries", () => ({
       experiments: {
         serverMove: false,
         performanceDiagnostics: false,
-        timelinePush: false,
       },
     },
   }),

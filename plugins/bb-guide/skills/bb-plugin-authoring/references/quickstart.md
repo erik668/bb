@@ -134,8 +134,10 @@ Default to `bb-plugin-hello` for the package name. Scoped names such as
 package-name component minus the `bb-plugin-` prefix. BB lowercases it,
 replaces non-alphanumeric runs with `-`, and trims separators. An empty result
 is invalid. Every bundled plugin id is reserved for its bundled source, and
-ids starting with `bb--` are reserved for plugins bundled with BB. The id
-namespaces routes, storage, settings, and CLI commands.
+ids starting with `bb--` are reserved for plugins bundled with BB. The ids
+`npm`, `cache`, `runtime`, and `snapshots` are refused because BB keeps its own
+folders under those names in `<dataDir>/plugins/`. The id namespaces routes,
+storage, settings, and CLI commands.
 
 ## Builds, installs, and dependencies
 
@@ -160,19 +162,26 @@ namespaces routes, storage, settings, and CLI commands.
   when it declares `bb.app`, and its host bundle and metadata when it declares
   `bb.host`.
 - `bb plugin build` stamps every declared artifact's `dist/*.meta.json` with
-  `sdkMajor`, `sdkVersion`, `artifactFormatVersion` (currently `1`),
+  `sdkMajor`, `sdkVersion`, `artifactFormatVersion` (`1`, or `2` with chunks),
   `pluginId`, `pluginVersion`, and `builtWith: { bbVersion, pluginSdkVersion }`.
   Managed installs reject artifacts whose `pluginId`/`pluginVersion` disagree
   with the package manifest, or whose SDK major does not match the host.
   `app.meta.json` also lists `runtimeSlots`, the shimmed host modules the
   bundle imports. bb downloads `@pierre/diffs` only before evaluating a bundle
   that lists it; a bundle built without the field gets every slot.
+- Each dynamic `import()` in app code becomes a chunk in `dist/chunks/`,
+  listed in `app.meta.json` (`chunks`, `entryChunks`, `chunkRuntimeSlots`),
+  and the meta's `artifactFormatVersion` becomes `2`; bb versions that only
+  know `1` refuse the bundle. bb serves chunks under the bundle's content
+  hash, so a chunk always matches the entry that imports it. Ship
+  `dist/chunks/` with `dist/app.js` in npm packages. See "Loading a
+  surface's code when it first renders" in frontend-registration.md.
 - Give every mount and portal your plugin id. Current `lib/portal-scope`
   and the shared overlays set `data-bb-plugin` next to `data-bb-plugin-root`.
   If `app.js` sets `data-bb-plugin-root` without it, as copies of
-  `lib/portal-scope` from before July 2026 do, `bb plugin build` warns. The
-  `narrowPluginCss` experiment then still serves that plugin the slower
-  stylesheet, whose utilities also match any id-less root. Refresh it with
+  `lib/portal-scope` from before July 2026 do, `bb plugin build` warns, and bb
+  serves that plugin the slower stylesheet, whose utilities also match any
+  id-less root. Refresh it with
   `npx shadcn add @bb/portal-scope`.
 - Runtime imports that bb does not shim belong in `dependencies`; validator
   imports such as Zod are ordinary runtime dependencies that the build
@@ -205,5 +214,6 @@ The scaffold tsconfig typechecks both `server.ts` and `app.tsx`.
 ## On-disk state
 
 Each plugin has `<dataDir>/plugins/<id>/data.db` (its SQLite), `secrets/`
-(secret settings + HTTP token), and `logs/plugin.log` (JSONL, rotated at
-5MB).
+(secret settings + HTTP token), `files/` (the plugin's own files, from
+`bb.storage.experimental_directory()`), and `logs/plugin.log` (JSONL, rotated
+at 5MB). Uninstall deletes `secrets/` and `files/`; `data.db` and logs stay.

@@ -2,11 +2,11 @@ import { z } from "zod";
 import {
   createThreadProvisioningId,
   getThreadStartupContext,
-  threads,
+  getThreadStatus,
+  setStartingThreadProvisioningStartupContext,
   type DbConnection,
   type DbTransaction,
 } from "@bb/db";
-import { and, eq, isNull, or, sql } from "drizzle-orm";
 import {
   environmentMachineSelectionSchema,
   jsonValueSchema,
@@ -141,12 +141,8 @@ export function getThreadProvisionContext(
   db: DbConnection | DbTransaction,
   threadId: string,
 ): ThreadProvisionContext | null {
-  const thread = db
-    .select({ status: threads.status })
-    .from(threads)
-    .where(eq(threads.id, threadId))
-    .get();
-  return thread?.status === "starting" || thread?.status === "stopping"
+  const status = getThreadStatus(db, threadId);
+  return status === "starting" || status === "stopping"
     ? readThreadProvisionContext(db, threadId)
     : null;
 }
@@ -165,26 +161,12 @@ function persistThreadProvisionContext(
   replace: boolean,
 ): boolean {
   const persisted = persistedThreadProvisionContextSchema.parse(context);
-  return (
-    db
-      .update(threads)
-      .set({
-        startupContext: JSON.stringify({ kind: "provisioning", ...persisted }),
-      })
-      .where(
-        and(
-          eq(threads.id, threadId),
-          eq(threads.status, "starting"),
-          replace
-            ? undefined
-            : or(
-                isNull(threads.startupContext),
-                sql`json_extract(${threads.startupContext}, '$.kind') = 'provisioning' AND json_extract(${threads.startupContext}, '$.state.provisioningId') = ${context.state.provisioningId}`,
-              ),
-        ),
-      )
-      .run().changes > 0
-  );
+  return setStartingThreadProvisioningStartupContext(db, {
+    provisioningId: context.state.provisioningId,
+    replace,
+    startupContext: JSON.stringify({ kind: "provisioning", ...persisted }),
+    threadId,
+  });
 }
 
 export function readThreadStartupContextOfKind<T>(

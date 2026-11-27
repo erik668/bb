@@ -3,16 +3,12 @@ import {
   defaultStreamHandler,
 } from "@tanstack/react-start/server";
 
-import { NO_EXPERIMENTS, type ExperimentBootstrap } from "./experiments/flags";
-import {
-  resolveExperiments,
-  withExperimentHeaders,
-} from "./experiments/server";
+import { proxyPostHogRequest } from "./landing/posthog-proxy";
+import { finalizeDocumentResponse } from "./server/document-response";
 import {
   marketplaceHtmlCacheControl,
   marketplaceResponseStatus,
 } from "./marketplace/marketplace-response-status.js";
-import { getEnv } from "./server/env";
 
 const handleRequest = createStartHandler(async (context) => {
   const pathname = new URL(context.request.url).pathname;
@@ -22,40 +18,36 @@ const handleRequest = createStartHandler(async (context) => {
   );
   const result = await defaultStreamHandler(context);
   const response = "response" in result ? result.response : result;
-  const responseStatus = status ?? response.status;
-  const cacheControl = marketplaceHtmlCacheControl(pathname, responseStatus);
-  if (status === null && cacheControl === null) return result;
-  const headers = new Headers(response.headers);
-  if (cacheControl !== null) headers.set("cache-control", cacheControl);
-  const updatedResponse = new Response(response.body, {
-    status: responseStatus,
-    statusText: status === null ? response.statusText : "",
-    headers,
+  const updatedResponse = finalizeDocumentResponse(response, {
+    status,
+    cacheControl: marketplaceHtmlCacheControl(
+      pathname,
+      status ?? response.status,
+    ),
   });
   return "response" in result
     ? { ...result, response: updatedResponse }
     : updatedResponse;
 });
 
+const PROXY_CACHE = "posthog-proxy-assets";
+
 export default {
-  async fetch(request: Request): Promise<Response> {
-    const resolution = await resolveExperiments(request, {
-      postHogKey: import.meta.env.VITE_POSTHOG_KEY,
-      postHogHost:
-        import.meta.env.VITE_POSTHOG_HOST ?? "https://us.i.posthog.com",
-      baseDomain: getEnv().BASE_DOMAIN,
+  async fetch(
+    request: Request,
+    _env: unknown,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
+    const proxied = await proxyPostHogRequest(request, {
       fetch: (input, init) => fetch(input, init),
-      log: (entry) => console.log(JSON.stringify(entry)),
+      cache: {
+        match: async (key) => (await caches.open(PROXY_CACHE)).match(key),
+        put: async (key, response) =>
+          (await caches.open(PROXY_CACHE)).put(key, response),
+      },
+      waitUntil: (promise) => ctx.waitUntil(promise),
     });
-    const response = await handleRequest(request, {
-      context: { experiments: resolution?.bootstrap ?? NO_EXPERIMENTS },
-    });
-    return withExperimentHeaders(response, resolution);
+    if (proxied) return proxied;
+    return handleRequest(request);
   },
 };
-
-declare module "@tanstack/react-start" {
-  interface Register {
-    server: { requestContext: { experiments: ExperimentBootstrap } };
-  }
-}

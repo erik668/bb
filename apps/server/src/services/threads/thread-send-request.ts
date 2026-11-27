@@ -9,7 +9,7 @@ import type {
 } from "@bb/server-contract";
 import { ApiError } from "../../errors.js";
 import type { LoggedPendingInteractionWorkSessionDeps } from "../../types.js";
-import { attemptDispatch } from "./dispatch-attempt.js";
+import { assertThreadCanCompact, attemptDispatch } from "./dispatch-attempt.js";
 import { requireThreadCommandEnvironment } from "./thread-command-environment.js";
 import { assertThreadHostAcceptsWork } from "./thread-host-admission.js";
 import { runWithTurnTrace } from "../system/turn-trace.js";
@@ -35,7 +35,7 @@ export async function acceptThreadSendRequest(
     const environment = await requireThreadCommandEnvironment(deps, {
       thread: args.thread,
     });
-    await attemptDispatch(deps, {
+    const outcome = await attemptDispatch(deps, {
       thread: args.thread,
       payload: request,
       source: { kind: "operation", environment },
@@ -47,7 +47,12 @@ export async function acceptThreadSendRequest(
       startedOnBehalfOf: null,
       trigger: "user",
     });
-    return { ok: true, delivery: "sent" };
+    return {
+      ok: true,
+      delivery: "sent",
+      messageSequence:
+        outcome.kind === "dispatched" ? outcome.messageSequence : null,
+    };
   }
 
   if (compactFirst) {
@@ -60,6 +65,7 @@ export async function acceptThreadSendRequest(
     if (request.mode === "steer") {
       throwInvalidCompactFirst("cannot steer a turn");
     }
+    assertThreadCanCompact(deps, args.thread);
   }
   const payload: SendMessageRequest = compactFirst
     ? { ...request, mode: "queue-if-active", compactFirst }
@@ -83,7 +89,11 @@ export async function acceptThreadSendRequest(
       }),
   );
   if (outcome.kind === "dispatched") {
-    return { ok: true, delivery: "sent" };
+    return {
+      ok: true,
+      delivery: "sent",
+      messageSequence: outcome.messageSequence,
+    };
   }
   return {
     ok: true,

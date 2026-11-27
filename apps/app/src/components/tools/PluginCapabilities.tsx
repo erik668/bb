@@ -1,10 +1,10 @@
 import type { ReactNode } from "react";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import { pluginCliCall } from "@bb/domain/plugin-cli";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { Button } from "@bb/shared-ui/button";
-import type { PluginCapability, SkillListResponse } from "@bb/server-contract";
+import type { PluginCapability } from "@bb/server-contract";
 import { Icon, type IconName } from "@bb/shared-ui/icon";
 import {
   ResourceActionButton,
@@ -29,17 +29,21 @@ import {
   reloadPlugin,
   type PluginListItem,
 } from "@/hooks/queries/plugin-settings-queries";
-import { usePluginSlots, type PluginSlotSnapshot } from "@/lib/plugin-slots";
 import {
-  getPluginConfigurationRoutePath,
+  usePluginSlotKind,
+  usePluginSlots,
+  type PluginSlotSnapshot,
+} from "@/lib/plugin-slots";
+import {
   getPluginPanelRoutePath,
   getRootComposeRoutePath,
-  getSettingsRoutePath,
   getSkillDetailRoutePath,
   getSkillsRoutePath,
 } from "@/lib/route-paths";
 import { getPluginHomepageSectionAnchor } from "@/lib/plugin-homepage-section";
 import { projectSkillsQueryKey } from "@/hooks/queries/query-keys";
+import { sdk } from "@/lib/sdk";
+import { getSettingsTargetPath } from "@/components/settings/settings-sections";
 
 function pluginActivityIcon(state: "running" | "ok" | "error" | null): {
   name: IconName;
@@ -193,15 +197,30 @@ function pluginAppSurfaceItems(
             "settings",
             "Settings",
             "Opens this plugin's configuration.",
-            configurationPath ?? getPluginConfigurationRoutePath({ pluginId }),
+            configurationPath ?? getSettingsTargetPath({ pluginId: pluginId }),
           ),
         ]
       : []),
     ...namedSlotItems(
       pluginId,
-      slots.navPanels,
+      slots.navPanels.filter(
+        (panel) => panel.experimental_hideFromNavigation !== true,
+      ),
       "nav",
       "Adds a page to the app sidebar.",
+      (panel) =>
+        getPluginPanelRoutePath({
+          pluginId,
+          path: panel.path,
+        }),
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.navPanels.filter(
+        (panel) => panel.experimental_hideFromNavigation === true,
+      ),
+      "nav",
+      "Adds a page the plugin opens itself, outside navigation.",
       (panel) =>
         getPluginPanelRoutePath({
           pluginId,
@@ -227,14 +246,14 @@ function pluginAppSurfaceItems(
       slots.threadLists,
       "thread-list",
       "Can replace the sidebar thread list; configured in Appearance.",
-      () => getSettingsRoutePath("appearance"),
+      () => getSettingsTargetPath({ section: "appearance" }),
     ),
     ...namedSlotItems(
       pluginId,
       slots.experimentalSidebarNavigations,
       "sidebar-navigation",
       "Can draw the sidebar navigation; configured in Appearance.",
-      () => getSettingsRoutePath("appearance"),
+      () => getSettingsTargetPath({ section: "appearance" }),
     ),
     ...namedSlotItems(
       pluginId,
@@ -253,7 +272,7 @@ function pluginAppSurfaceItems(
       slots.composers,
       "composer",
       "Can replace the thread composer; configured in Appearance.",
-      () => getSettingsRoutePath("appearance"),
+      () => getSettingsTargetPath({ section: "appearance" }),
     ),
     ...namedSlotItems(
       pluginId,
@@ -320,6 +339,30 @@ function pluginAppSurfaceItems(
       slots.threadInfoSections,
       "thread-info-section",
       "Adds a section to the thread Info tab.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadHeaderRows,
+      "thread-header-row",
+      "Adds a row under the thread header.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadHeaderTitles,
+      "thread-header-title",
+      "Replaces the thread title in the thread header.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadRails,
+      "thread-rail",
+      "Adds an item to the rail beside the conversation.",
+    ),
+    ...namedSlotItems(
+      pluginId,
+      slots.threadRailOutlines,
+      "thread-rail-outline",
+      "Replaces the thread outline beside the conversation.",
     ),
     ...namedSlotItems(
       pluginId,
@@ -397,11 +440,13 @@ function pluginAppSurfaceItems(
           slot.id,
           slot.title,
           "Opens supported files in a plugin-provided viewer.",
-          getSettingsRoutePath("files"),
+          getSettingsTargetPath({ section: "files" }),
         ),
         detail:
           slot.extensions.length === 0 ? (
-            <span>Opens files the plugin shows in a plugin-provided viewer.</span>
+            <span>
+              Opens files the plugin shows in a plugin-provided viewer.
+            </span>
           ) : (
             <span className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-0.5">
               <span>Opens these files in a plugin-provided viewer:</span>
@@ -438,10 +483,16 @@ export function PluginIncludes({
   configurationPath?: string;
 }) {
   const slots = usePluginSlots();
-  const queryClient = useQueryClient();
-  const cachedSkills = queryClient.getQueryData<SkillListResponse>(
-    projectSkillsQueryKey(PERSONAL_PROJECT_ID),
-  );
+  const cachedSkills = useQuery({
+    queryKey: projectSkillsQueryKey(PERSONAL_PROJECT_ID),
+    queryFn: ({ signal }) =>
+      sdk.skills.list({
+        projectId: PERSONAL_PROJECT_ID,
+        environmentId: null,
+        signal,
+      }),
+    enabled: false,
+  }).data;
   const appItems = pluginAppSurfaceItems(plugin, slots, configurationPath);
 
   const skillDestination = (capabilityId: string): string => {
@@ -465,7 +516,7 @@ export function PluginIncludes({
         mono: kind === "skill" || kind === "agent-tool",
         destinationPath:
           kind === "theme"
-            ? getSettingsRoutePath("appearance")
+            ? getSettingsTargetPath({ section: "appearance" })
             : kind === "skill"
               ? skillDestination(capability.id)
               : undefined,
@@ -584,7 +635,7 @@ function PluginRuntimeStatusAlert({
   onReload: () => void;
   reloadPending: boolean;
 }) {
-  const { settingsSections } = usePluginSlots();
+  const settingsSections = usePluginSlotKind("settingsSections");
   const hasSettingsPage =
     plugin.hasSettings ||
     settingsSections.some((section) => section.pluginId === plugin.id);
@@ -623,7 +674,7 @@ function PluginRuntimeStatusAlert({
                 <Link
                   to={
                     configurationPath ??
-                    getPluginConfigurationRoutePath({ pluginId: plugin.id })
+                    getSettingsTargetPath({ pluginId: plugin.id })
                   }
                 >
                   Open settings

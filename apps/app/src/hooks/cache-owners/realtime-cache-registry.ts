@@ -38,6 +38,7 @@ import {
   allPluginSettingsQueryKeyPrefix,
   allPluginSettingsViewQueryKeyPrefix,
   allPluginSourceQueryKeyPrefix,
+  pluginMarketplacesQueryKey,
   pluginSafeModeQueryKey,
   allProjectCommandsQueryKeyPrefix,
   allThreadStorageFilePreviewQueryKeyPrefix,
@@ -69,7 +70,9 @@ import {
   threadStorageLocationQueryKey,
   threadStoragePathsForThreadQueryKeyPrefix,
   threadTimelineQueryKeyPrefix,
+  allHostProviderCliInstallJobsQueryKeyPrefix,
   allHostProviderCliStatusQueryKeyPrefix,
+  hostProviderCliInstallJobsQueryKey,
   hostProviderCliStatusQueryKey,
 } from "../queries/query-keys";
 import { systemEnvironmentProvidersQueryKey } from "../queries/environment-provider-queries";
@@ -87,7 +90,6 @@ import {
   getThreadCompactedHistoryInvalidationQueryKeys,
   getThreadTimelineWindowInvalidationQueryKeys,
 } from "./cache-invalidation-groups";
-import { isCachedThreadTimelinePushEnabled } from "./thread-timeline-push-owner";
 
 interface TimelineInvalidationQueryKeysArgs {
   queryClient: QueryClient;
@@ -188,7 +190,7 @@ function invalidateQueryKeyWithThrottledActiveRefetch({
   queryClient,
   queryKey,
 }: ThrottledActiveRefetchArgs): void {
-  queryClient.invalidateQueries({ exact, queryKey, refetchType: "none" });
+  void queryClient.invalidateQueries({ exact, queryKey, refetchType: "none" });
 
   const scheduleKey = timelineInvalidationKey(queryKey);
   let entries = throttledActiveRefetchEntries.get(queryClient);
@@ -276,7 +278,10 @@ function invalidateQueryKeyWithoutCancelingActiveFetch({
   queryKey,
 }: ScheduleTrailingActiveRefetchArgs): void {
   const hadActiveFetch = hasActiveFetchingQueries(queryClient, queryKey, exact);
-  queryClient.invalidateQueries({ exact, queryKey }, { cancelRefetch: false });
+  void queryClient.invalidateQueries(
+    { exact, queryKey },
+    { cancelRefetch: false },
+  );
   if (hadActiveFetch) {
     scheduleTrailingActiveRefetch({ exact, queryClient, queryKey });
   }
@@ -302,7 +307,7 @@ function invalidateTerminalTimelineQueryKeys({
   for (const queryKey of queryKeys) {
     cancelTrailingActiveRefetch({ queryClient, queryKey });
     void queryClient.cancelQueries({ queryKey });
-    queryClient.invalidateQueries({ queryKey });
+    void queryClient.invalidateQueries({ queryKey });
   }
 }
 
@@ -470,6 +475,7 @@ export const REALTIME_ENVIRONMENT_CHANGE_REGISTRY = {
     dirty: [
       dirtyEnvironmentRecordQueries,
       dirtyEnvironmentWorkspaceStateQueries,
+      dirtyEnvironmentThreadListQueries,
     ],
   },
   "work-status-changed": {
@@ -531,7 +537,14 @@ export const REALTIME_HOST_CHANGE_REGISTRY = {
     dirty: [dirtyProjectCommandCatalogQueries],
   },
   "provider-cli-status-changed": {
-    dirty: [dirtyHostProviderCliStatusQueries],
+    dirty: [
+      dirtyHostProviderCliStatusQueries,
+      dirtySystemProviderQueries,
+      dirtyHostSystemExecutionOptionQueries,
+    ],
+  },
+  "provider-cli-install-jobs-changed": {
+    dirty: [dirtyHostProviderCliInstallJobQueries],
   },
 } satisfies HostChangeRegistry;
 
@@ -744,7 +757,7 @@ function invalidateThreadListQueries(
     : getCachedThreadListQueryKeys(queryClient);
   for (const queryKey of listQueryKeys) {
     if (!includeArchived && isArchivedThreadListQueryKey(queryKey)) {
-      queryClient.invalidateQueries({
+      void queryClient.invalidateQueries({
         exact: true,
         queryKey,
         refetchType: "none",
@@ -850,7 +863,7 @@ function dirtyThreadTimelineQueries({
     !hasActiveQueries(queryClient, threadTimelineQueryKeyPrefix(threadId))
   ) {
     for (const queryKey of [...timelineQueryKeys, ...outlineQueryKeys]) {
-      queryClient.invalidateQueries({ queryKey, refetchType: "none" });
+      void queryClient.invalidateQueries({ queryKey, refetchType: "none" });
     }
     return;
   }
@@ -879,7 +892,6 @@ function dirtyThreadTimelineQueriesForAppendedEvents(
   const { eventTypes, queryClient, threadId, timelineSequence } = context;
   if (
     threadId === undefined ||
-    !isCachedThreadTimelinePushEnabled(queryClient) ||
     !hasActiveQueries(queryClient, threadTimelineQueryKeyPrefix(threadId))
   ) {
     dirtyThreadTimelineQueries(context);
@@ -969,7 +981,7 @@ function markThreadDetailQueryStale({
   if (!threadId) {
     return;
   }
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: threadQueryKey(threadId),
     refetchType: "none",
   });
@@ -1035,7 +1047,7 @@ function dirtyEnvironmentWorkspaceStateQueries(
   for (const queryKey of getEnvironmentWorkspaceStateInvalidationQueryKeys(
     context,
   )) {
-    context.queryClient.invalidateQueries({ queryKey });
+    void context.queryClient.invalidateQueries({ queryKey });
   }
 }
 
@@ -1043,7 +1055,7 @@ function dirtyEnvironmentLiveWorkspaceStateQueries({
   environmentId,
   queryClient,
 }: EnvironmentRealtimeDirtyContext): void {
-  queryClient.invalidateQueries({
+  void queryClient.invalidateQueries({
     queryKey: environmentFilePreviewQueryKeyPrefix(environmentId),
   });
 }
@@ -1157,6 +1169,16 @@ function dirtyHostSystemExecutionOptionQueries({
   void invalidateSystemExecutionOptions({ hostId, queryClient });
 }
 
+function dirtyHostProviderCliInstallJobQueries({
+  hostId,
+}: HostRealtimeDirtyContext): QueryKey[] {
+  return [
+    hostId === undefined
+      ? allHostProviderCliInstallJobsQueryKeyPrefix()
+      : hostProviderCliInstallJobsQueryKey(hostId),
+  ];
+}
+
 function dirtyHostProviderCliStatusQueries({
   hostId,
 }: HostRealtimeDirtyContext): QueryKey[] {
@@ -1182,6 +1204,7 @@ function dirtyPluginManagementQueries(): QueryKey[] {
     allPluginSettingsQueryKeyPrefix(),
     allPluginSourceQueryKeyPrefix(),
     allPluginCatalogSearchQueryKeyPrefix(),
+    pluginMarketplacesQueryKey(),
     pluginSafeModeQueryKey(),
   ];
 }

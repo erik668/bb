@@ -3,39 +3,34 @@ import {
   sweepProviderEnvironment,
 } from "../environments/environment-engine.js";
 import { cancelAbandonedProviderCreations } from "../threads/thread-environment-providers.js";
-import { eq, isNotNull, inArray } from "drizzle-orm";
 import {
   deleteProject,
   getProject,
   getEnvironment,
-  deletionThreadTreeIdsForProject,
+  hasProjectThreads,
+  listDeletedProjectIds,
   listEnvironments,
+  listProjectDeletionThreads,
   markProjectDeleted,
   markThreadDeleted,
-  projects,
-  threads,
-  type DbQueryConnection,
+  type ProjectDeletionThreadRow,
 } from "@bb/db";
-import type { Thread, ThreadStatus } from "@bb/domain";
+import type { Thread } from "@bb/domain";
 import type {
   AppDeps,
   LoggedPendingInteractionWorkSessionDeps,
 } from "../../types.js";
 import { deleteProjectAttachments } from "./attachments.js";
 import { deferAfterResponse } from "../lib/response-deferral.js";
-import { requestThreadStorageDeletion } from "../threads/thread-lifecycle.js";
+import {
+  finalizeStoppedThread,
+  requestThreadStorageDeletion,
+} from "../threads/thread-lifecycle.js";
 import { NotificationBuffer } from "../lib/notification-buffer.js";
 import { emitPluginThreadDeleted } from "../plugins/plugin-thread-events.js";
 
 interface ProjectDeletionArgs {
   projectId: string;
-}
-
-interface ProjectDeletionThread {
-  deletedAt: number | null;
-  environmentId: string | null;
-  id: string;
-  status: ThreadStatus;
 }
 
 type ProjectDeletionDeps = LoggedPendingInteractionWorkSessionDeps &
@@ -48,26 +43,10 @@ function isProjectDeletionActive(
   return getProject(deps.db, projectId)?.deletedAt !== null;
 }
 
-function listProjectDeletionThreads(
-  db: DbQueryConnection,
-  args: ProjectDeletionArgs,
-): ProjectDeletionThread[] {
-  return db
-    .select({
-      deletedAt: threads.deletedAt,
-      environmentId: threads.environmentId,
-      id: threads.id,
-      status: threads.status,
-    })
-    .from(threads)
-    .where(inArray(threads.id, deletionThreadTreeIdsForProject(args.projectId)))
-    .all();
-}
-
 function tombstoneProjectThreadsForDeletion(
   deps: ProjectDeletionDeps,
   args: ProjectDeletionArgs,
-): { deletedThreads: Thread[]; projectThreads: ProjectDeletionThread[] } {
+): { deletedThreads: Thread[]; projectThreads: ProjectDeletionThreadRow[] } {
   const notificationBuffer = new NotificationBuffer();
   const result = deps.db.transaction(
     (tx) => {
@@ -97,19 +76,6 @@ function tombstoneProjectThreadsForDeletion(
   return result;
 }
 
-function hasRemainingProjectThreads(
-  deps: Pick<AppDeps, "db">,
-  projectId: string,
-): boolean {
-  return (
-    deps.db
-      .select({ id: threads.id })
-      .from(threads)
-      .where(eq(threads.projectId, projectId))
-      .get() !== undefined
-  );
-}
-
 export function beginProjectDeletion(
   deps: ProjectDeletionDeps,
   args: ProjectDeletionArgs,
@@ -130,7 +96,19 @@ export function beginProjectDeletion(
       ? (environmentsById.get(thread.environmentId) ??
         getEnvironment(deps.db, thread.environmentId))
       : null;
+    requestProjectThreadStorageDeletion(deps, thread, environment);
+  }
+}
+
+function requestProjectThreadStorageDeletion(
+  deps: ProjectDeletionDeps,
+  thread: ProjectDeletionThreadRow,
+  environment: { hostId: string; id: string } | null,
+): void {
+  if (thread.storageDeletedAt === null) {
     requestThreadStorageDeletion(deps, thread, environment);
+  } else if (thread.purgeRequestedAt === null) {
+    finalizeStoppedThread(deps, { fence: false, threadId: thread.id });
   }
 }
 
@@ -186,10 +164,10 @@ export async function advanceProjectDeletion(
     }
     cancelAbandonedProviderCreations(deps, thread.id);
     deps.terminalSessions.closeDeletedThreadTerminals({ threadId: thread.id });
-    requestThreadStorageDeletion(deps, thread, environment);
+    requestProjectThreadStorageDeletion(deps, thread, environment);
   }
 
-  if (hasRemainingProjectThreads(deps, args.projectId)) {
+  if (hasProjectThreads(deps.db, args.projectId)) {
     return false;
   }
 
@@ -208,10 +186,5 @@ export async function advanceProjectDeletion(
 export function listProjectsPendingDeletion(
   deps: Pick<AppDeps, "db">,
 ): string[] {
-  return deps.db
-    .select({ id: projects.id })
-    .from(projects)
-    .where(isNotNull(projects.deletedAt))
-    .all()
-    .map((project) => project.id);
+  return listDeletedProjectIds(deps.db);
 }

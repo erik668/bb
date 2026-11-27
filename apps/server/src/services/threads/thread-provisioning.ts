@@ -4,8 +4,18 @@ import {
 } from "@bb/db";
 import { sweepProviderMachine } from "../machines/provider-orchestration.js";
 import { cancelProviderEnvironmentCreation } from "../environments/environment-engine.js";
+import {
+  PATH_CLAIM_SETTLE_TIMEOUT_MS,
+  settlingPathClaim,
+  watchPathClaimChanges,
+} from "../environments/path-admission.js";
 import { getPreparingEnvironment } from "@bb/db";
-import { getThread, type DbTransaction, type EnvironmentRow } from "@bb/db";
+import {
+  getThread,
+  hasThreadStartTurnRequest,
+  type DbTransaction,
+  type EnvironmentRow,
+} from "@bb/db";
 import {
   type EnvironmentProviderSelection,
   type PromptInput,
@@ -27,10 +37,7 @@ import {
   createClientTurnRequestId,
   type TurnRequestRetryMarker,
 } from "./thread-events.js";
-import {
-  hasLiveThreadStartInFlight,
-  requestThreadStart,
-} from "./thread-lifecycle.js";
+import { requestThreadStart } from "./thread-lifecycle.js";
 import type { DispatchAuthor } from "./dispatch-author.js";
 import { resolvePermissionEscalation } from "./thread-runtime-config.js";
 import {
@@ -51,8 +58,8 @@ import {
   saveThreadProvisionContext,
   readThreadProvisionContext,
 } from "./thread-startup-store.js";
-import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
-import { buildThreadStatusChangeMetadata } from "./thread-runtime-display.js";
+import { runThreadLifecycleInTransaction } from "./lifecycle/run.js";
+import { finishThreadLifecycleInBackground } from "./lifecycle/finish.js";
 import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
 import { recordAcceptedPromptHistoryEntry } from "../prompt-history.js";
 
@@ -154,12 +161,13 @@ function settleSeededThreadProvisioning(
   const settled = deps.db.transaction(
     (tx) => {
       const current = getThreadProvisionContext(tx, args.threadId);
-      const outcome = applyLoggedThreadLifecycleEventInTransaction(
-        { db: tx, logger: deps.logger },
-        { threadId: args.threadId, event: { type: "run.succeeded" } },
+      const outcome = runThreadLifecycleInTransaction(
+        { db: tx, hub: deps.hub, logger: deps.logger },
+        args.threadId,
+        { type: "provisioning.seeded" },
       );
       const completedProvisioning =
-        outcome.applied &&
+        outcome.statusChanged &&
         current !== null &&
         current.state.provisioningId === args.context.state.provisioningId &&
         current.state.provisionEventSequence !== null;
@@ -176,18 +184,14 @@ function settleSeededThreadProvisioning(
     },
     { behavior: "immediate" },
   );
-  if (!settled.outcome.applied) {
+  if (!settled.outcome.statusChanged) {
     deps.logger.warn(
       { threadId: args.threadId },
       "Seed-without-run thread was no longer starting; idle settle skipped",
     );
     return;
   }
-  deps.hub.notifyThread(
-    args.threadId,
-    ["status-changed"],
-    buildThreadStatusChangeMetadata(deps, settled.outcome.thread),
-  );
+  finishThreadLifecycleInBackground(deps, settled.outcome);
   if (settled.completedProvisioning) {
     deps.hub.notifyThread(args.threadId, ["events-appended"], {
       timelineSequence: getLatestThreadSequence(deps.db, {
@@ -293,10 +297,15 @@ async function startThreadIfEnvironmentReady(
   });
 }
 
+export interface RequestedThreadProvision {
+  context: ThreadProvisionContext;
+  messageSequence: number;
+}
+
 export function requestThreadProvision(
   deps: Pick<AppDeps, "db" | "hub">,
   args: RequestThreadProvisionArgs,
-): ThreadProvisionContext {
+): RequestedThreadProvision {
   return deps.db.transaction(() => {
     const { initiator, senderThreadId } = args.author;
     const target: TurnRequestTarget = { kind: "thread-start" };
@@ -346,7 +355,7 @@ export function requestThreadProvision(
       threadId: args.thread.id,
       context,
     });
-    return context;
+    return { context, messageSequence: request.sequence };
   });
 }
 
@@ -356,11 +365,12 @@ export function requestThreadEnvironmentRestore(
 ): ThreadProvisionContext | null {
   return deps.db.transaction(
     (tx) => {
-      const prepared = applyLoggedThreadLifecycleEventInTransaction(
-        { db: tx, logger: deps.logger },
-        { event: { type: "run.preparing" }, threadId: args.thread.id },
+      const prepared = runThreadLifecycleInTransaction(
+        { db: tx, hub: deps.hub, logger: deps.logger },
+        args.thread.id,
+        { type: "provisioning.started" },
       );
-      if (!prepared.applied) {
+      if (prepared.refusal !== null) {
         return null;
       }
       const context = createThreadStartup({
@@ -394,7 +404,7 @@ export function requestThreadEnvironmentRestore(
 export function requestThreadTargetReprovision(
   deps: Pick<AppDeps, "db" | "hub">,
   args: RequestThreadTargetReprovisionArgs,
-): ThreadProvisionContext {
+): RequestedThreadProvision {
   return deps.db.transaction(() => {
     const request = appendReprovisionTurnRequest(deps, args);
     const context = createThreadStartup({
@@ -430,7 +440,7 @@ export function requestThreadTargetReprovision(
       threadId: args.thread.id,
       context,
     });
-    return context;
+    return { context, messageSequence: request.sequence };
   });
 }
 
@@ -488,20 +498,32 @@ function appendReprovisionTurnRequest(
   return request;
 }
 
+const pathClaimDeadlines = new Map<
+  string,
+  { provisioningId: string; deadline: number }
+>();
+
+function pathClaimDeadline(threadId: string, provisioningId: string): number {
+  const existing = pathClaimDeadlines.get(threadId);
+  if (existing?.provisioningId === provisioningId) return existing.deadline;
+  const deadline = Date.now() + PATH_CLAIM_SETTLE_TIMEOUT_MS;
+  pathClaimDeadlines.set(threadId, { provisioningId, deadline });
+  return deadline;
+}
+
 async function advanceThreadProvisioningOnce(
   deps: ThreadProvisioningDeps,
   args: AdvanceThreadProvisioningArgs,
 ): Promise<void> {
   const thread = getThread(deps.db, args.threadId);
-  if (
-    !thread ||
-    thread.deletedAt !== null ||
-    hasLiveThreadStartInFlight(thread.id)
-  ) {
+  if (!thread || thread.deletedAt !== null) {
+    pathClaimDeadlines.delete(args.threadId);
     return;
   }
+  if (hasThreadStartTurnRequest(deps.db, thread.id)) return;
   if (thread.status !== "starting") {
     clearThreadProvisionSchedule(thread.id);
+    pathClaimDeadlines.delete(thread.id);
     return;
   }
   let context = getThreadProvisionContext(deps.db, thread.id);
@@ -517,6 +539,8 @@ async function advanceThreadProvisioningOnce(
     return;
   }
 
+  const claimChanges = watchPathClaimChanges(deps.hub);
+  let waitingOnClaim = false;
   try {
     const ready = await ensureThreadProvisionEnvironmentReady(deps, {
       context,
@@ -531,7 +555,22 @@ async function advanceThreadProvisioningOnce(
       environment: ready.environment,
       thread: ready.thread,
     });
+    pathClaimDeadlines.delete(thread.id);
   } catch (error) {
+    const claim = settlingPathClaim(error);
+    const deadline =
+      claim === null
+        ? 0
+        : pathClaimDeadline(thread.id, context.state.provisioningId);
+    if (claim !== null && Date.now() < deadline) {
+      waitingOnClaim = true;
+      void claimChanges.settled(claim, deadline).then(() => {
+        claimChanges.stop();
+        scheduleThreadProvisioningAdvance(deps, thread.id);
+      });
+      return;
+    }
+    pathClaimDeadlines.delete(thread.id);
     const failureThread = getCurrentProvisioningFailureThread(deps, {
       context,
       threadId: thread.id,
@@ -545,6 +584,8 @@ async function advanceThreadProvisioningOnce(
       environmentId: context.state.environmentId ?? failureThread.environmentId,
       detail,
     });
+  } finally {
+    if (!waitingOnClaim) claimChanges.stop();
   }
 }
 

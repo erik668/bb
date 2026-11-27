@@ -2122,7 +2122,7 @@ describe("public thread data routes", () => {
       if (!turnRow) {
         throw new Error("Expected a turn row");
       }
-      expect(turnRow.sourceSeqStart).toBe(1);
+      expect(turnRow.sourceSeqStart).toBe(2);
 
       const detailsResponse = await harness.app.request(
         `/api/v1/threads/${thread.id}/timeline/turn-summary-details?turnId=${turnRow.turnId}&sourceSeqStart=${turnRow.sourceSeqStart}&sourceSeqEnd=${turnRow.sourceSeqEnd}`,
@@ -2861,7 +2861,10 @@ describe("public thread data routes", () => {
         },
       );
       expect(deleteResponse.status).toBe(200);
-      await expect(readJson(deleteResponse)).resolves.toEqual({ ok: true });
+      await expect(readJson(deleteResponse)).resolves.toEqual({
+        ok: true,
+        progress: "complete",
+      });
       expect(getQueuedThreadMessage(harness.db, queuedMessage.id)).toBeNull();
     });
   });
@@ -3551,7 +3554,7 @@ describe("public thread data routes", () => {
           [{ type: "text", text: "First grouped queued message" }],
           [{ type: "text", text: "Second grouped queued message" }],
         ],
-        target: { mode: "start" },
+        target: { mode: "auto", expectedTurnId: null },
       });
 
       expect(
@@ -4479,10 +4482,11 @@ describe("public thread data routes", () => {
         harness,
         ({ command }) =>
           command.type === "host.list_paths" &&
-          command.path === threadStoragePath,
+          command.rootPaths[0] === threadStoragePath,
       );
       expect(pathsCommand.command).toMatchObject({
-        path: threadStoragePath,
+        rootPaths: [threadStoragePath],
+        followRootSymlink: false,
         query: "notes",
         limit: 1000,
         includeFiles: true,
@@ -4498,6 +4502,7 @@ describe("public thread data routes", () => {
             name: "notes",
             score: 100,
             positions: [0, 1, 2, 3, 4],
+            rootPath: threadStoragePath,
           },
           {
             kind: "file",
@@ -4505,6 +4510,7 @@ describe("public thread data routes", () => {
             name: "plan.md",
             score: 75,
             positions: [0, 1, 2, 3, 4],
+            rootPath: threadStoragePath,
           },
         ],
         truncated: false,

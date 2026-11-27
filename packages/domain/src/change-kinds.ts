@@ -59,6 +59,7 @@ export const HOST_CHANGE_KINDS = [
   "provider-model-catalog-changed",
   "provider-commands-changed",
   "provider-cli-status-changed",
+  "provider-cli-install-jobs-changed",
 ] as const;
 export type HostChangeKind = (typeof HOST_CHANGE_KINDS)[number];
 
@@ -289,6 +290,7 @@ export const threadStatusChangeMetadataSchema = z
     runtime: threadRuntimeStateSchema,
     activity: threadActivityStateSchema,
     latestAttentionAt: z.number(),
+    statusChangedAt: z.number(),
     updatedAt: z.number(),
   })
   .strict();

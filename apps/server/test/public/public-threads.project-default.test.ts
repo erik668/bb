@@ -69,7 +69,7 @@ async function createAndCaptureIntent(
 }
 
 describe("project-default thread environment", () => {
-  it("hands a branch checkout to the worktree provider without inspecting its branches", async () => {
+  it("hands a branch checkout to the worktree provider after one checkout inspection", async () => {
     await withTestHarness(async (harness) => {
       installFakeGitWorktreeProvider();
       const { host, session } = seedHostSession(harness.deps, {
@@ -98,7 +98,7 @@ describe("project-default thread environment", () => {
         inputs: { branch: { kind: "default" } },
         selectionResolved: true,
       });
-      expect(inspected).not.toContain("host.inspect_git_source");
+      expect(inspected).toEqual(["host.inspect_git_checkout"]);
       expect(getThread(harness.db, threadId)?.originPluginId).toBeNull();
     });
   });
@@ -129,6 +129,7 @@ describe("project-default thread environment", () => {
           hasUncommittedChanges: false,
           operation: { kind: "none" },
           originDefaultBranch: "origin/main",
+          defaultWorktreeBaseBranch: "origin/main",
         },
         onInspectGitSource,
       });
@@ -187,6 +188,7 @@ describe("project-default thread environment", () => {
         hasUncommittedChanges: false,
         operation: { kind: "none" as const },
         originDefaultBranch: null,
+        defaultWorktreeBaseBranch: null,
       } satisfies GitSourceInspection,
     },
     {
@@ -202,6 +204,7 @@ describe("project-default thread environment", () => {
         hasUncommittedChanges: false,
         operation: { kind: "none" as const },
         originDefaultBranch: null,
+        defaultWorktreeBaseBranch: null,
       } satisfies GitSourceInspection,
     },
   ])(

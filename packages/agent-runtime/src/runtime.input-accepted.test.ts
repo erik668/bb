@@ -52,6 +52,7 @@ describe("createAgentRuntime input accepted events", () => {
       options: fullRuntimeOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222222u",
       threadId: "t1",
       input: [promptTextInput({ text: "delay:500 active turn" })],
@@ -66,6 +67,7 @@ describe("createAgentRuntime input accepted events", () => {
 
     await expect(
       runtime.steerTurn({
+        additionalWorkspaceWriteRoots: [],
         threadId: "t1",
         expectedTurnId: turnId,
         clientRequestId: "creq_23456789ae",
@@ -109,6 +111,7 @@ describe("createAgentRuntime input accepted events", () => {
       options: fullRuntimeOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222222v",
       threadId: "t1",
       input: [promptTextInput({ text: "delay:500 active turn" })],
@@ -123,6 +126,7 @@ describe("createAgentRuntime input accepted events", () => {
 
     await expect(
       runtime.steerTurn({
+        additionalWorkspaceWriteRoots: [],
         clientRequestId: "creq_222222222w",
         threadId: "t1",
         expectedTurnId: turnId,
@@ -161,6 +165,7 @@ describe("createAgentRuntime input accepted events", () => {
       options: fullRuntimeOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_2345678tsa",
       threadId: "t1",
       input: [promptTextInput({ text: "delay:5000 active turn" })],
@@ -176,6 +181,7 @@ describe("createAgentRuntime input accepted events", () => {
     vi.useFakeTimers();
     try {
       const steer = runtime.steerTurn({
+        additionalWorkspaceWriteRoots: [],
         clientRequestId: "creq_2345678tsb",
         threadId: "t1",
         expectedTurnId: turnId,
@@ -250,6 +256,7 @@ describe("createAgentRuntime input accepted events", () => {
         options: fullRuntimeOptions,
       });
       await runtime.runTurn({
+        additionalWorkspaceWriteRoots: [],
         clientRequestId: "creq_222222222x",
         threadId: "t1",
         input: [promptTextInput({ text: "delay:500 active turn" })],
@@ -264,6 +271,7 @@ describe("createAgentRuntime input accepted events", () => {
 
       await expect(
         runtime.steerTurn({
+          additionalWorkspaceWriteRoots: [],
           clientRequestId: "creq_222222222y",
           threadId: "t1",
           expectedTurnId: turnId,
@@ -279,6 +287,7 @@ describe("createAgentRuntime input accepted events", () => {
 
       await expect(
         runtime.steerTurn({
+          additionalWorkspaceWriteRoots: [],
           clientRequestId: "creq_222222222z",
           threadId: "t1",
           expectedTurnId: turnId,
@@ -293,4 +302,56 @@ describe("createAgentRuntime input accepted events", () => {
       await runtime.shutdown();
     },
   );
+
+  it("keeps a newer turn that started while a stale steer was in flight", async () => {
+    const events: ThreadEvent[] = [];
+    const runtime = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath: tmpDir,
+        onEvent: (event) => events.push(event),
+      },
+      launch: { scripted: { steerFindsNewTurn: true } },
+    });
+
+    await runtime.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: "fake",
+      options: fullRuntimeOptions,
+    });
+    await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
+      clientRequestId: "creq_22222222nm",
+      threadId: "t1",
+      input: [promptTextInput({ text: "delay:500 active turn" })],
+      options: fullRuntimeOptions,
+    });
+    const { turnId: missedTurnId } = await waitForThreadTurnStarted({
+      events,
+      providerId: "fake",
+      runtime,
+      threadId: "t1",
+    });
+
+    const result = await runtime.steerTurn({
+      additionalWorkspaceWriteRoots: [],
+      clientRequestId: "creq_22222222np",
+      threadId: "t1",
+      expectedTurnId: missedTurnId,
+      input: [promptTextInput({ text: "steer that misses its turn" })],
+      options: fullRuntimeOptions,
+    });
+
+    const startedTurnIds = events
+      .filter((event) => event.type === "turn/started")
+      .map((event) => getThreadEventScopeTurnId(event.scope));
+    expect(startedTurnIds).toHaveLength(2);
+    const newerTurnId = startedTurnIds[1];
+    expect(newerTurnId).not.toBe(missedTurnId);
+    expect(result).toEqual({ status: "stale", activeTurnId: newerTurnId });
+    expect(runtime.getActiveTurnId("t1")).toBe(newerTurnId);
+
+    await runtime.shutdown();
+  });
 });

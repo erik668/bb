@@ -12,13 +12,19 @@
       "source": "./src/domain-fixtures.ts",
       "types": "./src/domain-fixtures.ts",
       "default": "./src/domain-fixtures.ts"
+    },
+    "./child-processes": {
+      "source": "./src/child-processes.ts",
+      "types": "./src/child-processes.ts",
+      "default": "./src/child-processes.ts"
     }
   },
   "types": "./src/index.ts",
   "scripts": {
     "clean": "rimraf dist tsconfig.tsbuildinfo",
     "test": "vitest run --config vitest.config.ts",
-    "typecheck": "tsrs --noEmit"
+    "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json"
   },
   "dependencies": {
     "@bb/domain": "workspace:*",

@@ -1,13 +1,16 @@
 import { z } from "zod";
 import {
+  environmentHolderSchema,
   environmentStatusSchema,
   FILE_LIST_QUERY_MAX_LENGTH,
   gitBranchNameSchema,
+  jsonValueSchema,
 } from "@bb/domain";
 import { apiErrorSchema } from "../errors.js";
 import {
   environmentProviderInstanceKeySchema,
   pathListIncludeQueryValueSchema,
+  workspacePathSearchFoldersSchema,
 } from "./shared.js";
 import { workspaceResolutionFailureSchema } from "@bb/host-daemon-contract/workspace";
 
@@ -34,9 +37,29 @@ export type UpdateEnvironmentRequest = z.infer<
   typeof updateEnvironmentRequestSchema
 >;
 
+export const createEnvironmentRequestSchema = z
+  .object({
+    projectId: z.string().min(1),
+    hostId: z.string().min(1).optional(),
+    provider: z
+      .object({
+        id: z.string().min(1),
+        inputs: jsonValueSchema.optional(),
+      })
+      .strict()
+      .optional(),
+    name: environmentNameSchema.optional(),
+    heldBy: environmentHolderSchema,
+  })
+  .strict();
+export type CreateEnvironmentRequest = z.infer<
+  typeof createEnvironmentRequestSchema
+>;
+
 export const listEnvironmentsQuerySchema = z.object({
   projectId: z.string().min(1).optional(),
   environmentProviderId: z.string().min(1).optional(),
+  heldBy: environmentHolderSchema.optional(),
   hostId: z.string().min(1).optional(),
   instanceKey: environmentProviderInstanceKeySchema.optional(),
   path: z.string().min(1).optional(),
@@ -51,9 +74,29 @@ export const environmentPathsQuerySchema = z.object({
   limit: z.string().regex(/^\d+$/).optional(),
   includeFiles: pathListIncludeQueryValueSchema,
   includeDirectories: pathListIncludeQueryValueSchema,
+  folders: workspacePathSearchFoldersSchema.optional(),
 });
 export type EnvironmentPathsQuery = z.infer<typeof environmentPathsQuerySchema>;
 
+export const environmentRepoSchema = z
+  .object({
+    rootPath: z.string().min(1),
+    path: z.string().min(1),
+    label: z.string(),
+    source: z.enum(["main", "folder", "discovered"]),
+  })
+  .strict();
+export type EnvironmentRepo = z.infer<typeof environmentRepoSchema>;
+
+export const environmentReposResponseSchema = z
+  .object({
+    repos: z.array(environmentRepoSchema),
+    truncated: z.boolean(),
+  })
+  .strict();
+export type EnvironmentReposResponse = z.infer<
+  typeof environmentReposResponseSchema
+>;
 
 export const environmentArchiveThreadsResponseSchema = z.object({
   ok: z.literal(true),
@@ -101,4 +144,3 @@ export const environmentActionApiErrorSchema = apiErrorSchema.extend({
 export type EnvironmentActionApiError = z.infer<
   typeof environmentActionApiErrorSchema
 >;
-

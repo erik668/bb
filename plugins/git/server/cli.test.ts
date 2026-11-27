@@ -1,4 +1,4 @@
-import type { BbPluginApi } from "@get-bb/plugin-sdk";
+import { experimental_BbHttpError, type BbPluginApi } from "@get-bb/plugin-sdk";
 import {
   createFakePluginHost,
   type ExperimentalFakeHostRpcCall,
@@ -30,11 +30,30 @@ const ENVIRONMENT = {
   environmentProviderSelection: null,
   environmentProviderInstanceKey: null,
   managed: true,
+  heldBy: null,
+  statusMessage: null,
   workspaceProvisionType: "worktree",
 } as Environment;
 
 function unexpectedHostCall(call: ExperimentalFakeHostRpcCall): never {
   throw new Error(`unexpected host call ${call.method}`);
+}
+
+function reposOf(environment: { isGitRepo: boolean; path: string | null }) {
+  return {
+    repos:
+      environment.isGitRepo && environment.path !== null
+        ? [
+            {
+              rootPath: environment.path,
+              path: environment.path,
+              label: "",
+              source: "main" as const,
+            },
+          ]
+        : [],
+    truncated: false,
+  };
 }
 
 function setup(
@@ -56,6 +75,8 @@ function setup(
     sdk: {
       environments: {
         get: async () => options.environment ?? ENVIRONMENT,
+        experimental_repos: async () =>
+          reposOf(options.environment ?? ENVIRONMENT),
       },
       files: {
         read: async (args: unknown) => {
@@ -113,6 +134,7 @@ const changedFile = {
 function filesHost() {
   return {
     outcome: "available",
+    fingerprint: "files-fingerprint",
     value: {
       initialPatches: [
         {
@@ -121,6 +143,7 @@ function filesHost() {
           path: "src/a.ts",
         },
       ],
+      reusedPatchPaths: [],
       mergeBaseRef: null,
       shortstat: " 1 file changed, 2 insertions(+), 1 deletion(-)\n",
       truncated: false,
@@ -685,8 +708,11 @@ describe("bb git errors", () => {
       sdk: {
         environments: {
           get: async () => {
-            throw Object.assign(new Error("HTTP 404: Environment not found"), {
+            throw new experimental_BbHttpError({
               status: 404,
+              code: null,
+              message: "Environment not found",
+              body: null,
             });
           },
         },

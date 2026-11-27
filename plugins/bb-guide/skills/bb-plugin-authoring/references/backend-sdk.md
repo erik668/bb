@@ -27,13 +27,13 @@ signatures (see "Looking up the exact API" in distribution.md).
   `restoreEnvironment` `getPluginMetadata` `updatePluginMetadata`
   `experimental_listPluginMetadata` `experimental_listAncestors`
   `experimental_listDescendants` `experimental_listCascade`
-  `experimental_regenerateTitle`; sub-areas `events` (`list` `wait`),
+  `experimental_regenerateTitle` `experimental_headState`; sub-areas `events` (`list` `wait`),
   `interactions` (`get` `list` `cancel` `resolve` `respond`), `queue`
   (`list`), `queuedMessages` (`create` `list` `update` `delete` `send`
   `reorder` `setGroupBoundary` `experimental_holdForEdit`
   `experimental_releaseEditHold`; `update` takes any of `input`, `sendAt`,
   `model`, `reasoningLevel`, `permissionMode`, `serviceTier`),
-  `tabs` (`get` `update`)
+  `tabs` (`get` `update`), `experimental_backgroundTasks` (`list` `stop`)
 - `threadSections`: `list` `create` `update` `delete`
 - `projects`: `list` `get` `create` `update` `delete` `reorder` `paths`
   `files` `fileContent` `branches` `commands` `defaultExecutionOptions`
@@ -46,11 +46,13 @@ signatures (see "Looking up the exact API" in distribution.md).
   `commit` `archiveThreads` `experimental_cleanup`
 - `hosts`: `list` `get` `update` `delete` `directory` `pathsExist`
   `pickFolder` `cloneDefaultPath` `providerCliStatus` `installProviderCli`
-  `retryUpdate` `experimental_listProviders` `experimental_create`
+  `experimental_startProviderCliInstall` `retryUpdate`
+  `experimental_listProviders` `experimental_create`
   `experimental_getEnrollmentCommand` `experimental_reconnect`
   `experimental_suspend` `experimental_resume` `experimental_retryCleanup`
   `experimental_reconcile` `experimental_deleteOldServerCopy`
-  `experimental_discoverRepos`, and the
+  `experimental_discoverRepos`; sub-area `experimental_providerCliInstallJobs`
+  (`list` `get` `wait`), and the
   deprecated `createJoinCode` (machine creation and suspension are in
   backend-machines.md)
 - `files`: `read` `write` `list` `listPaths` `mkdir` `move` `remove`
@@ -120,12 +122,14 @@ CLI, agents, and bb. Tests set it with
 `harness.callRpc(method, input, { experimental_caller })`.
 
 ```ts
-handOver(input, { experimental_caller: caller }) {
-  if (caller.kind !== "plugin" || caller.pluginId !== "connect") {
-    throw new Error("only the connect plugin can call handOver");
-  }
-  return handOver(input);
-},
+const handlers = {
+  handOver(input, { experimental_caller: caller }) {
+    if (caller.kind !== "plugin" || caller.pluginId !== "connect") {
+      throw new Error("only the connect plugin can call handOver");
+    }
+    return handOver(input);
+  },
+};
 ```
 
 The context's `experimental_signal` aborts when the caller stops waiting
@@ -237,7 +241,12 @@ prompts, provider or host payloads, or model input.
 inputs) — never both. `threads.spawn` and `threads.fork` auto-fill attribution:
 `origin: "plugin"` and `originPluginId: <your id>` unless you set them. Seeding
 `pluginMetadata` always attributes the new thread to your plugin, overriding an
-explicit `origin` or `originPluginId`. `bb.sdk.threads.send({
+explicit `origin` or `originPluginId`. Your `bb.events` handlers get no event
+for a thread your `spawn` or `fork` may have created until that call returns;
+held events then arrive in order. Store the returned id before your next
+`await` and a turn that ends before the response still reaches your
+`thread.idle` or `thread.failed` handler, with no re-read needed.
+`bb.sdk.threads.send({
 threadId, mode: "auto", input: [...] })` starts a turn on an idle thread or
 queues/steers a running one.
 
@@ -254,12 +263,23 @@ await bb.sdk.threads.update({ threadId, title: "Fix the flaky test" });
 `threads.list` filters on `projectId`, `environmentId`, `hostId`,
 `parentThreadId`, `sourceThreadId`, `sectionId`, `originKind`,
 `originPluginId`, `archived`, `unsectioned`, `hasParent`, and `includeHidden`,
-and it pages with `limit` and `offset`. `threadIds` (at most 200) narrows it to
+and it returns one page of a required `limit`, so a caller that needs every
+match pages with `offset` until a page comes back shorter than its `limit`
+(`environments.list` pages the same way). `threadIds` (at most 200) narrows it to
 those threads and leaves out unknown or deleted IDs, so it also answers which
 of a set of threads still exist.
 `threads.update` writes `title`, `sectionId`, `parentThreadId`, `model`,
 `reasoningLevel`, and `visibility`. Use `threads.timeline` (or
 `threads.output` for the last assistant text) to read a thread's messages.
+To read a thread's current to-dos, slash commands, session options, extension
+states, plan prompt mode, model fallback, or context usage, use
+`threads.experimental_headState({ threadId })`: it reads their latest stored
+state without building a timeline window, so it stays cheap on threads with
+long turns.
+`threads.experimental_backgroundTasks.list({ threadId })` returns the
+thread's running background commands and agents, each with its timeline
+`itemId` and `stoppable`; `stop({ threadId, itemId })` stops one stoppable
+task and leaves the thread and its other tasks running.
 For raw history, `threads.events.list` defaults to ascending order and supports
 exclusive `afterSeq` / `beforeSeq` cursors, `order: "asc" | "desc"`, and a
 non-empty typed `types` array. Combine `order: "desc"` with `beforeSeq` to page
@@ -281,19 +301,21 @@ first when the worker no longer belongs in active lists. Use a `finally`
 block so a plugin failure cannot retain the agent process:
 
 ```ts
-const worker = await bb.sdk.threads.spawn({
-  projectId,
-  environment: { type: "project-default" },
-  prompt: "Review this change.",
-  visibility: "hidden",
-});
+async function review(projectId: string) {
+  const worker = await bb.sdk.threads.spawn({
+    projectId,
+    environment: { type: "project-default" },
+    prompt: "Review this change.",
+    visibility: "hidden",
+  });
 
-try {
-  await bb.sdk.threads.wait({ threadId: worker.id, status: "idle" });
-  return await bb.sdk.threads.output({ threadId: worker.id });
-} finally {
-  await bb.sdk.threads.archive({ threadId: worker.id });
-  await bb.sdk.threads.stop({ threadId: worker.id });
+  try {
+    await bb.sdk.threads.wait({ threadId: worker.id, status: "idle" });
+    return await bb.sdk.threads.output({ threadId: worker.id });
+  } finally {
+    await bb.sdk.threads.archive({ threadId: worker.id });
+    await bb.sdk.threads.stop({ threadId: worker.id });
+  }
 }
 ```
 
@@ -385,5 +407,42 @@ preview URLs expire and never reveal the host id or absolute root.
 Caller-gated RPC handlers can throw `new experimental_PluginRpcRefusal({
 code: "forbidden", message: "Only the connect plugin can call this method" })`
 from `@get-bb/plugin-sdk`. `bb.sdk.plugins.callRpc` rejects with a `BbHttpError`
-whose `code` is `forbidden` and `status` is 403. See `backend-events.md` for
-the refusal codes, optional validation issues and mutation rollback behavior.
+whose `code` is `forbidden` and `status` is 403.
+
+Every `bb.sdk` call rejects a non-2xx response with that error. Import it as
+`experimental_BbHttpError` from `@get-bb/plugin-sdk` and narrow with
+`error instanceof experimental_BbHttpError`, which also matches errors thrown
+by the host's copy of the SDK; then read `status`, `code` (the server's error
+code, such as `thread_not_found`, or null) and `body`. A `callRpc` to a plugin
+that isn't installed or isn't running has `code` `plugin_not_found` or
+`plugin_not_running`. See `backend-events.md` for the refusal codes, optional
+validation issues and mutation rollback behavior.
+
+### Thread files and the delete_finalize hook
+
+`threads.experimental_export({ threadId })` returns the thread as a
+self-contained `.jsonl.zst` file: its rows, every event and its attachments.
+`threads.experimental_import({ file })` recreates a deleted thread in its
+project, and refuses a thread that still exists.
+
+A deleted thread stays in bb's database, hidden and unchanging, until core
+finishes the delete by removing its rows.
+`bb.experimental_hooks.on("thread.delete_finalize", handler)` runs before that
+starts, so a plugin can keep a copy first:
+
+```ts
+bb.experimental_hooks.on("thread.delete_finalize", ({ threadId }) => {
+  if (!wantsCopy(threadId) || hasCopy(threadId)) return { action: "proceed" };
+  void bb.sdk.threads
+    .experimental_export({ threadId })
+    .then((file) => storeCopy(threadId, file));
+  return { action: "wait" };
+});
+```
+
+`wait` keeps the rows; core asks again about every 10 seconds and after every
+restart, until every plugin answers `proceed`. Decide in milliseconds and
+export in the background, as above. A throw, a timeout or any other answer
+counts as `wait`. A disabled or uninstalled plugin is not asked, so its threads
+are removed without a copy. Core removes nothing while plugins are still
+loading and never asks again once the removal has started.

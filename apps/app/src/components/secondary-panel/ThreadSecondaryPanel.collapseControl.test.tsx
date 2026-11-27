@@ -1,7 +1,5 @@
 // @vitest-environment jsdom
 
-
-import { ThreadInfoFixedTabContent } from "@/components/secondary-panel/thread-info-registration";
 import {
   cleanup,
   fireEvent,
@@ -24,6 +22,7 @@ import {
   createPluginPageFixedPanelTab,
   createThreadInfoFixedPanelTab,
   createWorkspaceFilePreviewFixedPanelTab,
+  getFixedPanelTabsStateStorageKey,
   type SecondaryFileFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
 import {
@@ -64,7 +63,7 @@ const infoFixedTabDescriptor = {
   ariaLabel: "Show thread info panel",
   label: "Info",
   contentFillsRegion: true,
-  renderContent: () => <ThreadInfoFixedTabContent />,
+  renderContent: () => <div>Thread metadata</div>,
   leadingVisual: null,
   onSelect: noop,
   tab: infoFixedTab,
@@ -119,7 +118,6 @@ function renderPanel(args: {
             fixedTabs={infoFixedTabs}
             tabs={[]}
             isOpen
-            metadataContent={null}
             onClose={noop}
             onCollapse={noop}
             onTabReorder={noop}
@@ -152,6 +150,10 @@ function renderFixedTabSplit(ready = true) {
     sidebarSplitStorageKey(panelStateId),
     serializeSidebarSplitState(split),
   );
+  window.localStorage.setItem(
+    getFixedPanelTabsStateStorageKey({ threadId: panelStateId }),
+    JSON.stringify({ lastUsedAt: Date.now() }),
+  );
 
   const content = (areFixedTabsReady: boolean) => (
     <Wrapper>
@@ -167,7 +169,6 @@ function renderFixedTabSplit(ready = true) {
               tabs={[]}
               isConversationCollapsed={false}
               isOpen
-              metadataContent={<div>Thread metadata</div>}
               onClose={noop}
               onCollapse={noop}
               onTabReorder={noop}
@@ -204,7 +205,6 @@ describe("ThreadSecondaryPanel unavailable content", () => {
                 tabs={[]}
                 isConversationCollapsed={false}
                 isOpen={isOpen}
-                metadataContent={null}
                 onClose={noop}
                 onCollapse={noop}
                 onTabReorder={noop}
@@ -269,7 +269,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
             ]}
             isConversationCollapsed={false}
             isOpen
-            metadataContent={null}
             onClose={noop}
             onCollapse={noop}
             onTabReorder={noop}
@@ -315,7 +314,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
             tabs={[]}
             isConversationCollapsed={false}
             isOpen
-            metadataContent={null}
             onClose={noop}
             onCollapse={noop}
             onTabReorder={noop}
@@ -394,7 +392,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
                 ]}
                 isConversationCollapsed={false}
                 isOpen
-                metadataContent={null}
                 onClose={noop}
                 onCollapse={noop}
                 onTabReorder={noop}
@@ -467,7 +464,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
                 fixedTabs={[]}
                 isConversationCollapsed={false}
                 isOpen
-                metadataContent={null}
                 onClose={noop}
                 onCollapse={noop}
                 onOpenNewTab={noop}
@@ -537,7 +533,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
             ]}
             isConversationCollapsed={false}
             isOpen={isOpen}
-            metadataContent={null}
             onClose={noop}
             onCollapse={noop}
             onTabReorder={noop}
@@ -600,7 +595,6 @@ describe("ThreadSecondaryPanel compact file content", () => {
               tabs={[createTestRenderableTab(activeTab, renderContent)]}
               isConversationCollapsed={false}
               isOpen
-              metadataContent={null}
               onClose={noop}
               onCollapse={noop}
               onTabReorder={noop}
@@ -711,7 +705,6 @@ describe("ThreadSecondaryPanel Diff eligibility", () => {
               tabs={[]}
               isConversationCollapsed={false}
               isOpen
-              metadataContent={<div>Thread metadata</div>}
               onClose={noop}
               onCollapse={noop}
               onTabReorder={noop}
@@ -732,7 +725,6 @@ describe("ThreadSecondaryPanel Diff eligibility", () => {
     ).toBeNull();
     expect(screen.queryByText("This panel view is unavailable.")).toBeNull();
   });
-
 });
 
 describe("ThreadSecondaryPanel hide control glyph", () => {
@@ -870,7 +862,6 @@ describe("ThreadSecondaryPanel full-screen control", () => {
                 tabs={[createTestRenderableTab(fileTab)]}
                 isConversationCollapsed={false}
                 isOpen
-                metadataContent={null}
                 onClose={noop}
                 onCollapse={noop}
                 onTabReorder={noop}
@@ -1015,7 +1006,6 @@ describe("ThreadSecondaryPanel full-screen control", () => {
                 tabs={[createTestRenderableTab(fileTab)]}
                 isConversationCollapsed
                 isOpen
-                metadataContent={null}
                 onClose={noop}
                 onCollapse={noop}
                 onTabReorder={noop}
@@ -1140,12 +1130,18 @@ it("focuses New tab without opening it and resumes cycling from the button", asy
           <PanelGroup direction="horizontal">
             <ThreadSecondaryPanel
               activeTab={infoFixedTab}
-              fixedTabs={infoFixedTabs}
+              fixedTabs={[
+                {
+                  ...infoFixedTabDescriptor,
+                  renderContent: () => (
+                    <input aria-label="Draft" defaultValue="keep" />
+                  ),
+                },
+              ]}
               tabs={[]}
               splitPanelStateId="new-tab-navigation"
               isOpen
               isConversationCollapsed={false}
-              metadataContent={<input aria-label="Draft" defaultValue="keep" />}
               onClose={noop}
               onCollapse={noop}
               onTabReorder={noop}
@@ -1207,7 +1203,6 @@ it("ignores tab navigation while chat maximize suppresses the panel and resumes 
                   splitPanelStateId="suppressed-panel-navigation"
                   isOpen
                   isConversationCollapsed={false}
-                  metadataContent={null}
                   onClose={noop}
                   onCollapse={noop}
                   onTabReorder={noop}

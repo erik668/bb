@@ -8,7 +8,7 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import { cn } from "@bb/shared-ui/lib/utils";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { useScrollOverflowState } from "@/components/thread/timeline/useScrollOverflowState";
+import { useScrollOverflowState } from "@bb/shared-ui/use-scroll-overflow-state";
 import { PaletteModeChip, type PaletteModeChipProps } from "./PaletteModeChip";
 import { PALETTE_INPUT_CLASS, PaletteInputBand } from "./PaletteInputBand";
 
@@ -61,16 +61,22 @@ export function PaletteShell({
 }: PaletteShellProps) {
   const isCompact = useIsCompactViewport();
   const inputDescriptionId = useId();
-  const overflow = useScrollOverflowState<HTMLDivElement>({
+  const {
+    scrollRef: overflowScrollRef,
+    topSentinelRef,
+    bottomSentinelRef,
+    aboveOverflow,
+    belowOverflow,
+  } = useScrollOverflowState<HTMLDivElement>({
     measureOverflow: true,
   });
-  const composedListRef = useComposedRefs(listRef, overflow.scrollRef);
+  const composedListRef = useComposedRefs(listRef, overflowScrollRef);
   const resultsMask =
-    overflow.aboveOverflow && overflow.belowOverflow
+    aboveOverflow && belowOverflow
       ? "linear-gradient(to bottom, transparent 0, black 1.5rem, black calc(100% - 1.5rem), transparent 100%)"
-      : overflow.aboveOverflow
+      : aboveOverflow
         ? "linear-gradient(to bottom, transparent 0, black 1.5rem, black 100%)"
-        : overflow.belowOverflow
+        : belowOverflow
           ? "linear-gradient(to bottom, black 0, black calc(100% - 1.5rem), transparent 100%)"
           : undefined;
 
@@ -117,14 +123,14 @@ export function PaletteShell({
           data-palette-results-viewport
         >
           <div
-            ref={overflow.topSentinelRef}
+            ref={topSentinelRef}
             aria-hidden
             className="-mb-px h-px w-full"
             data-palette-scroll-sentinel="top"
           />
           {children}
           <div
-            ref={overflow.bottomSentinelRef}
+            ref={bottomSentinelRef}
             aria-hidden
             className="h-px w-full"
             data-palette-scroll-sentinel="bottom"

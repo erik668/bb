@@ -1,6 +1,6 @@
 import { nanoid } from "nanoid";
 import { Link } from "react-router-dom";
-import { OptionPicker } from "@/components/pickers/OptionPicker";
+import { OptionPicker } from "@bb/shared-ui/option-picker";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import { Icon } from "@bb/shared-ui/icon";
 import { useState, type ReactNode } from "react";
@@ -16,8 +16,8 @@ import {
 import { Button } from "@bb/shared-ui/button";
 import { Input } from "@bb/shared-ui/input";
 import { sdk } from "@/lib/sdk";
-import { SettingsSection } from "@/components/ui/settings-section";
-import { getSettingsSectionRoutePath } from "@/components/settings/settings-sections";
+import { SettingsSection } from "@bb/shared-ui/settings-section";
+import { getSettingsTargetPath } from "@/components/settings/settings-sections";
 import { MachineEnvironmentImportDialog } from "@/components/settings/MachineEnvironmentImportDialog";
 import type { ParsedEnvEntry } from "@/lib/parse-env-file";
 import {
@@ -419,7 +419,7 @@ const ROW_CAPTION_CLASS_NAME = "text-xs leading-snug text-subtle-foreground";
 function GlobalSettingsLink() {
   return (
     <Link
-      to={getSettingsSectionRoutePath("environment-variables")}
+      to={getSettingsTargetPath({ section: "environment-variables" })}
       className="rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
     >
       global settings

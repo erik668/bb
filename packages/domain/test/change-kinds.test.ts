@@ -41,7 +41,7 @@ const maximalThreadMetadata: ThreadChangeMetadata = {
   projectId: "proj_1",
   statusChange: {
     status: "active",
-    runtime: { displayStatus: "active" },
+    runtime: { displayStatus: "active", failure: null },
     activity: {
       activeBackgroundAgentCount: 1,
       activeBackgroundCommandCount: 1,
@@ -49,6 +49,7 @@ const maximalThreadMetadata: ThreadChangeMetadata = {
       activeWorkflowCount: 1,
     },
     latestAttentionAt: 1_000,
+    statusChangedAt: 2_000,
     updatedAt: 2_000,
   },
 };
@@ -138,6 +139,7 @@ describe("lenient changed-message schema parity", () => {
             activeWorkflowCount: 0,
           },
           latestAttentionAt: 1_000,
+          statusChangedAt: 2_000,
           updatedAt: 2_000,
         },
       },

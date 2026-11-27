@@ -230,6 +230,7 @@ function createFakeRuntime(): AgentRuntime {
     steerTurn: vi.fn(async () => steerTurnResult),
     stopThread: vi.fn(async () => ({ providerCheckpointId: null })),
     clearThreadGoal: vi.fn(async () => ({ cleared: true })),
+    stopBackgroundTask: vi.fn(async () => ({ stopped: true })),
     renameThread: vi.fn(async () => undefined),
     archiveThread: vi.fn(async () => undefined),
     unarchiveThread: vi.fn(async () => undefined),
@@ -245,6 +246,7 @@ function createFakeRuntime(): AgentRuntime {
     }),
     listRunningProviders: vi.fn(() => []),
     getActiveTurnId: vi.fn(() => null),
+    getActiveTurnRequestIds: vi.fn(() => []),
     waitForActiveTurn: vi.fn(async () => null),
     getProviderSession: vi.fn(() => null),
     reapIdleProviderSessions: vi.fn(async () => ({ reapedSessions: [] })),
@@ -252,6 +254,9 @@ function createFakeRuntime(): AgentRuntime {
     getLiveThreadIds: vi.fn(() => []),
     hasOpenBackgroundWork: vi.fn(() => false),
     listOpenBackgroundWork: vi.fn(() => []),
+    reconfigureSkillRoots: vi.fn(async () => ({
+      appliedToEveryProvider: false,
+    })),
     shutdown: vi.fn(async () => undefined),
   };
 }
@@ -420,6 +425,17 @@ async function openTerminalWithId(
   return spawned.pty;
 }
 
+async function streamTerminalOutput(
+  manager: TerminalManager,
+  terminalId: string,
+): Promise<void> {
+  await manager.handleMessage({
+    type: "terminal.stream",
+    terminalId,
+    enabled: true,
+  });
+}
+
 async function attachTerminal(
   harness: TerminalManagerHarness,
   args: AttachTerminalArgs,
@@ -504,6 +520,7 @@ describe("TerminalManager", () => {
         reason: "Git",
       },
     ]);
+    await streamTerminalOutput(harness.manager, "term-1");
     expect(harness.adapter.spawned[0]?.args.env.GH_TOKEN).toBe(
       "terminal-private-token",
     );
@@ -1015,6 +1032,7 @@ describe("TerminalManager", () => {
   it("forwards output and replays scrollback on attach", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
 
     pty.emitData("hello");
     pty.emitData("\n");
@@ -1056,6 +1074,7 @@ describe("TerminalManager", () => {
   it("flushes the first output after an idle period without the batch delay", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
     vi.useFakeTimers({
       toFake: [
         "setTimeout",
@@ -1088,11 +1107,7 @@ describe("TerminalManager", () => {
   it("pauses the PTY a window ahead of acknowledged output and resumes on acknowledgement", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
-    await harness.manager.handleMessage({
-      type: "terminal.flow-control",
-      terminalId: "term-1",
-      enabled: true,
-    });
+    await streamTerminalOutput(harness.manager, "term-1");
     const chunk = "x".repeat(64 * 1024);
 
     for (let index = 0; index < 16; index += 1) {
@@ -1119,11 +1134,7 @@ describe("TerminalManager", () => {
   it("resumes a paused PTY whose process exited so node-pty can drain it", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
-    await harness.manager.handleMessage({
-      type: "terminal.flow-control",
-      terminalId: "term-1",
-      enabled: true,
-    });
+    await streamTerminalOutput(harness.manager, "term-1");
     for (let index = 0; index < 17; index += 1) {
       pty.emitData("x".repeat(64 * 1024));
     }
@@ -1134,28 +1145,74 @@ describe("TerminalManager", () => {
     await vi.waitFor(() => {
       expect(pty.paused).toBe(false);
     });
+    pty.emitData("x".repeat(64 * 1024));
+    pty.emitData("tail");
+    pty.emitExit(0);
+
+    await vi.waitFor(() => {
+      expect(collectTerminalOutput(harness.messages).endsWith("tail")).toBe(
+        true,
+      );
+    });
+    expect(pty.pauseCount).toBe(1);
   });
 
-  it("stops pacing every PTY when the server connection is released", async () => {
+  it("stops streaming and pacing every PTY when the server connection is released", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
-    await harness.manager.handleMessage({
-      type: "terminal.flow-control",
-      terminalId: "term-1",
-      enabled: true,
-    });
+    await streamTerminalOutput(harness.manager, "term-1");
     for (let index = 0; index < 17; index += 1) {
       pty.emitData("x".repeat(64 * 1024));
     }
     expect(pty.paused).toBe(true);
+    const streamedBytes = collectTerminalOutput(harness.messages).length;
 
-    harness.manager.releaseOutputFlowControl();
+    harness.manager.releaseOutputStreams();
     for (let index = 0; index < 17; index += 1) {
       pty.emitData("x".repeat(64 * 1024));
     }
 
     expect(pty.paused).toBe(false);
     expect(pty.pauseCount).toBe(1);
+    expect(collectTerminalOutput(harness.messages).length).toBe(streamedBytes);
+  });
+
+  it("keeps a flood bounded in scrollback without sending it until the server streams the terminal", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    const chunk = "x".repeat(64 * 1024);
+
+    for (let index = 0; index < 256; index += 1) {
+      pty.emitData(chunk);
+    }
+    pty.emitData("latest");
+    await attachTerminal(harness, {
+      requestId: "attach-after-flood",
+      terminalId: "term-1",
+    });
+
+    expect(pty.pauseCount).toBe(0);
+    expect(
+      harness.messages.filter((message) => message.type === "terminal.output"),
+    ).toEqual([]);
+    const replay = harness.messages.find(
+      (message) => message.type === "terminal.replay",
+    );
+    if (replay?.type !== "terminal.replay") {
+      throw new Error("Expected a terminal replay");
+    }
+    const replayText = replay.chunks
+      .map((entry) => Buffer.from(entry.dataBase64, "base64").toString("utf8"))
+      .join("");
+    expect(replay.nextSeq).toBe(257);
+    expect(replayText.length).toBeLessThanOrEqual(4 * 1024 * 1024);
+    expect(replayText.endsWith("latest")).toBe(true);
+
+    await streamTerminalOutput(harness.manager, "term-1");
+    pty.emitData("live");
+    await vi.waitFor(() => {
+      expect(collectTerminalOutput(harness.messages)).toBe("live");
+    });
   });
 
   it("keeps a retained terminal read-only after it exits", async () => {
@@ -1351,6 +1408,7 @@ describe("TerminalManager", () => {
   it("answers primary device attribute queries without replaying them", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
 
     pty.emitData("before\u001b[0cbetween\u001b[cafter");
     await harness.manager.handleMessage({
@@ -1383,6 +1441,7 @@ describe("TerminalManager", () => {
   it("answers primary device attribute queries split across output chunks", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
 
     for (const chunk of ["\u001b", "[", "0", "c", "\u001b[", "c"]) {
       pty.emitData(chunk);
@@ -1410,6 +1469,7 @@ describe("TerminalManager", () => {
   it("bounds device attribute replies for one flooded output chunk", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
 
     pty.emitData("\u001b[c".repeat(5_000));
 
@@ -1420,6 +1480,7 @@ describe("TerminalManager", () => {
   it("preserves near matches and incomplete device attribute queries on exit", async () => {
     const harness = createHarness();
     const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
 
     pty.emitData("before\u001b[1cafter\u001b[0");
     pty.emitExit(0);
@@ -1520,6 +1581,40 @@ describe("TerminalManager", () => {
     await harness.runtimeManager.replaceBaseShellEnv({ BB_BASE_ENV: "2" });
     expect(harness.runtimeManager.get("env-1")).toBeUndefined();
     expect(harness.runtime.shutdown).toHaveBeenCalledTimes(1);
+  });
+
+  it("streams a paced terminal's final output while it closes", async () => {
+    const harness = createHarness();
+    const pty = await openTerminal(harness);
+    await streamTerminalOutput(harness.manager, "term-1");
+    for (let index = 0; index < 17; index += 1) {
+      pty.emitData("x".repeat(64 * 1024));
+    }
+    expect(pty.paused).toBe(true);
+
+    await harness.manager.handleMessage({
+      type: "terminal.close",
+      terminalId: "term-1",
+      reason: "user",
+    });
+    expect(pty.paused).toBe(true);
+    pty.exited = true;
+    await vi.waitFor(() => {
+      expect(pty.paused).toBe(false);
+    });
+    pty.emitData("goodbye");
+    pty.emitExit(0);
+
+    await vi.waitFor(() => {
+      expect(
+        harness.messages.filter(
+          (message) => message.type === "terminal.exited",
+        ),
+      ).toHaveLength(1);
+    });
+    expect(collectTerminalOutput(harness.messages).endsWith("goodbye")).toBe(
+      true,
+    );
   });
 
   it("acknowledges closing a terminal that is already gone", async () => {
@@ -1633,6 +1728,7 @@ describe("TerminalManager", () => {
     if (!newPty) {
       throw new Error("Expected replacement terminal PTY to spawn");
     }
+    await streamTerminalOutput(harness.manager, "term-1");
 
     oldPty.emitStaleData("stale-output\n");
     oldPty.emitStaleExit(7);
@@ -1715,6 +1811,7 @@ describe("TerminalManager", () => {
       rows: 30,
       start: DEFAULT_TERMINAL_START,
     });
+    await streamTerminalOutput(manager, "term-real");
     await manager.handleMessage({
       type: "terminal.input",
       terminalId: "term-real",

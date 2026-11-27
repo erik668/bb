@@ -6,6 +6,9 @@ export const MANAGED_BRANCH_PREFIX_MAX_LENGTH = 64;
 
 export const DEFAULT_MANAGED_BRANCH_PREFIX = "bb/";
 
+export const LOCAL_NETWORK_SERVER_ACCESS_PROVIDER_ID = "local-network";
+export const MANUAL_SERVER_ACCESS_PROVIDER_ID = "direct";
+
 export const IDLE_PROVIDER_SESSION_TIMEOUT_MINUTES = [
   0, 5, 10, 30, 60,
 ] as const;
@@ -27,9 +30,11 @@ export const appSettingsSchema = z
     steerActiveThreadOnEnter: z.boolean(),
     terminalCopyOnSelect: z.boolean(),
     confirmThreadArchive: z.boolean(),
+    confirmDesktopQuit: z.boolean(),
     showDiagnosticEvents: z.boolean(),
     keepHistoryAfterContextClear: z.boolean(),
     summarizeShellCommands: z.boolean(),
+    resumeThreadsAfterRestart: z.boolean(),
     providerOrder: z.array(z.string().min(1)),
     defaultProviderId: z.string().min(1).nullable(),
     providerCompletedTurnDisplay: z.record(
@@ -54,7 +59,8 @@ export const appSettingsSchema = z
       })
       .nullable(),
     machineGitCredentialsEnabled: z.boolean(),
-    defaultMachineAccess: z.string().min(1).nullable(),
+    serverAccessOrder: z.array(z.string().min(1)),
+    localNetworkEnabled: z.boolean(),
     onboardingCompletedAt: z.string().min(1).nullable(),
     earlyAdopter: z.boolean(),
   })
@@ -66,9 +72,11 @@ export const defaultAppSettings: AppSettings = {
   steerActiveThreadOnEnter: true,
   terminalCopyOnSelect: true,
   confirmThreadArchive: true,
+  confirmDesktopQuit: true,
   showDiagnosticEvents: false,
   keepHistoryAfterContextClear: false,
   summarizeShellCommands: true,
+  resumeThreadsAfterRestart: false,
   providerOrder: [],
   defaultProviderId: null,
   providerCompletedTurnDisplay: {},
@@ -78,13 +86,28 @@ export const defaultAppSettings: AppSettings = {
   managedBranchPrefix: DEFAULT_MANAGED_BRANCH_PREFIX,
   idleProviderSessionTimeoutMinutes: 30,
   machineServerUrl: null,
-  defaultMachineAccess: null,
+  serverAccessOrder: [],
+  localNetworkEnabled: false,
   machineGitCredentialsEnabled: true,
   onboardingCompletedAt: null,
   earlyAdopter: false,
 };
 
 export const disabledProviderIdsSchema = z.array(z.string().min(1));
+
+export const serverAccessOriginsSchema = z.array(
+  z
+    .object({
+      providerId: z.string().min(1),
+      pluginId: z.string().min(1).nullable(),
+      origin: z.string().min(1),
+    })
+    .strict(),
+);
+
+export type ServerAccessOrigin = z.infer<
+  typeof serverAccessOriginsSchema
+>[number];
 
 export const appSettingsUpdateSchema = z.union([
   appSettingsSchema.extend({
@@ -94,8 +117,10 @@ export const appSettingsUpdateSchema = z.union([
     allowFastServiceTier: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
     confirmThreadArchive: z.boolean().optional(),
+    confirmDesktopQuit: z.boolean().optional(),
     keepHistoryAfterContextClear: z.boolean().optional(),
     summarizeShellCommands: z.boolean().optional(),
+    resumeThreadsAfterRestart: z.boolean().optional(),
     showUnhandledProviderEvents: z.boolean().optional(),
     onboardingCompletedAt: z.string().min(1).nullable().optional(),
     earlyAdopter: z.boolean().optional(),
@@ -107,8 +132,10 @@ export const appSettingsUpdateSchema = z.union([
     allowFastServiceTier: z.boolean().optional(),
     telemetryEnabled: z.boolean().optional(),
     confirmThreadArchive: z.boolean().optional(),
+    confirmDesktopQuit: z.boolean().optional(),
     keepHistoryAfterContextClear: z.boolean().optional(),
     summarizeShellCommands: z.boolean().optional(),
+    resumeThreadsAfterRestart: z.boolean().optional(),
     showUnhandledProviderEvents: z.boolean(),
     onboardingCompletedAt: z.string().min(1).nullable().optional(),
     earlyAdopter: z.boolean().optional(),

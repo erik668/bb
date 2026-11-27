@@ -19,6 +19,7 @@ import {
   FollowUpPromptBox,
   type FollowUpSubmitMode,
 } from "@/components/promptbox/FollowUpPromptBox";
+import { composerDraftStore } from "@/test/fixtures/composer-draft";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
 import { createInertScrollPositionKeeper } from "@/test/scroll-position-keeper";
 import { testTypeaheadConfig } from "@/test/fixtures/composer-search";
@@ -269,7 +270,6 @@ function createFollowUpPromptBoxProps(
 ): Parameters<typeof FollowUpPromptBox>[0] {
   return {
     attachments: {
-      items: [],
       projectId: "proj_test",
       isAttaching: false,
       error: null,
@@ -279,14 +279,11 @@ function createFollowUpPromptBoxProps(
     stack: null,
     composer: {
       history: {
-        currentDraft: { text: "Follow up", mentions: [], attachments: [] },
         entries: [],
         onSelectEntry: vi.fn(),
       },
       isFollowUpSubmitting: false,
-      message: "Follow up",
-      mentionRanges: [],
-      onChangeMessage: vi.fn(),
+      draft: composerDraftStore("Follow up"),
       onModifierSubmit: vi.fn(),
       onSubmit: vi.fn(),
       compactPromptPlaceholder: "Ask a follow-up",
@@ -314,6 +311,7 @@ function createFollowUpPromptBoxProps(
       reasoning: {
         value: "medium",
         options: [],
+        isLoading: false,
         onChange: vi.fn(),
       },
     },
@@ -430,14 +428,24 @@ describe("FollowUpPromptBox", () => {
         {...props}
         stack={<></>}
         pluginComposerHost={{
-          scope: { kind: "thread", threadId: "thr_test" },
+          scope: {
+            kind: "thread",
+            threadId: "thr_test",
+            projectId: "proj_test",
+            environmentId: null,
+          },
           textEffectKey: "thread:thr_test",
           getCurrent: () => draft,
           subscribeDraft: () => () => {},
           setDraft: vi.fn(),
           focus: vi.fn(),
         }}
-        pluginComposerScope={{ kind: "thread", threadId: "thr_test" }}
+        pluginComposerScope={{
+          kind: "thread",
+          threadId: "thr_test",
+          projectId: "proj_test",
+          environmentId: null,
+        }}
       />,
     );
     expect(screen.getByText("Expandable plugin banner")).toBeTruthy();
@@ -497,14 +505,24 @@ describe("FollowUpPromptBox", () => {
         {...props}
         stack={<div data-testid="queued-messages">Queued messages</div>}
         pluginComposerHost={{
-          scope: { kind: "thread", threadId: "thr_test" },
+          scope: {
+            kind: "thread",
+            threadId: "thr_test",
+            projectId: "proj_test",
+            environmentId: null,
+          },
           textEffectKey: "thread:thr_test",
           getCurrent: () => draft,
           subscribeDraft: () => () => {},
           setDraft: vi.fn(),
           focus: vi.fn(),
         }}
-        pluginComposerScope={{ kind: "thread", threadId: "thr_test" }}
+        pluginComposerScope={{
+          kind: "thread",
+          threadId: "thr_test",
+          projectId: "proj_test",
+          environmentId: null,
+        }}
       />,
     );
 
@@ -597,14 +615,24 @@ describe("FollowUpPromptBox", () => {
         composer={null}
         stack={<div data-testid="archived-notice">Thread is archived</div>}
         pluginComposerHost={{
-          scope: { kind: "thread", threadId: "thr_test" },
+          scope: {
+            kind: "thread",
+            threadId: "thr_test",
+            projectId: "proj_test",
+            environmentId: null,
+          },
           textEffectKey: "thread:thr_test",
           getCurrent: () => draft,
           subscribeDraft: () => () => {},
           setDraft: vi.fn(),
           focus: vi.fn(),
         }}
-        pluginComposerScope={{ kind: "thread", threadId: "thr_test" }}
+        pluginComposerScope={{
+          kind: "thread",
+          threadId: "thr_test",
+          projectId: "proj_test",
+          environmentId: null,
+        }}
       />,
     );
 
@@ -725,6 +753,8 @@ describe("FollowUpPromptBox", () => {
         kind: "queued-message" as const,
         threadId: "thr_test",
         queuedMessageId: "queued_1",
+        projectId: "proj_test",
+        environmentId: null,
       };
       const props = createFollowUpPromptBoxProps({ kind: "ready" });
       render(
@@ -1383,10 +1413,14 @@ describe("FollowUpPromptBox", () => {
           vi.advanceTimersByTime(20);
         });
         act(() => input.blur());
-        act(() => vi.advanceTimersByTime(550));
+        act(() => {
+          vi.advanceTimersByTime(550);
+        });
 
         fireEvent.pointerDown(control, { button: 0, pointerType: "touch" });
-        act(() => vi.advanceTimersByTime(300));
+        act(() => {
+          vi.advanceTimersByTime(300);
+        });
 
         expect(
           screen.getByTestId("prompt-box").getAttribute("data-compact"),
@@ -1421,13 +1455,17 @@ describe("FollowUpPromptBox", () => {
         act(() => input.focus());
         fireEvent.pointerDown(control);
         act(() => input.blur());
-        act(() => vi.advanceTimersByTime(20));
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
         expect(
           screen.getByTestId("prompt-box").getAttribute("data-compact"),
         ).toBe("false");
 
         fireEvent[releaseEvent](control);
-        act(() => vi.advanceTimersByTime(20));
+        act(() => {
+          vi.advanceTimersByTime(20);
+        });
         expect(
           screen.getByTestId("prompt-box").getAttribute("data-compact"),
         ).toBe("true");
@@ -1493,12 +1531,16 @@ describe("FollowUpPromptBox", () => {
         screen.getByTestId("prompt-box").getAttribute("data-compact"),
       ).toBe("false");
 
-      act(() => vi.advanceTimersByTime(700));
+      act(() => {
+        vi.advanceTimersByTime(700);
+      });
       expect(
         screen.getByTestId("prompt-box").getAttribute("data-compact"),
       ).toBe("false");
 
-      act(() => vi.advanceTimersByTime(100));
+      act(() => {
+        vi.advanceTimersByTime(100);
+      });
       expect(
         screen.getByTestId("prompt-box").getAttribute("data-compact"),
       ).toBe("true");

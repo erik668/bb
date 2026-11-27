@@ -19,8 +19,8 @@ import {
   within,
 } from "@testing-library/react";
 import {
+  afterAll,
   afterEach,
-  beforeAll,
   beforeEach,
   describe,
   expect,
@@ -35,6 +35,11 @@ import {
 import { LazyQueuedMessagesList } from "@/components/promptbox/banner/LazyQueuedMessagesList";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
 import { ThreadDetailPromptArea } from "./ThreadDetailPromptArea";
+
+const renderRecorder = await vi.hoisted(async () => {
+  const { installRenderRecorder } = await import("@/test/render-recorder");
+  return installRenderRecorder();
+});
 
 const shellProbeRenders = vi.fn();
 
@@ -139,7 +144,6 @@ function buildPromptArea({
         providerCommands={null}
         sessionOptions={null}
         modelFallback={null}
-        parentThreadSection={null}
         pendingInteractions={pendingInteractions}
         queuedMessageCount={0}
         pendingTodos={null}
@@ -170,7 +174,7 @@ function getBottomComposerInput(): HTMLInputElement {
 let threadCounter = 0;
 let threadId = "";
 
-beforeAll(() => LazyQueuedMessagesList.preload());
+await LazyQueuedMessagesList.preload();
 
 beforeEach(() => {
   threadCounter += 1;
@@ -182,8 +186,13 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  renderRecorder.reset();
   window.localStorage.clear();
   vi.clearAllMocks();
+});
+
+afterAll(() => {
+  renderRecorder.uninstall();
 });
 
 describe("ThreadDetailPromptArea published composer host", () => {
@@ -203,6 +212,24 @@ describe("ThreadDetailPromptArea published composer host", () => {
     expect(screen.getByTestId("published-host-draft").textContent).toBe(typed);
     expect(shellRenderCount()).toBe(rendersAfterMount);
     expect(observedShellHosts().at(-1)).toBe(hostAfterMount);
+  });
+
+  it("renders nothing outside the composer input once the draft has text", () => {
+    renderPromptArea({ thread: makeThread(threadId) });
+    const input = getBottomComposerInput();
+    fireEvent.change(input, { target: { value: "a" } });
+    renderRecorder.reset();
+
+    for (const text of ["ab", "abc", "abcd"]) {
+      fireEvent.change(input, { target: { value: text } });
+    }
+
+    expect(input.value).toBe("abcd");
+    expect(
+      renderRecorder
+        .renderedOutside("MockComposerInput")
+        .filter((name) => name !== "PublishedHostDraftProbe"),
+    ).toEqual([]);
   });
 
   it("submits the draft as typed, read imperatively at event time", async () => {

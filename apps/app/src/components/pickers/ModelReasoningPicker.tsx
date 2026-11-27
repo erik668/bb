@@ -48,14 +48,14 @@ import {
   OPTION_MUTED_CLASS_NAME,
   OPTION_TRIGGER_CONTENT_CLASS_NAME,
 } from "@bb/shared-ui/option-display";
-import type { PickerOption } from "./OptionPicker";
+import type { PickerOption } from "@bb/shared-ui/option-picker";
 import type { ModelPickerOption } from "./model-picker-option";
 import {
   MODEL_PICKER_MENU_WIDTH_CLASS_NAME,
   splitModelLabelTag,
 } from "./model-picker-menu";
 import { ModelReasoningMenu } from "./ModelReasoningMenuSplit";
-import { searchPickerOptions } from "@bb/shared-ui/picker-search";
+import { searchPickerOptions } from "@bb/fuzzy-match";
 import { useResetPickerScroll } from "@bb/shared-ui/hooks/use-reset-picker-scroll";
 import { formatModelLoadErrorText } from "./model-load-error-message";
 import {
@@ -69,8 +69,9 @@ import { isEditableKeyboardTarget } from "@/lib/app-keybindings";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import {
   APP_COMPOSER_SELECTOR,
-  resolveComposerCommandScope,
-} from "@/lib/composer-command-ownership";
+  composerHoldsCaret,
+  isActiveComposerShell,
+} from "@/lib/active-composer";
 import {
   ownsModelPickerCycleChord,
   resolveModelPickerToggle,
@@ -85,6 +86,7 @@ import type {
   SessionOptionChoice,
   SessionOptionMenuSection,
 } from "./SessionOptionsMenu";
+import { isNonImeKey } from "@bb/shared-ui/lib/ime-keyboard";
 
 const NO_AGENT_SECTIONS: readonly SessionOptionMenuSection[] = [];
 function ignoreAgentOptionChange(): void {}
@@ -133,9 +135,12 @@ const MODEL_SEARCH_MIN_OPTIONS = 5;
 const HANDOFF_DRAWER_TOP_CLASS_NAME =
   "[&>[data-persistent-drawer-handle]]:w-full [&>[data-persistent-drawer-handle]]:rounded-t-xl [&>[data-persistent-drawer-handle]]:bg-background";
 
+export type MoreModelsOpenedBy = "hover" | "activation";
+
 export type ModelNavRow =
   | { kind: "model"; option: ModelPickerOption }
-  | { kind: "more-toggle" };
+  | { kind: "more-toggle" }
+  | { kind: "more-submenu" };
 
 export function buildModelNavRows({
   modelOptions,
@@ -161,15 +166,17 @@ export function buildModelNavRows({
     return rows;
   }
 
-  if (isCompactViewport) {
-    rows.push({ kind: "more-toggle" });
-    if (showMoreModels) {
-      for (const option of moreModelOptions) {
-        rows.push({ kind: "model", option });
-      }
-    }
+  if (!isCompactViewport) {
+    rows.push({ kind: "more-submenu" });
+    return rows;
   }
 
+  rows.push({ kind: "more-toggle" });
+  if (showMoreModels) {
+    for (const option of moreModelOptions) {
+      rows.push({ kind: "model", option });
+    }
+  }
   return rows;
 }
 
@@ -191,6 +198,7 @@ interface ModelReasoningPickerProps {
   formatModelLabel?: (displayName: string) => string;
   reasoningValue: ReasoningLevel;
   reasoningOptions: readonly PickerOption<ReasoningLevel>[];
+  reasoningIsLoading: boolean;
   onReasoningChange: (value: ReasoningLevel) => void;
   serviceTierValue: ServiceTier | undefined;
   serviceTierOptions: readonly ProviderOptionDescriptor[];
@@ -225,6 +233,7 @@ export function ModelReasoningPicker({
   formatModelLabel,
   reasoningValue,
   reasoningOptions,
+  reasoningIsLoading,
   onReasoningChange,
   serviceTierValue,
   serviceTierOptions,
@@ -235,7 +244,7 @@ export function ModelReasoningPicker({
   serviceTierSupportByProvider,
   className,
   muted,
-  modal = true,
+  modal = false,
   align = "start",
   disabled,
   handoff,
@@ -260,7 +269,8 @@ export function ModelReasoningPicker({
     null,
   );
   const [showMoreModels, setShowMoreModels] = useState(false);
-  const [moreModelsOpen, setMoreModelsOpen] = useState(false);
+  const [moreModelsOpenedBy, setMoreModelsOpenedBy] =
+    useState<MoreModelsOpenedBy | null>(null);
   const [trackedSelectedProviderId, setTrackedSelectedProviderId] =
     useState(selectedProviderId);
   const [browsingHandoff, setHandoffMode] = useState(false);
@@ -279,7 +289,7 @@ export function ModelReasoningPicker({
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
-    setMoreModelsOpen(false);
+    setMoreModelsOpenedBy(null);
     setSearchQuery("");
     setActiveIndex(-1);
   }
@@ -360,14 +370,15 @@ export function ModelReasoningPicker({
     ...providerRouting,
     providerId: isPreviewing ? previewProviderId : undefined,
   });
+  const previewProviders = previewQuery.data?.providers;
   const previewProvider = useMemo(
     () =>
       isPreviewing
-        ? previewQuery.data?.providers.find(
+        ? previewProviders?.find(
             (provider) => provider.id === previewProviderId,
           )
         : undefined,
-    [isPreviewing, previewProviderId, previewQuery.data?.providers],
+    [isPreviewing, previewProviderId, previewProviders],
   );
   const previewCatalogIsVerified =
     isPreviewing &&
@@ -554,13 +565,20 @@ export function ModelReasoningPicker({
     (isPreviewing
       ? hasActiveModelOptions && !activeModelIsLoading
       : hasSelectedModel && !modelIsLoading && !selectedModelLoadFailed);
+  const showReasoningPlaceholder =
+    reasoningIsLoading &&
+    !isPreviewing &&
+    !isShowingModelError &&
+    hasSelectedModel &&
+    !modelIsLoading &&
+    !selectedModelLoadFailed;
 
   const resetBrowseState = useCallback(() => {
     setHandoffMode(false);
     setHandoffReasoningLevel(null);
     setPreviewProviderId(null);
     setShowMoreModels(false);
-    setMoreModelsOpen(false);
+    setMoreModelsOpenedBy(null);
     setSearchQuery("");
     setActiveIndex(-1);
   }, []);
@@ -589,11 +607,11 @@ export function ModelReasoningPicker({
             (isPreviewing ? previewSelection?.reasoningLevel : undefined) ??
             reasoningValue,
         });
-        setMoreModelsOpen(false);
+        setMoreModelsOpenedBy(null);
         return;
       }
       onModelChange(model);
-      setMoreModelsOpen(false);
+      setMoreModelsOpenedBy(null);
       setPreviewProviderId(null);
     },
     [
@@ -617,7 +635,7 @@ export function ModelReasoningPicker({
       );
       setHandoffReasoningLevel(null);
       setShowMoreModels(false);
-      setMoreModelsOpen(false);
+      setMoreModelsOpenedBy(null);
       setSearchQuery("");
       setActiveIndex(-1);
     },
@@ -676,7 +694,7 @@ export function ModelReasoningPicker({
       }
       onReasoningChange(level);
       setPreviewProviderId(null);
-      setMoreModelsOpen(false);
+      setMoreModelsOpenedBy(null);
     },
     [
       handoffMode,
@@ -693,19 +711,20 @@ export function ModelReasoningPicker({
   const isSplitPane = paneContext?.isSplitPane ?? false;
   const resolveCommandScope = useCallback(
     (target: EventTarget | null): ModelPickerScope => {
-      const scope = resolveComposerCommandScope({
-        composer: triggerRef.current?.closest(APP_COMPOSER_SELECTOR) ?? null,
-        target,
-        isFocusedPane,
-      });
+      const composer =
+        triggerRef.current?.closest(APP_COMPOSER_SELECTOR) ?? null;
       return {
-        ...scope,
         disabled: disabled ?? false,
+        isFocusedPane,
         isSplitPane,
+        isActiveComposer: isActiveComposerShell(composer, target),
+        caretInThisComposer: composerHoldsCaret(composer, target),
         editableOutsideComposer:
-          !scope.caretInThisComposer &&
-          !scope.caretInOtherComposer &&
-          isEditableKeyboardTarget(target),
+          isEditableKeyboardTarget(target) &&
+          !(
+            target instanceof Element &&
+            target.closest(APP_COMPOSER_SELECTOR) !== null
+          ),
       };
     },
     [disabled, isFocusedPane, isSplitPane],
@@ -876,16 +895,31 @@ export function ModelReasoningPicker({
         return;
       }
 
-      if (event.key === "Enter") {
-        if (highlightedIndex < 0) return;
-        const row = navRows[highlightedIndex];
-        if (!row) return;
+      const row = highlightedIndex >= 0 ? navRows[highlightedIndex] : undefined;
+      if (!row) return;
+
+      if (
+        row.kind === "more-submenu" &&
+        event.key === "ArrowRight" &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey &&
+        !event.shiftKey
+      ) {
+        event.preventDefault();
+        setMoreModelsOpenedBy("activation");
+        return;
+      }
+
+      if (isNonImeKey(event, "Enter")) {
         event.preventDefault();
         if (row.kind === "model") {
           if (row.option.disabled === true) return;
           handleModelSelect(row.option.value);
-        } else {
+        } else if (row.kind === "more-toggle") {
           toggleShowMoreModels();
+        } else {
+          setMoreModelsOpenedBy("activation");
         }
       }
     },
@@ -991,6 +1025,13 @@ export function ModelReasoningPicker({
               >
                 {triggerReasoningLabel}
               </span>
+            ) : reasoningIsLoading && hasSelectedModel && !modelIsLoading ? (
+              <Skeleton
+                aria-hidden
+                data-reasoning-loading-placeholder="trigger"
+                data-promptbox-hide-compact=""
+                className="h-3 w-8 shrink-0 rounded-sm"
+              />
             ) : null}
           </>
         )}
@@ -1133,13 +1174,14 @@ export function ModelReasoningPicker({
           showMoreModels={showMoreModels}
           onToggleMoreModels={toggleShowMoreModels}
           moreModelOptions={filteredMoreModelOptions}
-          moreModelsOpen={moreModelsOpen}
-          onMoreModelsOpenChange={setMoreModelsOpen}
+          moreModelsOpenedBy={moreModelsOpenedBy}
+          onMoreModelsOpenedByChange={setMoreModelsOpenedBy}
           isPreviewing={isPreviewing}
           modelValue={modelValue}
           selectionBlocked={previewSelectionBlocked}
           onModelSelect={handleModelSelect}
           showReasoningSection={showReasoningSection}
+          showReasoningPlaceholder={showReasoningPlaceholder}
           reasoningValue={activeReasoningValue}
           reasoningOptions={activeReasoningOptions}
           onReasoningSelect={handleReasoningSelect}

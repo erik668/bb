@@ -1,8 +1,15 @@
 import { getComposerEditorBridge } from "@/lib/composer-editor-registry";
-import { memo, useMemo, useState, type ReactNode } from "react";
+import {
+  memo,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import type {
   ComposerPlusMenuItem,
   ComposerView,
+  ExperimentalComposerActionContext,
   PluginComposerApi,
 } from "@get-bb/plugin-sdk";
 import { Button } from "@bb/shared-ui/button";
@@ -21,12 +28,15 @@ import type {
   ResolvedComposerPlusMenuItem,
 } from "@/lib/plugin-slot-resolvers";
 import { useComposer, useComposerView } from "@/lib/plugin-sdk-hooks";
+import { useAppNavigationHost } from "@/lib/app-navigation-host";
+import { useBindPluginActionContext } from "@/lib/plugin-action-context-provider";
 import { useResolvedComposerActions } from "./composer-slot-hooks";
 import { PluginIcon } from "./PluginIcon";
 import { PluginSlotMount } from "./PluginSlotMount";
 import {
   composerScopeIdentity,
   useOptionalPluginComposerStaticView,
+  usePluginComposerHost,
 } from "./plugin-composer-host";
 
 const PLUGIN_COMPOSER_INLINE_PLUGIN_LIMIT = 3;
@@ -275,6 +285,31 @@ export function PluginComposerPlusMenuEntry({
   );
 }
 
+interface RetiredComposerMenuRunMembers {
+  view: ComposerView;
+}
+
+function useComposerMenuItemDisabled(
+  item: ComposerPlusMenuItem,
+  composer: PluginComposerApi,
+): boolean | undefined {
+  const host = usePluginComposerHost();
+  const subscribe = (listener: () => void) => {
+    if (host === null) return () => {};
+    const unsubscribeDraft = host.subscribeDraft(listener);
+    const unsubscribeSelection = host.subscribeSelection?.(listener);
+    return () => {
+      unsubscribeDraft();
+      unsubscribeSelection?.();
+    };
+  };
+  const readDisabled = () =>
+    typeof item.disabled === "function"
+      ? item.disabled(composer)
+      : item.disabled;
+  return useSyncExternalStore(subscribe, readDisabled, readDisabled);
+}
+
 function PluginComposerPlusMenuEntryContent({
   pluginId,
   item,
@@ -286,14 +321,19 @@ function PluginComposerPlusMenuEntryContent({
 }) {
   const composer = useComposer();
   const view = useComposerView();
-  const disabled =
-    typeof item.disabled === "function"
-      ? item.disabled(composer)
-      : item.disabled;
+  const disabled = useComposerMenuItemDisabled(item, composer);
+  const bind = useBindPluginActionContext();
+  const host = useAppNavigationHost();
 
   const run = async () => {
+    const context: ExperimentalComposerActionContext &
+      RetiredComposerMenuRunMembers = {
+      ...bind(pluginId, () => host),
+      composer,
+      view,
+    };
     try {
-      await item.run({ composer, view } as { composer: PluginComposerApi });
+      await item.run(context);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.error(

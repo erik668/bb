@@ -3,7 +3,7 @@ import type {
   ThreadTimelinePendingTodoItem,
   ThreadTimelinePendingTodoItemStatus,
 } from "@bb/domain";
-import type { BbSdk } from "@bb/sdk";
+import { BbHttpError, type BbSdk } from "@bb/sdk";
 
 interface FetchThreadPendingTodosArgs {
   sdk: Pick<BbSdk, "threads">;
@@ -14,13 +14,13 @@ export async function fetchThreadPendingTodos(
   args: FetchThreadPendingTodosArgs,
 ): Promise<ThreadTimelinePendingTodos | null> {
   try {
-    const response = await args.sdk.threads.timeline({
+    const headState = await args.sdk.threads.experimental_headState({
       threadId: args.threadId,
-      summaryOnly: "true",
     });
-    return response.pendingTodos;
-  } catch {
-    return null;
+    return headState.pendingTodos;
+  } catch (error) {
+    if (error instanceof BbHttpError && error.status === 404) return null;
+    throw error;
   }
 }
 

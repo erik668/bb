@@ -8,9 +8,11 @@ import {
 } from "react";
 import { experimental_Icon as Icon } from "@get-bb/plugin-sdk/app";
 import { HOVER_REVEAL_NO_HOVER_VISIBLE_CLASS } from "@/components/ui/hover-reveal";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import {
   definePluginApp,
+  experimental_matchesShortcutKey as matchesShortcutKey,
   experimental_usePluginId,
   Markdown,
   useBbContext,
@@ -30,6 +32,7 @@ import {
   type StarredPromptRow,
   type promptLibraryRpcContract,
 } from "./contract.js";
+import { isNonImeKey } from "@/lib/ime-keyboard";
 
 const POPUP_ID = "prompt-library";
 
@@ -103,7 +106,7 @@ function formatAge(timestamp: number, now: number): string {
 
 function isStarShortcut(event: ReactKeyboardEvent): boolean {
   return (
-    event.key.toLowerCase() === "s" &&
+    matchesShortcutKey(event, "s") &&
     (event.metaKey || event.ctrlKey) &&
     !event.altKey &&
     !event.shiftKey
@@ -201,10 +204,10 @@ function PromptTitleEditor({
             onChange={(event) => setValue(event.target.value)}
             onKeyDown={(event) => {
               event.stopPropagation();
-              if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+              if (isNonImeKey(event, "Enter")) {
                 event.preventDefault();
                 void save();
-              } else if (event.key === "Escape") {
+              } else if (isNonImeKey(event, "Escape")) {
                 event.preventDefault();
                 if (!saving) cancel();
               }
@@ -214,7 +217,7 @@ function PromptTitleEditor({
           <div className="mt-1 flex gap-2">
             <button
               type="button"
-              onClick={save}
+              onClick={() => void save()}
               disabled={saving}
               className="rounded px-2 py-1 text-xs hover:bg-state-hover"
             >
@@ -303,12 +306,10 @@ function PromptLibraryPopup() {
   useEffect(() => {
     const root = rootRef.current;
     if (root === null) return;
-    const measure = () =>
-      setTwoPane(root.getBoundingClientRect().width >= TWO_PANE_MIN_WIDTH);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(root);
-    return () => observer.disconnect();
+    const readTwoPane = () =>
+      root.getBoundingClientRect().width >= TWO_PANE_MIN_WIDTH;
+    setTwoPane(readTwoPane());
+    return observeSharedResize(root, { read: readTwoPane, write: setTwoPane });
   }, []);
 
   useEffect(() => {
@@ -322,44 +323,44 @@ function PromptLibraryPopup() {
       setIsSearching(false);
       apply();
     };
-    const handle = window.setTimeout(
-      async () => {
-        setError(null);
-        setIsSearching(true);
-        timeout = window.setTimeout(
-          () => finish(() => setError("Loading prompts timed out. Try again.")),
-          SEARCH_TIMEOUT_MS,
+    const search = async () => {
+      setError(null);
+      setIsSearching(true);
+      timeout = window.setTimeout(
+        () => finish(() => setError("Loading prompts timed out. Try again.")),
+        SEARCH_TIMEOUT_MS,
+      );
+      try {
+        const next = await rpc.call("search", {
+          query,
+          scope,
+          projectId: targets.projectId,
+          threadId: targets.threadId,
+          composer: kind,
+          waitForHistory: false,
+          refreshHistory:
+            retryHistoryRef.current || pendingHistoryQueryRef.current !== query,
+        });
+        finish(() => {
+          retryHistoryRef.current = false;
+          pendingHistoryQueryRef.current = next.loading ? query : null;
+          setResult({ ...next, query });
+          if (next.historyError !== null)
+            setError(`History unavailable: ${next.historyError}`);
+          if (next.loading)
+            poll = window.setTimeout(
+              () => setReloadCount((count) => count + 1),
+              250,
+            );
+        });
+      } catch (cause: unknown) {
+        finish(() =>
+          setError(cause instanceof Error ? cause.message : String(cause)),
         );
-        try {
-          const next = await rpc.call("search", {
-            query,
-            scope,
-            projectId: targets.projectId,
-            threadId: targets.threadId,
-            composer: kind,
-            waitForHistory: false,
-            refreshHistory:
-              retryHistoryRef.current ||
-              pendingHistoryQueryRef.current !== query,
-          });
-          finish(() => {
-            retryHistoryRef.current = false;
-            pendingHistoryQueryRef.current = next.loading ? query : null;
-            setResult({ ...next, query });
-            if (next.historyError !== null)
-              setError(`History unavailable: ${next.historyError}`);
-            if (next.loading)
-              poll = window.setTimeout(
-                () => setReloadCount((count) => count + 1),
-                250,
-              );
-          });
-        } catch (cause: unknown) {
-          finish(() =>
-            setError(cause instanceof Error ? cause.message : String(cause)),
-          );
-        }
-      },
+      }
+    };
+    const handle = window.setTimeout(
+      () => void search(),
       query.length === 0 ? 0 : 60,
     );
     return () => {
@@ -495,10 +496,10 @@ function PromptLibraryPopup() {
       const step = event.key === "ArrowDown" ? 1 : -1;
       const next = rows[(activeIndex + step + rows.length) % rows.length];
       if (next !== undefined) setHighlightedKey(next.key);
-    } else if (event.key === "Enter") {
+    } else if (isNonImeKey(event, "Enter")) {
       event.preventDefault();
       if (row !== undefined) activate(row);
-    } else if (event.key === "Escape") {
+    } else if (isNonImeKey(event, "Escape")) {
       event.preventDefault();
       if (previewKey !== null && !twoPane) {
         setPreviewKey(null);

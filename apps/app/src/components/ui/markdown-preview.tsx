@@ -123,6 +123,7 @@ import {
 import {
   createMarkdownPieceCache,
   resolveMarkdownPieces,
+  resolveMarkdownPiecesUnlessHtml,
   type MarkdownPieceRenderConfig,
 } from "./markdown-incremental-pieces.js";
 import { normalizePromptBlockquoteBoundaries } from "./markdown-prompt-blockquote-boundaries.js";
@@ -135,6 +136,7 @@ import {
 } from "@/lib/localhost-link-rewrite-preference";
 import { useAppNavigationHost } from "@/lib/app-navigation-host";
 import { useHostPathExists } from "@/hooks/queries/host-path-queries";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { cn } from "@bb/shared-ui/lib/utils";
 import remarkDirective from "remark-directive";
 import { PromptMentionPill } from "@/components/thread/timeline/ConversationMessageMentions.js";
@@ -164,6 +166,11 @@ export interface MarkdownThreadMentions {
   mentions: readonly PromptTextMention[];
   preserveSoftBreaks: boolean;
 }
+
+export const AUTHORED_MARKDOWN_THREAD_MENTIONS: MarkdownThreadMentions = {
+  mentions: [],
+  preserveSoftBreaks: false,
+};
 
 interface MarkdownAnchorProps
   extends ComponentPropsWithoutRef<"a">, ExtraProps {
@@ -328,6 +335,56 @@ function resolveRehypePlugins({
 }): MarkdownRehypePlugins {
   const base = MARKDOWN_PLAIN_REHYPE_PLUGINS;
   return rehypeKatex === null ? base : [...base, rehypeKatex];
+}
+
+const markdownRemarkPluginLists = new Map<string, MarkdownRemarkPlugins>();
+
+function resolveMarkdownRemarkPlugins({
+  breaks,
+  headingIds,
+  messageDirectives,
+  promptMentions,
+  threadMentions,
+}: {
+  breaks: boolean;
+  headingIds: boolean;
+  messageDirectives: boolean;
+  promptMentions: boolean;
+  threadMentions: boolean;
+}): MarkdownRemarkPlugins {
+  const key = [
+    breaks,
+    headingIds,
+    messageDirectives,
+    promptMentions,
+    threadMentions,
+  ].join();
+  const cached = markdownRemarkPluginLists.get(key);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const plugins: MarkdownRemarkPlugins = [
+    remarkGfm,
+    [remarkMath, { singleDollarTextMath: false }],
+    remarkInlineDollarMath,
+  ];
+  if (headingIds) {
+    plugins.push(remarkHeadingIds);
+  }
+  if (breaks) {
+    plugins.push(remarkBreaks);
+  }
+  if (threadMentions) {
+    plugins.push(remarkThreadMentions);
+  }
+  if (promptMentions) {
+    plugins.push(remarkPromptMentions);
+  }
+  if (messageDirectives) {
+    plugins.push(remarkDirective);
+  }
+  markdownRemarkPluginLists.set(key, plugins);
+  return plugins;
 }
 
 function areMarkdownAbsoluteLocalFileLinkRoutingsEqual({
@@ -1528,7 +1585,7 @@ function setMarkdownContentWidthVariable({
 
 interface MarkdownTableGeometryRegistration {
   breakout: HTMLElement;
-  clip: HTMLElement | null;
+  clip: HTMLElement | null | undefined;
   content: HTMLElement;
   lastClipWidth: number;
   lastContentWidth: number;
@@ -1540,96 +1597,69 @@ type MarkdownTableBreakoutLimitMeasurement =
   | { kind: "unchanged" };
 
 interface MarkdownTableGeometryMeasurement {
-  breakout: HTMLElement;
   breakoutLimit: MarkdownTableBreakoutLimitMeasurement;
   contentWidth: number;
 }
 
-const markdownTableRegistrationsByElement = new Map<
-  HTMLElement,
-  Set<MarkdownTableGeometryRegistration>
->();
-let sharedMarkdownTableResizeObserver: ResizeObserver | null = null;
-
-function measureMarkdownTableGeometry(
-  registrations: Iterable<MarkdownTableGeometryRegistration>,
-): void {
-  const measurements: MarkdownTableGeometryMeasurement[] = [];
-  for (const registration of registrations) {
-    const { breakout, clip, content } = registration;
-    const contentWidth = content.getBoundingClientRect().width;
-    const clipWidth = clip?.clientWidth ?? -1;
-    if (
-      contentWidth === registration.lastContentWidth &&
-      clipWidth === registration.lastClipWidth
-    ) {
-      continue;
-    }
-    registration.lastContentWidth = contentWidth;
-    registration.lastClipWidth = clipWidth;
-    measurements.push({
-      breakout,
-      breakoutLimit: readMarkdownTableBreakoutLimit({ breakout, clip }),
-      contentWidth,
-    });
+function readMarkdownTableGeometry(
+  registration: MarkdownTableGeometryRegistration,
+): MarkdownTableGeometryMeasurement | null {
+  const { breakout, content } = registration;
+  const clip = (registration.clip ??= findHorizontalClipAncestor(content));
+  const contentWidth = content.getBoundingClientRect().width;
+  const clipWidth = clip?.clientWidth ?? -1;
+  if (
+    contentWidth === registration.lastContentWidth &&
+    clipWidth === registration.lastClipWidth
+  ) {
+    return null;
   }
-
-  for (const { breakout, breakoutLimit, contentWidth } of measurements) {
-    setMarkdownContentWidthVariable({
-      element: breakout,
-      width: contentWidth,
-    });
-    applyMarkdownTableBreakoutLimit({ breakout, measurement: breakoutLimit });
-  }
-}
-
-function getSharedMarkdownTableResizeObserver(): ResizeObserver {
-  sharedMarkdownTableResizeObserver ??= new ResizeObserver((entries) => {
-    const registrations = new Set<MarkdownTableGeometryRegistration>();
-    for (const entry of entries) {
-      if (!(entry.target instanceof HTMLElement)) continue;
-      for (const registration of markdownTableRegistrationsByElement.get(
-        entry.target,
-      ) ?? []) {
-        registrations.add(registration);
-      }
-    }
-    measureMarkdownTableGeometry(registrations);
-  });
-  return sharedMarkdownTableResizeObserver;
+  registration.lastContentWidth = contentWidth;
+  registration.lastClipWidth = clipWidth;
+  return {
+    breakoutLimit: readMarkdownTableBreakoutLimit({ breakout, clip }),
+    contentWidth,
+  };
 }
 
 function observeMarkdownTableGeometry(
   registration: MarkdownTableGeometryRegistration,
 ): () => void {
-  const elements =
-    registration.clip === null || registration.clip === registration.content
-      ? [registration.content]
-      : [registration.content, registration.clip];
-  const observer = getSharedMarkdownTableResizeObserver();
-  for (const element of elements) {
-    let registrations = markdownTableRegistrationsByElement.get(element);
-    if (!registrations) {
-      registrations = new Set();
-      markdownTableRegistrationsByElement.set(element, registrations);
-      observer.observe(element);
-    }
-    registrations.add(registration);
-  }
-
-  return () => {
-    for (const element of elements) {
-      const registrations = markdownTableRegistrationsByElement.get(element);
-      registrations?.delete(registration);
-      if (registrations?.size === 0) {
-        markdownTableRegistrationsByElement.delete(element);
-        sharedMarkdownTableResizeObserver?.unobserve(element);
+  const phases = {
+    read: () => readMarkdownTableGeometry(registration),
+    write: (measurement: MarkdownTableGeometryMeasurement | null) => {
+      if (measurement === null) return;
+      setMarkdownContentWidthVariable({
+        element: registration.breakout,
+        width: measurement.contentWidth,
+      });
+      applyMarkdownTableBreakoutLimit({
+        breakout: registration.breakout,
+        measurement: measurement.breakoutLimit,
+      });
+    },
+  };
+  let unobserveClip: (() => void) | null = null;
+  let clipFrame: number | null = null;
+  const unobserveContent = observeSharedResize(registration.content, {
+    read: () => {
+      const firstRead = registration.clip === undefined;
+      const measurement = phases.read();
+      const clip = registration.clip;
+      if (firstRead && clip && clip !== registration.content) {
+        clipFrame = requestAnimationFrame(() => {
+          clipFrame = null;
+          unobserveClip = observeSharedResize(clip, phases);
+        });
       }
-    }
-    if (markdownTableRegistrationsByElement.size === 0) {
-      sharedMarkdownTableResizeObserver?.disconnect();
-      sharedMarkdownTableResizeObserver = null;
-    }
+      return measurement;
+    },
+    write: phases.write,
+  });
+  return () => {
+    unobserveContent();
+    unobserveClip?.();
+    if (clipFrame !== null) cancelAnimationFrame(clipFrame);
   };
 }
 
@@ -1639,24 +1669,16 @@ function useMarkdownTableContentWidthVariable() {
   useLayoutEffect(() => {
     const breakout = breakoutRef.current;
     const content = breakout?.closest<HTMLElement>("[data-markdown-preview]");
-    if (!breakout || !content) {
+    if (!breakout || !content || typeof ResizeObserver === "undefined") {
       return;
     }
-    const clip = findHorizontalClipAncestor(content);
-    const registration: MarkdownTableGeometryRegistration = {
+    return observeMarkdownTableGeometry({
       breakout,
-      clip,
+      clip: undefined,
       content,
       lastClipWidth: -1,
       lastContentWidth: -1,
-    };
-
-    if (typeof ResizeObserver === "undefined") {
-      measureMarkdownTableGeometry([registration]);
-      return;
-    }
-
-    return observeMarkdownTableGeometry(registration);
+    });
   }, []);
 
   return breakoutRef;
@@ -1716,7 +1738,7 @@ function readMarkdownTableBreakoutLimit({
     return { kind: "set", value: `calc(${parentWidth + endRoom}px - 1rem)` };
   }
   const room = Math.min(Math.max(0, parentLeft - clipLeft), endRoom);
-  return { kind: "set", value: `${parentWidth + 2 * room}px` };
+  return { kind: "set", value: `calc(${parentWidth + 2 * room}px - 2rem)` };
 }
 
 function applyMarkdownTableBreakoutLimit({
@@ -1808,9 +1830,9 @@ function MarkdownPreviewComponent({
   const [expandedImage, setExpandedImage] =
     useState<ExpandedMarkdownImage | null>(null);
   const [markdownPieceCache] = useState(createMarkdownPieceCache);
-  const rendersHtml = allowHtml && content.includes("<");
+  const mayRenderHtml = allowHtml && content.includes("<");
   const usesIncrementalBlocks =
-    incrementalBlocks && !rendersHtml && promptMentions === undefined;
+    incrementalBlocks && promptMentions === undefined;
   const localFileRouting = linkRouting?.localFile;
   const localImageRouting = linkRouting?.localImage;
   const normalizeLocalFileLinks =
@@ -1907,32 +1929,15 @@ function MarkdownPreviewComponent({
       threadMentions,
     ],
   );
-  const baseRemarkPlugins = useMemo((): MarkdownRemarkPlugins => {
-    const plugins: MarkdownRemarkPlugins = [
-      remarkGfm,
-      [remarkMath, { singleDollarTextMath: false }],
-      remarkInlineDollarMath,
-    ];
-    if (headingAnchors) {
-      plugins.push(remarkHeadingIds);
-    }
-    if (
+  const baseRemarkPlugins = resolveMarkdownRemarkPlugins({
+    breaks:
       threadMentions?.preserveSoftBreaks === true ||
-      promptMentions !== undefined
-    ) {
-      plugins.push(remarkBreaks);
-    }
-    if (threadMentions !== undefined) {
-      plugins.push(remarkThreadMentions);
-    }
-    if (promptMentions !== undefined) {
-      plugins.push(remarkPromptMentions);
-    }
-    if (hasMessageDirectives) {
-      plugins.push(remarkDirective);
-    }
-    return plugins;
-  }, [headingAnchors, threadMentions, promptMentions, hasMessageDirectives]);
+      promptMentions !== undefined,
+    headingIds: headingAnchors,
+    messageDirectives: hasMessageDirectives,
+    promptMentions: promptMentions !== undefined,
+    threadMentions: threadMentions !== undefined,
+  });
   const codeFenceRegistry = useCodeFenceLanguages();
   const remarkPlugins = useMemo((): MarkdownRemarkPlugins => {
     const plugins: MarkdownRemarkPlugins = [...baseRemarkPlugins];
@@ -1989,9 +1994,20 @@ function MarkdownPreviewComponent({
       resolvedUrlTransform,
     ],
   );
-  const markdownPieces = usesIncrementalBlocks
-    ? resolveMarkdownPieces(markdownPieceCache, markdownPieceRenderConfig, body)
-    : null;
+  const markdownPieces = !usesIncrementalBlocks
+    ? null
+    : mayRenderHtml
+      ? resolveMarkdownPiecesUnlessHtml(
+          markdownPieceCache,
+          markdownPieceRenderConfig,
+          body,
+        )
+      : resolveMarkdownPieces(
+          markdownPieceCache,
+          markdownPieceRenderConfig,
+          body,
+        );
+  const rendersHtml = mayRenderHtml && markdownPieces === null;
 
   const Markdown = rendersHtml ? LazyMarkdownHtml : ReactMarkdown;
   const renderedMarkdown =

@@ -1,27 +1,33 @@
 import { sweepProviderLifecycles } from "../../../apps/server/src/services/environments/environment-engine.js";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
+import net from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import {
   ensurePersonalProject,
-  getExperiments,
+  getAppSettings,
   getAutoAppUpdate,
   getSkippedAppUpdate,
   setAutoAppUpdate,
+  setExperiments,
   setSkippedAppUpdate,
   listRunningThreads,
+  startWalCheckpointer,
   type DbConnection,
 } from "@bb/db";
 import { createMigratedConnection } from "@bb/db/testing";
-import { defaultFeatureFlags } from "@bb/domain";
+import { defaultFeatureFlags, type ExperimentUpdates } from "@bb/domain";
 import {
   acquireDaemonLock,
   createHostDaemonApp,
   loadHostIdentity,
   persistHostId,
+  persistServerRoutes,
+  readPersistedServerRoutes,
+  ServerRouteResolver,
   type HostDaemon,
   type HostDaemonApp,
 } from "@bb/host-daemon/test";
@@ -50,10 +56,9 @@ import { createScheduledAppUpdateService } from "../../../apps/server/src/servic
 import { createAppUpdateSendHold } from "../../../apps/server/src/services/system/app-update-send-hold.js";
 import { createCliCommandService } from "../../../apps/server/src/services/system/cli-command.js";
 import { createAppVersionService } from "../../../apps/server/src/services/system/app-version.js";
-import { createProviderNativeRootsCache } from "../../../apps/server/src/services/providers/native-roots.js";
+import { createProjectSkillIndexCache } from "../../../apps/server/src/services/skills/skill-listing.js";
 import { createProviderLiveCommandsCache } from "../../../apps/server/src/services/providers/provider-live-commands.js";
 import { createBbAppManagedConfigReloader } from "../../../apps/server/src/services/system/bb-app-managed-config.js";
-import { createSetupGuideExperiment } from "../../../apps/server/src/services/system/setup-guide-experiment.js";
 import { createNoopTelemetryService } from "../../../apps/server/src/services/system/telemetry.js";
 import { TerminalSessionLifecycle } from "../../../apps/server/src/services/terminals/terminal-session-lifecycle.js";
 import type {
@@ -116,6 +121,7 @@ export interface IntegrationHarness {
   cleanup(): Promise<void>;
   crashDaemon(): Promise<void>;
   daemonApp: HostDaemonApp;
+  dropDaemonConnections(): number;
   db: DbConnection;
   hostId: string;
   hub: NotificationHub;
@@ -128,6 +134,8 @@ export interface IntegrationHarness {
 }
 
 interface CreateHarnessOptions {
+  experiments?: ExperimentUpdates;
+  proxyDaemonConnection?: boolean;
   serverPort?: number;
   bindHost?: "127.0.0.1" | "0.0.0.0";
   staticDir?: string;
@@ -203,7 +211,11 @@ async function startIntegrationServer(
   });
 
   const db = createMigratedConnection();
+  const walCheckpointer = startWalCheckpointer({ logger: testLogger });
   ensurePersonalProject(db);
+  if (options.experiments !== undefined) {
+    setExperiments(db, options.experiments);
+  }
   const hub = new NotificationHub();
   const sharedPorts = new HostSharedPortCoordinator({ db, hub });
   const watchInterests = new WatchInterestCoordinator({ db, hub });
@@ -216,7 +228,6 @@ async function startIntegrationServer(
     hostDaemonPort: 3001,
     inheritedSkillsRootPaths: [],
     marketplaceUrl: "https://marketplace.invalid/marketplace.json",
-    connectGateKeysUrl: "https://gate-keys.invalid/bb-connect-gate-keys.json",
     appUrl: "https://bb.example.test",
     serverPort: 0,
     sharedSkillRoots: { user: [], project: [] },
@@ -289,7 +300,7 @@ async function startIntegrationServer(
       mode: null,
       notifyChanged: notifyAppUpdateChanged,
       threadsResumeAfterRestart: () =>
-        getExperiments(db).resumeThreadsAfterRestart,
+        getAppSettings(db).resumeThreadsAfterRestart,
       sendHold: createAppUpdateSendHold({
         aiServices,
         config,
@@ -306,7 +317,6 @@ async function startIntegrationServer(
         terminalSessions,
       }),
     }),
-    isEnabled: () => getExperiments(db).updateWhenIdle,
     logger: testLogger,
     notifyChanged: notifyAppUpdateChanged,
     onChangedMessage: (listener) => hub.onChangedMessage(listener),
@@ -334,7 +344,7 @@ async function startIntegrationServer(
     appVersion,
     bbAppManagedConfig,
     providerRegistry,
-    providerNativeRoots: createProviderNativeRootsCache(),
+    projectSkillIndexes: createProjectSkillIndexCache(),
     providerLiveCommands: createProviderLiveCommandsCache(),
     pluginHostArtifacts,
     aiServices,
@@ -347,16 +357,9 @@ async function startIntegrationServer(
     pendingInteractions,
     sharedPorts,
     skillTreeRegistry,
-    setupGuideExperiment: await createSetupGuideExperiment({
-      dataDir: serverDataDir,
-      fetch: () => Promise.reject(new Error("no PostHog in tests")),
-      flagTimeoutMs: 1_000,
-      logger: testLogger,
-      override: null,
-      telemetry,
-    }),
     telemetry,
     terminalSessions,
+    walCheckpointer,
     watchInterests,
   };
   const { app, closeWebSockets, injectWebSocket, pluginService } = createApp(
@@ -425,6 +428,51 @@ async function startIntegrationServer(
       });
       await closeWebSockets();
       await closed;
+      await walCheckpointer.stop();
+    },
+  };
+}
+
+interface DaemonConnectionProxy {
+  close(): Promise<void>;
+  dropConnections(): number;
+  url: string;
+}
+
+async function startDaemonConnectionProxy(
+  serverUrl: string,
+): Promise<DaemonConnectionProxy> {
+  const upstream = new URL(serverUrl);
+  const sockets = new Set<net.Socket>();
+  const track = (socket: net.Socket) => {
+    sockets.add(socket);
+    socket.once("close", () => sockets.delete(socket));
+  };
+  const proxy = net.createServer((client) => {
+    const target = net.connect(Number(upstream.port), upstream.hostname);
+    track(client);
+    track(target);
+    client.on("error", () => target.destroy());
+    target.on("error", () => client.destroy());
+    client.pipe(target).pipe(client);
+  });
+  await new Promise<void>((resolve) =>
+    proxy.listen(0, upstream.hostname, resolve),
+  );
+  const address = proxy.address();
+  if (address === null || typeof address === "string") {
+    throw new Error("Daemon connection proxy has no port");
+  }
+  return {
+    url: `http://${upstream.hostname}:${address.port}`,
+    dropConnections() {
+      const dropped = sockets.size;
+      for (const socket of sockets) socket.resetAndDestroy();
+      return dropped;
+    },
+    close() {
+      for (const socket of sockets) socket.destroy();
+      return new Promise((resolve) => proxy.close(() => resolve()));
     },
   };
 }
@@ -432,6 +480,7 @@ async function startIntegrationServer(
 async function startHarnessDaemon(
   dataDir: string,
   server: RunningTestServer,
+  serverUrl: string,
 ): Promise<HarnessDaemonResources> {
   const releaseLock = await acquireDaemonLock(dataDir);
 
@@ -450,7 +499,13 @@ async function startHarnessDaemon(
       localApiConfig: null,
       logger: testLogger,
       releaseLock,
-      serverUrl: server.baseUrl,
+      routes: new ServerRouteResolver({
+        anchorUrl: serverUrl,
+        anchorHeaders: {},
+        persisted: await readPersistedServerRoutes(dataDir, testLogger),
+        persist: persistServerRoutes(dataDir),
+        logger: testLogger,
+      }),
     });
     for (
       let attempt = 1;
@@ -503,6 +558,7 @@ export async function createIntegrationHarness(
   });
 
   let server: RunningTestServer | null = null;
+  let daemonProxy: DaemonConnectionProxy | null = null;
   let daemonResources: HarnessDaemonResources | null = null;
   let cleanedUp = false;
   let harness: IntegrationHarness | null = null;
@@ -518,7 +574,11 @@ export async function createIntegrationHarness(
       return;
     }
 
-    daemonResources = await startHarnessDaemon(daemonDataDir, server);
+    daemonResources = await startHarnessDaemon(
+      daemonDataDir,
+      server,
+      daemonProxy?.url ?? server.baseUrl,
+    );
     if (daemonResources.hostId !== harness.hostId) {
       const mismatchedResources = daemonResources;
       daemonResources = null;
@@ -569,6 +629,7 @@ export async function createIntegrationHarness(
     cleanedUp = true;
 
     await shutdownDaemon("integration-cleanup").catch(() => undefined);
+    await daemonProxy?.close().catch(() => undefined);
     await server?.close().catch(() => undefined);
     await killProcessesReferencingPath(tmpRoot);
     await removePathWithRetry(tmpRoot);
@@ -579,7 +640,14 @@ export async function createIntegrationHarness(
     const api = createPublicApiClient(server.baseUrl, {
       fetch: createIntegrationFetch(),
     });
-    daemonResources = await startHarnessDaemon(daemonDataDir, server);
+    if (options.proxyDaemonConnection === true) {
+      daemonProxy = await startDaemonConnectionProxy(server.baseUrl);
+    }
+    daemonResources = await startHarnessDaemon(
+      daemonDataDir,
+      server,
+      daemonProxy?.url ?? server.baseUrl,
+    );
     await waitForHostConnected(api);
     await persistHostId({
       dataDir: server.config.dataDir,
@@ -592,6 +660,12 @@ export async function createIntegrationHarness(
       crashDaemon,
       daemonApp: daemonResources.daemonApp,
       db: server.db,
+      dropDaemonConnections() {
+        if (daemonProxy === null) {
+          throw new Error("Pass proxyDaemonConnection to drop connections");
+        }
+        return daemonProxy.dropConnections();
+      },
       hostId: daemonResources.hostId,
       hub: server.hub,
       repoDir,

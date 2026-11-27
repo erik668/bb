@@ -19,6 +19,7 @@ import { SIDEBAR_FOOTER_ACTION_CLASS } from "@bb/shared-ui/sidebar-row-classes";
 import { useSidebarReorderDnd } from "@bb/shared-ui/use-sidebar-reorder-dnd";
 import { SidebarTouchSensor } from "./sidebarTouchSensor";
 import { useSidebarSortable } from "@bb/shared-ui/sortable-motion";
+import { isNonImeKey } from "@bb/shared-ui/lib/ime-keyboard";
 
 const BADGE_CLASS =
   "flex size-4 cursor-pointer items-center justify-center rounded-full border border-sidebar-border bg-sidebar text-sidebar-foreground outline-none after:absolute after:-inset-1.5 after:content-[''] hover:bg-sidebar-accent focus-visible:ring-2 focus-visible:ring-sidebar-ring disabled:cursor-default disabled:opacity-40";
@@ -60,7 +61,7 @@ export function SidebarFooterCustomize({ onDone }: { onDone: () => void }) {
       className="rounded-lg bg-sidebar-accent/40 py-1"
       data-testid="sidebar-footer-customize-inline"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.defaultPrevented) return;
+        if (!isNonImeKey(event, "Escape") || event.defaultPrevented) return;
         event.preventDefault();
         onDone();
       }}
@@ -160,15 +161,16 @@ function FooterIconTile({
     id: item.key,
     disabled: reorderDisabled,
   });
+  const { setActivatorNodeRef, attributes, listeners } = dragBindings;
   return (
     <li ref={setNodeRef} style={style} className="relative flex shrink-0">
       <Tooltip>
         <TooltipTrigger asChild>
           <button
             type="button"
-            ref={dragBindings.setActivatorNodeRef}
-            {...dragBindings.attributes}
-            {...dragBindings.listeners}
+            ref={setActivatorNodeRef}
+            {...attributes}
+            {...listeners}
             aria-label={`Reorder ${item.label}`}
             data-footer-icon={item.key}
             className={cn(
@@ -211,6 +213,7 @@ function MoreMenuRow({
     id: item.key,
     disabled: reorderDisabled,
   });
+  const { setActivatorNodeRef, attributes, listeners } = dragBindings;
   return (
     <li
       ref={setNodeRef}
@@ -220,9 +223,9 @@ function MoreMenuRow({
     >
       <button
         type="button"
-        ref={dragBindings.setActivatorNodeRef}
-        {...dragBindings.attributes}
-        {...dragBindings.listeners}
+        ref={setActivatorNodeRef}
+        {...attributes}
+        {...listeners}
         aria-label={`Reorder ${item.label}`}
         className="flex size-6 shrink-0 cursor-grab touch-none items-center justify-center rounded-sm text-subtle-foreground/60 hover:text-sidebar-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring active:cursor-grabbing"
       >

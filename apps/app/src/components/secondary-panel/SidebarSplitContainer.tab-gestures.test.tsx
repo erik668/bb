@@ -13,6 +13,7 @@ const descriptors = ["alpha.ts", "beta.ts"].map((label) => ({
 }));
 
 afterEach(() => {
+  fireEvent.click(document.body);
   cleanup();
   window.localStorage.clear();
   vi.restoreAllMocks();
@@ -28,6 +29,7 @@ function renderTabs() {
     <TooltipProvider>
       <aside>
         <SidebarSplitContainer
+          isTabListReady
           activeTabId="alpha.ts"
           isFullScreen={false}
           onActivateTab={() => {}}

@@ -7,12 +7,14 @@
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts",
     "build": "tsx scripts/build-assets.ts"
   },
   "dependencies": {
     "@bb/domain": "workspace:*",
     "@bb/server-contract": "workspace:*",
+    "@bb/text-utils": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {

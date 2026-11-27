@@ -1,7 +1,6 @@
 import {
   createContext,
   createElement,
-  useCallback,
   useContext,
   useEffect,
   useLayoutEffect,
@@ -47,6 +46,7 @@ interface SearchMessageLocationProviderProps {
 
 interface SearchMessagePaginationOptions {
   hasOlderRows?: boolean;
+  isCatchingUpRows?: boolean;
   isLoadingOlderRows?: boolean;
   onLoadOlderRows?: () => Promise<void> | void;
   reportsMissingTarget?: boolean;
@@ -264,22 +264,37 @@ function searchTargetAppliesToThread(
   );
 }
 
+function createLocationKeyReader(initialLocationKey: string): {
+  read: () => string;
+  write: (locationKey: string) => void;
+} {
+  let current = initialLocationKey;
+  return {
+    read: () => current,
+    write: (locationKey) => {
+      current = locationKey;
+    },
+  };
+}
+
 export function SearchMessageLocationProvider({
   threadId,
   children,
 }: SearchMessageLocationProviderProps) {
   const location = useLocation();
   const locationKey = `${location.key}:${location.pathname}${location.search}${location.hash}`;
-  const locationKeyRef = useRef(locationKey);
+  const [targetKeyReader] = useState(() =>
+    createLocationKeyReader(locationKey),
+  );
   useLayoutEffect(() => {
-    locationKeyRef.current = locationKey;
-  }, [locationKey]);
-  const readLocationKey = useCallback(() => locationKeyRef.current, []);
+    targetKeyReader.write(locationKey);
+  }, [locationKey, targetKeyReader]);
+  const readLocationKey = targetKeyReader.read;
   const searchTarget = readSearchMessageTarget(location.state);
   const messageLinkTarget = parseMessageLink(
     `${location.pathname}${location.search}${location.hash}`,
   );
-  const target =
+  const target: SearchMessageTarget | null =
     messageLinkTarget === null
       ? searchTarget
       : { ...messageLinkTarget, match: "message" as const };
@@ -332,6 +347,7 @@ export function useScrollToSearchedMessage(
   threadId: string | undefined,
   {
     hasOlderRows = false,
+    isCatchingUpRows = false,
     isLoadingOlderRows = false,
     onLoadOlderRows,
     reportsMissingTarget = false,
@@ -361,12 +377,24 @@ export function useScrollToSearchedMessage(
     loadedRange !== null &&
     (targetMatch === "message" || targetIsOlderThanLoadedRows);
   const canLoadOlderTarget = targetIsOlderThanLoadedRows && hasOlderRows;
+  const targetIsNotFound =
+    reportsMissingTarget &&
+    targetIsMissing &&
+    !canLoadOlderTarget &&
+    !isLoadingOlderRows &&
+    !isCatchingUpRows;
+  if (
+    targetIsNotFound &&
+    targetLocationKey !== null &&
+    settledLocationKey !== targetLocationKey
+  ) {
+    setSettledLocationKey(targetLocationKey);
+  }
   const isInitialRevealPending =
     reportsMissingTarget &&
     initialLocationKey !== null &&
     initialLocationKey === targetLocationKey &&
-    settledLocationKey !== initialLocationKey &&
-    !(targetIsMissing && !canLoadOlderTarget && !isLoadingOlderRows);
+    settledLocationKey !== initialLocationKey;
 
   useEffect(() => {
     if (
@@ -415,12 +443,7 @@ export function useScrollToSearchedMessage(
         });
         return;
       }
-      if (
-        reportsMissingTarget &&
-        targetIsMissing &&
-        !canLoadOlderTarget &&
-        !isLoadingOlderRows
-      ) {
+      if (targetIsNotFound) {
         handledKeyRef.current = targetLocationKey;
         appToast.message("Message not found", {
           description:
@@ -434,7 +457,7 @@ export function useScrollToSearchedMessage(
     if (renderedTarget === null) {
       return;
     }
-    let frame: number;
+    const scheduled = { frame: 0 };
     let frameCount = 0;
     let stableFrameCount = 0;
     let previousGeometry: string | null = null;
@@ -467,12 +490,12 @@ export function useScrollToSearchedMessage(
         revealTimelineRow(element, bottomAnchor);
         return;
       }
-      frame = requestAnimationFrame(revealTarget);
+      scheduled.frame = requestAnimationFrame(revealTarget);
     };
 
-    frame = requestAnimationFrame(revealTarget);
+    scheduled.frame = requestAnimationFrame(revealTarget);
     return () => {
-      cancelAnimationFrame(frame);
+      cancelAnimationFrame(scheduled.frame);
     };
   }, [
     bottomAnchor,
@@ -487,7 +510,7 @@ export function useScrollToSearchedMessage(
     targetMatch,
     targetSeq,
     targetThreadId,
-    targetIsMissing,
+    targetIsNotFound,
     targetLeafRow,
     threadId,
   ]);

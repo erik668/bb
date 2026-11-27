@@ -33,7 +33,8 @@ On first load the plugin copies any non-default `sidebar.*` values from
 
 Collapsed groups stay collapsed when background threads appear or become
 unread. Their headers retain activity indicators. Opening a thread reveals
-its containing groups; background activity does not change collapse preferences.
+its containing groups in that window only; neither opening a thread nor
+background activity changes collapse preferences.
 
 `environmentGrouping` decides whether sibling threads sharing one worktree
 collapse into a single row: `"auto"` (default) groups them in every
@@ -41,6 +42,13 @@ organization except chronological, `false` never groups, and `true` always
 groups. Children sharing their parent’s worktree stay directly beneath the
 parent without another worktree header. `sortDirection` is `default` (each field's natural order: newest first
 for dates, A–Z for titles), `ascending`, or `descending`.
+
+With the default direction in Updated at order, active threads come first
+(newest-created first). Inactive
+roots use their latest attention time; inactive children use the later of their
+attention time and last status change, so successful completion moves a child
+above older activity without making it unread. This applies at every nesting
+level and beneath pinned roots. Reading or renaming does not move a child.
 
 `hiddenGroups` (default `[]`) moves groups into More, the same as a group
 menu's Hide from list. Keys are `threads`, `project:<projectId>`,
@@ -94,10 +102,7 @@ provider ids have no icon.
 
 Organize → Rows → Metadata adds a line under each thread's title where plugins
 draw metadata, such as GitHub PR Status's pull request number. Rows grow to
-two lines only when a plugin shows something for them. The option appears only
-while the `threadRowMetadata` experiment is on
-(`bb settings experiment threadRowMetadata true`); while it is off the sidebar
-ignores `showRowMetadata`. `showRowMetadata` defaults to `false`; use
+two lines only when a plugin shows something for them. `showRowMetadata` defaults to `false`; use
 `bb thread-list prefs set showRowMetadata true` to turn it on.
 
 Organize → Groups → By read status lists threads that show the unread dot above

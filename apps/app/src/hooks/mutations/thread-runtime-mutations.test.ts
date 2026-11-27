@@ -131,7 +131,10 @@ const executionInputSources = {
 
 beforeEach(() => {
   vi.mocked(wsManager.getConnectionState).mockReturnValue("connected");
-  vi.mocked(sdk.threads.cancelPlan).mockResolvedValue({ ok: true });
+  vi.mocked(sdk.threads.cancelPlan).mockResolvedValue({
+    ok: true,
+    progress: "complete",
+  });
   vi.mocked(sdk.threads.editMessage).mockResolvedValue({
     ok: true,
     operationId: "edit-op-1",
@@ -140,9 +143,13 @@ beforeEach(() => {
   vi.mocked(sdk.threads.send).mockResolvedValue({
     ok: true,
     delivery: "sent",
+    messageSequence: 1,
   });
   vi.mocked(sdk.threads.spawn).mockResolvedValue(makeThreadResponse());
-  vi.mocked(sdk.threads.queuedMessages.delete).mockResolvedValue({ ok: true });
+  vi.mocked(sdk.threads.queuedMessages.delete).mockResolvedValue({
+    ok: true,
+    progress: "complete",
+  });
   vi.mocked(sdk.threads.queuedMessages.list).mockResolvedValue([
     makeQueuedMessage(),
   ]);
@@ -247,7 +254,10 @@ describe("thread runtime mutations", () => {
     const getSdkMethod = () => sdk.threads.cancelPlan;
     const queryClient = createTestQueryClient();
     const invalidateQueries = vi.spyOn(queryClient, "invalidateQueries");
-    const cancellation = createDeferredPromise<{ ok: true }>();
+    const cancellation = createDeferredPromise<{
+      ok: true;
+      progress: "complete" | "in-progress";
+    }>();
     vi.mocked(getSdkMethod()).mockReturnValueOnce(cancellation.promise);
     queryClient.setQueryData(
       threadTimelineQueryKey("thread-1"),
@@ -269,7 +279,7 @@ describe("thread runtime mutations", () => {
       extensionStates: { "provider-codex/goal": { status: "active" } },
     });
 
-    cancellation.resolve({ ok: true });
+    cancellation.resolve({ ok: true, progress: "complete" });
     await cancellationPromise;
     expect(getSdkMethod()).toHaveBeenCalledWith({ threadId: "thread-1" });
     expect(invalidateQueries).toHaveBeenCalled();
@@ -378,6 +388,7 @@ describe("thread runtime mutations", () => {
         status: "starting",
         runtime: {
           displayStatus: "provisioning",
+          failure: null,
         },
       }),
     );
@@ -437,9 +448,9 @@ describe("thread runtime mutations", () => {
 
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => queuedMessage.id),
     ).toEqual(["qmsg-2"]);
   });

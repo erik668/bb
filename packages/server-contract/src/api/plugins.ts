@@ -33,6 +33,16 @@ export const pluginResolvedVersionSchema = z.object({
   display: z.string(),
 });
 
+export const pluginRangeUpgradeSchema = z.object({
+  currentRange: z.string(),
+  range: z.string(),
+  basis: z.enum(["catalog", "release"]),
+  candidate: pluginResolvedVersionSchema,
+  breaking: z.boolean(),
+  reasons: z.array(z.string()),
+});
+export type PluginRangeUpgrade = z.infer<typeof pluginRangeUpgradeSchema>;
+
 export const pluginUpdateCheckEntrySchema = z.object({
   id: z.string(),
   outcome: pluginUpdateOutcomeSchema,
@@ -46,6 +56,7 @@ export const pluginUpdateCheckEntrySchema = z.object({
       reasons: z.array(z.string()),
     })
     .optional(),
+  rangeUpgrade: pluginRangeUpgradeSchema.optional(),
   detail: z.string().optional(),
 });
 export type PluginUpdateCheckEntry = z.infer<
@@ -60,7 +71,15 @@ export const pluginUpdateCheckResponseSchema = z.object({
   results: z.array(pluginUpdateCheckEntrySchema),
 });
 
-export const pluginApplyUpdateRequestSchema = z.object({}).strict();
+export const pluginApplyUpdateRequestSchema = z
+  .object({
+    range: z.string().min(1).optional(),
+    expectedVersion: z.string().min(1).optional(),
+  })
+  .strict();
+export type PluginApplyUpdateRequest = z.infer<
+  typeof pluginApplyUpdateRequestSchema
+>;
 
 export const pluginApplyUpdateResultSchema = z.object({
   applied: z.boolean(),
@@ -144,6 +163,7 @@ export const pluginUpdateStateSchema = z.object({
   blockedVersion: z.string().optional(),
   blockedLabel: z.string().optional(),
   blockedReasons: z.array(z.string()).optional(),
+  rangeUpgrade: pluginRangeUpgradeSchema.optional(),
   lastCheckAt: z.number().optional(),
   lastFailure: z
     .object({
@@ -188,6 +208,9 @@ export const pluginAppStateSchema = z.object({
       sdkVersion: z.string(),
       compatible: z.boolean(),
       runtimeSlots: z.array(z.string()),
+      staticChunkUrls: z.array(z.string()),
+      lazyChunkUrls: z.array(z.string()),
+      lazyRuntimeSlots: z.array(z.string()),
     })
     .nullable(),
 });
@@ -264,6 +287,8 @@ export const pluginListResponseSchema = z.object({
   plugins: z.array(installedPluginSchema),
 });
 export type PluginListResponse = z.infer<typeof pluginListResponseSchema>;
+
+export const APP_SHELL_PLUGIN_LIST_ELEMENT_ID = "bb-plugin-list";
 
 export const pluginSourceSelectionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("root") }).strict(),
@@ -522,6 +547,16 @@ export type PluginCatalogCollection = z.infer<
   typeof pluginCatalogCollectionSchema
 >;
 
+export const pluginCatalogListingSchema = z.object({
+  marketplace: z.string(),
+  marketplaceDisplayName: z.string(),
+  publisherLabel: z.string(),
+  entryId: z.string(),
+  official: z.boolean(),
+  source: z.string(),
+});
+export type PluginCatalogListing = z.infer<typeof pluginCatalogListingSchema>;
+
 export const pluginCatalogSearchResultSchema = z.object({
   entryId: z.string(),
   pluginId: z.string(),
@@ -544,6 +579,7 @@ export const pluginCatalogSearchResultSchema = z.object({
   publisherKey: z.string(),
   publisherLabel: z.string(),
   official: z.boolean(),
+  listings: z.array(pluginCatalogListingSchema).default([]),
   author: pluginCatalogAuthorSchema.nullable(),
   installed: z.boolean(),
   installedByDefault: z.boolean().default(false),
@@ -640,6 +676,8 @@ export const pluginMarketplaceSchema = z.object({
   displayName: z.string(),
   description: z.string().nullable(),
   official: z.boolean(),
+  enabled: z.boolean(),
+  canDisable: z.boolean(),
   sourceKind: pluginMarketplaceSourceKindSchema,
   source: z.string(),
   subdirectory: z.string().nullable().default(null),
@@ -671,6 +709,12 @@ export const pluginMarketplaceRemoveResponseSchema = z.object({
   ok: z.literal(true),
   convertedPluginIds: z.array(z.string()),
 });
+
+export const pluginMarketplaceSetEnabledRequestSchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
 
 export const pluginMarketplaceRefreshRequestSchema = z
   .object({

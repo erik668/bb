@@ -1,7 +1,9 @@
+import { useComposedRefs } from "@radix-ui/react-compose-refs";
 import {
   forwardRef,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useRef,
   useState,
@@ -13,7 +15,6 @@ import type {
   PluginThreadActionsInlineItem,
   PluginThreadActionsMenuProps,
   PluginThreadActionsTriggerProps,
-  PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk";
 import {
   ContextMenu,
@@ -48,7 +49,7 @@ function ThreadActionsMenuItems({
   drawerStep,
   onDrawerStepChange,
 }: {
-  thread: PluginThreadActionTarget;
+  thread: { id: string };
   inline?: readonly PluginThreadActionsInlineItem[];
   requestRename?: (threadId: string) => void;
   surface: ThreadActionMenuSurface;
@@ -100,13 +101,10 @@ const ThreadActionsTriggerSlot = forwardRef<
       console.error(`experimental_ThreadActionsMenu: \`trigger\` ${problem}`);
     }
   }, [hostClassName]);
+  const composedRef = useComposedRefs(ref, element);
   return render({
     ...props,
-    ref: (node: HTMLButtonElement | null) => {
-      element.current = node;
-      if (typeof ref === "function") ref(node);
-      else if (ref !== null) ref.current = node;
-    },
+    ref: composedRef,
   });
 });
 
@@ -236,7 +234,7 @@ function ThreadBulkMenuItems({
   drawerStep,
   onDrawerStepChange,
 }: {
-  threads: readonly PluginThreadActionTarget[];
+  threads: readonly { id: string }[];
   inline?: readonly PluginThreadActionsInlineItem[];
 } & MenuItemsRenderProps) {
   const groups = useThreadBulkActionMenuGroups({ threads, inline });
@@ -310,6 +308,13 @@ function DesktopContextMenuShell({
   dragging,
 }: ContextMenuShellProps) {
   const [open, setOpen] = useState(false);
+  const [closedForDrag, setClosedForDrag] = useState(false);
+  if (dragging && open) {
+    setOpen(false);
+    setClosedForDrag(true);
+  } else if (!dragging && closedForDrag) {
+    setClosedForDrag(false);
+  }
   const handleOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (nextOpen && dragging) return;
@@ -318,9 +323,10 @@ function DesktopContextMenuShell({
     },
     [dragging, onOpenChange],
   );
+  const notifyClosedForDrag = useEffectEvent(() => onOpenChange?.(false));
   useEffect(() => {
-    if (dragging && open) handleOpenChange(false);
-  }, [dragging, handleOpenChange, open]);
+    if (closedForDrag) notifyClosedForDrag();
+  }, [closedForDrag]);
   return (
     <ContextMenu modal={false} open={open} onOpenChange={handleOpenChange}>
       <ContextMenuTrigger asChild disabled={disabled || dragging}>

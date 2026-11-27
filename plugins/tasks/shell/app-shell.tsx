@@ -9,6 +9,7 @@ import {
   type TasksRoute,
 } from "./routes.js";
 import { loadViewMode, storeViewMode } from "./view-preference.js";
+import { useNewTaskRequests } from "./new-task-requests.js";
 import { TasksTopbar } from "./topbar.js";
 import { ListView } from "../views/list/index.js";
 import { BoardView } from "../views/board/index.js";
@@ -19,6 +20,8 @@ import { ManagePanel } from "../views/manage/manage-panel.js";
 import { EmptyState } from "../components/empty-state.js";
 import { Button } from "@/components/ui/button";
 import { Icon } from "@/components/ui/icon";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
+import { isNonImeKey } from "@/lib/ime-keyboard";
 
 const BOARD_MIN_WIDTH = 448;
 
@@ -113,14 +116,15 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     const main = mainRef.current;
     if (!main || typeof ResizeObserver === "undefined") return;
-    const update = () => {
+    const readUsable = () => {
       const mainWidth = main.clientWidth;
-      setBoardUsable(!(mainWidth > 0 && mainWidth < BOARD_MIN_WIDTH));
+      return !(mainWidth > 0 && mainWidth < BOARD_MIN_WIDTH);
     };
-    update();
-    const observer = new ResizeObserver(update);
-    observer.observe(main);
-    return () => observer.disconnect();
+    setBoardUsable(readUsable());
+    return observeSharedResize(main, {
+      read: readUsable,
+      write: setBoardUsable,
+    });
   }, []);
   const projects = useProjects();
 
@@ -137,7 +141,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   useEffect(() => {
     if (!onTaskRoute) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (!isNonImeKey(event, "Escape") || event.defaultPrevented) return;
       if (isEditableTarget(event.target)) return;
       if (hasOpenOverlay()) return;
       backRef.current();
@@ -149,19 +153,7 @@ function TasksAppShellContent({ subPath }: PluginNavPanelProps) {
   const noProjects = projects.data !== undefined && projects.data.length === 0;
   const newTaskProjectId = route.kind === "project" ? route.projectId : null;
 
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "c" || event.metaKey || event.ctrlKey || event.altKey)
-        return;
-      if (event.defaultPrevented || event.repeat) return;
-      if (isEditableTarget(event.target)) return;
-      if (hasOpenOverlay()) return;
-      event.preventDefault();
-      setNewTaskOpen(true);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  useNewTaskRequests(() => setNewTaskOpen(true));
 
   return (
     <div className="relative flex h-full min-h-0 bg-background text-foreground">

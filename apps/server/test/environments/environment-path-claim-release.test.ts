@@ -4,19 +4,28 @@ import {
   getEnvironment,
   getPreparingEnvironment,
   getThread,
+  listEnvironments,
 } from "@bb/db";
-import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
+import {
+  validatePluginEnvironmentProviderDeclaration,
+  type PluginEnvironmentProviderV1CreateContext,
+  type PluginEnvironmentProviderV1Declaration,
+} from "@get-bb/plugin-sdk/internal/host-policy";
 import type {
-  PluginEnvironmentProviderCreateContext,
   PluginEnvironmentProviderCreateResult,
   PluginEnvironmentProviderRemoveResult,
 } from "@get-bb/plugin-sdk/environment-provider";
 import { createDeferredPromise } from "@bb/test-helpers";
 import { eq } from "drizzle-orm";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ApiError } from "../../src/errors.js";
 import { sweepProviderLifecycles } from "../../src/services/environments/environment-engine.js";
-import { assertEnvironmentPathAvailable } from "../../src/services/environments/path-admission.js";
+import { DEFAULT_ENVIRONMENT_PROVIDER_ID } from "../../src/services/environments/environment-provider-ids.js";
+import {
+  assertEnvironmentPathAvailable,
+  CHECKOUT_BUSY_MESSAGE,
+  PATH_CLAIM_SETTLE_TIMEOUT_MS,
+} from "../../src/services/environments/path-admission.js";
 import {
   setPluginEnvironmentProviderBridge,
   type PluginEnvironmentProviderRecord,
@@ -26,6 +35,13 @@ import { runStartupRecoverySweep } from "../../src/services/system/periodic-swee
 import { createThreadFromRequest } from "../../src/services/threads/thread-create.js";
 import { failThreadProvisioning } from "../../src/services/threads/thread-provisioning-environment.js";
 import { clearAllThreadProvisionSchedules } from "../../src/services/threads/thread-startup-store.js";
+import {
+  listQueuedCommands,
+  reportQueuedCommandSuccess,
+  waitForQueuedCommand,
+} from "../helpers/commands.js";
+import { checkoutProviderInputsSchema } from "../helpers/environment-provider.js";
+import { advanceUntilSettled } from "../helpers/fake-timers.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
@@ -34,6 +50,7 @@ import {
   seedThread,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const PLUGIN_ID = "claim-release";
 const PROVIDER_ID = "shared-checkout";
@@ -41,11 +58,12 @@ const SHARED_PATH = "/tmp/environment-path-claim-release";
 
 function installClaimingProvider(
   create: (
-    context: PluginEnvironmentProviderCreateContext,
+    context: PluginEnvironmentProviderV1CreateContext,
   ) => Promise<PluginEnvironmentProviderCreateResult>,
   remove: () => Promise<PluginEnvironmentProviderRemoveResult> = async () => ({
     status: "removed",
   }),
+  locate?: PluginEnvironmentProviderV1Declaration["locate"],
 ): void {
   const records: PluginEnvironmentProviderRecord[] = [
     {
@@ -61,6 +79,7 @@ function installClaimingProvider(
           gitRemote: false,
           projectless: false,
         },
+        ...(locate === undefined ? {} : { locate }),
         create,
         remove,
       }),
@@ -345,10 +364,14 @@ describe("environment path claim release", () => {
       });
       holdPath(harness, { environmentId: shared.id, ownerThreadId: owner.id });
       const claimed = createDeferredPromise<boolean>();
-      installClaimingProvider(async (context) => {
-        claimed.resolve(await context.experimental_claimPath(SHARED_PATH));
-        return { status: "created", path: SHARED_PATH, ownsPath: false };
-      });
+      installClaimingProvider(
+        async (context) => {
+          claimed.resolve(await context.experimental_claimPath(SHARED_PATH));
+          return { status: "created", path: SHARED_PATH, ownsPath: false };
+        },
+        undefined,
+        () => ({ path: SHARED_PATH, reuse: false }),
+      );
       const thread = await startThread(harness, {
         projectId: project.id,
         hostId: host.id,
@@ -467,6 +490,318 @@ describe("environment path claim release", () => {
       expect(getEnvironment(harness.db, stuck.id)).toMatchObject({
         claimPath: null,
         teardownStatus: "removed",
+      });
+    });
+  });
+});
+
+const CHECKOUT_PATH = "/tmp/environment-path-settle-checkout";
+
+interface CheckoutCreateHolds {
+  beforeClaim?: Promise<void>;
+  afterClaim?: Promise<void>;
+}
+
+function installCheckoutProvider(
+  args: {
+    holds?: CheckoutCreateHolds[];
+    onClaimed?: (index: number) => void;
+  } = {},
+): { claimedBy(index: number): Promise<string>; creates(): number } {
+  const holds = args.holds ?? [];
+  const claims = holds.map(() => createDeferredPromise<string>());
+  let createCount = 0;
+  const records: PluginEnvironmentProviderRecord[] = [
+    {
+      pluginId: "environment-project-checkout",
+      provider: validatePluginEnvironmentProviderDeclaration({
+        id: DEFAULT_ENVIRONMENT_PROVIDER_ID.projectCheckout,
+        displayName: "Checkout",
+        description: "Work in a project checkout on this machine.",
+        icon: "Folder",
+        requires: { projectCheckout: true },
+        inputs: checkoutProviderInputsSchema,
+        locate: ({ inputs }) => {
+          const parsed = checkoutProviderInputsSchema.parse(inputs);
+          return {
+            path: parsed.path ?? CHECKOUT_PATH,
+            reuse: parsed.branch === undefined,
+          };
+        },
+        create: async (context) => {
+          const path =
+            checkoutProviderInputsSchema.parse(context.inputs).path ??
+            CHECKOUT_PATH;
+          const index = createCount;
+          createCount += 1;
+          await holds[index]?.beforeClaim;
+          while (!(await context.experimental_claimPath(path))) {
+            context.signal.throwIfAborted();
+            await delay(10);
+          }
+          claims[index]?.resolve(context.thread.id);
+          args.onClaimed?.(index);
+          await holds[index]?.afterClaim;
+          return {
+            status: "created",
+            path,
+            ownsPath: false,
+            ...(index === 0 ? {} : { mergeBaseBranch: `base-${index}` }),
+          };
+        },
+        remove: async () => ({ status: "removed" }),
+      }),
+    },
+  ];
+  setPluginEnvironmentProviderBridge({
+    listEnvironmentCompositions: () => [],
+    listEnvironmentProviders: () => records,
+    getEnvironmentProvider: (id) =>
+      records.find((record) => record.provider.id === id),
+    invokeProvider: (_pluginId, _label, run) => invokePluginInline(run),
+    decisionTimeoutMs: 10_000,
+  });
+  return {
+    creates: () => createCount,
+    claimedBy: (index) => {
+      const claim = claims[index];
+      if (claim === undefined) throw new Error(`No held claim ${index}`);
+      return claim.promise;
+    },
+  };
+}
+
+function createCheckoutThread(
+  harness: TestAppHarness,
+  args: { projectId: string; hostId: string; prompt: string },
+) {
+  return createThreadFromRequest(harness.deps, {
+    environment: {
+      type: "host",
+      hostId: args.hostId,
+      workspace: { type: "unmanaged", path: CHECKOUT_PATH },
+    },
+    input: textInput(args.prompt),
+    origin: "app",
+    projectId: args.projectId,
+    providerId: "codex",
+    startedOnBehalfOf: null,
+  });
+}
+
+async function finishWorkspaceSetup(
+  harness: TestAppHarness,
+  threadId: string,
+): Promise<void> {
+  const queued = await waitForQueuedCommand(
+    harness,
+    ({ command }) =>
+      command.type === "environment.attach" &&
+      command.initiator?.threadId === threadId,
+    5_000,
+  );
+  if (queued.command.type !== "environment.attach")
+    throw new Error("Expected environment.attach command");
+  await reportQueuedCommandSuccess(harness, queued, {
+    path: queued.command.path,
+    isGitRepo: true,
+    isWorktree: false,
+    branchName: "main",
+    defaultBranch: "main",
+    transcript: [],
+  });
+}
+
+async function waitForThreadStarts(
+  harness: TestAppHarness,
+  threadIds: string[],
+): Promise<void> {
+  for (const threadId of threadIds)
+    await waitForQueuedCommand(
+      harness,
+      ({ command }) =>
+        command.type === "thread.start" && command.threadId === threadId,
+      5_000,
+    );
+}
+
+function errorEvents(harness: TestAppHarness, threadIds: string[]) {
+  return threadIds.flatMap((threadId) =>
+    listEvents(harness.db, { threadId })
+      .filter((event) => event.type === "system/error")
+      .map((event) => event.data),
+  );
+}
+
+describe("creates racing on a new checkout path", () => {
+  it("makes threads that locate a path another create still prepares wait, then join its environment", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-checkout-settle-create",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: CHECKOUT_PATH,
+      });
+      const firstHold = createDeferredPromise<void>();
+      const provider = installCheckoutProvider({
+        holds: [{ afterClaim: firstHold.promise }],
+      });
+      const target = { projectId: project.id, hostId: host.id };
+      const first = await createCheckoutThread(harness, {
+        ...target,
+        prompt: "first checkout",
+      });
+      expect(await provider.claimedBy(0)).toBe(first.id);
+      const later = [
+        await createCheckoutThread(harness, {
+          ...target,
+          prompt: "second checkout",
+        }),
+        await createCheckoutThread(harness, {
+          ...target,
+          prompt: "third checkout",
+        }),
+      ];
+      await delay(50);
+      expect(provider.creates()).toBe(1);
+      for (const thread of later)
+        expect(getThread(harness.db, thread.id)).toMatchObject({
+          status: "starting",
+          environmentId: null,
+        });
+
+      firstHold.resolve();
+      await finishWorkspaceSetup(harness, first.id);
+      const threadIds = [first.id, ...later.map((thread) => thread.id)];
+      await waitForThreadStarts(harness, threadIds);
+      const shared = getThread(harness.db, first.id)?.environmentId;
+      for (const threadId of threadIds)
+        expect(getThread(harness.db, threadId)?.environmentId).toBe(shared);
+      expect(provider.creates()).toBe(1);
+      expect(errorEvents(harness, threadIds)).toEqual([]);
+      expect(
+        listEnvironments(harness.db, { projectId: project.id }).filter(
+          (row) => row.status !== "destroyed",
+        ),
+      ).toHaveLength(1);
+    });
+  });
+
+  it("lets a thread join a workspace whose setup is still running, and runs setup once", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-checkout-join-setup",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: CHECKOUT_PATH,
+      });
+      const provider = installCheckoutProvider();
+      const target = { projectId: project.id, hostId: host.id };
+      const first = await createCheckoutThread(harness, {
+        ...target,
+        prompt: "first checkout",
+      });
+      const firstSetup = await waitForQueuedCommand(
+        harness,
+        ({ command }) =>
+          command.type === "environment.attach" &&
+          command.initiator?.threadId === first.id,
+        5_000,
+      );
+      if (firstSetup.command.type !== "environment.attach")
+        throw new Error("Expected environment.attach command");
+      const shared = firstSetup.command.environmentId;
+      const second = await createCheckoutThread(harness, {
+        ...target,
+        prompt: "second checkout",
+      });
+      await vi.waitFor(
+        () =>
+          expect(getThread(harness.db, second.id)?.environmentId).toBe(shared),
+        { timeout: 5_000 },
+      );
+      await reportQueuedCommandSuccess(harness, firstSetup, {
+        path: CHECKOUT_PATH,
+        isGitRepo: true,
+        isWorktree: false,
+        branchName: "main",
+        defaultBranch: "main",
+        transcript: [],
+      });
+
+      const threadIds = [first.id, second.id];
+      await waitForThreadStarts(harness, threadIds);
+      expect(
+        listQueuedCommands(harness, "environment.attach"),
+        "setup ran again",
+      ).toEqual([]);
+      expect(provider.creates()).toBe(1);
+      expect(getEnvironment(harness.db, shared)).toMatchObject({
+        status: "ready",
+        ownerThreadId: null,
+        claimPath: null,
+      });
+      expect(errorEvents(harness, threadIds)).toEqual([]);
+    });
+  });
+
+  it("gives up waiting with the busy error once the settle bound passes", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-checkout-settle-timeout",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+        path: CHECKOUT_PATH,
+      });
+      const shared = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+        path: CHECKOUT_PATH,
+        status: "ready",
+        environmentProviderId: DEFAULT_ENVIRONMENT_PROVIDER_ID.projectCheckout,
+        environmentProviderPluginId: "environment-project-checkout",
+      });
+      const starting = seedThread(harness.deps, {
+        projectId: project.id,
+        status: "starting",
+      });
+      harness.db
+        .update(environments)
+        .set({ ownerThreadId: starting.id, claimPath: CHECKOUT_PATH })
+        .where(eq(environments.id, shared.id))
+        .run();
+      installCheckoutProvider();
+      const subscribe = vi.spyOn(harness.hub, "onChangedMessage");
+      onTestFinished(() => subscribe.mockRestore());
+
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+      try {
+        const outcome = createCheckoutThread(harness, {
+          projectId: project.id,
+          hostId: host.id,
+          prompt: "wait for the checkout",
+        }).then(
+          () => null,
+          (error: unknown) => error,
+        );
+        await vi.waitFor(() => expect(subscribe).toHaveBeenCalled());
+        await vi.advanceTimersByTimeAsync(PATH_CLAIM_SETTLE_TIMEOUT_MS - 1_000);
+        expect(await Promise.race([outcome, Promise.resolve("pending")])).toBe(
+          "pending",
+        );
+        expect(await advanceUntilSettled(outcome, 1_000)).toMatchObject({
+          status: 409,
+          body: { code: "workspace_busy", message: CHECKOUT_BUSY_MESSAGE },
+        });
+      } finally {
+        vi.useRealTimers();
+      }
+      expect(getEnvironment(harness.db, shared.id)).toMatchObject({
+        ownerThreadId: starting.id,
+        claimPath: CHECKOUT_PATH,
       });
     });
   });

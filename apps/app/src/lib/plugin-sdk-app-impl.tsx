@@ -1,4 +1,10 @@
+import { useConversationOutline } from "@/lib/conversation-outline";
+import { lazyComponent } from "./lazy-component";
+import { useTimelineViewport } from "@/lib/timeline-viewport";
 import { applicationLinkApprovals } from "./application-url";
+import { matchesAppShortcutKey } from "@bb/domain";
+import { sliceUtf16Head } from "@bb/text-utils";
+import { searchPickerOptions } from "@bb/fuzzy-match";
 import {
   LazyPluginMarkdown,
   LazyPluginDiff,
@@ -53,16 +59,18 @@ import { PluginUrlLink } from "@/components/plugin/PluginUrlLink";
 import { ExperimentalFileLink } from "@/components/plugin/ExperimentalFileLink";
 import { ExperimentalFilePreview } from "@/components/plugin/ExperimentalFilePreview";
 import { usePluginId } from "@/components/plugin/plugin-context";
+import { useExperimentalCommandShortcut } from "@/lib/plugin-command-shortcut";
 import { CollapsibleStackCard } from "@/components/promptbox/banner/CollapsibleStackCard";
 import { usePluginThreadExtensionState } from "@/components/plugin/usePluginThreadExtensionState";
-import { useQuestionFormHost } from "@bb/shared-ui/question-form-host";
+import { useQuestionFormHost } from "@/components/thread/user-questions/question-form-host-context";
 import { definePluginApp } from "./plugin-app-definition";
+import { useBbContext } from "./plugin-bb-context";
 import {
-  useBbContext,
   useBbNavigate,
   usePluginCanOpenFileExternally,
   useComposer,
   useComposers,
+  useActiveComposer,
   useComposerView,
   useEnvironmentProviders,
   useProviders,
@@ -80,6 +88,7 @@ import {
   experimental_usePanelTabs,
 } from "./plugin-sdk-hooks";
 import { useAppNavigationHost } from "./app-navigation-host";
+import { useThreadRequests } from "./thread-requests";
 import {
   useSidebarThreadActions,
   useSidebarThreadDraft,
@@ -90,10 +99,11 @@ import {
   useSidebarThreadShortcut,
   useSidebarThreads,
 } from "./plugin-sidebar-hooks";
-import {
-  useSidebarSplitLayout,
-  useSidebarThreadSplit,
-} from "./plugin-sidebar-split";
+import { useSidebarSplitLayout } from "./plugin-split-layout";
+import { useSidebarThreadSplit } from "./plugin-sidebar-split";
+import { useThreadState } from "./thread-state";
+import { useEnvironmentState } from "./environment-state";
+import { useThreadStorageFilesState } from "./thread-storage-files-state";
 import { useExperiment } from "./plugin-experiments";
 import {
   experimental_PluginRpcCallError,
@@ -114,22 +124,23 @@ import {
 } from "./thread-actions/thread-action-registry";
 import { useCodeTheme } from "./plugin-code-theme";
 import { copyToClipboard } from "./clipboard";
+import { showMutationErrorToast } from "./mutation-errors";
 import { saveFile } from "./save-file";
 import {
   useSidebarNavigation,
   useSidebarNavigationSplit,
 } from "./plugin-sidebar-navigation";
 import { SidebarNavigationIcon } from "@/components/sidebar/SidebarNavigationModel";
-import {
-  InfoList,
-  InfoSection,
-} from "@/components/secondary-panel/info/info-list";
+import { InfoList } from "@/components/secondary-panel/info/info-list";
 import { InfoListRow } from "@bb/shared-ui/info-list-row";
 import { DetailRow } from "@/components/ui/detail-card";
 import { ThreadContextCardRow } from "@/components/plugin/ThreadContextCardRow";
-import { useThreadContextKind } from "@/components/plugin/PluginThreadContextCard";
+import { SurfaceInfoSection } from "@/components/plugin/ThreadContextCardSection";
+import { ThreadInfo } from "@/components/secondary-panel/info/ThreadInfo";
+import { useThreadContextKind } from "@/components/plugin/thread-context-card-pane";
 import { useTabVisible } from "@/components/secondary-panel/tab-visibility";
 import { useServerChoices } from "@/hooks/useServerChoices";
+import { getServerChoices } from "@/lib/server-choices";
 import { ThreadRowMetadata } from "@/components/plugin/ThreadRowMetadata";
 
 function PluginInfoListRow({
@@ -166,15 +177,18 @@ export const pluginSdkAppImplementation = {
   experimental_usePluginId: usePluginId,
   experimental_useQuestionFormHost: useQuestionFormHost,
   useBbNavigate,
+  experimental_useThreadRequests: useThreadRequests,
   experimental_useCanOpenFileExternally: usePluginCanOpenFileExternally,
   experimental_useTabVisible: useTabVisible,
   experimental_useServers: useServerChoices,
+  experimental_hasServers: () => getServerChoices() !== null,
   experimental_useAppPanel,
   experimental_useFixedTabTarget,
   experimental_usePanelTabs,
   experimental_PanelTabIcon: PanelTabIcon,
   useComposer,
   useComposers,
+  experimental_useActiveComposer: useActiveComposer,
   experimental_useComposerRenderer: useComposerRendererApi,
   experimental_useThreadTitleDisplayText: useThreadTitleDisplayText,
   experimental_useComposerContributions: useComposerContributions,
@@ -185,6 +199,10 @@ export const pluginSdkAppImplementation = {
   experimental_VoiceRecordingBar: VoiceRecordingBar,
   experimental_FailedVoiceRecordings: FailedVoiceRecordings,
   experimental_ShortcutHint: AppCommandShortcutHint,
+  experimental_useCommandShortcut: useExperimentalCommandShortcut,
+  experimental_matchesShortcutKey: matchesAppShortcutKey,
+  experimental_sliceUtf16Head: sliceUtf16Head,
+  experimental_searchPickerOptions: searchPickerOptions,
   experimental_ImageLightbox: ImageLightbox,
   experimental_PromptMentionIcon: ComposerMentionIcon,
   experimental_describePromptMention: describePromptMention,
@@ -216,14 +234,21 @@ export const pluginSdkAppImplementation = {
   experimental_SourceCode: LazyPluginSourceCode,
   experimental_FilePreview: ExperimentalFilePreview,
   experimental_Diff: LazyPluginDiff,
-  experimental_InfoSection: InfoSection,
+  experimental_InfoSection: SurfaceInfoSection,
+  experimental_ThreadInfo: ThreadInfo,
   experimental_CollapsibleStackCard: CollapsibleStackCard,
   experimental_ThreadRowMetadata: ThreadRowMetadata,
   experimental_DetailRow: DetailRow,
   experimental_ThreadContextCardRow: ThreadContextCardRow,
   experimental_InfoList: InfoList,
+  experimental_lazy: lazyComponent,
   experimental_InfoListRow: PluginInfoListRow,
   experimental_useSidebarThreads: useSidebarThreads,
+  experimental_useThread: useThreadState,
+  experimental_useConversationOutline: useConversationOutline,
+  experimental_useTimelineViewport: useTimelineViewport,
+  experimental_useEnvironment: useEnvironmentState,
+  experimental_useThreadStorageFiles: useThreadStorageFilesState,
   experimental_useSidebarThreadActions: useSidebarThreadActions,
   experimental_useThreadActions: useThreadActionEntries,
   experimental_useArchiveEnvironmentThreads: useArchiveEnvironmentThreads,
@@ -256,6 +281,7 @@ export const pluginSdkAppImplementation = {
   experimental_useProviders: useProviders,
   experimental_useCodeTheme: useCodeTheme,
   experimental_copyToClipboard: copyToClipboard,
+  experimental_showErrorToast: showMutationErrorToast,
   experimental_saveFile: saveFile,
 } satisfies PluginSdkApp;
 

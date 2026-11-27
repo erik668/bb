@@ -1,5 +1,9 @@
-import type { InternalDoNotUseSetupFailureStage } from "@get-bb/plugin-sdk/app";
-import { usePluginSlots } from "@/lib/plugin-slots";
+import type {
+  InternalDoNotUseSetupFailureDetail,
+  InternalDoNotUseSetupFailureStage,
+} from "@get-bb/plugin-sdk/app";
+import { usePluginSlotKind } from "@/lib/plugin-slots";
+import { PLUGIN_SLOT_REVEAL, useOrderedReveal } from "@/lib/lazy-parts";
 import { PluginSlotMount } from "./PluginSlotMount";
 
 export function PluginSetupGuideSections({
@@ -11,11 +15,15 @@ export function PluginSetupGuideSections({
   pluginId: string;
   onPhone: boolean;
   onSetupStarted: () => void;
-  onSetupFailed: (stage: InternalDoNotUseSetupFailureStage) => void;
+  onSetupFailed: (
+    stage: InternalDoNotUseSetupFailureStage,
+    detail?: InternalDoNotUseSetupFailureDetail,
+  ) => void;
 }) {
-  const { setupGuideSections } = usePluginSlots();
-  const sections = setupGuideSections.filter(
-    (section) => section.pluginId === pluginId,
+  const setupGuideSections = usePluginSlotKind("setupGuideSections");
+  const sections = useOrderedReveal(
+    setupGuideSections.filter((section) => section.pluginId === pluginId),
+    PLUGIN_SLOT_REVEAL,
   );
   if (sections.length === 0) return null;
   return sections.map((section) => (

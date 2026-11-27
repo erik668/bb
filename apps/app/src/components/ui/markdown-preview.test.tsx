@@ -17,7 +17,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { highlightMarkdownCode } from "./markdown-code-highlight";
 import { MarkdownPreview } from "./markdown-preview";
 import { MARKDOWN_TABLE_START_OFFSET_VARIABLE } from "./markdown-table-breakout";
@@ -48,7 +48,7 @@ const inlineCodeLinkRouting = {
   },
 } satisfies MarkdownLinkRouting;
 
-beforeAll(() => LazyMarkdownHtml.preload());
+await LazyMarkdownHtml.preload();
 
 afterEach(() => {
   resolveApplicationUrlConfirmation("cancel");
@@ -216,7 +216,7 @@ describe("MarkdownPreview", () => {
     notifyResize();
     expect(
       flushBreakout?.style.getPropertyValue("--md-table-breakout-max"),
-    ).toBe("300px");
+    ).toBe("calc(300px - 2rem)");
     flush.unmount();
 
     const roomy = renderClipped(600);
@@ -225,7 +225,7 @@ describe("MarkdownPreview", () => {
     notifyResize();
     expect(
       roomyBreakout?.style.getPropertyValue("--md-table-breakout-max"),
-    ).toBe("500px");
+    ).toBe("calc(500px - 2rem)");
     roomy.unmount();
 
     const sheet = document.createElement("style");
@@ -244,7 +244,7 @@ describe("MarkdownPreview", () => {
     notifyResize();
     expect(
       rootedBreakout?.style.getPropertyValue("--md-table-breakout-max"),
-    ).toBe("300px");
+    ).toBe("calc(300px - 2rem)");
     sheet.remove();
     rooted.unmount();
 

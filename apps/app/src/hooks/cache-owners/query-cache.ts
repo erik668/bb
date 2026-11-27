@@ -34,7 +34,9 @@ type TimelineRowsUpdater = (
   rows: readonly TimelineRow[],
 ) => readonly TimelineRow[] | null;
 
-type TimelineRowsUpdatePredicate = (queryKey: QueryKey) => boolean;
+type TimelineRowsUpdatePredicate = (
+  response: ThreadTimelineResponse,
+) => boolean;
 
 interface UpdateCachedTimelineRowsArgs {
   queryClient: QueryClient;
@@ -397,6 +399,7 @@ export function optimisticallyInsertThread(
   const queuedWork = thread.queuedMessageCount > 0 ? "waiting" : "none";
   const insertedThread: ThreadListEntry = {
     ...thread,
+    statusChangedAt: thread.createdAt,
     activity: {
       activeWorkflowCount: 0,
       activeBackgroundAgentCount: 0,
@@ -407,6 +410,8 @@ export function optimisticallyInsertThread(
     environmentHostId,
     environmentName: null,
     environmentPath: null,
+    environmentStatus: null,
+    environmentHostLifecycle: null,
     environmentProviderId: null,
     environmentIsWorktree: null,
     environmentWorkspaceDisplayKind: "other",
@@ -496,7 +501,7 @@ function updateCachedTimelineRows({
     if (!response) {
       continue;
     }
-    if (!shouldUpdate(queryKey)) {
+    if (!shouldUpdate(response)) {
       continue;
     }
 
@@ -520,6 +525,26 @@ export function insertOptimisticTimelineRow(
   updateCachedTimelineRows({
     queryClient,
     shouldUpdate: updateEveryTimelineQuery,
+    threadId,
+    updater: (rows) => [...rows, row],
+  });
+}
+
+export function insertOptimisticTimelineRowUnlessDelivered({
+  messageSequence,
+  queryClient,
+  row,
+  threadId,
+}: {
+  messageSequence: number | null;
+  queryClient: QueryClient;
+  row: TimelineRow;
+  threadId: string;
+}): void {
+  updateCachedTimelineRows({
+    queryClient,
+    shouldUpdate: (response) =>
+      messageSequence === null || response.maxSeq < messageSequence,
     threadId,
     updater: (rows) => [...rows, row],
   });

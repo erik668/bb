@@ -5,6 +5,8 @@ import { createConnection } from "../../src/connection.js";
 import { noopNotifier } from "../../src/notifier.js";
 import type { DbNotifier } from "../../src/notifier.js";
 import { threads } from "../../src/schema.js";
+import { writeThreadLifecycleStateInTransaction } from "../../src/data/thread-run-state.js";
+import type { ThreadStatus } from "@bb/domain";
 import {
   createThread,
   countNonDeletedAssignedChildThreads,
@@ -12,7 +14,7 @@ import {
   getThreadExecutionOverride,
   hasActiveThreadAttention,
   setThreadExecutionOverride,
-  listHostThreadIds,
+  listRuntimeHostThreadIds,
   listActiveVisiblePinnedThreadRoots,
   listThreadMentionRowsByIds,
   listThreadEnvironmentAssignmentsOnHost,
@@ -26,8 +28,6 @@ import {
   reorderPinnedThread,
   unpinThread,
   unarchiveThread,
-  applyThreadLifecycleEvent,
-  requireThreadLifecycleEventApplied,
 } from "../../src/data/threads.js";
 import { createPendingInteraction } from "../../src/data/pending-interactions.js";
 import {
@@ -43,6 +43,26 @@ import {
   environmentHasLiveThreads,
 } from "../../src/data/environments.js";
 import { createMigratedConnection } from "../../src/testing.js";
+
+function moveThreadStatus(
+  db: ReturnType<typeof createMigratedConnection>,
+  threadId: string,
+  from: ThreadStatus,
+  to: ThreadStatus,
+) {
+  const empty = { heldCompletion: null, requests: [], stop: null };
+  const result = db.transaction((tx) =>
+    writeThreadLifecycleStateInTransaction(tx, {
+      expectedStatus: from,
+      failureKind: null,
+      next: { ...empty, status: to },
+      previous: empty,
+      threadId,
+    }),
+  );
+  if (result.kind !== "written") throw new Error("status move conflicted");
+  return result.thread;
+}
 
 function setup() {
   const db = createMigratedConnection();
@@ -704,7 +724,7 @@ describe("threads", () => {
     expect(rootThreads.map((thread) => thread.id)).toContain(parent.id);
   });
 
-  it("paginates archived threads ordered by archive recency", async () => {
+  it("paginates archived threads ordered by archive recency", () => {
     const { db, project } = setup();
     const created: { id: string }[] = [];
     for (let index = 0; index < 5; index += 1) {
@@ -714,32 +734,39 @@ describe("threads", () => {
       });
       created.push(thread);
     }
-    for (const thread of created) {
-      archiveThread(db, noopNotifier, thread.id);
-      await new Promise((resolve) => setTimeout(resolve, 2));
+    const archivedAt = Date.now();
+    const now = vi.spyOn(Date, "now");
+    try {
+      for (const [index, thread] of created.entries()) {
+        now.mockReturnValue(archivedAt + index);
+        archiveThread(db, noopNotifier, thread.id);
+      }
+
+      const archivedFirstPage = listThreadsWithPendingInteractionState(db, {
+        projectId: project.id,
+        archived: true,
+        limit: 3,
+      });
+      expect(archivedFirstPage.map((thread) => thread.id)).toEqual([
+        created[4]?.id,
+        created[3]?.id,
+        created[2]?.id,
+      ]);
+
+      const archivedSecondPage = listThreadsWithPendingInteractionState(db, {
+        projectId: project.id,
+        archived: true,
+        limit: 3,
+        offset: 3,
+      });
+      expect(archivedSecondPage.map((thread) => thread.id)).toEqual([
+        created[1]?.id,
+        created[0]?.id,
+      ]);
+    } finally {
+      now.mockRestore();
+      db.$client.close();
     }
-
-    const archivedFirstPage = listThreadsWithPendingInteractionState(db, {
-      projectId: project.id,
-      archived: true,
-      limit: 3,
-    });
-    expect(archivedFirstPage.map((thread) => thread.id)).toEqual([
-      created[4]?.id,
-      created[3]?.id,
-      created[2]?.id,
-    ]);
-
-    const archivedSecondPage = listThreadsWithPendingInteractionState(db, {
-      projectId: project.id,
-      archived: true,
-      limit: 3,
-      offset: 3,
-    });
-    expect(archivedSecondPage.map((thread) => thread.id)).toEqual([
-      created[1]?.id,
-      created[0]?.id,
-    ]);
   });
 
   it("counts archived assigned child threads", () => {
@@ -1299,7 +1326,7 @@ describe("threads", () => {
     ]);
   });
 
-  it("lists host thread ids only for environments on that host", () => {
+  it("lists the live and still-running threads on a host", () => {
     const { db, project, host } = setup();
     const otherHost = upsertHost(db, noopNotifier, {
       name: "other-host",
@@ -1308,90 +1335,72 @@ describe("threads", () => {
       providerOwnsPath: false,
       projectId: project.id,
       hostId: host.id,
-      path: "/tmp/thread-host-match",
-      status: "ready",
-    });
-    const otherEnvironment = createEnvironment(db, noopNotifier, {
-      providerOwnsPath: false,
-      projectId: project.id,
-      hostId: otherHost.id,
-      path: "/tmp/thread-host-other",
-      status: "ready",
-    });
-    const activeThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
-    });
-    const stoppingThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
-    });
-    createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: otherEnvironment.id,
-      providerId: "codex",
-    });
-    requireThreadLifecycleEventApplied(
-      applyThreadLifecycleEvent(db, {
-        event: { type: "stop.requested" },
-        threadId: stoppingThread.id,
-      }),
-    );
-    expect(getThread(db, stoppingThread.id)?.status).toBe("stopping");
-
-    expect(listHostThreadIds(db, { hostId: host.id })).toEqual([
-      activeThread.id,
-      stoppingThread.id,
-    ]);
-  });
-
-  it("lists every host thread id including archived, deleted, and destroyed-environment threads", () => {
-    const { db, project, host } = setup();
-    const environment = createEnvironment(db, noopNotifier, {
-      providerOwnsPath: false,
-      projectId: project.id,
-      hostId: host.id,
-      path: "/tmp/thread-storage-targets",
+      path: "/tmp/runtime-host-threads",
       status: "ready",
     });
     const destroyedEnvironment = createEnvironment(db, noopNotifier, {
       providerOwnsPath: false,
       projectId: project.id,
       hostId: host.id,
-      path: "/tmp/destroyed-thread-storage-targets",
+      path: "/tmp/destroyed-runtime-host-threads",
       status: "destroyed",
     });
-    const activeThread = createThread(db, noopNotifier, {
+    const otherEnvironment = createEnvironment(db, noopNotifier, {
+      providerOwnsPath: false,
       projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
+      hostId: otherHost.id,
+      path: "/tmp/other-runtime-host-threads",
+      status: "ready",
     });
-    const destroyedEnvironmentThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: destroyedEnvironment.id,
-      providerId: "codex",
-    });
-    const archivedThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
-    });
-    const deletedThread = createThread(db, noopNotifier, {
-      projectId: project.id,
-      environmentId: environment.id,
-      providerId: "codex",
-    });
-    archiveThread(db, noopNotifier, archivedThread.id);
-    markThreadDeleted(db, noopNotifier, { threadId: deletedThread.id });
+    const createHostThread = (
+      environmentId: string,
+      status: ThreadStatus,
+      state: "live" | "archived" | "deleted",
+    ) => {
+      const thread = createThread(db, noopNotifier, {
+        projectId: project.id,
+        environmentId,
+        providerId: "codex",
+      });
+      db.update(threads)
+        .set({ status })
+        .where(eq(threads.id, thread.id))
+        .run();
+      if (state === "archived") archiveThread(db, noopNotifier, thread.id);
+      if (state === "deleted") {
+        markThreadDeleted(db, noopNotifier, { threadId: thread.id });
+      }
+      return thread.id;
+    };
+    const liveIdle = createHostThread(environment.id, "idle", "live");
+    const liveActive = createHostThread(environment.id, "active", "live");
+    const liveOnDestroyedEnvironment = createHostThread(
+      destroyedEnvironment.id,
+      "idle",
+      "live",
+    );
+    const archivedActive = createHostThread(
+      environment.id,
+      "active",
+      "archived",
+    );
+    const archivedStopping = createHostThread(
+      environment.id,
+      "stopping",
+      "archived",
+    );
+    createHostThread(environment.id, "idle", "archived");
+    createHostThread(environment.id, "error", "archived");
+    createHostThread(environment.id, "active", "deleted");
+    createHostThread(otherEnvironment.id, "active", "live");
 
-    expect([...listHostThreadIds(db, { hostId: host.id })].sort()).toEqual(
+    expect(listRuntimeHostThreadIds(db, { hostId: host.id })).toEqual(
       [
-        activeThread.id,
-        archivedThread.id,
-        deletedThread.id,
-        destroyedEnvironmentThread.id,
+        liveIdle,
+        liveActive,
+        liveOnDestroyedEnvironment,
+        archivedActive,
+        archivedStopping,
       ].sort(),
     );
   });
@@ -1413,12 +1422,7 @@ describe("thread lifecycle transitions and read state", () => {
       });
 
       vi.setSystemTime(2_000);
-      const idleThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, {
-          event: { type: "run.succeeded" },
-          threadId: activeThread.id,
-        }),
-      );
+      const idleThread = moveThreadStatus(db, activeThread.id, "active", "idle");
       expect(idleThread.status).toBe("idle");
       expect(idleThread.updatedAt).toBe(2_000);
       expect(idleThread.latestAttentionAt).toBe(2_000);
@@ -1428,12 +1432,7 @@ describe("thread lifecycle transitions and read state", () => {
         lastReadAt: idleThread.latestAttentionAt,
       });
       vi.setSystemTime(3_000);
-      const activeAgainThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, {
-          event: { type: "run.started" },
-          threadId: activeThread.id,
-        }),
-      );
+      const activeAgainThread = moveThreadStatus(db, activeThread.id, "idle", "active");
       expect(activeAgainThread.status).toBe("active");
       expect(activeAgainThread.updatedAt).toBe(3_000);
       expect(activeAgainThread.latestAttentionAt).toBe(2_000);
@@ -1458,12 +1457,7 @@ describe("thread lifecycle transitions and read state", () => {
       });
 
       vi.setSystemTime(2_000);
-      const erroredThread = requireThreadLifecycleEventApplied(
-        applyThreadLifecycleEvent(db, {
-          event: { type: "run.failed" },
-          threadId: stoppingThread.id,
-        }),
-      );
+      const erroredThread = moveThreadStatus(db, stoppingThread.id, "stopping", "error");
       expect(erroredThread.status).toBe("error");
       expect(erroredThread.updatedAt).toBe(2_000);
       expect(erroredThread.latestAttentionAt).toBe(1_000);

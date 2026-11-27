@@ -9,7 +9,7 @@ import {
 import {
   deleteClaimedQueuedThreadMessageBatchInTransaction,
   getEnvironment,
-  getExperiments,
+  getAppSettings,
   hasLiveQueuedRetry,
   isAppUpdateSendHoldSet,
   type EnvironmentRow,
@@ -18,6 +18,7 @@ import {
   listRunningThreads,
   type ClaimedQueuedThreadMessageRow,
   type RunningThreadRow,
+  FORK_HISTORY_COPY_MARK,
 } from "@bb/db";
 import {
   createStandaloneBuiltinCompactCommandInput,
@@ -64,7 +65,7 @@ import {
   settleQueueRowDispatched,
   type QueuedDispatchMessage,
 } from "./queue-waits.js";
-import { applyLoggedThreadLifecycleEventInTransaction } from "./lifecycle-outcome.js";
+import { runThreadLifecycleInTransaction } from "./lifecycle/run.js";
 import { buildExecutionOptions } from "./thread-commands.js";
 import {
   getActiveTurnId,
@@ -110,6 +111,7 @@ import { markTurnTraceSpan } from "../system/turn-trace.js";
 export const pendingThreadStartContextSchema = z.object({
   environmentIntent: threadProvisionEnvironmentIntentSchema,
   fork: threadForkDescriptorSchema.nullable(),
+  historyCopy: z.literal(FORK_HISTORY_COPY_MARK).optional(),
   /** Provider-facing input when it differs from the persisted start seed. */
   providerInput: z.array(promptInputSchema).optional(),
   startedOnBehalfOf: startedOnBehalfOfSchema.nullable(),
@@ -276,7 +278,7 @@ export interface DispatchAttemptArgs {
 }
 
 export type DispatchAttemptOutcome =
-  | { kind: "dispatched" }
+  | { kind: "dispatched"; messageSequence: number | null }
   | { kind: "queued"; entry: ThreadQueuedMessage };
 
 /**
@@ -340,7 +342,7 @@ async function runOperationDispatch(
   args: DispatchAttemptArgs,
   source: Extract<DispatchAttemptSource, { kind: "operation" }>,
 ): Promise<DispatchAttemptOutcome> {
-  await sendThreadMessage(deps, {
+  const messageSequence = await sendThreadMessage(deps, {
     environment: source.environment,
     originPluginId: args.originPluginId,
     payload: args.payload,
@@ -353,7 +355,7 @@ async function runOperationDispatch(
       ? { historyReplacement: source.historyReplacement }
       : {}),
   });
-  return { kind: "dispatched" };
+  return { kind: "dispatched", messageSequence };
 }
 
 interface DispatchAttemptRun {
@@ -376,6 +378,16 @@ async function runDispatchAttempt(
   // recover from, rather than the 409 that used to make a stop a dead end for
   // everything the user lined up behind it.
   ensureThreadIsWritable(thread, true);
+  if (
+    thread.status === "pending" &&
+    readPendingThreadStartContext(deps, thread.id)?.historyCopy !== undefined
+  ) {
+    throw new ApiError(
+      409,
+      "fork_history_copying",
+      "This fork is still copying its history; send the message again once it finishes",
+    );
+  }
   assertThreadHostAcceptsWork(deps.db, thread);
   if (
     payload.mode === "queue-if-active" &&
@@ -443,13 +455,13 @@ async function runDispatchAttempt(
     payload,
     args.executionDefaults ?? { threadId: thread.id },
   );
-  if (payload.compactFirst) {
-    const { compactFirst, ...request } = payload;
-    await compactThreadContext(deps, thread);
-    payload = request;
-    args = { ...args, payload };
-  }
-  const resolvedPayload = resolveExecutionIntoPayload(payload, execution);
+  const executionInputSources =
+    claimed?.[0]?.executionInputSources ?? payload.executionInputSources ?? {};
+  const { compactFirst: _compactFirst, ...messagePayload } = payload;
+  const resolvedPayload = resolveExecutionIntoPayload(
+    messagePayload,
+    execution,
+  );
   const queuedMessage: QueuedDispatchMessage = {
     input: payload.input,
     execution,
@@ -460,29 +472,36 @@ async function runDispatchAttempt(
     payload: args.queuePayload,
     systemNotice,
     deliveryMode: run.deliveryMode,
+    executionInputSources,
+    compactFirst: payload.compactFirst === true,
   };
 
-  const retriesGoFirst = getExperiments(
-    deps.db,
-  ).resumeThreadsAfterRestart;
+  const retriesGoFirst = getAppSettings(deps.db).resumeThreadsAfterRestart;
   const waitOn = (
     waitingOn: QueuedMessageWaitingOn,
-    sendAt: number | null,
+    recheckAt: number | null = null,
   ): DispatchAttemptOutcome => {
     const entry = recordQueuedMessageWait(deps, {
       thread,
-      message: queuedMessage,
+      message: {
+        ...queuedMessage,
+        compactFirst: payload.compactFirst === true,
+      },
       placement:
         retriesGoFirst && args.queuePayload.kind === "retry" ? "front" : "back",
       waitingOn,
-      sendAt,
+      sendAt:
+        waitingOn.kind === "time"
+          ? (payload.sendAt ?? null)
+          : futureSendAt(payload.sendAt, sendNow),
+      recheckAt,
       claimed,
     });
     if (entry === null) {
       // The row vanished under a re-queue (the user deleted it). Nothing is
       // waiting and nothing dispatched; report it as dispatched-away so the
       // drain stops rather than looping on a row that no longer exists.
-      return { kind: "dispatched" };
+      return { kind: "dispatched", messageSequence: null };
     }
     return { kind: "queued", entry };
   };
@@ -503,12 +522,12 @@ async function runDispatchAttempt(
   const continueThroughCoreWaits = async (): Promise<void> => {
     const sendAt = payload.sendAt ?? null;
     if (!sendNow && sendAt !== null && sendAt > Date.now()) {
-      continued.outcome = waitOn({ kind: "time" }, sendAt);
+      continued.outcome = waitOn({ kind: "time" });
       return;
     }
 
     if (isAppUpdateSendHoldSet(deps.db)) {
-      continued.outcome = waitOn({ kind: "app-update" }, null);
+      continued.outcome = waitOn({ kind: "app-update" });
       return;
     }
 
@@ -519,12 +538,12 @@ async function runDispatchAttempt(
       retriesGoFirst &&
       hasLiveQueuedRetry(deps.db, thread.id)
     ) {
-      continued.outcome = waitOn({ kind: "thread-busy" }, null);
+      continued.outcome = waitOn({ kind: "thread-busy" });
       return;
     }
 
     if (thread.status === "stopping") {
-      continued.outcome = waitOn({ kind: "stopping" }, null);
+      continued.outcome = waitOn({ kind: "stopping" });
       return;
     }
 
@@ -543,7 +562,7 @@ async function runDispatchAttempt(
     }
 
     if (systemNotice !== null && thread.environmentId === null) {
-      continued.outcome = waitOn({ kind: "provisioning" }, null);
+      continued.outcome = waitOn({ kind: "provisioning" });
       return;
     }
 
@@ -562,10 +581,10 @@ async function runDispatchAttempt(
       isMachineWaitingForExecution(deps, dispatchHost.id)
     ) {
       cancelPreparingMachinePause(deps, dispatchHost.id);
-      continued.outcome = waitOn(
-        { kind: "host-offline", hostName: dispatchHost.name },
-        null,
-      );
+      continued.outcome = waitOn({
+        kind: "host-offline",
+        hostName: dispatchHost.name,
+      });
       requestQueuedMachineReadiness(deps, dispatchHost.id);
       return;
     }
@@ -576,7 +595,7 @@ async function runDispatchAttempt(
         (run.deliveryMode === "queue" &&
           !isActiveTurnMainRunIdle(deps, currentThread)))
     ) {
-      continued.outcome = waitOn({ kind: "thread-busy" }, null);
+      continued.outcome = waitOn({ kind: "thread-busy" });
       return;
     }
 
@@ -586,15 +605,15 @@ async function runDispatchAttempt(
       dispatchHost !== null &&
       !deps.hub.hasDaemonForHost(dispatchHost.id)
     ) {
-      continued.outcome = waitOn(
-        { kind: "host-offline", hostName: dispatchHost.name },
-        null,
-      );
+      continued.outcome = waitOn({
+        kind: "host-offline",
+        hostName: dispatchHost.name,
+      });
       return;
     }
 
     if (payload.mode !== "start" && isManualCompactionActive(deps, thread)) {
-      continued.outcome = waitOn({ kind: "thread-busy" }, null);
+      continued.outcome = waitOn({ kind: "thread-busy" });
       return;
     }
     if (
@@ -617,14 +636,27 @@ async function runDispatchAttempt(
       }
     }
     if (!firstDispatch && isPreStartThreadStatus(thread.status)) {
-      continued.outcome = waitOn({ kind: "provisioning" }, null);
+      continued.outcome = waitOn({ kind: "provisioning" });
       return;
     }
     if (
       payload.mode !== "start" &&
       deps.pendingInteractions.hasTurnBoundPendingThreadInteraction(thread.id)
     ) {
-      continued.outcome = waitOn({ kind: "interaction" }, null);
+      continued.outcome = waitOn({ kind: "interaction" });
+      return;
+    }
+
+    if (payload.compactFirst === true) {
+      await compactThreadContext(deps, thread);
+      const { compactFirst: _compacted, ...request } = payload;
+      payload = request;
+      args = { ...args, payload };
+      continued.outcome = waitOn({ kind: "thread-busy" });
+      requestQueuedMessageDispatch(deps, {
+        kind: "thread-ready",
+        threadId: thread.id,
+      });
       return;
     }
 
@@ -674,9 +706,7 @@ async function runDispatchAttempt(
         serviceTier: execution.serviceTier,
         permissionMode: execution.permissionMode,
       },
-      executionSources: dispatchExecutionSources(
-        payload.executionInputSources ?? {},
-      ),
+      executionSources: dispatchExecutionSources(executionInputSources),
       attempt,
       initiator: author.initiator,
       senderThreadId: author.senderThreadId,
@@ -690,7 +720,7 @@ async function runDispatchAttempt(
     });
     if (outcome.kind === "wait") {
       if (claimed !== null) {
-        noteDispatchRequeued(thread.id);
+        noteDispatchRequeued(thread.id, outcome.waiter.pluginId);
       }
       return waitOn(
         {
@@ -698,7 +728,7 @@ async function runDispatchAttempt(
           pluginId: outcome.waiter.pluginId,
           reason: dispatchWaitReasonForPass(outcome),
         },
-        outcome.waiter.sendAt,
+        outcome.waiter.recheckAt,
       );
     }
   } else {
@@ -730,22 +760,17 @@ async function runDispatchAttempt(
       // for a thread that is gone. Reporting a dispatch here would tell the
       // caller their message went when it went nowhere.
       const current = getThread(deps.db, thread.id);
-      return reattemptDispatchForThreadChange(
-        deps,
-        args,
-        current,
-        run,
-        waitOn,
-      );
+      return reattemptDispatchForThreadChange(deps, args, current, run, waitOn);
     }
     await launchAdmittedThread(deps, admission);
-    return { kind: "dispatched" };
+    return { kind: "dispatched", messageSequence: admission.messageSequence };
   }
 
   markTurnTraceSpan("dispatch.checkpoint.done");
   const environment = await requireThreadCommandEnvironment(deps, { thread });
+  let messageSequence: number | null;
   try {
-    await sendThreadMessage(deps, {
+    messageSequence = await sendThreadMessage(deps, {
       environment,
       originPluginId: args.originPluginId,
       payload: resolvedPayload,
@@ -779,29 +804,35 @@ async function runDispatchAttempt(
     );
   }
   if (claimed !== null) {
-    settleQueueRowDispatched({ row: claimed[0]! });
+    settleQueueRowDispatched({ rows: claimed });
   }
-  return { kind: "dispatched" };
+  return { kind: "dispatched", messageSequence };
 }
 
 class DispatchThreadStatusChangedError extends Error {}
+
+function futureSendAt(
+  sendAt: number | undefined,
+  sendNow: boolean,
+): number | null {
+  return !sendNow && sendAt !== undefined && sendAt > Date.now()
+    ? sendAt
+    : null;
+}
 
 async function reattemptDispatchForThreadChange(
   deps: LoggedPendingInteractionWorkSessionDeps,
   args: DispatchAttemptArgs,
   thread: Thread | null,
   run: DispatchAttemptRun,
-  waitOn: (
-    waitingOn: QueuedMessageWaitingOn,
-    sendAt: number | null,
-  ) => DispatchAttemptOutcome,
+  waitOn: (waitingOn: QueuedMessageWaitingOn) => DispatchAttemptOutcome,
 ): Promise<DispatchAttemptOutcome> {
   if (thread === null) {
     throw new ApiError(404, "thread_not_found", "Thread not found");
   }
   if (run.reattempted) {
     ensureThreadIsWritable(thread, true);
-    const outcome = waitOn({ kind: "thread-busy" }, null);
+    const outcome = waitOn({ kind: "thread-busy" });
     deps.logger.info(
       {
         queuedMessageId: outcome.kind === "queued" ? outcome.entry.id : null,
@@ -860,7 +891,8 @@ interface AdmitPendingThreadArgs {
 }
 
 interface PendingThreadAdmission {
-  claimedRow: ClaimedQueuedThreadMessageRow | null;
+  claimedRows: readonly ClaimedQueuedThreadMessageRow[];
+  messageSequence: number;
   startingThread: Thread;
 }
 
@@ -910,10 +942,13 @@ async function admitPendingThread(
   const execution = await buildExecutionOptions(deps, args.payload, {
     threadId: args.thread.id,
   });
-  const claimedRow = args.claimed?.[0] ?? null;
-  let startingThread: Thread;
+  const claimedRows = args.claimed ?? [];
+  let admitted: {
+    messageSequence: number;
+    startingThread: NonNullable<ReturnType<typeof getThread>>;
+  };
   try {
-    startingThread = deps.db.transaction(
+    admitted = deps.db.transaction(
       (tx) => {
         // The row is consumed and the thread flipped in ONE transaction: a
         // flip that loses to a concurrent attempt rolls the consumption back,
@@ -926,16 +961,17 @@ async function admitPendingThread(
             args.respectManualStopPause,
           )({ tx });
         }
-        const prepared = applyLoggedThreadLifecycleEventInTransaction(
-          { db: tx, logger: deps.logger },
-          { threadId: args.thread.id, event: { type: "run.preparing" } },
+        const prepared = runThreadLifecycleInTransaction(
+          { db: tx, hub: deps.hub, logger: deps.logger },
+          args.thread.id,
+          { type: "provisioning.started" },
         );
-        if (!prepared.applied) {
+        if (prepared.refusal !== null) {
           throw new PendingThreadAdmissionLost();
         }
         const starting = getThread(tx, args.thread.id);
         if (starting === null) throw new PendingThreadAdmissionLost();
-        requestThreadProvision(deps, {
+        const { messageSequence } = requestThreadProvision(deps, {
           author: args.author,
           thread: starting,
           environmentIntent: startContext.environmentIntent,
@@ -950,7 +986,7 @@ async function admitPendingThread(
           startedOnBehalfOf: startContext.startedOnBehalfOf,
           titleProvided: startContext.titleProvided,
         });
-        return starting;
+        return { messageSequence, startingThread: starting };
       },
       { behavior: "immediate" },
     );
@@ -966,13 +1002,15 @@ async function admitPendingThread(
     );
     return null;
   }
+  const { messageSequence, startingThread } = admitted;
   deps.hub.notifyThread(
     startingThread.id,
     ["status-changed"],
     buildThreadStatusChangeMetadata(deps, startingThread),
   );
   return {
-    claimedRow,
+    claimedRows,
+    messageSequence,
     startingThread,
   };
 }
@@ -981,10 +1019,8 @@ async function launchAdmittedThread(
   deps: LoggedPendingInteractionWorkSessionDeps,
   admission: PendingThreadAdmission,
 ): Promise<void> {
-  const { claimedRow, startingThread } = admission;
-  if (claimedRow !== null) {
-    settleQueueRowDispatched({ row: claimedRow });
-  }
+  const { claimedRows, startingThread } = admission;
+  settleQueueRowDispatched({ rows: claimedRows });
   scheduleThreadProvisioningAdvance(deps, startingThread.id);
 }
 
@@ -1014,10 +1050,10 @@ function resolveExecutionIntoPayload(
   };
 }
 
-export async function compactThreadContext(
-  deps: LoggedPendingInteractionWorkSessionDeps,
+export function assertThreadCanCompact(
+  deps: Pick<LoggedPendingInteractionWorkSessionDeps, "providerRegistry">,
   thread: Thread,
-): Promise<void> {
+): void {
   ensureThreadIsWritable(thread);
   if (!deps.providerRegistry.supportsManualCompaction(thread.providerId)) {
     throw new ApiError(
@@ -1033,7 +1069,13 @@ export async function compactThreadContext(
       "Context can only be compacted while the thread is idle or errored",
     );
   }
+}
 
+export async function compactThreadContext(
+  deps: LoggedPendingInteractionWorkSessionDeps,
+  thread: Thread,
+): Promise<void> {
+  assertThreadCanCompact(deps, thread);
   const environment = await requireThreadCommandEnvironment(deps, { thread });
   await attemptDispatch(deps, {
     thread,

@@ -2,6 +2,7 @@ import {
   experimental_ComposerRoot as ComposerRoot,
   experimental_FailedVoiceRecordings as FailedVoiceRecordings,
   experimental_Icon as SdkIcon,
+  experimental_matchesShortcutKey as matchesShortcutKey,
   experimental_ShortcutHint as AppCommandShortcutHint,
   experimental_useComposerCommandSearch as useComposerCommandSearch,
   experimental_useComposerContributions as useComposerContributions,
@@ -81,6 +82,7 @@ import {
   REDUCED_MOTION_QUERY,
 } from "@/components/ui/hooks/use-media-query";
 import { blurActiveKeyboardInputWithin } from "@/components/ui/overlay-trigger";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import { AttachmentPreview } from "./AttachmentPreview";
 import { areDraftsEqual, isDraftEmpty } from "./composer-draft";
@@ -132,9 +134,9 @@ import {
   ComposerEditorSlot,
 } from "./ComposerEditorSlot";
 import { isModifierSubmitKeyEvent } from "./modifier-submit-key";
-import { composerSubmittingBlockedReason } from "./composer-submit-gate";
 
 import { ComposerSendMenu } from "./ComposerSendMenu";
+import { isImeComposing, isNonImeKey } from "@/lib/ime-keyboard";
 
 const PROMPTBOX_MIN_HEIGHT = 68;
 const DEFAULT_MENTION_TRIGGER = "@";
@@ -1000,7 +1002,7 @@ function usePostCompositionKeyDownEvents(): WeakSet<KeyboardEvent> {
 
 function isIPadHardwareEnterCandidate(event: KeyboardEvent): boolean {
   return (
-    event.key === "Enter" &&
+    isNonImeKey(event, "Enter") &&
     (event.code === "Enter" || event.code === "NumpadEnter")
   );
 }
@@ -1081,12 +1083,12 @@ export function PromptBoxInternal({
   useEffect(() => {
     const formElement = formRef.current;
     if (!formElement || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
-      lastObservedHeightRef.current =
-        formElement.getBoundingClientRect().height;
+    return observeSharedResize(formElement, {
+      read: () => formElement.getBoundingClientRect().height,
+      write: (height) => {
+        lastObservedHeightRef.current = height;
+      },
     });
-    observer.observe(formElement);
-    return () => observer.disconnect();
   }, []);
   useLayoutEffect(() => {
     const formElement = formRef.current;
@@ -1098,19 +1100,20 @@ export function PromptBoxInternal({
       );
       return;
     }
-    const capEditor = () => {
-      const chromeHeight =
-        formElement.offsetHeight - scrollElement.offsetHeight;
+    const readChromeHeight = () =>
+      formElement.offsetHeight - scrollElement.offsetHeight;
+    const capEditor = (chromeHeight: number) => {
       formElement.style.setProperty(
         COMPOSER_EDITOR_AVAILABLE_HEIGHT_PROPERTY,
         `${maxHeight - chromeHeight}px`,
       );
     };
-    capEditor();
+    capEditor(readChromeHeight());
     if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(capEditor);
-    observer.observe(formElement);
-    return () => observer.disconnect();
+    return observeSharedResize(formElement, {
+      read: readChromeHeight,
+      write: capEditor,
+    });
   }, [maxHeight]);
   useLayoutEffect(() => {
     const formElement = formRef.current;
@@ -1791,14 +1794,13 @@ export function PromptBoxInternal({
             pasteWithoutFormattingRef.current =
               (event.metaKey || event.ctrlKey) &&
               event.shiftKey &&
-              event.key.toLowerCase() === "v";
+              matchesShortcutKey(event, "v");
             if (
               !_view.editable ||
               !isIPadOSWebKitDevice ||
               !isIPadHardwareEnterCandidate(event) ||
               _view.composing ||
-              event.isComposing ||
-              event.keyCode === 229
+              isImeComposing(event)
             ) {
               return false;
             }
@@ -2596,7 +2598,7 @@ export function PromptBoxInternal({
   const handleComposerMenuKeyDown = useCallback(
     (event: KeyboardEvent): boolean => {
       if (!composerMenuOpen || event.defaultPrevented) return false;
-      if (event.key === "Escape") {
+      if (isNonImeKey(event, "Escape")) {
         event.preventDefault();
         event.stopPropagation();
         dismissComposerMenu(true);
@@ -2604,7 +2606,7 @@ export function PromptBoxInternal({
       }
       if (
         popupOpen &&
-        event.key === "Enter" &&
+        isNonImeKey(event, "Enter") &&
         event.target instanceof HTMLInputElement
       ) {
         event.preventDefault();
@@ -2829,33 +2831,9 @@ export function PromptBoxInternal({
   const canPrimarySubmit = canSubmitAction(primarySubmitAction);
   const canSubmit = hasSubmittableInput && canPrimarySubmit;
   const canModifierSubmit = canSubmitAction(modifierSubmitAction);
-  const submittingBlockedReason = composerSubmittingBlockedReason({
-    canSubmit: canPrimarySubmit,
-    hasSubmittableInput,
-    isAttaching,
-    isSubmitting,
-    voiceActive: showVoiceActionGroup,
-    submitDisabledReason,
-  });
   const composerEditorState = useMemo<ExperimentalComposerEditorState>(
-    () => ({
-      layout: composerLayout,
-      isRunning,
-      isSubmitting,
-      isSubmittingBlocked: !canPrimarySubmit,
-      submittingBlockedReason,
-      isAttaching,
-      attachmentError,
-    }),
-    [
-      attachmentError,
-      canPrimarySubmit,
-      composerLayout,
-      isAttaching,
-      isRunning,
-      isSubmitting,
-      submittingBlockedReason,
-    ],
+    () => ({ layout: composerLayout }),
+    [composerLayout],
   );
   const insertAtCursorForPlugin = useCallback(
     (draft: ComposerDraft, block: boolean) => {
@@ -3031,6 +3009,16 @@ export function PromptBoxInternal({
     submitPrompt();
   }, [pendingCommandSubmit, submitPrompt]);
 
+  const chooseSuggestion = useCallback(
+    (item: TypeaheadSuggestion) => {
+      applyTrigger(item);
+      if (item.kind === "command" && item.origin === "builtin") {
+        setPendingCommandSubmit(true);
+      }
+    },
+    [applyTrigger],
+  );
+
   const submitModifierPrompt = useCallback(() => {
     if (!canModifierSubmit || !onModifierSubmit) return;
     if (editorRef.current) cancelPromptThreadLinkPaste(editorRef.current);
@@ -3095,11 +3083,7 @@ export function PromptBoxInternal({
 
   const handleEditorKeyDown = useCallback(
     (event: KeyboardEvent, isOriginalIPadHardwareEnter = false): boolean => {
-      if (
-        event.isComposing ||
-        event.keyCode === 229 ||
-        postCompositionKeyDownEvents.has(event)
-      ) {
+      if (isImeComposing(event) || postCompositionKeyDownEvents.has(event)) {
         return false;
       }
       if (dispatchAppCommandKey(event) || handleComposerMenuKeyDown(event)) {
@@ -3166,27 +3150,24 @@ export function PromptBoxInternal({
           return true;
         }
         if (
-          (event.key === "Enter" || event.key === "Tab") &&
+          (isNonImeKey(event, "Enter") || event.key === "Tab") &&
           activeSuggestions.length > 0
         ) {
           event.preventDefault();
           const selected =
             activeSuggestions[selectedIndex] ?? activeSuggestions[0];
           if (selected) {
-            applyTrigger(selected);
-            if (
-              event.key === "Enter" &&
-              selected.kind === "command" &&
-              selected.origin === "builtin"
-            ) {
-              setPendingCommandSubmit(true);
+            if (isNonImeKey(event, "Enter")) {
+              chooseSuggestion(selected);
+            } else {
+              applyTrigger(selected);
             }
           }
           return true;
         }
       }
 
-      if (event.key === "Escape") {
+      if (isNonImeKey(event, "Escape")) {
         if (onEscape) {
           onEscape();
           return true;
@@ -3247,7 +3228,7 @@ export function PromptBoxInternal({
       }
 
       const isBlockquoteExitKey =
-        event.key === "Enter" &&
+        isNonImeKey(event, "Enter") &&
         event.shiftKey &&
         !event.metaKey &&
         !event.altKey &&
@@ -3263,7 +3244,7 @@ export function PromptBoxInternal({
       }
 
       const isPromptNewlineKey =
-        event.key === "Enter" &&
+        isNonImeKey(event, "Enter") &&
         !event.metaKey &&
         !event.altKey &&
         !event.ctrlKey &&
@@ -3278,7 +3259,7 @@ export function PromptBoxInternal({
       }
 
       if (!canSubmitWithEnterKey) return false;
-      const isSubmitKey = event.key === "Enter" && !event.shiftKey;
+      const isSubmitKey = isNonImeKey(event, "Enter") && !event.shiftKey;
 
       if (!isSubmitKey) return false;
       event.preventDefault();
@@ -3290,6 +3271,7 @@ export function PromptBoxInternal({
       activeSuggestions,
       applyHistoryDraft,
       applyTrigger,
+      chooseSuggestion,
       dispatchAppCommandKey,
       handleComposerMenuKeyDown,
       history,
@@ -3299,7 +3281,6 @@ export function PromptBoxInternal({
       postCompositionKeyDownEvents,
       resetHistorySession,
       selectedIndex,
-      setPendingCommandSubmit,
       showTypeaheadMenu,
       submitModifierPrompt,
       submitPrompt,
@@ -3314,7 +3295,7 @@ export function PromptBoxInternal({
   useEffect(() => {
     if (!showVoiceActionGroup || !voice) return;
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (!isNonImeKey(event, "Escape")) return;
       event.preventDefault();
       event.stopPropagation();
       cancelVoiceInput();
@@ -3488,7 +3469,7 @@ export function PromptBoxInternal({
                 <MentionMenu
                   state={typeaheadMenuState}
                   selectedIndex={selectedIndex}
-                  onApply={applyTrigger}
+                  onApply={chooseSuggestion}
                   onDismiss={isPointerCoarse ? dismissComposerMenu : undefined}
                 />
               )}

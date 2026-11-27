@@ -9,6 +9,11 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./thread-run-state": {
+      "source": "./src/thread-run-state.ts",
+      "types": "./src/thread-run-state.ts",
+      "default": "./src/thread-run-state.ts"
+    },
     "./thread-status": {
       "source": "./src/thread-status.ts",
       "types": "./src/thread-status.ts",
@@ -28,6 +33,11 @@
       "source": "./src/thread-origin-kind.ts",
       "types": "./src/thread-origin-kind.ts",
       "default": "./src/thread-origin-kind.ts"
+    },
+    "./thread-failure-kind": {
+      "source": "./src/thread-failure-kind.ts",
+      "types": "./src/thread-failure-kind.ts",
+      "default": "./src/thread-failure-kind.ts"
     },
     "./queued-message-lifecycle": {
       "source": "./src/queued-message-lifecycle.ts",
@@ -109,9 +119,11 @@
   "scripts": {
     "clean": "rimraf dist tsconfig.tsbuildinfo",
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts"
   },
   "dependencies": {
+    "@bb/text-utils": "workspace:*",
     "zod": "^4.6.7"
   },
   "devDependencies": {

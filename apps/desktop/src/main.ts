@@ -3,6 +3,7 @@ import { pathToFileURL } from "node:url";
 import { spawnHostProcess as spawn, hostToolchain } from "@bb/process-utils";
 import { openApplicationUrl } from "./application-url.js";
 import { createDesktopLogger } from "./desktop-logger.js";
+import { createDesktopQuitController } from "./desktop-quit.js";
 import { attachServerUpdateControl } from "./server-update-control.js";
 import { registerServerChoiceIpc } from "./server-choice-ipc.js";
 import { randomUUID } from "node:crypto";
@@ -19,12 +20,12 @@ import {
   Menu,
   nativeImage,
   nativeTheme,
+  powerMonitor,
   net,
   safeStorage,
   session,
   shell,
   webContents as electronWebContents,
-  type Event,
   type IpcMainInvokeEvent,
   type MessageBoxOptions,
   type WebContents,
@@ -45,6 +46,7 @@ import {
 } from "@bb/connect-client";
 import {
   appCommandIdSchema,
+  appSettingsSchema,
   type AppCommandId,
   type AppKeybindings,
 } from "@bb/domain";
@@ -52,9 +54,11 @@ import {
   bbDesktopBrowserImportCookiesRequestSchema,
   bbDesktopThemeSchema,
   type BbDesktopInfo,
+  type BbDesktopServerList,
   type BbDesktopWindowState,
 } from "@bb/desktop-contract";
 import {
+  desktopQuitStatusSchema,
   serverMessageLenientSchema,
   type ClientMessage,
 } from "@bb/server-contract";
@@ -267,7 +271,14 @@ import {
   BB_DESKTOP_BROWSER_OPEN_FULL_DISK_ACCESS_SETTINGS_CHANNEL,
 } from "./desktop-browser-ipc.js";
 import { parseDesktopSystemConfig } from "./desktop-system-config.js";
-import { resolveDesktopReloadShortcut } from "./desktop-reload-shortcut.js";
+import {
+  STARTUP_RELOAD_KEYBINDINGS,
+  resolveDesktopReloadShortcut,
+} from "./desktop-reload-shortcut.js";
+import {
+  type RendererCrashRecovery,
+  watchRendererCrashes,
+} from "./desktop-renderer-recovery.js";
 import {
   createLogTailer,
   createLogLineBuffer,
@@ -410,7 +421,7 @@ let desktopBrowserBroker: DesktopBrowserBroker | null = null;
 let desktopBrowserBrokerClient: ReturnType<
   typeof createDesktopBrowserBrokerClient
 > | null = null;
-let currentAppKeybindings: AppKeybindings = [];
+let currentAppKeybindings: AppKeybindings = STARTUP_RELOAD_KEYBINDINGS;
 let currentApplicationMenuAccelerators = DEFAULT_APPLICATION_MENU_ACCELERATORS;
 let desktopUpdateService: DesktopUpdateService | null = null;
 let desktopAutoUpdateService: DesktopAutoUpdateService | null = null;
@@ -424,6 +435,7 @@ let systemConfigSync: SystemConfigSync | null = null;
 let systemConfigRefreshToken = 0;
 let refreshRemoteSystemConfig: (() => void) | null = null;
 const applicationWindowWebContentsIds = new Set<number>();
+const windowCrashRecoveries = new Map<number, RendererCrashRecovery>();
 const splitNavigationEnabledWebContentsIds = new Set<number>();
 const splitNavigationCommandsByWebContentsId = new Map<
   number,
@@ -433,7 +445,6 @@ let bbAppLoaded = false;
 let startupErrorPage: StartupErrorPage | null = null;
 let startupActionPending = false;
 let connectSignInWindow: BrowserWindow | null = null;
-let stoppingForQuit = false;
 let appImageRelaunchPath: string | null = null;
 let quitting = false;
 let serverTargetStore: ServerTargetStore | null = null;
@@ -580,7 +591,11 @@ function registerApplicationRendererReloadShortcut(
   webContents: WebContents,
 ): void {
   webContents.on("before-input-event", (event, input) => {
-    const shortcut = resolveDesktopReloadShortcut(input);
+    const shortcut = resolveDesktopReloadShortcut(
+      input,
+      currentAppKeybindings,
+      process.platform,
+    );
     if (shortcut === null) {
       return;
     }
@@ -597,6 +612,11 @@ function reloadApplicationWindow(
   ignoreCache: boolean,
 ): void {
   desktopBrowserViewManager?.prepareWindowReload(browserWindow);
+  if (
+    windowCrashRecoveries.get(browserWindow.webContents.id)?.restoreCrashPage()
+  ) {
+    return;
+  }
   if (ignoreCache) {
     browserWindow.webContents.reloadIgnoringCache();
   } else {
@@ -766,6 +786,13 @@ function listServerChoices() {
   );
 }
 
+function getServerList(): BbDesktopServerList {
+  return {
+    servers: listServerChoices(),
+    connectServersSkipReason: connectServerSyncSkipReason,
+  };
+}
+
 function buildMenuServerItems(connectServers: ConnectServerRef[]) {
   return buildDesktopServerChoices(
     serverTargetStore,
@@ -816,13 +843,13 @@ function popupServerMenu(browserWindow: BrowserWindow | null): void {
 }
 
 function refreshApplicationMenu(): void {
-  const choices = listServerChoices();
+  const serverList = getServerList();
   for (const browserWindow of BrowserWindow.getAllWindows()) {
     if (applicationWindowWebContentsIds.has(browserWindow.webContents.id)) {
       sendToApplicationRenderer(
         browserWindow,
         BB_DESKTOP_SERVER_CHOICES_CHANGED_CHANNEL,
-        choices,
+        serverList,
       );
     }
   }
@@ -1046,6 +1073,7 @@ async function refreshSystemConfig(
     currentAppKeybindings = config.keybindings;
     currentApplicationMenuAccelerators = resolveApplicationMenuAccelerators(
       currentAppKeybindings,
+      process.platform,
     );
     refreshApplicationMenu();
   } catch (error) {
@@ -1279,7 +1307,7 @@ async function authenticateConnectTarget(
     remoteServerUrl,
   });
   if (localResult.ok) {
-    void ensureDesktopMachineEnrolled();
+    ensureDesktopMachineEnrolled();
   }
   return localResult;
 }
@@ -2157,12 +2185,14 @@ async function loadLogViewerWindow(
     lineBuffer.stop();
   });
 
-  await browserWindow.loadURL(createLogViewerViewUrl({ logDir: args.logDir }));
-  sendLogViewerSnapshot({
-    browserWindow,
-    lines: lineBuffer.lines(),
-    logDir: args.logDir,
+  browserWindow.webContents.on("did-finish-load", () => {
+    sendLogViewerSnapshot({
+      browserWindow,
+      lines: lineBuffer.lines(),
+      logDir: args.logDir,
+    });
   });
+  await browserWindow.loadURL(createLogViewerViewUrl({ logDir: args.logDir }));
   await tailer.start();
 }
 
@@ -2316,15 +2346,84 @@ async function stopOwnedRuntime(): Promise<void> {
   }
 }
 
-function handleBeforeQuit(event: Event): void {
-  quitting = true;
-  if (stoppingForQuit) {
-    return;
-  }
-
-  event.preventDefault();
-  stoppingForQuit = true;
-  void finishQuit().finally(() => {
+const quitController = createDesktopQuitController({
+  async readStatus() {
+    const runtime = currentRuntime;
+    if (runtime === null || runtime.ownership !== "spawned") {
+      return { confirmDesktopQuit: false, runningAgentCount: 0 };
+    }
+    const response = await fetch(
+      new URL("/api/v1/system/quit-status", runtime.serverUrl),
+      {
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (!response.ok)
+      throw new Error(`Quit status request failed: ${response.status}`);
+    return desktopQuitStatusSchema.parse(await response.json());
+  },
+  async confirm(count) {
+    const localServerLabel =
+      process.platform === "darwin"
+        ? "this Mac's bb server"
+        : "this computer's bb server";
+    const options: MessageBoxOptions = {
+      type: "warning",
+      title: "Quit bb?",
+      message:
+        count === null
+          ? `Agents may be working on ${localServerLabel}`
+          : `${count} agent${count === 1 ? " is" : "s are"} working on ${localServerLabel}`,
+      detail: `Quitting bb stops ${count === 1 ? "it" : "them"}.`,
+      buttons: ["Quit anyway", "Cancel"],
+      defaultId: 1,
+      cancelId: 1,
+      checkboxLabel: "Don't ask again",
+      checkboxChecked: false,
+      noLink: true,
+    };
+    const parentWindow = getFocusedApplicationWindow();
+    if (parentWindow !== null) {
+      app.focus({ steal: true });
+      parentWindow.show();
+    }
+    const result =
+      parentWindow === null
+        ? await dialog.showMessageBox(options)
+        : await dialog.showMessageBox(parentWindow, options);
+    return {
+      quit: result.response === 0,
+      dontAskAgain: result.checkboxChecked,
+    };
+  },
+  async disableConfirmation() {
+    const runtime = currentRuntime;
+    if (runtime === null) return;
+    const configResponse = await fetch(formatApiUrl(runtime.serverUrl), {
+      signal: AbortSignal.timeout(3000),
+    });
+    if (!configResponse.ok)
+      throw new Error(
+        `Could not read general settings: ${configResponse.status}`,
+      );
+    const { generalSettings } = z
+      .object({ generalSettings: appSettingsSchema.strip() })
+      .parse(await configResponse.json());
+    const response = await fetch(
+      new URL("/api/v1/settings/general", runtime.serverUrl),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...generalSettings, confirmDesktopQuit: false }),
+        signal: AbortSignal.timeout(3000),
+      },
+    );
+    if (!response.ok)
+      throw new Error(`Could not save quit preference: ${response.status}`);
+  },
+  finishQuit,
+  requestQuit: () => app.quit(),
+  quitApplication() {
     if (appImageRelaunchPath !== null) {
       app.releaseSingleInstanceLock();
       const replacement = spawn(appImageRelaunchPath, process.argv.slice(1), {
@@ -2333,12 +2432,16 @@ function handleBeforeQuit(event: Event): void {
       });
       replacement.on("error", (error) => desktopLogger.error(error.message));
       replacement.unref();
+      appImageRelaunchPath = null;
     }
     app.quit();
-  });
-}
+  },
+  onError: (error) =>
+    desktopLogger.error(`Could not quit bb: ${String(error)}`),
+});
 
 async function finishQuit(): Promise<void> {
+  quitting = true;
   stopServerMovedWatcher();
   desktopBrowserBrokerClient?.stop();
   desktopBrowserBroker?.dispose();
@@ -2382,15 +2485,27 @@ async function installDesktopUpdate(): Promise<void> {
     throw new Error("This AppImage cannot be replaced in place.");
   }
   await desktopWindowFactory?.persistOpenWindows();
-  await desktopAutoUpdateService.installUpdate();
+  quitController.bypassConfirmation();
+  try {
+    await desktopAutoUpdateService.installUpdate();
+  } catch (error) {
+    quitController.restoreConfirmation();
+    throw error;
+  }
 }
 
 function registerDesktopUpdateIpc(): void {
   registerServerChoiceIpc({
     applicationWindowWebContentsIds,
     onListRequested: () => connectServerSync?.onListRequested(),
-    list: listServerChoices,
+    list: getServerList,
     select: setActiveServerTarget,
+    addServer() {
+      void openSetServerUrlDialog(true);
+    },
+    signInToConnect() {
+      openConnectSignIn(getFocusedApplicationWindow());
+    },
     onError: (error) =>
       desktopLogger.error(`Could not switch server: ${String(error)}`),
   });
@@ -2656,6 +2771,24 @@ async function waitForWindowsInstallerToFinish(): Promise<boolean> {
   return result === "finished" && !quitting;
 }
 
+async function waitForOwnedRuntimeReady(
+  bbProcess: BbAppProcess,
+): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const result = await Promise.race([
+    bbProcess.ready.then(() => "ready" as const),
+    new Promise<"timed-out">((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout("timed-out"), STARTUP_TIMEOUT_MS);
+    }),
+  ]);
+  clearTimeout(timer);
+  if (result === "timed-out") {
+    desktopLogger.warn(
+      `[desktop] bb-app did not report this computer connected within ${STARTUP_TIMEOUT_MS}ms; opening bb anyway`,
+    );
+  }
+}
+
 async function startOwnedRuntime(
   args: StartOwnedRuntimeArgs,
 ): Promise<DesktopRuntime | null> {
@@ -2667,10 +2800,12 @@ async function startOwnedRuntime(
       intervalMs: STARTUP_POLL_INTERVAL_MS,
       serverUrl: args.serverUrl,
       timeoutMs: STARTUP_TIMEOUT_MS,
-    }).then((result) => ({
-      kind: "server-probe",
-      result,
-    })),
+    }).then(async (result) => {
+      if (result.kind === "compatible") {
+        await waitForOwnedRuntimeReady(bbProcess);
+      }
+      return { kind: "server-probe", result };
+    }),
     bbProcess.exit.then((exit) => ({
       exit,
       kind: "process-exited",
@@ -2911,7 +3046,10 @@ async function runDesktopApp(): Promise<void> {
       stateKey: null,
     });
   });
-  app.on("before-quit", handleBeforeQuit);
+  app.on("before-quit", (event) => quitController.beforeQuit(event));
+  nativeAutoUpdater.on("before-quit-for-update", () =>
+    quitController.bypassConfirmation(),
+  );
   app.on("window-all-closed", () => {
     if (process.platform !== "darwin") {
       app.quit();
@@ -2932,6 +3070,24 @@ async function runDesktopApp(): Promise<void> {
     connectSessionRenewal?.renewIfDue();
   });
   app.on("browser-window-created", (_event, browserWindow) => {
+    const webContentsId = browserWindow.webContents.id;
+    windowCrashRecoveries.set(
+      webContentsId,
+      watchRendererCrashes({
+        describeWindow: () => `window "${browserWindow.getTitle()}"`,
+        logger: desktopLogger,
+        onRendererGone() {
+          if (applicationWindowWebContentsIds.has(webContentsId)) {
+            desktopBrowserViewManager?.prepareWindowReload(browserWindow);
+          }
+        },
+        webContents: browserWindow.webContents,
+      }),
+    );
+    browserWindow.once("closed", () => {
+      windowCrashRecoveries.delete(webContentsId);
+    });
+    browserWindow.on("session-end", () => quitController.bypassConfirmation());
     if (desktopBrowserViewManager === null) {
       return;
     }
@@ -2950,6 +3106,7 @@ async function runDesktopApp(): Promise<void> {
     },
     async stopOwnedRuntime() {
       quitting = true;
+      quitController.bypassConfirmation();
       await stopOwnedRuntime();
     },
   });
@@ -2964,6 +3121,10 @@ async function runDesktopApp(): Promise<void> {
     Object.assign(process.env, hostToolchain.environment());
   }
   await app.whenReady();
+  powerMonitor.on("shutdown", () => {
+    quitController.bypassConfirmation();
+    app.quit();
+  });
   if (app.isPackaged) {
     await session.defaultSession.clearCache();
   }
@@ -3177,6 +3338,7 @@ async function runDesktopApp(): Promise<void> {
   });
   registerDesktopUpdateIpc();
   desktopFindViewManager = createDesktopFindViewManager({
+    logger: desktopLogger,
     preloadPath: findBarPreloadPath,
   });
   ipcMain.on(BB_DESKTOP_OPEN_WINDOW_FIND_CHANNEL, (event, payload: unknown) => {
@@ -3391,6 +3553,11 @@ async function runDesktopApp(): Promise<void> {
       void shell.openExternal(openArgs.url);
     },
     onWindowCreated: registerApplicationWindow,
+    shouldCloseWindow: () =>
+      quitController.shouldCloseWindow(
+        process.platform,
+        BrowserWindow.getAllWindows().length === 1,
+      ),
     preloadPath,
     userDataPath,
   });

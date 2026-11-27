@@ -2,6 +2,7 @@ import ArrowDown01Icon from "@hugeicons/core-free-icons/ArrowDown01Icon";
 import LinkSquare02Icon from "@hugeicons/core-free-icons/LinkSquare02Icon";
 import Cancel01Icon from "@hugeicons/core-free-icons/Cancel01Icon";
 import Download01Icon from "@hugeicons/core-free-icons/Download01Icon";
+import Flag02Icon from "@hugeicons/core-free-icons/Flag02Icon";
 import GithubIcon from "@hugeicons/core-free-icons/GithubIcon";
 import PackageIcon from "@hugeicons/core-free-icons/PackageIcon";
 import Search01Icon from "@hugeicons/core-free-icons/Search01Icon";
@@ -45,7 +46,10 @@ import {
   marketplaceDetailPath,
   marketplaceIndexPath,
   marketplaceInstallCommand,
+  marketplaceIsCommunityEntry,
+  marketplaceReportUrl,
   marketplaceRepositoryUrl,
+  MARKETPLACE_PUBLISH_PATH,
   marketplaceShelves,
   moreInMarketplaceCategory,
   moreFromMarketplaceAuthor,
@@ -57,6 +61,7 @@ import {
   type MarketplaceShelf,
   type MarketplaceSort,
 } from "./marketplace-view-model.js";
+import { isNonImeKey } from "@bb/shared-ui/lib/ime-keyboard";
 
 const SORT_LABELS: Record<MarketplaceSort, string> = {
   "recently-added": "New",
@@ -99,7 +104,7 @@ export function MarketplaceNavigationProvider({
   );
 }
 
-function MarketplaceLink({
+export function MarketplaceLink({
   href,
   className,
   children,
@@ -245,7 +250,9 @@ function InstallCount({
   if (badge?.kind !== "count") return null;
   const total = badge.installs;
   const formatted =
-    variant === "detail" ? total.toLocaleString("en-US") : formatInstalls(total);
+    variant === "detail"
+      ? total.toLocaleString("en-US")
+      : formatInstalls(total);
   return (
     <span
       className={className}
@@ -592,6 +599,12 @@ function MarketplaceToolbar({
             Themes, providers, workflows, and tools, installed with one command.
           </p>
           <div className="marketplace-hero-search">{search}</div>
+          <p className="marketplace-hero-note">
+            Community listings are not reviewed by BB.{" "}
+            <MarketplaceLink href={MARKETPLACE_PUBLISH_PATH}>
+              Publish a plugin
+            </MarketplaceLink>
+          </p>
         </header>
       ) : (
         <div className="marketplace-author-search">{search}</div>
@@ -602,7 +615,7 @@ function MarketplaceToolbar({
             className="marketplace-category-select"
             ref={categoryMenu}
             onKeyDown={(event) => {
-              if (event.key === "Escape") {
+              if (isNonImeKey(event, "Escape")) {
                 event.currentTarget.removeAttribute("open");
                 event.currentTarget.querySelector("summary")?.focus();
               }
@@ -942,7 +955,8 @@ function MoreInCategory({
       <div className="marketplace-section-head">
         <div>
           <h2>
-            More in {categoryName}{"\u00a0"}
+            More in {categoryName}
+            {"\u00a0"}
             <span>{entries.length}</span>
           </h2>
           {category?.description === undefined ? null : (
@@ -1001,6 +1015,7 @@ export function PublicMarketplaceDetailPage({
   const category = categoryDefinition?.displayName ?? "More plugins";
   const categoryId = categoryDefinition?.id ?? UNCATEGORIZED_CATEGORY_ID;
   const repository = marketplaceRepositoryUrl(entry);
+  const community = marketplaceIsCommunityEntry(entry);
   const setup = bundledPluginSetup(entry);
   const installCommand =
     setup === null
@@ -1060,7 +1075,11 @@ export function PublicMarketplaceDetailPage({
                 {category}
               </MarketplaceLink>
               <InstallCount entry={entry} stats={stats} variant="detail" />
-
+              {community ? (
+                <span className="marketplace-detail-unreviewed">
+                  Not reviewed by BB
+                </span>
+              ) : null}
             </div>
           </div>
           <div className="marketplace-detail-install">
@@ -1103,15 +1122,28 @@ export function PublicMarketplaceDetailPage({
               <hr className="marketplace-overview-rule" />
               <div className="marketplace-overview-heading">
                 <h2>Overview</h2>
-              <a
-                className="marketplace-detail-source"
-                href={repository}
-                target="_blank"
-                rel="noreferrer"
-              >
-                View source
-                <HugeiconsIcon icon={LinkSquare02Icon} aria-hidden />
-              </a>
+                <div className="marketplace-overview-links">
+                  <a
+                    className="marketplace-detail-source"
+                    href={repository}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    View source
+                    <HugeiconsIcon icon={LinkSquare02Icon} aria-hidden />
+                  </a>
+                  {community ? (
+                    <a
+                      className="marketplace-detail-source"
+                      href={marketplaceReportUrl(entry.id)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Report
+                      <HugeiconsIcon icon={Flag02Icon} aria-hidden />
+                    </a>
+                  ) : null}
+                </div>
               </div>
               {entry.overview === undefined ? null : (
                 <MarketplaceOverview markdown={entry.overview} />

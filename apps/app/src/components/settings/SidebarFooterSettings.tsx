@@ -6,7 +6,7 @@ import {
 import { Icon } from "@bb/shared-ui/icon";
 import { Button } from "@bb/shared-ui/button";
 import { Switch } from "@bb/shared-ui/switch";
-import { SettingsWithControl } from "@/components/ui/settings-section";
+import { SettingsWithControl } from "@bb/shared-ui/settings-section";
 import { useReorderDnd } from "@bb/shared-ui/use-reorder-dnd";
 import { useSidebarSortable } from "@bb/shared-ui/sortable-motion";
 import {
@@ -78,6 +78,7 @@ function FooterSettingsRow({
     id: item.key,
     disabled: false,
   });
+  const { setActivatorNodeRef, attributes, listeners } = dragBindings;
   return (
     <div
       ref={setNodeRef}
@@ -89,9 +90,9 @@ function FooterSettingsRow({
         variant="ghost"
         size="icon"
         className="size-7 touch-none text-muted-foreground"
-        ref={dragBindings.setActivatorNodeRef}
-        {...dragBindings.attributes}
-        {...dragBindings.listeners}
+        ref={setActivatorNodeRef}
+        {...attributes}
+        {...listeners}
         aria-label={`Reorder ${item.label}`}
       >
         <Icon name="DragDropVertical" className="size-4" />

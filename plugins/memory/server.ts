@@ -11,6 +11,7 @@ import { isMemoryKind, MEMORY_KINDS, type MemoryKind } from "./memory-kinds.js";
 import {
   CANDIDATE_STATUSES,
   CandidateStore,
+  CandidateStoreError,
   SETTINGS_OWNER_ACTOR,
   type CandidateChallenge,
   type CandidateDecisionReceipt,
@@ -825,13 +826,14 @@ class MemoryStore {
   }
 
   insertMemoryRecord(record: MemoryRecord): void {
-    this.db
+    const inserted = this.db
       .prepare(
         `INSERT INTO memories (
            id, scope, scope_key, project_id, name, summary, details, kind,
            tags_json, importance, pinned, source_thread_id, write_reason,
            version, created_at, updated_at, deleted_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+         ON CONFLICT(scope_key, name) WHERE deleted_at IS NULL DO NOTHING`,
       )
       .run(
         record.id,
@@ -851,6 +853,11 @@ class MemoryStore {
         record.createdAt,
         record.updatedAt,
       );
+    if (inserted.changes === 0) {
+      throw new CandidateStoreError(
+        `an active ${record.scope} memory named "${record.name}" already exists; review or edit it in Memory settings`,
+      );
+    }
     this.insertHistory(
       record,
       "create",

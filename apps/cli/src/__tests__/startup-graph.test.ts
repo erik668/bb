@@ -1,6 +1,10 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { promisify } from "node:util";
@@ -226,10 +230,12 @@ describe("bb startup module graph", () => {
         process.execPath,
         [distEntry, "status"],
         { cwd: cliRoot, env },
-      );
+      ).catch((error: { stdout: string; stderr: string }) => error);
 
       expect(stdout).toContain("Project: (not set)");
-      expect(stderr).toBe("");
+      expect(stderr).toBe(
+        "Error: The bb server at http://127.0.0.1:1 did not answer: fetch failed: bad port\n",
+      );
     }, 30_000);
 
     it("loads only the thread chunk for `bb thread`", async () => {
@@ -248,7 +254,10 @@ describe("bb startup module graph", () => {
 
     it("uses registered plugin help from the split artifact", async () => {
       let pluginCalls = 0;
-      const server = createServer(async (request, response) => {
+      const handle = async (
+        request: IncomingMessage,
+        response: ServerResponse,
+      ) => {
         response.setHeader("content-type", "application/json");
         if (request.url === "/api/v1/plugins/contributions") {
           response.end(
@@ -289,6 +298,9 @@ describe("bb startup module graph", () => {
             stderr: "",
           }),
         );
+      };
+      const server = createServer((request, response) => {
+        handle(request, response).catch((error) => response.destroy(error));
       });
       await new Promise<void>((resolvePromise) =>
         server.listen(0, "127.0.0.1", resolvePromise),
@@ -316,6 +328,13 @@ describe("bb startup module graph", () => {
           serverUrl,
         );
         expect(direct.stdout).toBe("fixture ran: inspect fixture-1\n");
+        const coreGroupChunks = direct.urls.filter((url) =>
+          CORE_COMMAND_GROUPS.some((group) =>
+            new RegExp(`/index-chunks/${group.name}-[A-Z0-9]+\\.js$`).test(url),
+          ),
+        );
+        expect(coreGroupChunks).toEqual([]);
+        expect(loaded(direct, `${chunkDirUrl}json-shapes-`)).toEqual([]);
 
         const raw = await runCli(
           "dist",

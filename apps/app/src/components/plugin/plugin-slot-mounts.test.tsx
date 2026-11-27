@@ -1,5 +1,8 @@
 import { useThreadFixedTabs } from "./PluginThreadFixedTabs";
 // @vitest-environment jsdom
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { threadQueryKey } from "@/hooks/queries/query-keys";
+import { makeThreadResponse } from "@/test/fixtures/thread-responses";
 
 import {
   MemoryRouter,
@@ -8,20 +11,17 @@ import {
   useNavigate,
   useParams,
 } from "react-router-dom";
+import { useAppNavigationHostRef } from "@/lib/app-navigation-host";
 import {
   startTransition,
+  useInsertionEffect,
   useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
-import {
-  act,
-  cleanup,
-  fireEvent,
-  render,
-  screen,
-} from "@testing-library/react";
+import { act, cleanup, fireEvent, screen } from "@testing-library/react";
+import { render } from "@/test/render-with-query-client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
 import type {
@@ -36,7 +36,7 @@ import { createPluginPanelFixedPanelTab } from "@/lib/fixed-panel-tabs-state";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginNavPanelSlot,
 } from "@/lib/plugin-slots";
 import { PLUGIN_PANEL_ROUTE_PATH } from "@/lib/route-paths";
@@ -148,7 +148,7 @@ describe("PluginHomepageSections", () => {
     );
     render(
       <MemoryRouter initialEntries={["/"]}>
-        <PluginHomepageSections />
+        <PluginHomepageSections projectId={null} />
       </MemoryRouter>,
     );
     expect(screen.getByText("plugin broken crashed")).toBeDefined();
@@ -259,17 +259,17 @@ describe("useComposer", () => {
     function ComposerProbe() {
       const composer = useComposer();
       onRender?.(composer);
-      const initialMethods = useRef({
+      const [initialMethods] = useState(() => ({
         setText: composer.setText,
         updateText: composer.updateText,
         clear: composer.clear,
         setTextEffect: composer.setTextEffect,
-      });
+      }));
       const methodsAreStable =
-        initialMethods.current.setText === composer.setText &&
-        initialMethods.current.updateText === composer.updateText &&
-        initialMethods.current.clear === composer.clear &&
-        initialMethods.current.setTextEffect === composer.setTextEffect;
+        initialMethods.setText === composer.setText &&
+        initialMethods.updateText === composer.updateText &&
+        initialMethods.clear === composer.clear &&
+        initialMethods.setTextEffect === composer.setTextEffect;
       return (
         <div>
           <div>scope: {composer.scope.kind}</div>
@@ -407,7 +407,12 @@ describe("useComposer", () => {
       }),
     );
     const staticView: ComposerView = {
-      scope: { kind: "thread", threadId: "thr_quiet" },
+      scope: {
+        kind: "thread",
+        threadId: "thr_quiet",
+        projectId: "proj_test",
+        environmentId: null,
+      },
       layout: "expanded",
       draft: { text: "", isEmpty: true, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
@@ -461,7 +466,12 @@ describe("useComposer", () => {
       }),
     );
     const staticView: ComposerView = {
-      scope: { kind: "thread", threadId: "thr_navigated" },
+      scope: {
+        kind: "thread",
+        threadId: "thr_navigated",
+        projectId: "proj_test",
+        environmentId: null,
+      },
       layout: "expanded",
       draft: { text: "", isEmpty: true, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
@@ -524,7 +534,12 @@ describe("useComposer", () => {
       }),
     );
     const staticView: ComposerView = {
-      scope: { kind: "thread", threadId: "thr_late" },
+      scope: {
+        kind: "thread",
+        threadId: "thr_late",
+        projectId: "proj_test",
+        environmentId: null,
+      },
       layout: "expanded",
       draft: { text: "", isEmpty: true, attachmentCount: 0 },
       run: { isRunning: false, isSubmitting: false },
@@ -576,6 +591,34 @@ describe("useComposer", () => {
     );
     expect(focusRequests).toBe(1);
     unsubscribe();
+  });
+
+  it("scopes a composer outside any composer host to the route thread's project and environment", () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(
+      threadQueryKey("thr_route"),
+      makeThreadResponse({
+        id: "thr_route",
+        projectId: "proj_route",
+        environmentId: "env_route",
+      }),
+    );
+    registerComposerProbe("route");
+    render(
+      <MemoryRouter initialEntries={["/projects/proj_route/threads/thr_route"]}>
+        <ComposerCustomizationMount />
+      </MemoryRouter>,
+      { queryClient },
+    );
+
+    expect(
+      JSON.parse(screen.getByTestId("route-scope-details").textContent ?? ""),
+    ).toEqual({
+      kind: "thread",
+      threadId: "thr_route",
+      projectId: "proj_route",
+      environmentId: "env_route",
+    });
   });
 
   it("keeps the withdrawn thread-row status method callable for prebuilt 0.4.1 bundles", () => {
@@ -716,7 +759,9 @@ describe("useComposer", () => {
         ],
       });
       const draftRef = useRef(draft);
-      draftRef.current = draft;
+      useInsertionEffect(() => {
+        draftRef.current = draft;
+      });
       const subscribeDraft = useComposerHostDraftNotifier(draft);
       const host = useMemo<PluginComposerHost>(
         () => ({
@@ -724,6 +769,8 @@ describe("useComposer", () => {
             kind: "queued-message",
             threadId: "thr_queue",
             queuedMessageId,
+            projectId: "proj_test",
+            environmentId: null,
           },
           textEffectKey: `queued-message:thr_queue:${queuedMessageId}:1`,
           getCurrent: () => draftRef.current,
@@ -821,6 +868,8 @@ describe("useComposer", () => {
                   kind: "queued-message",
                   threadId: "thr_queue",
                   queuedMessageId: "qmsg_1",
+                  projectId: "proj_test",
+                  environmentId: null,
                 },
                 textEffectKey:
                   "queued-message:thr_queue:qmsg_1:sibling-surface",
@@ -930,7 +979,9 @@ describe("useComposer", () => {
         ],
       });
       const draftRef = useRef(draft);
-      draftRef.current = draft;
+      useInsertionEffect(() => {
+        draftRef.current = draft;
+      });
       const subscribeDraft = useComposerHostDraftNotifier(draft);
       const host = useMemo<PluginComposerHost>(
         () => ({
@@ -1166,6 +1217,8 @@ describe("useComposer", () => {
             kind: "queued-message",
             threadId: "thr_scope_owner",
             queuedMessageId,
+            projectId: "proj_test",
+            environmentId: null,
           },
           textEffectKey: "shared-scope-effect",
           getCurrent: () => draft,
@@ -1224,7 +1277,7 @@ describe("useComposer", () => {
       return (
         <button
           type="button"
-          onClick={() => navigate("/threads/thr_owned_next")}
+          onClick={() => void navigate("/threads/thr_owned_next")}
         >
           change-owned-scope
         </button>
@@ -1348,7 +1401,12 @@ describe("useComposer", () => {
     function Harness() {
       const host = useMemo<PluginComposerHost>(
         () => ({
-          scope: { kind: "thread", threadId: "thr_submit", environment: null },
+          scope: {
+            kind: "thread",
+            threadId: "thr_submit",
+            projectId: "proj_test",
+            environmentId: null,
+          },
           textEffectKey: "thread:thr_submit",
           getCurrent: () => draft,
           subscribeDraft: () => () => {},
@@ -1369,7 +1427,12 @@ describe("useComposer", () => {
       closePopup: () => false,
       isPopupOpen: () => false,
       host: {
-        scope: { kind: "thread", threadId: "thr_submit" },
+        scope: {
+          kind: "thread",
+          threadId: "thr_submit",
+          projectId: "proj_test",
+          environmentId: null,
+        },
         textEffectKey: "thread:thr_submit",
         getCurrent: () => draft,
         subscribeDraft: () => () => {},
@@ -1508,7 +1571,12 @@ describe("useComposer().experimental_setSelection", () => {
       });
     });
     const host: PluginComposerHost = {
-      scope: { kind: "thread", threadId: "thr_selection" },
+      scope: {
+        kind: "thread",
+        threadId: "thr_selection",
+        projectId: "proj_test",
+        environmentId: null,
+      },
       textEffectKey: "thread:thr_selection",
       getCurrent: () => emptyDraft,
       subscribeDraft: () => () => {},
@@ -1587,7 +1655,12 @@ describe("useComposer().experimental_setSelection", () => {
       }),
     );
     const host = {
-      scope: { kind: "thread", threadId: "thr_own_selection", environment: null },
+      scope: {
+        kind: "thread",
+        threadId: "thr_own_selection",
+        projectId: "proj_test",
+        environmentId: null,
+      },
       textEffectKey: "thread:thr_own_selection",
       getSelection: () => selection,
       subscribeSelection: (listener: () => void) => {
@@ -1628,7 +1701,12 @@ describe("useComposer().experimental_setSelection", () => {
       <MemoryRouter initialEntries={["/threads/thr_selection"]}>
         <Harness
           host={{
-            scope: { kind: "thread", threadId: "thr_selection" },
+            scope: {
+              kind: "thread",
+              threadId: "thr_selection",
+              projectId: "proj_test",
+              environmentId: null,
+            },
             textEffectKey: "thread:thr_selection",
             setSelection,
           }}
@@ -1674,6 +1752,8 @@ describe("useComposer().experimental_setSelection", () => {
         kind: "queued-message" as const,
         threadId: "thr_selection",
         queuedMessageId: "qmsg_1",
+        projectId: "proj_test",
+        environmentId: null,
       },
     ]) {
       const view = render(
@@ -1711,11 +1791,11 @@ describe("PluginPanelView routes", () => {
         ],
       }),
     );
-    applyPluginCss("demo", "/demo.css?h=route");
+    void applyPluginCss("demo", "/demo.css?h=route");
     function LeavePanel() {
       const navigate = useNavigate();
       return (
-        <button type="button" onClick={() => navigate("/")}>
+        <button type="button" onClick={() => void navigate("/")}>
           Leave panel
         </button>
       );
@@ -1817,7 +1897,7 @@ describe("plugin panel shared title bar and full-bleed body", () => {
     const panel = panelSlot({ headerContent: ExplodingAccessory });
     render(
       <>
-        <PluginPanelHeaderCenter chrome={panel} />
+        <PluginPanelHeaderCenter chrome={panel} panel={panel} subPath="" />
         <PluginPanelHeaderActions panel={panel} subPath="" />
       </>,
     );
@@ -1831,10 +1911,10 @@ describe("plugin panel shared title bar and full-bleed body", () => {
       return <button type="button">Toggle sidebar</button>;
     }
     const panel = panelSlot({ headerContent: Accessory });
-    applyPluginCss("demo", "/demo.css?h=header");
+    void applyPluginCss("demo", "/demo.css?h=header");
     const view = render(
       <>
-        <PluginPanelHeaderCenter chrome={panel} />
+        <PluginPanelHeaderCenter chrome={panel} panel={panel} subPath="" />
         <PluginPanelHeaderActions panel={panel} subPath="notes/today.md" />
       </>,
     );
@@ -1871,6 +1951,51 @@ describe("plugin panel shared title bar and full-bleed body", () => {
         .querySelector("[data-plugin-right-panel-toggle-portal]")
         ?.getAttribute("data-plugin-right-panel-toggle-portal"),
     ).toBe("plugin-panel:demo:board:pane-docs");
+  });
+
+  it("renders experimental_headerTitle in place of the icon and title with the subPath", () => {
+    function Breadcrumb({ subPath }: { subPath: string }) {
+      return (
+        <nav aria-label="Breadcrumb">
+          <button type="button">acme</button> › {subPath}
+        </nav>
+      );
+    }
+    const panel = panelSlot({ experimental_headerTitle: Breadcrumb });
+    render(
+      <PluginPanelHeaderCenter
+        chrome={panel}
+        panel={panel}
+        subPath="feature-x"
+      />,
+    );
+    const breadcrumb = screen.getByRole("navigation", { name: "Breadcrumb" });
+    expect(breadcrumb.textContent).toBe("acme › feature-x");
+    expect(breadcrumb.closest("[data-bb-plugin-root]")).not.toBeNull();
+    expect(screen.queryByText("Demo board")).toBeNull();
+  });
+
+  it("restores the default title when experimental_headerTitle crashes", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    function Crashes(): never {
+      throw new Error("title crashed");
+    }
+    const panel = panelSlot({ experimental_headerTitle: Crashes });
+    render(<PluginPanelHeaderCenter chrome={panel} panel={panel} subPath="" />);
+    expect(screen.getByText("Demo board")).toBeDefined();
+    expect(screen.queryByText(/plugin demo crashed/)).toBeNull();
+  });
+
+  it("still renders the route of a panel hidden from navigation", () => {
+    setPluginSlotRegistrations(
+      "demo",
+      registrationSet({
+        navPanels: [panelSlot({ experimental_hideFromNavigation: true })],
+      }),
+    );
+    renderPanelBody("/plugins/demo/board/env_1");
+    expect(screen.getByText("panel body")).toBeDefined();
   });
 
   it("still contains a crashing panel inside the error boundary", () => {
@@ -1910,13 +2035,13 @@ describe("plugin thread panel actions", () => {
     );
   }
 
-  function usePanelFor(
+  function useHostFor(
     actions: readonly Parameters<
       typeof createPanelActionDestination
     >[0]["action"][],
     openPluginPanel: (args: OpenPluginPanelArgs) => void,
   ) {
-    return useMemo(
+    const panel = useMemo(
       () =>
         createAppPanelController(() => ({
           activeTabId: null,
@@ -1927,9 +2052,26 @@ describe("plugin thread panel actions", () => {
         })),
       [actions, openPluginPanel],
     );
+    const hostRef = useAppNavigationHostRef();
+    useLayoutEffect(() => {
+      hostRef.current = { ...hostRef.current, panel };
+    });
+    return hostRef;
   }
 
-  function ActionsProbe({
+  function ActionsProbe(props: {
+    threadId: string | null;
+    openPluginPanel: (args: OpenPluginPanelArgs) => void;
+  }) {
+    const [queryClient] = useState(() => new QueryClient());
+    return (
+      <QueryClientProvider client={queryClient}>
+        <ActionsProbeBody {...props} />
+      </QueryClientProvider>
+    );
+  }
+
+  function ActionsProbeBody({
     threadId,
     openPluginPanel,
   }: {
@@ -1938,7 +2080,7 @@ describe("plugin thread panel actions", () => {
   }) {
     const { actions } = useThreadFixedTabs({ threadId, environmentId: null });
     const entries = usePluginPanelActions({
-      panel: usePanelFor(actions, openPluginPanel),
+      hostRef: useHostFor(actions, openPluginPanel),
       threadId,
       environmentId: null,
       actions,
@@ -1963,8 +2105,8 @@ describe("plugin thread panel actions", () => {
             id: "issue",
             title: "Issue",
             component: PanelProbe,
-            run: ({ threadId, experimental_panel }) => {
-              experimental_panel.openTab({
+            run: ({ threadId, panel }) => {
+              panel.openTab({
                 tab: {
                   id: "issue",
                   context: { kind: "thread" },
@@ -2032,9 +2174,9 @@ describe("plugin thread panel actions", () => {
             id: "cyclic",
             title: "Cyclic",
             component: PanelProbe,
-            run: ({ experimental_panel }) => {
+            run: ({ panel }) => {
               declines.push(
-                experimental_panel.openTab({
+                panel.openTab({
                   tab: {
                     id: "cyclic",
                     context: { kind: "thread" },
@@ -2049,9 +2191,9 @@ describe("plugin thread panel actions", () => {
             id: "coerced",
             title: "Coerced",
             component: PanelProbe,
-            run: ({ experimental_panel }) => {
+            run: ({ panel }) => {
               declines.push(
-                experimental_panel.openTab({
+                panel.openTab({
                   tab: {
                     id: "coerced",
                     context: { kind: "thread" },
@@ -2090,7 +2232,7 @@ describe("plugin thread panel actions", () => {
             component: PanelProbe,
             run: (context) => {
               accepted.push(
-                context.experimental_panel.openTab({
+                context.panel.openTab({
                   tab: {
                     id: "issue",
                     context: { kind: "thread" },
@@ -2112,7 +2254,7 @@ describe("plugin thread panel actions", () => {
             component: NewThreadPanelProbe,
             run: (context) => {
               accepted.push(
-                context.experimental_panel.openTab({
+                context.panel.openTab({
                   tab: {
                     id: "setup",
                     context: { kind: "thread" },
@@ -2135,16 +2277,19 @@ describe("plugin thread panel actions", () => {
       opened.push(args.paramsJson);
     };
     function BothActionsHarness() {
-      const { actions } = useThreadFixedTabs({ threadId: "thr_one", environmentId: null });
-      const { newThreadPanelActions } = usePluginSlots();
+      const { actions } = useThreadFixedTabs({
+        threadId: "thr_one",
+        environmentId: null,
+      });
+      const newThreadPanelActions = usePluginSlotKind("newThreadPanelActions");
       const threadEntries = usePluginPanelActions({
         actions,
-        panel: usePanelFor(actions, recordOpen),
+        hostRef: useHostFor(actions, recordOpen),
         threadId: "thr_9",
         environmentId: null,
       });
       const rootEntries = usePluginNewThreadPanelActions({
-        panel: usePanelFor(newThreadPanelActions, recordOpen),
+        hostRef: useHostFor(newThreadPanelActions, recordOpen),
         projectId: "proj_1",
       });
       return (
@@ -2158,7 +2303,11 @@ describe("plugin thread panel actions", () => {
       );
     }
 
-    render(<BothActionsHarness />);
+    render(
+      <QueryClientProvider client={new QueryClient()}>
+        <BothActionsHarness />
+      </QueryClientProvider>,
+    );
     fireEvent.click(screen.getByText("Thread action"));
     fireEvent.click(screen.getByText("Root action"));
 
@@ -2197,8 +2346,8 @@ describe("plugin thread panel actions", () => {
             title: "Set up thread",
             icon: "Wand",
             component: NewThreadPanelProbe,
-            run: ({ projectId, experimental_panel }) => {
-              experimental_panel.openTab({
+            run: ({ projectId, panel }) => {
+              panel.openTab({
                 tab: {
                   id: "setup",
                   context: { kind: "thread" },
@@ -2217,9 +2366,9 @@ describe("plugin thread panel actions", () => {
       const [tab, setTab] = useState<ReturnType<
         typeof createPluginPanelFixedPanelTab
       > | null>(null);
-      const { newThreadPanelActions } = usePluginSlots();
+      const newThreadPanelActions = usePluginSlotKind("newThreadPanelActions");
       const entries = usePluginNewThreadPanelActions({
-        panel: usePanelFor(newThreadPanelActions, (args) =>
+        hostRef: useHostFor(newThreadPanelActions, (args) =>
           setTab(createPluginPanelFixedPanelTab(args)),
         ),
         projectId: "proj_1",

@@ -1,6 +1,7 @@
-import { and, asc, eq, gt, gte, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, gte, ne, notInArray, sql } from "drizzle-orm";
 import { storedAttachmentPaths } from "@bb/domain";
 import type { DbConnection, DbQueryConnection } from "../connection.js";
+import { acquireProjectAttachmentOwnership } from "./project-attachments.js";
 import {
   events,
   projectAttachmentBackfills,
@@ -35,21 +36,31 @@ export function ensureProjectAttachmentBackfill(
       phase: "files",
       ...emptyCursor,
       attemptedAt: 0,
-      error: null,
     })
     .onConflictDoNothing()
     .run();
+  return getProjectAttachmentBackfill(db, projectId)!;
+}
+
+export function getProjectAttachmentBackfill(
+  db: DbQueryConnection,
+  projectId: string,
+): AttachmentBackfill | undefined {
   return db
     .select()
     .from(projectAttachmentBackfills)
     .where(eq(projectAttachmentBackfills.projectId, projectId))
-    .get()!;
+    .get();
 }
 
 export function nextProjectAttachmentBackfill(
   db: DbConnection,
-  now: number,
+  args: { excludedProjectIds: ReadonlySet<string> },
 ): string | null {
+  const notExcluded = (column: typeof projects.id) =>
+    args.excludedProjectIds.size === 0
+      ? undefined
+      : notInArray(column, [...args.excludedProjectIds]);
   const missing = db
     .select({ id: projects.id })
     .from(projects)
@@ -57,7 +68,12 @@ export function nextProjectAttachmentBackfill(
       projectAttachmentBackfills,
       eq(projectAttachmentBackfills.projectId, projects.id),
     )
-    .where(sql`${projectAttachmentBackfills.projectId} IS NULL`)
+    .where(
+      and(
+        sql`${projectAttachmentBackfills.projectId} IS NULL`,
+        notExcluded(projects.id),
+      ),
+    )
     .orderBy(asc(projects.id))
     .limit(1)
     .get();
@@ -69,10 +85,11 @@ export function nextProjectAttachmentBackfill(
       .where(
         and(
           ne(projectAttachmentBackfills.phase, "done"),
-          or(
-            isNull(projectAttachmentBackfills.error),
-            lt(projectAttachmentBackfills.attemptedAt, now - 60_000),
-          ),
+          args.excludedProjectIds.size === 0
+            ? undefined
+            : notInArray(projectAttachmentBackfills.projectId, [
+                ...args.excludedProjectIds,
+              ]),
         ),
       )
       .orderBy(
@@ -236,4 +253,60 @@ export function readAttachmentBackfillInput(
       nextThread?.id ?? "",
     ),
   };
+}
+
+export function nextCompletedProjectAttachmentBackfill(
+  db: DbQueryConnection,
+  args: { afterProjectId: string; excludedProjectIds: ReadonlySet<string> },
+): string | null {
+  return (
+    db
+      .select({ id: projectAttachmentBackfills.projectId })
+      .from(projectAttachmentBackfills)
+      .where(
+        and(
+          eq(projectAttachmentBackfills.phase, "done"),
+          gt(projectAttachmentBackfills.projectId, args.afterProjectId),
+          args.excludedProjectIds.size === 0
+            ? undefined
+            : notInArray(projectAttachmentBackfills.projectId, [
+                ...args.excludedProjectIds,
+              ]),
+        ),
+      )
+      .orderBy(asc(projectAttachmentBackfills.projectId))
+      .limit(1)
+      .get()?.id ?? null
+  );
+}
+
+export function commitAttachmentBackfillStep(
+  db: DbConnection,
+  step: {
+    paths: readonly string[];
+    next: AttachmentBackfill;
+    threadId: string | null;
+  },
+): void {
+  db.transaction(
+    (tx) => {
+      const { threadId } = step;
+      if (
+        threadId &&
+        tx
+          .select({ id: threads.id })
+          .from(threads)
+          .where(eq(threads.id, threadId))
+          .get()
+      )
+        acquireProjectAttachmentOwnership(
+          tx,
+          threadId,
+          step.paths,
+          "best-effort",
+        );
+      updateAttachmentBackfill(tx, step.next);
+    },
+    { behavior: "immediate" },
+  );
 }

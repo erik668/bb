@@ -38,14 +38,13 @@ import {
 import { AppBreadcrumbs } from "./AppBreadcrumbs";
 import { PageTitleHeader } from "./PageTitleHeader";
 import {
-  PageTitleHookHost,
+  PageTitleProvider,
   usePageTitleValue,
   focusedPageTitleAtom,
 } from "./page-title";
 import { AppPageHeader, HEADER_ICON_BUTTON_CLASS } from "./AppPageHeader";
 import { stripProjectThreads } from "@/hooks/queries/project-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
-import { SidebarThreadEntriesProvider } from "@/lib/sidebar-thread-entries";
 import {
   didThreadDetailBootstrapRefreshAfterMount,
   useThread,
@@ -58,9 +57,9 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { APP_OVERLAY_LAYER } from "@/components/ui/app-overlay-layers";
 import {
   COMPACT_SHELF_HIDDEN_FIXED_CHROME_CLASS,
-  usePanelShelfState,
+  useFixedChromePanelShelfState,
 } from "@/components/ui/secondary-panel-shelf-visibility";
-import { ProjectPathDialog } from "@/components/dialogs/ProjectPathDialog";
+import { LazyProjectPathDialog } from "@/components/dialogs/LazyProjectPathDialog";
 import { ProjectActionsMenu } from "@/components/project/ProjectActionsMenu";
 import { ProjectActionsProvider } from "@/components/project/ProjectActionsProvider";
 import {
@@ -97,9 +96,8 @@ import { usePluginCachePruneCommand } from "@/hooks/usePluginCachePruneCommand";
 import { useServerDaemonLogsCommand } from "@/hooks/useServerDaemonLogsCommand";
 import {
   getLegacyProjectComposeRoutePath,
-  getSettingsProjectRoutePath,
   getRootComposeRoutePath,
-  getThreadRoutePath,
+  getThreadLocationPath,
   isProjectlessProjectId,
   SETTINGS_ROUTE_PATH,
 } from "@/lib/route-paths";
@@ -125,16 +123,14 @@ import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { useMobileVisualViewportHeight } from "./useMobileVisualViewportHeight";
 import { isIOSWebKit } from "@/lib/ios-webkit";
 import { wsManager } from "@/lib/ws";
-import { splitLayoutAtom } from "@/lib/split-layout/atoms";
-import { findPaneByThread } from "@/lib/split-layout";
-import {
-  applyThreadOpenToLayout,
-  paneContentForPathname,
-} from "@/views/thread-detail/splitThreadNavigation";
+import { openThread } from "@/lib/split-layout/openThread";
+import { paneContentForPathname } from "@/views/thread-detail/splitThreadNavigation";
 import { useAppSettingsRouteMemory } from "@/hooks/useAppSettingsRouteMemory";
-import { useSetRootComposeProjectId } from "@/lib/root-compose-selection";
+import { useOpenNewThread } from "@/hooks/useOpenNewThread";
 import { BackToAppCommandHandler } from "./BackToAppCommandHandler";
 import { HistoryCommandHandlers } from "./HistoryCommandHandlers";
+import { isNonImeKey } from "@bb/shared-ui/lib/ime-keyboard";
+import { getSettingsTargetPath } from "@/components/settings/settings-sections";
 
 const SIDEBAR_WIDTH_KEY = "bb.sidebar.width";
 const SIDEBAR_OPEN_KEY = "bb.sidebar.open";
@@ -225,6 +221,7 @@ function SidebarStateBridge({
       }
       framed={usesDesktopChrome}
       data-testid="app-layout-root"
+      data-app-shell=""
       open={open}
       onOpenChange={handleOpenChange}
     >
@@ -252,7 +249,7 @@ function SidebarTriggerOverlay({
   const isCompactViewport = useIsCompactViewport();
   const { openMobile } = useSidebar();
   const isFramed = useIsSidebarFramed();
-  const panelShelfState = usePanelShelfState({
+  const panelShelfState = useFixedChromePanelShelfState({
     isCompactViewport,
     isSidebarDrawerOpen: openMobile,
   });
@@ -406,7 +403,11 @@ function AppHeader({
       />
     </div>
   ) : pluginPanelChrome ? (
-    <PluginPanelHeaderCenter chrome={pluginPanelChrome} />
+    <PluginPanelHeaderCenter
+      chrome={pluginPanelChrome}
+      panel={pluginPanel}
+      subPath={pluginPanelSubPath ?? ""}
+    />
   ) : hasCenterContent ? (
     <div className="min-w-0 flex-1">
       {headerTitle ? (
@@ -425,7 +426,7 @@ function AppHeader({
     !isProjectlessProjectId(projectId) ? (
     <>
       <Link
-        to={getSettingsProjectRoutePath(projectId)}
+        to={getSettingsTargetPath({ projectId: projectId })}
         className={cn(
           HEADER_ICON_BUTTON_CLASS,
           "inline-flex items-center justify-center transition-colors",
@@ -453,13 +454,13 @@ interface AppLayoutProps {
 
 export function AppLayout({ children }: AppLayoutProps) {
   const location = useLocation();
+  const pageTitle = useCorePageTitle({
+    subPath: location.pathname + location.search,
+  });
   return (
-    <PageTitleHookHost
-      usePageTitle={useCorePageTitle}
-      subPath={location.pathname + location.search}
-    >
+    <PageTitleProvider value={pageTitle}>
       <AppLayoutContent>{children}</AppLayoutContent>
-    </PageTitleHookHost>
+    </PageTitleProvider>
   );
 }
 
@@ -512,37 +513,25 @@ function AppLayoutContent({ children }: AppLayoutProps) {
       : isGlobalSettingsView
         ? appRoutePath
         : sectionBackRoutePath;
-  const setRootComposeProjectId = useSetRootComposeProjectId();
   useEffect(
     () =>
       wsManager.onThreadOpen((signal) => {
-        const route = getThreadRoutePath({
+        openThread({
+          navigate: (route, options) => {
+            void navigate(route, options);
+          },
           projectId: signal.projectId,
           threadId: signal.threadId,
+          split: { zone: signal.split, store, isCompact: isCompactViewport },
         });
-        const current = store.get(splitLayoutAtom);
-        const alreadyOpen =
-          current !== null &&
-          findPaneByThread(current.root, signal.projectId, signal.threadId) !==
-            null;
-        const next = applyThreadOpenToLayout(
-          current,
-          { projectId: signal.projectId, threadId: signal.threadId },
-          isCompactViewport ? "replace" : signal.split,
-        );
-        if (next !== current) {
-          store.set(splitLayoutAtom, next);
-        }
-        void navigate(route, alreadyOpen ? { replace: true } : undefined);
       }),
     [isCompactViewport, navigate, store],
   );
+  const openNewThread = useOpenNewThread();
   useAppCommandHandler("thread.new", () => {
-    if (projectId !== undefined) {
-      setRootComposeProjectId(projectId);
-    }
-    void navigate(getRootComposeRoutePath(), {
-      state: { focusPrompt: true },
+    openNewThread({
+      ...(projectId !== undefined ? { projectId } : {}),
+      focusPrompt: true,
     });
     return true;
   });
@@ -593,7 +582,7 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     threadId !== undefined &&
     resolvedThreadProjectId !== undefined &&
     resolvedThreadProjectId !== projectId
-      ? getThreadRoutePath({
+      ? getThreadLocationPath({
           projectId: resolvedThreadProjectId,
           threadId,
         })
@@ -790,7 +779,7 @@ function AppLayoutContent({ children }: AppLayoutProps) {
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
+      if (isNonImeKey(event, "Escape")) {
         finishSidebarResize();
       }
     };
@@ -819,93 +808,91 @@ function AppLayoutContent({ children }: AppLayoutProps) {
   }, [documentTitle]);
 
   return (
-    <SidebarThreadEntriesProvider navigation={sidebarNavigationQuery.data}>
-      <TooltipProvider delayDuration={300} disableHoverableContent>
-        <ProjectActionsProvider>
-          <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
-            <ThreadActionsProvider>
-              <SidebarStateBridge usesDesktopChrome={usesDesktopChrome}>
-                {canonicalThreadRoutePath !== null ? (
-                  <Navigate
-                    to={{
-                      pathname: canonicalThreadRoutePath,
-                      search: location.search,
-                      hash: location.hash,
-                    }}
-                    replace
-                  />
-                ) : null}
-                {backToAppRoutePath !== null && !isSidebarResizing ? (
-                  <BackToAppCommandHandler routePath={backToAppRoutePath} />
-                ) : null}
-                <HistoryCommandHandlers />
-                <AppLayoutSidebar
-                  routeSidebar={routeSidebar}
-                  isSettingsActive={isGlobalSettingsView}
-                  onResizeMouseDown={handleResizeMouseDown}
-                  isResizing={isSidebarResizing}
-                  settingsRoutePath={settingsRoutePath}
-                  backToAppRoutePath={backToAppRoutePath}
+    <TooltipProvider delayDuration={300} disableHoverableContent>
+      <ProjectActionsProvider>
+        <ThreadTitleMentionResourcesProvider {...titleMentionResources}>
+          <ThreadActionsProvider>
+            <SidebarStateBridge usesDesktopChrome={usesDesktopChrome}>
+              {canonicalThreadRoutePath !== null ? (
+                <Navigate
+                  to={{
+                    pathname: canonicalThreadRoutePath,
+                    search: location.search,
+                    hash: location.hash,
+                  }}
+                  replace
                 />
-                <SidebarInset>
-                  <div
-                    ref={setContentShell}
-                    data-testid="app-layout-content-shell"
-                    data-app-content-shell=""
-                    className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
-                  >
-                    {showHeader ? (
-                      <AppHeader
-                        resourceSection={
-                          resourceWorkspaceHeaderMeta
-                            ? resolveToolsSection(location.pathname)
-                            : null
-                        }
-                        usesDesktopChrome={usesDesktopChrome}
-                        usesProjectChromeStyle={isRootView || isArchivedView}
-                        projectId={projectId}
-                        project={project}
-                        pluginPanel={pluginPanel}
-                        pluginPanelChrome={pluginPanelChrome}
-                        pluginPanelSubPath={pluginPanelSubPath}
-                        meta={meta}
-                      />
-                    ) : null}
-                    <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
-                      {children}
-                    </main>
-                  </div>
-                </SidebarInset>
-                <SidebarTriggerOverlay
-                  reserveMacosTrafficLights={reserveMacosTrafficLights}
-                  usesDesktopChrome={usesDesktopChrome}
-                />
-              </SidebarStateBridge>
-              <PluginAppOverlays />
-              <ThreadRowMetadataCollectors />
-              <IframeDragGuardOverlay
-                active={isSidebarResizing}
-                cursor="col-resize"
+              ) : null}
+              {backToAppRoutePath !== null && !isSidebarResizing ? (
+                <BackToAppCommandHandler routePath={backToAppRoutePath} />
+              ) : null}
+              <HistoryCommandHandlers />
+              <AppLayoutSidebar
+                routeSidebar={routeSidebar}
+                isSettingsActive={isGlobalSettingsView}
+                onResizeMouseDown={handleResizeMouseDown}
+                isResizing={isSidebarResizing}
+                settingsRoutePath={settingsRoutePath}
+                backToAppRoutePath={backToAppRoutePath}
               />
-              <CommandPalette
-                threadId={threadId ?? null}
-                projectId={projectId ?? null}
+              <SidebarInset>
+                <div
+                  ref={setContentShell}
+                  data-testid="app-layout-content-shell"
+                  data-app-content-shell=""
+                  className="relative flex h-full min-h-0 min-w-0 w-full flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pb-(--bb-content-bottom-inset) pl-[env(safe-area-inset-left)] [--bb-content-bottom-inset:var(--bb-safe-area-bottom,env(safe-area-inset-bottom))]"
+                >
+                  {showHeader ? (
+                    <AppHeader
+                      resourceSection={
+                        resourceWorkspaceHeaderMeta
+                          ? resolveToolsSection(location.pathname)
+                          : null
+                      }
+                      usesDesktopChrome={usesDesktopChrome}
+                      usesProjectChromeStyle={isRootView || isArchivedView}
+                      projectId={projectId}
+                      project={project}
+                      pluginPanel={pluginPanel}
+                      pluginPanelChrome={pluginPanelChrome}
+                      pluginPanelSubPath={pluginPanelSubPath}
+                      meta={meta}
+                    />
+                  ) : null}
+                  <main className="flex min-h-0 flex-1 flex-col p-4 md:p-5">
+                    {children}
+                  </main>
+                </div>
+              </SidebarInset>
+              <SidebarTriggerOverlay
+                reserveMacosTrafficLights={reserveMacosTrafficLights}
+                usesDesktopChrome={usesDesktopChrome}
               />
-              <NotificationCenter />
-              <ProjectPathDialog
-                target={quickCreateProject.projectPathDialog.target}
-                pending={quickCreateProject.isCreating}
-                platform={quickCreateProject.platform}
-                hostId={quickCreateProject.hostId}
-                hostName={quickCreateProject.hostName}
-                hosts={quickCreateProject.hosts}
-                onOpenChange={quickCreateProject.projectPathDialog.onOpenChange}
-                onSubmit={quickCreateProject.submitProjectPath}
-              />
-            </ThreadActionsProvider>
-          </ThreadTitleMentionResourcesProvider>
-        </ProjectActionsProvider>
-      </TooltipProvider>
-    </SidebarThreadEntriesProvider>
+            </SidebarStateBridge>
+            <PluginAppOverlays />
+            <ThreadRowMetadataCollectors />
+            <IframeDragGuardOverlay
+              active={isSidebarResizing}
+              cursor="col-resize"
+            />
+            <CommandPalette
+              threadId={threadId ?? null}
+              projectId={projectId ?? null}
+            />
+            <NotificationCenter />
+            <LazyProjectPathDialog
+              target={quickCreateProject.projectPathDialog.target}
+              pending={quickCreateProject.isCreating}
+              platform={quickCreateProject.platform}
+              hostId={quickCreateProject.hostId}
+              hostName={quickCreateProject.hostName}
+              hosts={quickCreateProject.hosts}
+              onOpenChange={quickCreateProject.projectPathDialog.onOpenChange}
+              onSubmit={quickCreateProject.submitProjectPath}
+            />
+          </ThreadActionsProvider>
+        </ThreadTitleMentionResourcesProvider>
+      </ProjectActionsProvider>
+    </TooltipProvider>
   );
 }

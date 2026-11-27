@@ -21,6 +21,12 @@ export default defineConfig({
     host: viteDevConfig.appHost,
     port: viteDevConfig.appPort,
     proxy: {
+      "^/(?:health(?:[?]|$)|install(?:/|\\.sh(?:[?]|$))|internal(?:/|[?]|$))": {
+        target: viteDevConfig.serverHttpOrigin,
+        changeOrigin: true,
+        ws: true,
+        xfwd: true,
+      },
       "/api": {
         target: viteDevConfig.serverHttpOrigin,
         changeOrigin: true,

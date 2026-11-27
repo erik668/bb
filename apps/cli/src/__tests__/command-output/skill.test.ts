@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Host } from "@bb/domain";
 import {
   collectLogLines,
   runCommand,
@@ -25,8 +26,9 @@ describe("bb skill commands", () => {
           id: `skill_${"a".repeat(64)}`,
           name: "review",
           description: "Review the current diff",
-          provider: "codex",
-          scope: "codex-user",
+          providers: ["codex"],
+          scope: "provider-user",
+          pluginId: null,
           filePath: "/home/user/.agents/skills/review/SKILL.md",
           manageable: true,
           registrySkillId: null,
@@ -46,14 +48,59 @@ describe("bb skill commands", () => {
     );
   });
 
+  it("labels a skill that several providers read as shared, not bb", async () => {
+    const skill = {
+      description: null,
+      pluginId: null,
+      manageable: true,
+      registrySkillId: null,
+    };
+    stubServerApi({
+      "v1.projects.:id.skills.$get": vi.fn(async () => ({
+        skills: [
+          {
+            ...skill,
+            id: `skill_${"a".repeat(64)}`,
+            name: "multi-provider",
+            providers: ["claude-code", "codex"],
+            scope: "provider-user",
+            filePath: "/home/user/.agents/skills/multi-provider/SKILL.md",
+          },
+          {
+            ...skill,
+            id: `skill_${"b".repeat(64)}`,
+            name: "bb-owned",
+            providers: [],
+            scope: "bb-user",
+            filePath: "/home/user/.bb/skills/bb-owned/SKILL.md",
+          },
+        ],
+      })),
+    });
+
+    await runCommand(["skill", "list"], register);
+
+    const rows = collectLogLines(vi.mocked(console.log)).join("\n").split("\n");
+    expect(rows.find((row) => row.includes("multi-provider"))).toMatch(
+      /provider-user\s+shared\s/u,
+    );
+    expect(rows.find((row) => row.includes("bb-owned"))).toMatch(
+      /bb-user\s+bb\s/u,
+    );
+  });
+
   it("installs only by canonical registry identity", async () => {
     vi.mocked(globalThis.fetch).mockResolvedValue(
       new Response(
         JSON.stringify({
-          ok: true,
-          filePath: "/home/user/.bb/skills/review/SKILL.md",
+          job: {
+            id: "job_1",
+            registrySkillId: "owner/repo/review",
+            state: "completed",
+            filePath: "/home/user/.bb/skills/review/SKILL.md",
+          },
         }),
-        { status: 200, headers: { "content-type": "application/json" } },
+        { status: 202, headers: { "content-type": "application/json" } },
       ),
     );
 
@@ -63,7 +110,9 @@ describe("bb skill commands", () => {
     );
 
     const [input, init] = vi.mocked(globalThis.fetch).mock.calls[0] ?? [];
-    expect(String(input)).toBe("http://server/api/v1/skills-registry/install");
+    expect(String(input)).toBe(
+      "http://server/api/v1/skills-registry/install-jobs",
+    );
     expect(JSON.parse(String(init?.body))).toEqual({
       registrySkillId: "owner/repo/review",
     });
@@ -361,6 +410,57 @@ describe("bb skill commands", () => {
 
     expect(vi.mocked(console.log)).toHaveBeenCalledWith(
       JSON.stringify({ skill: { ...entry, stars: 27_053 }, detail }, null, 2),
+    );
+  });
+
+  it("bb skill install-cli-skills --json exits non-zero when a machine fails", async () => {
+    const result = {
+      results: [
+        {
+          ok: false,
+          hostId: "host-1",
+          hostName: "laptop",
+          errorMessage: "disk full",
+        },
+      ],
+    };
+    const host: Host = {
+      id: "host-1",
+      name: "laptop",
+      type: "persistent",
+      status: "connected",
+      machineProviderId: null,
+      lifecycle: {
+        phase: "active",
+        suspendedAt: null,
+        message: null,
+        pendingLog: "",
+        teardown: null,
+      },
+      maxPermissionMode: "full",
+      lastSeenAt: 1,
+      route: null,
+      lastRejectedProtocolVersion: null,
+      createdAt: 1,
+      updatedAt: 2,
+    };
+    stubServerApi({
+      "v1.hosts.$get": vi.fn(async () => [host]),
+      "v1.system.cli-skills.install.$post": vi.fn(async () => result),
+    });
+
+    await expect(
+      runCommand(
+        ["skill", "install-cli-skills", "--machine", "host-1", "--json"],
+        register,
+      ),
+    ).rejects.toThrow("process.exit:1");
+
+    expect(
+      JSON.parse(String(vi.mocked(console.log).mock.calls[0]?.[0])),
+    ).toEqual(result);
+    expect(console.error).toHaveBeenCalledWith(
+      "Error: The install failed on at least one machine.\nlaptop: disk full",
     );
   });
 });

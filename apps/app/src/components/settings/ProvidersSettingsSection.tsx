@@ -25,7 +25,7 @@ import {
   SettingsRowList,
   SettingsSection,
   SettingsWithControl,
-} from "@/components/ui/settings-section";
+} from "@bb/shared-ui/settings-section";
 import { ProviderIcon } from "@/components/plugin/ProviderIcon";
 import { useSetProviderEnabled } from "@/hooks/mutations/provider-mutations";
 import {
@@ -204,7 +204,7 @@ function SortableProviderRow({
       style={style}
       className={cn(
         "group/provider-row",
-        isDragging && "relative z-10 rounded-md bg-card opacity-90 shadow-lift",
+        isDragging && "relative z-10 rounded-md bg-card shadow-lift",
       )}
     >
       {handle}
@@ -264,7 +264,7 @@ function CompletedTurnDisplayRow({
         disabled={disabled}
         aria-label={`Collapse finished ${provider.displayName} turns`}
         onCheckedChange={(checked) =>
-          onGeneralSettingsChange(
+          void onGeneralSettingsChange(
             withProviderCompletedTurnDisplay(
               generalSettings,
               provider,
@@ -383,7 +383,7 @@ export function ProvidersSettingsSection({
               checked={generalSettings.allowFastServiceTier}
               disabled={disabled}
               onCheckedChange={(enabled) =>
-                onGeneralSettingsChange({
+                void onGeneralSettingsChange({
                   allowFastServiceTier: enabled,
                 })
               }
@@ -420,7 +420,7 @@ export function ProvidersSettingsSection({
                   <DropdownMenuItem
                     key={minutes}
                     onSelect={() =>
-                      onGeneralSettingsChange({
+                      void onGeneralSettingsChange({
                         idleProviderSessionTimeoutMinutes: minutes,
                       })
                     }

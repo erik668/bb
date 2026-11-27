@@ -16,10 +16,15 @@ function renderSection(overrides?: {
   onTerminalCopyOnSelectChange?: (enabled: boolean) => void;
   generalSettingsDisabled?: boolean;
   managedBranchPrefix?: string;
-  onManagedBranchPrefixChange?: (prefix: string) => void;
+  onManagedBranchPrefixChange?: (prefix: string) => Promise<void> | void;
 }) {
   return render(
     <GeneralSettingsSection
+      resumeThreadsAfterRestart={false}
+      onResumeThreadsAfterRestartChange={vi.fn()}
+      confirmDesktopQuit={true}
+      desktopQuitConfirmationAvailable={true}
+      onConfirmDesktopQuitChange={vi.fn()}
       confirmThreadArchive={true}
       onConfirmThreadArchiveChange={vi.fn()}
       keepHistoryAfterContextClear={false}

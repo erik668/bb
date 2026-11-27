@@ -44,7 +44,7 @@ import {
   sidebarShowProviderIconsAtom,
   sidebarShowRowMetadataAtom,
 } from "../preferences/atoms.js";
-import { SidebarProjectsContext } from "../model/use-sidebar-data.js";
+import { SidebarProjectNamesContext } from "../model/use-sidebar-data.js";
 import type { ThreadRowOptions } from "./ThreadRow.js";
 import {
   preferenceValueAtom,
@@ -128,7 +128,9 @@ function ThreadRowHarness({
     />
   );
   const content = (
-    <SidebarProjectsContext.Provider value={projects}>
+    <SidebarProjectNamesContext.Provider
+      value={new Map(projects.map((project) => [project.id, project.name]))}
+    >
       <SidebarProvidersContext.Provider value={providers}>
         <TooltipProvider>
           <SidebarDraftPresenceSync />
@@ -171,7 +173,7 @@ function ThreadRowHarness({
           </ThreadRowNavigationProvider>
         </TooltipProvider>
       </SidebarProvidersContext.Provider>
-    </SidebarProjectsContext.Provider>
+    </SidebarProjectNamesContext.Provider>
   );
   return isCompactViewport === undefined ? (
     content
@@ -194,7 +196,6 @@ interface RenderThreadRowArgs extends Omit<HarnessProps, "thread"> {
   sdk?: PluginSdkTestFakes;
   threadActions?: TestThreadActionsResolver;
   threadBulkActions?: TestThreadBulkActionsResolver;
-  experiments?: string[];
 }
 
 function renderThreadRow({
@@ -209,11 +210,11 @@ function renderThreadRow({
   sdk,
   threadActions = hostThreadActions(),
   threadBulkActions,
-  experiments,
   ...harness
 }: RenderThreadRowArgs = {}): RenderedSlot & {
   rerenderThreadRow(nextThread: PluginSidebarThread): void;
 } {
+  renderedRowThreads.set(thread.id, thread);
   const slot = renderSlot(
     { component: ThreadRowHarness },
     { thread, projects, providers, ...harness },
@@ -240,11 +241,11 @@ function renderThreadRow({
       sdk,
       threadActions,
       threadBulkActions,
-      experiments,
     },
   );
   return Object.assign(slot, {
     rerenderThreadRow(nextThread: PluginSidebarThread) {
+      renderedRowThreads.set(nextThread.id, nextThread);
       slot.lifecycle.rerender(
         <ThreadRowHarness
           thread={nextThread}
@@ -321,6 +322,8 @@ function deferred() {
   return { promise, resolve, reject };
 }
 
+const renderedRowThreads = new Map<string, PluginSidebarThread>();
+
 interface RanThreadAction {
   key: string;
   threadId: string;
@@ -333,7 +336,9 @@ function hostThreadActions({
   ran?: RanThreadAction[];
   archiveRun?: () => Promise<void>;
 } = {}): TestThreadActionsResolver {
-  return (thread, { requestRename }) => {
+  return ({ id }, { requestRename }) => {
+    const thread = renderedRowThreads.get(id);
+    if (thread === undefined) return [];
     const entry = (
       key: string,
       label: string,
@@ -397,6 +402,7 @@ async function expectRenamePresentation(outcome: RenamePresentationOutcome) {
 }
 
 afterEach(() => {
+  renderedRowThreads.clear();
   cleanup();
   pointerState.coarse = false;
   vi.restoreAllMocks();
@@ -1248,9 +1254,12 @@ describe("ThreadRow", () => {
     expect(renderedIndicators()).toEqual(["unread-error"]);
   });
 
-  it.each([true, false])(
-    "reserves quick-action space after parent disclosure (collapsed: %s)",
-    (isCollapsed) => {
+  it.each([
+    { isCollapsed: true, reservesAtRest: true },
+    { isCollapsed: false, reservesAtRest: false },
+  ])(
+    "reserves quick-action space at rest only while the parent disclosure is visible (collapsed: $isCollapsed)",
+    ({ isCollapsed, reservesAtRest }) => {
       const onToggleCollapsed = vi.fn();
       renderThreadRow({
         thread: createThread({
@@ -1274,11 +1283,13 @@ describe("ThreadRow", () => {
       const link = screen.getByRole("link", {
         name: "Open Nested discussion with enough text to fill the sidebar width",
       });
+      const content = link.parentElement;
       expect(
-        link.parentElement?.classList.contains(
-          "pr-(--bb-sidebar-hover-actions-inset)",
-        ),
-      ).toBe(true);
+        content?.classList.contains("pr-(--bb-sidebar-hover-actions-inset)"),
+      ).toBe(reservesAtRest);
+      expect(
+        content?.classList.contains("bb-sidebar-hover-actions-inset"),
+      ).toBe(!reservesAtRest);
       const row = link.closest("[data-sidebar-rename-row]");
       expect(
         Array.from(row?.querySelectorAll("button") ?? [], (button) =>
@@ -1312,7 +1323,7 @@ describe("ThreadRow", () => {
   });
 
   it("draws other plugins' metadata only while Metadata is on", () => {
-    const slot = renderThreadRow({ experiments: ["threadRowMetadata"] });
+    const slot = renderThreadRow();
     expect(
       slot.container.querySelector("[data-thread-row-metadata]"),
     ).toBeNull();
@@ -1323,19 +1334,51 @@ describe("ThreadRow", () => {
     ).not.toBeNull();
   });
 
-  it("ignores the Metadata preference while its experiment is off", () => {
-    getDefaultStore().set(sidebarShowRowMetadataAtom, true);
-    const slot = renderThreadRow();
-    expect(
-      slot.container.querySelector("[data-thread-row-metadata]"),
-    ).toBeNull();
-  });
+  it.each([
+    { name: "a thread row", options: DEFAULT_OPTIONS },
+    {
+      name: "a compact parent row",
+      options: {
+        kind: "parent",
+        depth: 1,
+        isCompact: true,
+        isCollapsed: false,
+        childCount: 1,
+        hiddenThreads: [],
+        onToggleCollapsed: vi.fn(),
+      } satisfies ThreadRowOptions,
+    },
+  ])(
+    "lays out $name whose metadata line has no items like Metadata off",
+    ({ options }) => {
+      const itemsVariant = "has-[[data-thread-row-metadata][data-has-items]]:";
+      const ungatedClasses = (element: Element) =>
+        [...element.classList]
+          .filter((name) => !name.includes(itemsVariant))
+          .sort();
+      const layout = () => {
+        const link = screen.getByRole("link", { name: "Open Thread" });
+        const row = link.closest("[data-sidebar-rename-row]");
+        expect(row).not.toBeNull();
+        return {
+          row: ungatedClasses(row!),
+          content: ungatedClasses(link.parentElement!),
+        };
+      };
+      const slot = renderThreadRow({ options });
+      const metadataOff = layout();
+
+      act(() => getDefaultStore().set(sidebarShowRowMetadataAtom, true));
+      const line = slot.container.querySelector("[data-thread-row-metadata]");
+      expect(line?.hasAttribute("data-has-items")).toBe(false);
+      expect(layout()).toEqual(metadataOff);
+      expect(ungatedClasses(line!.parentElement!)).toContain("hidden");
+    },
+  );
 
   it("routes a click on other plugins' metadata like the rest of the row", () => {
     getDefaultStore().set(sidebarShowRowMetadataAtom, true);
-    const slot = renderThreadRow({
-      experiments: ["threadRowMetadata"],
-    });
+    const slot = renderThreadRow({});
     const link = screen.getByRole("link", { name: "Open Thread" });
     const row = link.closest("[data-sidebar-rename-row]");
     const items = row?.querySelector("[data-thread-row-metadata]");

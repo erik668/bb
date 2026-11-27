@@ -5,6 +5,7 @@ import {
   type DbQueryConnection,
   type DbTransaction,
 } from "../connection.js";
+import type { ServerRouteKind } from "@bb/domain";
 import type { DbNotifier } from "../notifier.js";
 import { hostDaemonSessions } from "../schema.js";
 import { createHostDaemonSessionId } from "../ids.js";
@@ -151,15 +152,19 @@ export function listLatestClosedSessionsForHosts(
     .select()
     .from(hostDaemonSessions)
     .where(
-      and(
-        inArray(hostDaemonSessions.hostId, hostIds),
-        sql`${hostDaemonSessions.id} = (
-          SELECT latest.id
-          FROM host_daemon_sessions AS latest
-          WHERE latest.host_id = ${hostDaemonSessions.hostId}
-            AND latest.status = 'closed'
-          ORDER BY latest.closed_at DESC, latest.id DESC
-          LIMIT 1
+      inArray(
+        hostDaemonSessions.id,
+        sql`(
+          SELECT (
+            SELECT latest.id
+            FROM host_daemon_sessions AS latest
+              INDEXED BY host_daemon_sessions_host_status_idx
+            WHERE latest.host_id = requested.value
+              AND latest.status = 'closed'
+            ORDER BY latest.closed_at DESC, latest.id DESC
+            LIMIT 1
+          )
+          FROM json_each(${JSON.stringify(hostIds)}) AS requested
         )`,
       ),
     )
@@ -206,4 +211,54 @@ export function heartbeatSession(
     }
     return updated;
   });
+}
+
+export function listActiveSessionIdsForHost(
+  db: SessionReadConnection,
+  hostId: string,
+): string[] {
+  return db
+    .select({ id: hostDaemonSessions.id })
+    .from(hostDaemonSessions)
+    .where(
+      and(
+        eq(hostDaemonSessions.hostId, hostId),
+        eq(hostDaemonSessions.status, "active"),
+      ),
+    )
+    .all()
+    .map((row) => row.id);
+}
+
+export interface ActiveSessionHost {
+  hostId: string;
+  id: string;
+}
+
+export function listActiveSessionHosts(
+  db: DbQueryConnection,
+): ActiveSessionHost[] {
+  return db
+    .select({ hostId: hostDaemonSessions.hostId, id: hostDaemonSessions.id })
+    .from(hostDaemonSessions)
+    .where(eq(hostDaemonSessions.status, "active"))
+    .all();
+}
+
+export interface RecordSessionRouteInput {
+  sessionId: string;
+  route: { providerId: string; kind: ServerRouteKind } | null;
+}
+
+export function recordSessionRoute(
+  db: DbConnection,
+  input: RecordSessionRouteInput,
+): void {
+  db.update(hostDaemonSessions)
+    .set({
+      routeProviderId: input.route?.providerId ?? null,
+      routeKind: input.route?.kind ?? null,
+    })
+    .where(eq(hostDaemonSessions.id, input.sessionId))
+    .run();
 }

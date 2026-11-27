@@ -22,6 +22,7 @@ out
 # production
 /build
 /apps/app/build/
+/apps/app/dist-profiling/
 /packages/bb-app/host-daemon/
 /packages/bb-app/host-package/
 /apps/desktop/release/
@@ -35,6 +36,7 @@ out
 /packages/plugin-sdk/bundled-types/
 /packages/plugin-build/src/generated/
 /apps/server/src/generated/
+/plugins/bb-guide/skills/bb-plugin-authoring/references/*-api-index.md
 
 # misc
 .DS_Store
@@ -75,6 +77,9 @@ output.txt
 
 # turborepo
 .turbo
+
+# Query functions each @bb/db and @bb/server test run executed (BB_QUERY_PLAN_EXECUTED)
+.query-plan/
 .claude/
 
 # Temp roots from the CLI packaged-plugin build test (mkdtemp under apps/cli)
@@ -99,3 +104,4 @@ provider-recordings/raw/
 /plugins/*/.bundled-runtime/
 
 .ci-health/
+.test-durations/

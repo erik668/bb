@@ -13,7 +13,6 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import type { PromptMentionLinkResolver } from "@bb/client-core";
 import { isThreadForkable } from "@bb/client-core";
 import {
-  useThreadTimelineController,
   type ThreadTimelineConsumerMessageAction,
   type ThreadTimelineForkMessageHandler,
 } from "@/components/thread/timeline";
@@ -30,6 +29,7 @@ import { useEnvironment } from "@/hooks/queries/environment-queries";
 import { useEnvironmentCheckoutDisplay } from "@/hooks/queries/git-plugin-queries";
 import { useSystemProviderInfo } from "@/hooks/queries/system-queries";
 import { useThread } from "@/hooks/queries/thread-queries";
+import { useThreadTimelineSubscription } from "@/hooks/queries/thread-panel-queries";
 import { useMarkThreadRead } from "@/hooks/mutations/thread-state-mutations";
 import { useForkThreadFromMessage } from "@/hooks/useForkThreadFromMessage";
 import { useHostDaemon } from "@/hooks/useHostDaemon";
@@ -46,14 +46,23 @@ import { BbHttpError } from "@/lib/sdk";
 import { ThreadChatLoadingBody } from "@/components/thread/timeline/ThreadChatLoading";
 import {
   getProjectComposeRoutePath,
-  getThreadRoutePath,
   type ThreadRoutePathArgs,
 } from "@/lib/route-paths";
 import { useOptionalPaneContext } from "@/views/thread-detail/PaneContext";
 import {
+  resolveThreadEnvironmentAccess,
+  useThreadTimelineTitleActions,
+} from "@/views/thread-detail/thread-screen-hosts";
+import { useThreadUnreadDividerState } from "@/views/thread-detail/useThreadUnreadDividerState";
+import { useCreateThreadInEnvironment } from "@/hooks/useCreateThreadInEnvironment";
+import {
   ThreadScreen,
   type ThreadScreenPresentation,
 } from "@/views/thread-detail/ThreadScreen";
+import { openThread } from "@/lib/split-layout/openThread";
+
+const NO_CONSUMER_MESSAGE_ACTIONS: readonly ThreadTimelineConsumerMessageAction[] =
+  [];
 
 export function PluginThreadChat({
   threadId,
@@ -106,14 +115,19 @@ function PluginThreadChatBody({
   const threadQuery = useThread(threadId, { enabled: threadId.length > 0 });
   const thread = threadQuery.data;
   const hasComposer = variant !== "timeline";
-  const timeline = useThreadTimelineController({
-    enabled: threadId.length > 0,
-    threadId,
-  });
+  useThreadTimelineSubscription(threadId, { enabled: threadId.length > 0 });
   const markThreadRead = useMarkThreadRead();
+  const unreadDividerState = useThreadUnreadDividerState({
+    hasFreshThread:
+      thread !== undefined &&
+      !threadQuery.isPlaceholderData &&
+      !threadQuery.isFetching,
+    routeThreadId: threadId,
+    thread,
+  });
   useThreadReadTracking({
     markThreadRead,
-    thread: hasComposer ? thread : undefined,
+    thread: hasComposer && unreadDividerState.ready ? thread : undefined,
   });
   const threadProviderInfo = useSystemProviderInfo(
     thread?.environmentId
@@ -143,7 +157,7 @@ function PluginThreadChatBody({
         paneNavigateInPane(target);
         return;
       }
-      navigate(getThreadRoutePath(target));
+      openThread({ navigate, ...target });
     },
     [navigate, paneNavigateInPane],
   );
@@ -166,6 +180,17 @@ function PluginThreadChatBody({
   const { isLocalDaemonHost } = useHostDaemon();
   const environmentQuery = useEnvironment(thread?.environmentId ?? null);
   const environment = environmentQuery.data ?? null;
+  const environmentAccess = resolveThreadEnvironmentAccess({
+    thread: thread ?? null,
+    environment,
+    environmentLoadFailed: environmentQuery.isError,
+  });
+  const createThreadInEnvironment = useCreateThreadInEnvironment({
+    projectId: thread?.projectId ?? "",
+    environmentId: thread?.environmentId ?? "",
+    sectionId: thread?.sectionId ?? null,
+    pinned: thread?.pinnedAt != null,
+  });
   const hostsQuery = useHosts({ enabled: environment !== null });
   const environmentHost = environment
     ? (hostsQuery.data?.find((host) => host.id === environment.hostId) ?? null)
@@ -183,6 +208,15 @@ function PluginThreadChatBody({
     openFilePreview: navigation.openFilePreview,
     threadId: thread?.id,
   }).openLink;
+  const handleTimelineTitleAction = useThreadTimelineTitleActions({
+    threadId,
+    projectId: thread?.projectId ?? "",
+    openThread: navigateToThread,
+    environmentId: thread?.environmentId ?? null,
+    panel: navigation.panel,
+    openFilePreview: navigation.openFilePreview,
+    openLocalFileLink: onOpenLocalFileLink,
+  });
   const resolveHostMentionLink = canUseHostFileNavigation
     ? timelineNavigation.resolveMentionLink
     : undefined;
@@ -193,11 +227,11 @@ function PluginThreadChatBody({
       : undefined);
   const pluginId = useContext(PluginContext);
   const consumerMessageActions = useMemo<
-    readonly ThreadTimelineConsumerMessageAction[] | undefined
+    readonly ThreadTimelineConsumerMessageAction[]
   >(
     () =>
       messageActions === undefined || messageActions.length === 0
-        ? undefined
+        ? NO_CONSUMER_MESSAGE_ACTIONS
         : messageActions.map((action) => ({
             id: action.id,
             pluginId: action.icon !== undefined ? null : pluginId,
@@ -215,15 +249,15 @@ function PluginThreadChatBody({
         const targetProjectId = resource.projectId ?? thread?.projectId;
         if (targetProjectId === undefined) return null;
         return () =>
-          navigate(
-            getThreadRoutePath({
-              projectId: targetProjectId,
-              threadId: resource.threadId,
-            }),
-          );
+          openThread({
+            navigate,
+            projectId: targetProjectId,
+            threadId: resource.threadId,
+          });
       }
       if (resource.kind === "project") {
-        return () => navigate(getProjectComposeRoutePath(resource.projectId));
+        return () =>
+          void navigate(getProjectComposeRoutePath(resource.projectId));
       }
       if (
         resource.kind === "path" &&
@@ -318,8 +352,13 @@ function PluginThreadChatBody({
                 ? {
                     environmentCheckout,
                     environmentChrome,
-                    focusRequest,
+                    focusRequest: focusRequest ?? null,
                     contextEnvironmentId: null,
+                    onCreateNewThreadInEnvironment:
+                      environmentAccess.reusesEnvironment
+                        ? createThreadInEnvironment
+                        : null,
+                    onOpenThreadInfo: null,
                     permissionPolicy:
                       permissionPolicy === "editable" ? "editable" : "snapshot",
                   }
@@ -330,7 +369,7 @@ function PluginThreadChatBody({
             projectId={thread.projectId}
             resolveMentionLink={resolveMentionLink}
             thread={thread}
-            timeline={timeline}
+            timelineEnabled
             timelineHost={{
               consumerMessageActions,
               environmentHostName:
@@ -338,11 +377,12 @@ function PluginThreadChatBody({
                 isHostAmbiguous(hasMultipleMachines, environmentHost.type)
                   ? environmentHost.name
                   : null,
-              includePluginMessageActions: false,
-              leadingContent,
-              onForkMessage: isForkAvailable ? handleForkMessage : undefined,
-              unreadDividerAutoScroll: false,
-              unreadDividerPlacement: null,
+              leadingContent: leadingContent ?? null,
+              messageActionSurface: "embedded-chat",
+              onForkMessage: isForkAvailable ? handleForkMessage : null,
+              onTitleAction: handleTimelineTitleAction,
+              unreadDividerAutoScroll: unreadDividerState.autoScroll,
+              unreadDividerPlacement: unreadDividerState.placement,
             }}
           />
         </ThreadTimelineNavigationProvider>

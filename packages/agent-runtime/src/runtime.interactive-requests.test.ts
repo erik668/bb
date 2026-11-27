@@ -1,4 +1,4 @@
-import { RuntimeToolCalls } from "./runtime-provider-requests.js";
+import { RuntimeProviderRequests } from "./runtime-provider-requests.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -75,6 +75,14 @@ const deniedEscalationOptions = {
   permissionEscalation: "deny",
 } as const;
 
+const askEscalationOptions = {
+  ...fullRuntimeOptions,
+  permissionMode: "accept-edits",
+  permissionScope: "workspace",
+  approvalReviewer: "user",
+  permissionEscalation: "ask",
+} as const;
+
 async function answerDirectRequest(args: {
   rawRequest: JsonRpcMessage;
   handshake?: Record<string, unknown>;
@@ -91,7 +99,6 @@ async function answerDirectRequest(args: {
     "process.stdin.pipe(process.stdout)",
   ]);
   const adapter = createProviderForId("fake", {
-    additionalWorkspaceWriteRoots: [],
     bridgeLaunch: createScriptedEchoLaunch(),
   });
   const [initialize] = adapter.buildPostInitializeRequests();
@@ -105,11 +112,13 @@ async function answerDirectRequest(args: {
   }
   try {
     handleRuntimeProviderRequest({
-      toolCalls: new RuntimeToolCalls(),
+      interactiveRequests: new RuntimeProviderRequests(),
+      toolCalls: new RuntimeProviderRequests(),
       getActiveTurnId: args.getActiveTurnId ?? (() => "bb-turn-1"),
       getThreadExecutionOptions:
         args.getThreadExecutionOptions ?? (() => undefined),
       onInteractiveRequest: args.onInteractiveRequest,
+      onStderr: undefined,
       onToolCall: async () => ({
         contentItems: [{ type: "inputText", text: "tool result" }],
         success: true,
@@ -163,6 +172,7 @@ describe("createAgentRuntime interactive requests", () => {
       options: fullRuntimeOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222224h",
       threadId: "t1",
       input: [promptTextInput({ text: "approve:command ship it" })],
@@ -205,6 +215,53 @@ describe("createAgentRuntime interactive requests", () => {
     await runtime.shutdown();
   });
 
+  it("aborts the pending interactive request when the bridge withdraws it", async () => {
+    const signals: AbortSignal[] = [];
+    const events: ThreadEvent[] = [];
+    const runtime = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath: tmpDir,
+        onEvent: (event) => events.push(event),
+        onInteractiveRequest: (_request, signal) => {
+          signals.push(signal);
+          return new Promise((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(signal.reason), {
+              once: true,
+            });
+          });
+        },
+      },
+    });
+
+    await runtime.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: "fake",
+      options: fullRuntimeOptions,
+    });
+    await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
+      clientRequestId: "creq_222222224w",
+      threadId: "t1",
+      input: [
+        promptTextInput({ text: "approve:command withdraw_approval delay:20" }),
+      ],
+      options: fullRuntimeOptions,
+    });
+    await waitForThreadAgentMessageText({
+      events,
+      providerId: "fake",
+      runtime,
+      text: "Approval withdrawn",
+      threadId: "t1",
+    });
+
+    expect(signals).toHaveLength(1);
+    expect(signals[0]?.aborted).toBe(true);
+    await runtime.shutdown();
+  });
+
   it("completes the turn with Denied when the user denies the approval", async () => {
     const requests: PendingInteractionCreate[] = [];
     const events: ThreadEvent[] = [];
@@ -227,6 +284,7 @@ describe("createAgentRuntime interactive requests", () => {
       options: fullRuntimeOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222224i",
       threadId: "t1",
       input: [promptTextInput({ text: "approve:command hello" })],
@@ -285,6 +343,64 @@ describe("createAgentRuntime interactive requests", () => {
   it("denies interactive requests when permission escalation is deny", async () => {
     const requests: string[] = [];
     const events: ThreadEvent[] = [];
+    const stderr: string[] = [];
+    const runtime = createScriptedEchoRuntime({
+      runtime: {
+        workspacePath: tmpDir,
+        onEvent: (event) => events.push(event),
+        onStderr: (line) => stderr.push(line),
+        onInteractiveRequest: async (request) => {
+          requests.push(request.providerRequestId);
+          return { decision: "allow_once", grantedPermissions: null };
+        },
+      },
+    });
+
+    await runtime.startThread({
+      environmentId: "env-1",
+      threadId: "t1",
+      projectId: "p1",
+      providerId: "fake",
+      options: deniedEscalationOptions,
+    });
+    await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
+      clientRequestId: "creq_222222224j",
+      threadId: "t1",
+      input: [promptTextInput({ text: "approve:command denied" })],
+      options: deniedEscalationOptions,
+    });
+    await waitForThreadAgentMessageText({
+      events,
+      providerId: "fake",
+      runtime,
+      text: "Denied",
+      threadId: "t1",
+    });
+
+    expect(requests).toEqual([]);
+    expect(stderr).toContainEqual(
+      expect.stringMatching(
+        /^Declined approval request ".+" on turn ".+" for thread "t1" without asking: the turn runs with permission escalation "deny"\.$/u,
+      ),
+    );
+    await runtime.shutdown();
+  });
+
+  it.each([
+    {
+      name: "keeps a running ask turn asking after a deny-escalation steer joins it",
+      running: askEscalationOptions,
+      steer: { ...askEscalationOptions, permissionEscalation: "deny" },
+    },
+    {
+      name: "lets an ask-escalation steer raise a running deny turn to asking",
+      running: { ...askEscalationOptions, permissionEscalation: "deny" },
+      steer: askEscalationOptions,
+    },
+  ] as const)("$name", async ({ running, steer }) => {
+    const requests: string[] = [];
+    const events: ThreadEvent[] = [];
     const runtime = createScriptedEchoRuntime({
       runtime: {
         workspacePath: tmpDir,
@@ -301,23 +417,40 @@ describe("createAgentRuntime interactive requests", () => {
       threadId: "t1",
       projectId: "p1",
       providerId: "fake",
-      options: deniedEscalationOptions,
+      options: running,
     });
     await runtime.runTurn({
-      clientRequestId: "creq_222222224j",
+      additionalWorkspaceWriteRoots: [],
+      clientRequestId: "creq_222222225a",
       threadId: "t1",
-      input: [promptTextInput({ text: "approve:command denied" })],
-      options: deniedEscalationOptions,
+      input: [promptTextInput({ text: "approve_after_steer:command" })],
+      options: running,
     });
+    const { turnId } = await waitForThreadTurnStarted({
+      events,
+      providerId: "fake",
+      runtime,
+      threadId: "t1",
+    });
+    await expect(
+      runtime.steerTurn({
+        additionalWorkspaceWriteRoots: [],
+        threadId: "t1",
+        expectedTurnId: turnId,
+        clientRequestId: "creq_222222225b",
+        input: [promptTextInput({ text: "FYI, my build finished" })],
+        options: steer,
+      }),
+    ).resolves.toEqual({ status: "steered" });
     await waitForThreadAgentMessageText({
       events,
       providerId: "fake",
       runtime,
-      text: "Denied",
+      text: "Response to: approve_after_steer:command",
       threadId: "t1",
     });
 
-    expect(requests).toEqual([]);
+    expect(requests).toHaveLength(1);
     await runtime.shutdown();
   });
 
@@ -343,6 +476,7 @@ describe("createAgentRuntime interactive requests", () => {
       options: deniedEscalationOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222224k",
       threadId: "t1",
       input: [promptTextInput({ text: "approve:command provider-enforced" })],
@@ -393,6 +527,7 @@ describe("createAgentRuntime interactive requests", () => {
       options: deniedEscalationOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222224m",
       threadId: "t1",
       input: [promptTextInput({ text: "ask_user" })],
@@ -472,6 +607,7 @@ describe("createAgentRuntime interactive requests", () => {
       options: fullRuntimeOptions,
     });
     await runtime.runTurn({
+      additionalWorkspaceWriteRoots: [],
       clientRequestId: "creq_222222224n",
       threadId: "t1",
       input: [promptTextInput({ text: "approve:command boom" })],
@@ -538,6 +674,7 @@ describe("createAgentRuntime interactive requests", () => {
           turnId: expectedTurnId,
           payload: expect.objectContaining({ kind: "secrets/secret-request" }),
         }),
+        expect.any(AbortSignal),
       );
       expect(answer).toMatchObject({
         jsonrpc: "2.0",

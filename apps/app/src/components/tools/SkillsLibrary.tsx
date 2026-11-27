@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useOpenNewThread } from "@/hooks/useOpenNewThread";
 import {
   matchPath,
   useLocation,
@@ -12,7 +13,8 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { PERSONAL_PROJECT_ID } from "@bb/domain";
-import { buildSkillEditThreadPrompt } from "@bb/shared-ui/resource-edit-prompt";
+import { buildSkillEditThreadPrompt } from "@/lib/resource-edit-prompt";
+import { initialPromptSeedFromComposer } from "@/lib/plugin-composer-handle";
 import type { EditableSkillScope, SkillSummary } from "@bb/server-contract";
 import { ResourceListState } from "@bb/shared-ui/resource-list";
 import {
@@ -48,7 +50,6 @@ import {
 import {
   getRegistrySkillDetailRoutePath,
   getRegistrySkillsRoutePath,
-  getRootComposeRoutePath,
   getSkillDetailRoutePath,
   getSkillsRoutePath,
 } from "@/lib/route-paths";
@@ -86,9 +87,12 @@ function SkillDetailPage({
 }) {
   const providerRoster = useProviderRoster();
   const [selectedPath, setSelectedPath] = useState("SKILL.md");
-  useEffect(() => {
+  const skillId = skill?.id;
+  const [selectedPathSkillId, setSelectedPathSkillId] = useState(skillId);
+  if (selectedPathSkillId !== skillId) {
+    setSelectedPathSkillId(skillId);
     setSelectedPath("SKILL.md");
-  }, [skill?.id]);
+  }
   const filesQuery = useSkillFiles(projectId, skill);
   const contentQuery = useSkillContent(projectId, skill, selectedPath);
   const primaryHost = usePrimaryHost({ enabled: skill !== null });
@@ -158,6 +162,7 @@ export function SkillsLibrary() {
   const providerRoster = useProviderRoster();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
+  const openNewThread = useOpenNewThread();
   const location = useLocation();
   const { skillId: routeSkillId, registrySkillId: routeRegistrySkillId } =
     useParams<{
@@ -205,24 +210,38 @@ export function SkillsLibrary() {
     skills: [],
     hasMore: false,
   });
-  useEffect(() => {
-    const data = registryQuery.data;
-    if (data === undefined) return;
-    setLoadedRegistry((current) => {
-      const matches =
-        current.ranking === data.ranking &&
-        current.search === trimmedRegistrySearch;
-      const base = matches ? current.skills : [];
-      const seen = new Set(base.map((skill) => skill.id));
-      const fresh = data.skills.filter((skill) => !seen.has(skill.id));
-      return {
-        ranking: data.ranking,
-        search: trimmedRegistrySearch,
-        skills: fresh.length === 0 && matches ? base : [...base, ...fresh],
-        hasMore: data.pagination.hasMore,
-      };
+  const registryData = registryQuery.data;
+  const [mergedRegistryInputs, setMergedRegistryInputs] = useState<{
+    data: typeof registryData;
+    search: string;
+  }>({ data: undefined, search: trimmedRegistrySearch });
+  if (
+    mergedRegistryInputs.data !== registryData ||
+    mergedRegistryInputs.search !== trimmedRegistrySearch
+  ) {
+    setMergedRegistryInputs({
+      data: registryData,
+      search: trimmedRegistrySearch,
     });
-  }, [registryQuery.data, trimmedRegistrySearch]);
+    if (registryData !== undefined) {
+      setLoadedRegistry((current) => {
+        const matches =
+          current.ranking === registryData.ranking &&
+          current.search === trimmedRegistrySearch;
+        const base = matches ? current.skills : [];
+        const seen = new Set(base.map((skill) => skill.id));
+        const fresh = registryData.skills.filter(
+          (skill) => !seen.has(skill.id),
+        );
+        return {
+          ranking: registryData.ranking,
+          search: trimmedRegistrySearch,
+          skills: fresh.length === 0 && matches ? base : [...base, ...fresh],
+          hasMore: registryData.pagination.hasMore,
+        };
+      });
+    }
+  }
   const loadedRegistrySkills = useMemo(
     () =>
       loadedRegistry.search === trimmedRegistrySearch
@@ -411,7 +430,7 @@ export function SkillsLibrary() {
   );
   const openSkill = useCallback(
     (skill: SkillSummary) => {
-      navigate(
+      void navigate(
         getSkillDetailRoutePath({
           skillId: skill.id,
         }),
@@ -421,25 +440,26 @@ export function SkillsLibrary() {
   );
   const editSkillViaThread = useCallback(
     (skill: SkillSummary) => {
-      navigate(getRootComposeRoutePath(), {
-        state: {
-          focusPrompt: true,
-          initialPrompt: buildSkillEditThreadPrompt({
+      openNewThread({
+        focusPrompt: true,
+        initialPrompt: initialPromptSeedFromComposer(
+          buildSkillEditThreadPrompt({
             id: skill.id,
             name: skill.name,
             path: skill.filePath,
           }),
-          replaceInitialPrompt: true,
-        },
+          null,
+        ),
+        replaceInitialPrompt: true,
       });
     },
-    [navigate],
+    [openNewThread],
   );
   const openRegistrySkill = useCallback(
     (skill: RegistrySkill) => {
       const localSkill = findLocalRegistrySkill(skill);
       if (localSkill !== null) {
-        navigate(
+        void navigate(
           getSkillDetailRoutePath({
             skillId: localSkill.id,
           }),
@@ -447,7 +467,9 @@ export function SkillsLibrary() {
         return;
       }
       if (!isRegistryBrowseRoute) setRegistryPage(0);
-      navigate(getRegistrySkillDetailRoutePath({ registrySkillId: skill.id }));
+      void navigate(
+        getRegistrySkillDetailRoutePath({ registrySkillId: skill.id }),
+      );
     },
     [findLocalRegistrySkill, isRegistryBrowseRoute, navigate],
   );
@@ -456,33 +478,27 @@ export function SkillsLibrary() {
     setRegistryPage(0);
   }, []);
   const closeSkillDetail = useCallback(() => {
-    navigate(getToolsOwnedCollectionRoutePath("skills"));
+    void navigate(getToolsOwnedCollectionRoutePath("skills"));
   }, [navigate]);
   const handleCreateSkill = useCallback(
     (prompt?: string) => {
-      navigate(getRootComposeRoutePath(), {
-        state: {
-          focusPrompt: true,
-          initialPrompt: prompt ?? CREATE_SKILL_PROMPT,
-          replaceInitialPrompt: true,
-          createDraftKind: "skill",
-        },
+      openNewThread({
+        focusPrompt: true,
+        initialPrompt: prompt ?? CREATE_SKILL_PROMPT,
+        replaceInitialPrompt: true,
       });
     },
-    [navigate],
+    [openNewThread],
   );
   const forkRegistrySkill = useCallback(
     (skill: RegistrySkill) => {
-      navigate(getRootComposeRoutePath(), {
-        state: {
-          focusPrompt: true,
-          initialPrompt: buildRegistrySkillReferencePrompt(skill),
-          replaceInitialPrompt: true,
-          createDraftKind: "skill",
-        },
+      openNewThread({
+        focusPrompt: true,
+        initialPrompt: buildRegistrySkillReferencePrompt(skill),
+        replaceInitialPrompt: true,
       });
     },
-    [navigate],
+    [openNewThread],
   );
   const registryDetail = registryDetailQuery.data ?? null;
   const selectedLocalRegistrySkill = selectedRegistrySkill

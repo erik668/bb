@@ -161,6 +161,13 @@ deltas and owns every timeline invariant:
   `interaction/request` carries an approval, a user question, or a
   plugin-defined request (`"<pluginId>/<name>"`); the resolution pairs with
   the payload kind ([provider-plugin-api.md](provider-plugin-api.md) §4).
+- **Withdrawn requests.** A bridge that stops waiting on an
+  `interaction/request` or `item/tool/call` it sent (the provider answered
+  or cancelled it, it timed out, or the session ended) sends
+  `notifications/cancelled { requestId }` with that request's JSON-RPC id.
+  The runtime then never answers it: a withdrawn tool call is aborted, and a
+  withdrawn interaction is closed on the server as interrupted, so its card
+  no longer holds back the thread's next message.
 - **Turn lifecycle.** Only `turn.open`, a claiming `turn.boundary`
   (`claimIfIdle`), and accepted-input lifecycle settlement ever open a
   turn; item/stream deltas never do. Accepted input queues until a turn
@@ -338,6 +345,20 @@ and runs without injected skills, so a bridge that answers unknown methods
 with `METHOD_NOT_FOUND` still starts threads. The runtime never probes.
 Conformance rule `skills/configure-declared` pins both directions: declared →
 the request must succeed; undeclared → the request must be refused.
+
+When the injected skill catalog changes, the host daemon first offers the new
+roots to the environment's running bridges. A bridge whose handshake also
+declares `skills: { reconfigure: true }` receives another `skills/configure`
+and must apply the new roots to every open session from its next turn,
+without restarting the session or the processes it started (Codex sets the
+app-server's extra skill roots). It answers with an error when it could not.
+When every running bridge applies the change, the environment keeps its
+runtime. Otherwise the daemon falls back to the previous behavior: an
+environment with no tracked work (no live turn, open background task or
+in-flight command) is replaced, so its sessions restart with the new catalog
+on their next turn, and a busy one keeps its sessions on the old catalog while
+new sessions use the new one. Leave `reconfigure` undeclared when your bridge
+applies roots only to sessions it starts later.
 
 ### Command catalog
 
@@ -578,6 +599,14 @@ content.
    `backgroundTask` still pending on the bridge's threads as `interrupted`
    with `taskStatus: "stopped"`; a bridge that outlives its provider child
    still settles that child's work itself.
+6. A pending `backgroundTask` the provider can stop on its own carries
+   `stoppable: true`. The runtime then may send
+   `thread/backgroundTask/stop {threadId, providerThreadId, familyId}` for
+   it, and for no other item, so the flag is the capability; there is no
+   handshake field. The bridge answers once the provider accepted the stop
+   and settles the item through its normal notification (`taskStatus:
+   "stopped"`); the request does not settle it. Omit the flag when the
+   provider has no per-task stop, and core hides the Stop control.
 
 ## Ordering guarantees
 
@@ -615,8 +644,19 @@ bridge-internal and invisible to the runtime. Bridges that spawn children
 finalize on `close`, not `exit`, with a bounded grace, verify currency in
 stream callbacks, and never let a descendant holding an inherited pipe inject
 into a fresh session. The bridge's own environment is constructed by the
-runtime from an allowlist; bridges construct their children's environments
-the same way and must not leak their own inherited env downward.
+runtime from an allowlist. Every provider CLI a bridge starts (session
+children, model listing, health and installation probes) gets
+`buildProviderCliEnv(envVars)` from the bridge kit: the bridge's environment
+without bridge-only runtime variables (`ELECTRON_RUN_AS_NODE`,
+`BB_PROVIDER_BRIDGE_RECORD_DIR`), plus the request's `envVars`. Launch
+settings such as an executable override are read from that same env, so a
+plugin-contributed value changes the CLI that runs, not just the variable its
+shell sees. The sessionless `model/list`, `commands/list`, `provider/health`,
+and `provider/installation/*` requests carry a required `envVars`: the provider
+env plugins contribute for that host, resolved with no thread or project.
+`provider/usage` carries none and probes with the bridge's own environment, so
+it reports the machine's own sign-in rather than a routed account's. The contract test `contract-tests/provider-cli-env.test.ts` runs this
+rule against every first-party bridge.
 
 ## Record mode
 
@@ -675,3 +715,80 @@ public dependencies, so `packages/provider-parity` replays their committed
 cells instead. Its self-suite applies the recorded conformance checks to the
 same replay used for event and timeline parity, so each cell launches its
 bridge only once.
+
+Scenario recordings live apart from the matrix cells, under
+`recordings/scenarios/<provider>/<cell>`, and are checked only against rules
+that hold for every bridge, never against a snapshot of the recorded output,
+so a legitimate bridge change does not need a re-recording.
+`packages/provider-parity/src/scenarios.self.test.ts` replays each one
+through the current bridge with `replayScenarioCell`, which puts
+`provider-probe-child.mjs` between the bridge and the replay child to log the
+argv, environment and stdin each provider process received, and to kill the
+provider where the recorded one died (`providerExit` in the manifest).
+`checkRecordedScenarioReplay` then reports `scenario/<cell>/<rule>`:
+
+- `settings-follow-up`: a model, reasoning level, env var or permission mode
+  changed with a follow-up turn reaches the provider before it receives that
+  prompt.
+- `settings-steer`: a permission mode changed with a steer reaches the
+  provider before it receives the steer. A model, reasoning level or env var
+  changed with a steer is deliberately not required to apply mid-turn (a
+  bridge may apply it, as ACP does, or leave it for the next turn).
+- Permission is read from the
+  provider's own vocabulary for Codex and Claude Code. ACP bridges enforce it
+  themselves, so for ACP agents the rule checks that every command the agent
+  ran or asked to run after the change to a stricter mode went through the
+  user's approval.
+- every cell: each message is accepted exactly once, every turn carries the
+  message that started it, every turn settles, and a steer whose turn already
+  ended is rejected as stale.
+- `steer-race`: a steer sent as its turn ends.
+- `provider-exit`: after the provider process dies mid-command, the next
+  message runs in a replacement process that resumes the same conversation,
+  or the bridge announces lost context.
+
+When a bridge no longer talks to the provider the way the recording did (the
+replay stalls, or the replay child skips or runs out of recorded lines), the
+rules that depend on replayed provider output (accepted once, turns carry
+input, every turn settles) are reported as skipped with a re-record note
+instead of failing; rules about what the bridge itself sent or answered are
+still judged. A rule a bridge breaks on main is listed in
+`recordings/scenarios/known-gaps.json` with its reason. The suite fails on a
+new failure and on a listed gap that passes, so a fix removes its entry.
+
+To re-record a scenario cell (the suite prints `<provider>/<cell> needs
+re-recording` when a replay drifts), sign in to the provider CLI and run, once
+per cell:
+
+```sh
+node scripts/provider-recordings/record-scenario-cell.mjs \
+  --provider codex --cell steer-race --raw ~/.bb/provider-recordings/scenarios \
+  [--models <first>,<second>]
+node scripts/provider-recordings/package-scenario-cells.mjs \
+  --raw ~/.bb/provider-recordings/scenarios \
+  --versions '{"codex":"codex-cli 0.169.0"}'
+```
+
+The first drives the real runtime and this checkout's bridge against the real
+CLI (`packages/agent-runtime/src/integration.record-scenario-cells.test.ts`,
+which runs only when invoked this way). `--models` picks the two models the
+settings cells switch between; it defaults to the provider's default and its
+next listed model. The second redacts the raw recordings through
+`package-cells.mjs`, applies the normalizations each manifest notes, marks
+where the provider died in `provider-exit`, and replaces those cells under
+`recordings/scenarios`. Check that the new cell keeps every rule, and update
+`known-gaps.json` if the bridge's behaviour changed.
+
+The recorder keeps each CLI's own config and state out of the user's real
+directories (`scripts/provider-recordings/isolate-agent-state.mjs`). Codex runs
+with `CODEX_HOME`, Pi with `PI_CODING_AGENT_DIR`, Cursor with
+`CURSOR_CONFIG_DIR` and `CURSOR_DATA_DIR`, and OpenCode with all four `XDG_*`
+directories pointed at a temporary directory seeded with copies of the files
+the CLI needs to sign in and pick models (OpenCode also gets its own service
+port and a copy of its active credentials); a refreshed `auth.json` is copied
+back. Claude Code keeps its sign-in in the macOS keychain under its config
+directory, so it cannot be moved: the recorder instead deletes the directories
+the run created under `~/.claude` (the run workspace's `projects` entry and that
+session's `session-env`, `file-history`, `todos` and `debug` entries). It never
+rewrites `~/.claude.json`, which other Claude Code sessions write concurrently,
+so the run workspace's project key stays there; it is harmless.

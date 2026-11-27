@@ -14,7 +14,7 @@ import {
   ModelReasoningPicker,
   type ModelReasoningPickerHandoff,
 } from "@/components/pickers/ModelReasoningPicker";
-import { type PickerOption } from "@/components/pickers/OptionPicker";
+import { type PickerOption } from "@bb/shared-ui/option-picker";
 import type { ModelPickerOption } from "@/components/pickers/model-picker-option";
 import type { ProviderPickerOption } from "@/components/pickers/model-brand-prefix";
 import type {
@@ -53,6 +53,7 @@ interface ExecutionServiceTierConfig {
 interface ExecutionReasoningConfig {
   value: ReasoningLevel;
   options: readonly PickerOption<ReasoningLevel>[];
+  isLoading: boolean;
   onChange: (value: ReasoningLevel) => void;
 }
 
@@ -125,6 +126,7 @@ export const ExecutionControls = memo(function ExecutionControls({
           formatModelLabel={formatModelLabel}
           reasoningValue={reasoning.value}
           reasoningOptions={reasoning.options}
+          reasoningIsLoading={reasoning.isLoading}
           onReasoningChange={reasoning.onChange}
           serviceTierValue={serviceTier?.value}
           serviceTierOptions={

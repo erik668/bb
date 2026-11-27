@@ -1,5 +1,7 @@
 # Debugging And QA
 
+- In source development mode, Connect routes the base handle URL to Vite for HTTPS pairings and local Cloud pairings. Vite serves the interface and proxies APIs, WebSockets, health checks, and machine installation/enrollment routes to the backend. No frontend port share is required for the base URL; packaged/worktree runtimes keep serving the built interface directly from the backend.
+
 - `pnpm dev` and `pnpm start:worktree` save the absolute source checkout path in `<data dir>/bb-dev-instance.json`. Storage reports use this record to identify development data even after the checkout is removed. Older instances can be identified from `bb-app-runtime.json` or hash-verified path matches; unknown source paths are reported explicitly.
 - `pnpm dev` prints the active frontend URL, server API URL, host daemon port, data dir, and logs dir. Do not assume fixed dev ports.
 - `pnpm mobile:apk:dev` builds a standalone ARM64 Android APK at `apps/mobile/build-output/bb-dev.apk`, named **bb dev** with an orange icon and separate package/data from the installed app. Append `-- x86_64` for an Intel emulator. See [the mobile build instructions](../apps/mobile/README.md#android-local-apk-and-verification) for prerequisites, installation, and per-thread delivery.
@@ -17,6 +19,17 @@ The desktop main process also writes rotating `logs/desktop.log` immediately,
 including updater, Connect, and startup errors. View → Local Logs is available
 on every desktop platform and when attached to an existing server; it follows
 local desktop, server, and daemon files in the selected data directory.
+
+When the renderer of any desktop window (app windows, dialogs, Local Logs,
+bb Connect sign-in, browser popups) goes away, `desktop.log` records
+`renderer gone (reason …, exit code …)` with the window title. The desktop
+reloads the page after 500 ms, 2 s and 8 s; a fourth crash within five minutes,
+or a renderer that cannot launch, shows a "This window stopped working" page
+whose Reload button (or Cmd+R in app windows) restores the crashed URL with a
+fresh retry budget. A crashed find bar is dropped and recreated on the next
+find. To reproduce, attach to the main process with
+`BB_DESKTOP_ELECTRON_ARGS="--inspect=<port>"` and call
+`webContents.forcefullyCrashRenderer()` on a window.
 
 ## Desktop Browser Tab Recovery
 
@@ -170,6 +183,46 @@ for example `SELECT timestamp, blob1, blob2, blob5, double2 FROM
 bb_connect_gate_events WHERE blob4 = '<handle>.getbb.app' ORDER BY timestamp
 DESC`.
 
+## Observing Processes in Tests
+
+A test must not learn about a process from its PID alone. The operating system
+reuses PIDs (Windows quickly), so a remembered PID can name an unrelated
+process. `node scripts/check-test-process-identity.mjs`, run in CI's plan job,
+rejects these in test code:
+
+- signal 0 (`kill(pid, 0)`, shell `kill -0`);
+- liveness helpers given a PID (`…Alive(pid)`, `…Running(pid)`, `…Exists(pid)`);
+- `/proc/<pid>` reads and `ps -p <pid>` probes;
+- PID comparisons (`.not.toBe(oldPid)`, `a.pid === b.pid`, `.not.toContain(oldPid)`);
+- `process.kill(<remembered pid>, signal)`, including group signals. A failed
+  spawn's `child.pid ?? 0` would signal the runner's whole process group.
+
+The process's own `process.pid` is allowed, and so is a `ps` call that reads a
+start time (`lstart`, `etime`) to compare a recorded identity. Use the fixtures
+in `@bb/test-helpers/child-processes`, the module that owns guarded signalling;
+forkable plugins get the same ones as `experimental_` exports of
+`@get-bb/plugin-sdk/testing`.
+
+- **Direct children:** `trackChildProcesses()` records every `ChildProcess`
+  spawned in the test process, including ones production code spawns
+  internally. Use `running()`, `waitForExit()`, `waitForClose()` and
+  `killRunning()`. Signal an owned child with `child.kill()` or
+  `killProcessGroup({ child })` from `@bb/process-utils`.
+- **Node descendants and fake daemons:** `createProcessLifeline()` gives a
+  socket they join with `holdSource(label, onHeld?)`. Await `holder.exited`;
+  `holder.kill()` never signals a reused PID.
+- **Shell descendants on POSIX:** redirect into `createDescendantPipe()`'s
+  `path` and await `opened`, then `closed`. Shell code that must wait for a
+  process compares its recorded `ps -o lstart= -p` start time.
+- **Real processes found through PID files or listings:** compare
+  `readProcessIdentity()` from `@bb/process-utils`, or stop them with
+  `stopVerifiedProcess()` from `@bb/config`.
+- **Restarted processes:** compare an identity the process reports itself, such
+  as a boot id.
+
+Waits are event-driven and bounded by the test's own timeout, not by a separate
+deadline.
+
 ## Reproducing Test Order Failures
 
 CI's test shards shuffle test files and tests within each file. Vitest prints the seed for
@@ -262,6 +315,199 @@ null before the first sample and for in-memory databases. Missing or
 inaccessible WAL files report a null size with a sample timestamp. WAL size
 can include space reused by earlier generations; it does not measure uncheckpointed backlog or identify
 checkpoint progress. Resource sampling is also disabled with the live gate.
+
+### Slow SQLite query plans
+
+With `BB_QUERY_PLAN_AUDIT=1` (the default for `pnpm dev`, `pnpm start:worktree`,
+and `pnpm desktop:worktree`) or the `performanceDiagnostics` experiment on, the
+server runs `EXPLAIN QUERY PLAN` once for each distinct statement and parameter
+shape it executes, after the statement returns, against a read-only connection
+to the same database. It logs a `Slow SQLite query plan` warning, once per
+process for each `rule`, `table`, and `caller`, when the plan:
+
+- walks `events`, `thread_search_segments`, `prompt_history_entries`, or
+  `terminal_sessions` through an index that matches fewer equality terms than
+  another index on that table (`weaker-index`);
+- scans one of those tables in full (`full-scan`);
+- builds an automatic index (`automatic-index`);
+- searches one of those tables once per outer row, from a correlated subquery
+  or an `EXISTS` subquery SQLite turned into a join, through a key that grows
+  with history (`correlated-subquery`). A search that pins a unique key, or an
+  `events` column whose rows are bounded per value (`turn_id`, `item_id`,
+  `parent_tool_call_id`), is accepted; a search on `thread_id` and `type`
+  alone is not, because it rereads the thread's history for every outer row;
+  or
+- loops over a CTE or subquery result, without an index, once for each row of
+  a search on one of those tables through a key that grows with history
+  (`nested-loop`). `json_each` and other virtual tables over the row's own
+  JSON are not counted.
+
+`caller` is the `src/` file and function that ran the query; in the built
+server, the file comes from the module comments esbuild writes into
+`apps/server/dist` bundles, so it needs an unminified bundle. Callers are read
+from POSIX stack paths, so the audit logs nothing on Windows. Findings listed in
+`packages/db/src/query-plan-allowlist.ts` are not logged. The tests apply the
+same rules and fail on findings missing from the allowlist; see
+`packages/db/src/query-plan-guard.ts`. On pull requests, the Linux test shards
+set `BB_QUERY_PLAN_EXECUTED`, so `@bb/db` and `@bb/server` record the query
+functions they run in `.query-plan/executed.jsonl` (a Turbo test output, so
+cached runs restore it). The `Query functions run in tests` job then fails when
+an exported query function in a `packages/db/src/data` file the PR changed never
+ran. The `Query Plan Audit` workflow
+(`.github/workflows/query-plan-audit.yml`) runs nightly on main, on pull
+requests that change `packages/db`, and by hand. Its audit job checks for
+allowlist entries no test reports and for exported query functions in
+`packages/db/src/data` that no `@bb/db` or `@bb/server` test runs; reproduce it
+with
+`BB_QUERY_PLAN_REPORT=<file> pnpm exec turbo run test --filter=@bb/db --filter=@bb/server`
+followed by `pnpm --filter @bb/db check:query-plan-report <file>`.
+
+Plans cannot show what a query costs once data grows, so the workflow's cost
+job runs `pnpm exec turbo run check:query-costs --filter=@bb/db`. It builds
+worlds through the real write paths and compares them along two axes:
+
+- Thread history: a thread with 625 or 10,000 turns (about 250,000 events in
+  the full-scale world), plus what each case group in
+  `packages/db/scripts/query-costs/` seeds for its tables at about twice the
+  size of the largest real user (for example 10,000 threads with title and
+  message search segments, 4,000 environments, 50,000 prompt history entries
+  and 15,000 terminal sessions at full scale).
+- Turn size: a 500-turn thread whose first and last turns, and the open turn
+  of a second, running thread, have 94 or 1,500 steps (about 1,100 or 18,000
+  events each: reasoning, commands with streamed output, file edits,
+  commentary, plan and usage updates, and delegations).
+
+`HistoryFixture.liveTurn` names the open turn, and the `open long turn` cases
+in `events-cases.ts` time the reads and appends a running thread makes
+against it. The check calls every exported query function in
+`packages/db/src/data` and in the plugin database modules (below) against the
+smaller and larger world of each axis,
+interleaved, each call inside a rolled-back savepoint. Each call is timed by
+CPU time, not by the wall clock, so other work on a busy runner does not count
+against it: the thread's CPU time on macOS, and the process's on Linux, where a
+thread's CPU time only advances at scheduler ticks and reads near zero for
+short calls. The check keeps the fastest of at
+least three calls per world. The larger world is 16 times the smaller, so a
+bounded cost measures about 1x, a linear one about 16x (size^1, up to about
+size^1.5 on shared CI runners, where memory-heavy queries scale worse under
+neighbouring load), and a quadratic one about 256x (size^2).
+
+A query function is expected to stay bounded: its cost must not grow faster
+than size^0.5 (4x) on either axis once its larger-world time reaches the
+growth floor. A full-history read that keeps a few rows, such as filtering
+every request event of a thread by a JSON field, measures about size^1 and
+fails. A case whose cost must grow, because it returns or modifies rows the
+larger world has more of, declares the axis with the reason:
+`growsWith: { history: "Lists every thread on the host, and the seed grows the thread count" }`
+(`history` or `turnSize`). A declaration that measures within size^0.125
+(1.4x) is reported as a warning so it can be removed once the query is
+bounded; the gap between size^0.125 and size^0.5 keeps runner noise from
+either failing an undeclared case or flagging a declared one that only
+partly grows.
+
+The growth floor is 2 ms on the reference machine, scaled by how long a fixed
+SQLite calibration workload takes on the current one, measured after the
+worlds are built (`packages/db/scripts/query-costs/calibration.ts`), so a
+slower CI runner checks roughly the cases a laptop does. The floor only
+screens out calls too small to time reliably; every case that grows with data
+declares it, so a case crossing the floor on one runner and not another does
+not change the result. The check prints the calibration, and for
+each axis the five undeclared functions closest to the limit. The check
+fails when:
+
+- an undeclared function grows faster than size^0.5 (4x);
+- a declared function grows faster than size^2 (256x);
+- a function takes longer than its ceiling in the larger world of either axis,
+  whether or not it declares growth: 100 ms on the reference machine, scaled
+  by the calibration like the growth floor, unless its case sets a higher
+  `ceilingMs` with a `reason`. Every query runs synchronously on the server's
+  main thread, request path or sweep alike, so a declaration explains why a
+  cost grows but never lets it grow without bound; or
+- a single call runs for more than 5 seconds of wall time, when it is killed,
+  or a case throws.
+
+It reports a GitHub Actions warning, without failing, when a declared function
+grows faster than size^1.5 (64x), or when a case raises `ceilingMs` but
+measures within a third of the default ceiling on every axis, so the raise
+can be removed. A case that crosses size^0.5 or its ceiling is measured up to eight
+times before it is reported. The default sits at about twice the slowest
+bounded case on CI, where heavy reads run up to 4 times slower than on the
+reference machine while the calibration moves about 1.5 times. The
+request-path statement-count test below is exact, so it stays blocking.
+
+The check also fails when an exported query function in `packages/db/src/data`
+has no case. A query function is an exported function that builds a query
+itself or calls a function in the same file that does, so wrappers around a
+private query helper count too (`pnpm --filter @bb/db list:query-functions`
+lists them; the same list drives the "query functions run in tests" checks). `--group <name>[,<name>]` runs only those case groups and skips
+the coverage check.
+
+Server code runs SQL only through those query functions:
+`apps/server/test/sql-in-data-modules.test.ts` fails when a file in
+`apps/server/src` imports `drizzle-orm` at runtime or builds a query on a
+`db`, `tx` or `$client` receiver. The server may still open a transaction
+and pass it to query functions, and pass `$client` to connection-level
+helpers (backup, checkpointing, vacuum).
+
+Plugins that keep their own SQLite file run it on the same main thread, but a
+forkable plugin cannot load `@bb/db`, so its test guard never sees them. The
+check therefore also covers the plugin database modules listed in
+`PLUGIN_QUERY_MODULES` (`packages/db/scripts/query-functions.ts`): the
+account-pool, automations and workflows stores. Their cases live in
+`packages/db/scripts/query-costs/plugin-databases-cases.ts`. Each of these
+groups sets `pluginDatabase`, so every world gets a separate database per
+plugin, opened as the server opens plugin databases (better-sqlite3 enforces foreign keys by default),
+which the group's seed migrates with the plugin's own statements and fills at
+both sizes; exported functions and public methods of exported classes count
+as query functions. The check also explains every statement those cases run
+against the larger history world's plugin databases and fails on the
+query-plan guard's rules for the tables the group lists in
+`pluginDatabase.auditedTables`, unless the group's
+`pluginDatabase.allowedFindings` lists the finding with the case name as its
+caller and a reason; an allowed finding no case reports is a warning. The
+workflow runs on pull requests that change these modules as well as
+`packages/db`. To time the cases against real data shapes, make a copy
+with `sqlite3 ~/.bb/bb.db "VACUUM INTO '/tmp/bb-copy.db'"` and run
+`pnpm --filter @bb/db check:query-costs --db /tmp/bb-copy.db`: it migrates the
+copy, seeds a world with 10,000 turns and 1,500-step long turns into it, and fails only on the ceiling, the
+plugin plan audit and the 5-second kill, since there is no second size to compare. The copy is written to;
+never point `--db` at `~/.bb/bb.db` (the check refuses), and never start a bb
+server on the copy.
+
+Both checks time single functions, so neither sees a request that calls a cheap
+query once per turn. `apps/server/test/perf/request-path-statements.test.ts`
+covers that: it builds the same fixture (`@bb/db/history-fixture`) in pairs of
+test servers, one pair per axis. On the history axis one server has 100 turns
+and 20 other threads and the other twice both; on the turn-size axis both have
+100 turns, with 750-step or 1,500-step long turns, large enough that the
+timeline window cuts inside the open turn. It runs hot request paths against
+each pair (thread list, search and count, timeline, conversation outline, turn
+details, events, prompt history, send with a queued retry, edit, stop, fork,
+and the running thread's timeline, head state, a streamed timeline delta,
+daemon ingestion, send and stop), and fails when a path executes any statement
+more often in the larger server, or when its response bytes grow more than 1.5
+times. Statements are counted at the better-sqlite3 layer, with parameter lists
+collapsed so a longer `IN (...)` list counts as the same statement. The counts
+are exact, so the test does not depend on machine speed. A path that grows by
+design, such as fork copying history or turn details returning the whole turn,
+declares it per axis and may grow at most linearly.
+
+bb lowers agent CPU priority so it stays responsive when agents saturate the
+CPU:
+
+- The host daemon sets nice 10 (the below-normal priority class on Windows) on
+  provider processes and environment lifecycle scripts as they start, and the
+  builds and tests they launch inherit it. Terminals keep normal priority.
+- On macOS, where the scheduler ignores nice between processes, the launcher
+  spawns the server and daemon through `/usr/sbin/taskpolicy -a` (application
+  scheduling, not inherited by their children). Check with
+  `ps -axo pid,ppid,pri,ni,command`: the server and daemon show `PRI` 46,
+  their children 31.
+
+A slow-DB record whose `cpuDurationMs` is a small fraction of `durationMs`
+with many `involuntaryContextSwitches` means the server thread was waiting for
+a CPU rather than working; on Linux check that agent processes show `NI` 10 in
+`ps -o pid,ni,command`.
 
 ## Pending Question Drafts
 
@@ -366,12 +612,35 @@ cannot acquire the app's origin privileges. HTML also carries the no-store
 policy, at any size; the app renders an HTML iframe only for files up
 to 5 MiB and shows larger HTML as source or, past 25 MB, as a Download.
 
-The server uses `host.read_file_chunk` for a metadata-only probe (`length: 0`),
-then reads at most 1 MiB per RPC as the HTTP consumer pulls data. HEAD, `304`,
-and `416` responses read no contents. Cancelling or aborting stops subsequent
-reads; an already in-flight RPC can finish. Each RPC opens and closes its file
+The server's first `host.read_file_chunk` returns the file's metadata together
+with its first 64 KiB, so a file up to 64 KiB takes one daemon round trip. That
+read sends the revisions named in `If-None-Match` as `knownRevisions`; when the
+file still has one of them, the daemon returns no bytes and the server answers
+`304`. HEAD, `If-None-Match: *`, and ranges that do not start at byte 0 make the
+first read metadata-only (`length: 0`). Later reads take at most 64 KiB per RPC,
+keeping up to 16 RPCs in flight ahead of the HTTP consumer. The daemon returns each chunk's bytes as a binary WebSocket
+frame (a 4-byte header length, the JSON frame, then the raw bytes) instead of
+base64 inside JSON. HEAD, `304`, and `416` responses read no contents.
+Cancelling, aborting, or a failed chunk stops subsequent reads and aborts the
+RPCs still in flight. Each RPC opens and closes its file
 handle, so no remote read session needs cleanup. Offsets and lengths are
 validated at the daemon boundary, and paths remain confined to the route's root.
+
+The daemon's session socket keeps small messages ahead of bulk data. Terminal
+output and file chunks queue per terminal or per chunk RPC and take turns;
+everything else (RPC replies, heartbeats, events, and terminal output under
+4 KiB such as keystroke echo whose terminal has nothing queued) is written at
+once. Bulk is written only while the socket buffers at most 64 KiB and the
+bulk the server has not yet acknowledged fits a send window; the server
+acknowledges every 32 KiB it receives. The window starts at 256 KiB and adapts
+between 64 KiB and 4 MiB by 64 KiB per round trip: it grows while
+acknowledgement round trips stay near the lowest seen in the last 10–20
+seconds, and shrinks while its own bulk keeps more than about 144 KiB and 10 ms
+queued on the path. A
+terminal's exit, error, and replay messages stay behind its queued output.
+Without the window, bulk bytes sat in kernel and network buffers and a reply
+waited behind them: on a 45 ms, 3.6 MB/s link, replies took about 400 ms
+during a file download.
 
 The daemon returns a revision based on device, inode, size, and nanosecond
 mtime/ctime. Every content read checks the expected revision before and after
@@ -402,6 +671,17 @@ A partially created environment retains its claim and is scheduled for the exist
 background lifecycle cleanup. Sends report `workspace_busy` with “Workspace cleanup
 is pending. Try again shortly.” until removal completes. Provider cleanup is never
 awaited by this admission repair, and startup does not scan for abandoned claims.
+
+A thread create that finds the path claimed by another create whose thread is still
+starting or stopping waits for that create to settle instead of failing. A provisioning
+thread that hits the same claim while attaching stays `starting` and resumes its
+provisioning when the claim settles, without holding up the command result that drove
+it. Both wake on changes to the claiming thread or its environment and re-run admission.
+After 15 minutes (the setup hook bound, which matches the checkout provider's own wait
+for a claimed path) they fail with the usual `workspace_busy` "Cannot checkout branch
+while another thread is using this workspace". Explicit reuse requests, sends, thread
+commands and directory changes still fail immediately. A create that adopts a workspace
+whose setup is still running joins that setup instead of running it again.
 
 ## Local Dev QA
 
@@ -486,13 +766,8 @@ Local machine enrollment follows the same origin: local `http:` server URLs
 produce `ws:` machine tunnels and `http:` share URLs, while non-local machine
 enrollment remains HTTPS-only.
 
-For bb connect next, `pnpm cloud:dev` sets the Connect worker's and bb-web's
-`NEXT_BASE_DOMAIN` to `next.bb.localhost`. `BB_CLOUD_DEV_GATE_SECRET` sets the
-worker's `GATE_SECRET` (the account API answers 404 without it),
-`BB_CLOUD_DEV_GATE_PUBLIC_KEYS` sets bb-web's `GATE_PUBLIC_KEYS`, and
 `BB_CLOUD_DEV_STATE_DIR` moves the local Durable Object state away from
-`.wrangler/cloud-dev`. `apps/connect-next/scripts/e2e-local.sh` uses all three;
-see [connect-next.md](connect-next.md#local-end-to-end-run).
+`.wrangler/cloud-dev`.
 
 The AI gateway answers `503 unavailable` until an OpenRouter key is present.
 Export `OPENROUTER_API_KEY` in the shell before `pnpm cloud:dev` to pass it
@@ -696,6 +971,30 @@ size is within 15%. Compare mode refuses a baseline written with different gate
 settings. Run the gate on a machine whose load average is below its core count;
 the table header warns when the machine is oversubscribed.
 
+## Timeline History Walk
+
+`apps/server/test/timeline-history/paged-walk.test.ts` checks the paging
+contract in `docs/timeline-pagination.md` against a whole real database. It
+copies the database named by `BB_TIMELINE_HISTORY_DB` with `VACUUM INTO`
+(opening the source read-only, so a running server is unaffected), migrates the
+copy, and for every thread compares a paged walk at the default window budget
+and at 120 events with one full build. It fails with the threads and budgets
+that differ and deletes the copy afterwards. It starts no server, so it cannot
+take over the bb Connect tunnel. Without the variable the suite skips.
+
+```bash
+BB_TIMELINE_HISTORY_DB=~/.bb/bb.db pnpm exec turbo run test:timeline-history --filter=@bb/server
+BB_TIMELINE_HISTORY_DB=~/.bb/bb.db BB_TIMELINE_HISTORY_THREADS=thr_a,thr_b \
+  pnpm exec turbo run test:timeline-history --filter=@bb/server
+```
+
+Run it on changes to timeline selection, ownership, or projection. A full run
+over about 4,500 threads takes about ten minutes, most of it the copy and the
+full builds. The synthetic equivalence tests in
+`apps/server/test/services/threads/timeline-read-equivalence-*.test.ts` cover
+only the event kinds the generator produces;
+`timeline-guard-coverage.test.ts` lists the kinds it does not.
+
 ## Desktop Browser Smoke Tests
 
 ```bash
@@ -733,6 +1032,20 @@ only go down, so adding a provider-id branch to core fails CI. After removing
 literals, regenerate the baseline with `--write` and commit it. `--list` prints
 every hit. When the baseline reaches zero, delete it and the guard. See
 [provider-plugin-api.md](provider-plugin-api.md).
+
+## Branch ref owner
+
+`node scripts/check-branch-ref-owner.mjs` keeps the choice between a local
+branch and `origin/<name>` in one place:
+`resolveBranchRef`, `readDefaultBranchRefs().baseBranch` and
+`branchRefCandidates` in
+`packages/environment-provider-host/src/workspace-git.ts`. It fails CI when
+source outside that file builds `refs/remotes/origin/${…}` or `` `origin/${…}` ``
+refs, or runs `merge-base --is-ancestor`. Tests and fixtures are exempt.
+The few sites that do this for another reason are listed in the script's
+allowlist with the reason. Every caller of the resolver
+also runs the shared case table in
+`packages/environment-provider-host/src/testing/branch-ref-cases.ts`.
 
 ## File Content Routes
 
@@ -881,6 +1194,22 @@ reconnects. Auto-update-enabled daemons install the server's matching `bb-app`
 artifact; disabled or failed updates leave the machine disconnected until a
 manual update succeeds. The commit that bumps the version records what changed.
 
+## Terminal Output Streaming
+
+A daemon sends a terminal's output to the server only while the server has
+asked for it with `terminal.stream` (`enabled: true`). The server asks just
+before it attaches a terminal client, or before it catches clients up after a
+daemon reconnect, and stops the stream when the last client detaches. While a
+terminal is not streamed, its output stays in the daemon's scrollback ring
+(4 MiB per terminal) and reaches clients through the attach replay. A dropped
+daemon session stops every stream.
+
+A streamed terminal never has more than 1 MiB of output that the server has not
+acknowledged; past that, the daemon pauses the PTY until `terminal.ack` arrives.
+The server acknowledges up to what the fastest visible, acknowledging client
+has parsed. With no such client (hidden, stalled, or not sending acks), it
+acknowledges output as it arrives, so the PTY runs at the link rate.
+
 ## Opt-in server performance diagnostics
 
 Collection needs both startup permission and the **Server performance
@@ -890,7 +1219,8 @@ daemon. Leave it off for routine operation: profiling and extra logging add
 overhead.
 
 While on, the server logs database operations of at least 25 ms, API requests
-of at least 100 ms, and event-loop stalls of at least 100 ms. Every five
+of at least 100 ms, event-loop stalls of at least 100 ms, and
+[slow SQLite query plans](#slow-sqlite-query-plans). Every five
 seconds `Server performance sample` records process and main-thread CPU, loop
 utilization and delay, GC, and memory; CPU values are interval totals, not
 per-request attribution. Its `maxDelayMs` and `p99DelayMs` are gaps of the
@@ -937,9 +1267,8 @@ While both gates are on, every ingested daemon event batch that carries agent
 message, reasoning, or plan text writes one `Stream trace` info line per thread.
 `streamTrace.receivedAt`, `committedAt`, and `notifiedAt` are epoch
 milliseconds; `events`, `textEvents`, and `textChars` size the batch;
-`served` is `push` when a thread view is subscribed to timeline pushes (the
-`timelinePush` experiment) and `refetch` otherwise, so comparing lines of the
-two kinds gives the A/B between delivery paths. The
+`served` is `push` when a thread view is subscribed to timeline pushes and
+`refetch` otherwise. The
 intervals between consecutive lines for a thread are the chunk cadence the
 server sees. The host daemon logs `Posted daemon event batch` at debug level
 (`BB_LOG_LEVEL=debug`) for every POST: `eventBatch.events`, `textChars`,
@@ -963,6 +1292,29 @@ applied chunk.
    `Thread timeline build blocked the event loop` and its stage timings.
    `inFlightWorkAtObservation` can name an unrelated long poll; compare
    `longestSynchronousWork` and its wall/CPU times with the profile instead.
+   Measured synchronous work includes daemon WebSocket messages, timeline
+   builds, sweep steps, every transaction on bb.db (`db:transaction <mode>:`
+   followed by the first write statement, or the first statement when it only
+   reads), single statements that take at least 1 ms (`db:all`, `db:get`,
+   `db:run`, `db:exec` with redacted SQL), and the synchronous part of each API
+   request, plugin RPC or HTTP handler, plugin event handler, plugin load, and
+   plugin background service before its first `await`
+   (`<label> (until first await)`). When a measured child took at least half
+   of its parent's time, `longestSynchronousWork` names the chain, for example
+   `ws:daemon heartbeat > db:transaction deferred: update "host_daemon_sessions" ...`.
+   `longestSynchronousWorkCaller` names the request, plugin invocation, sweep,
+   or plugin load or service that was running the work, including callbacks
+   and timers a plugin scheduled while it loaded. Code a plugin runs after an
+   `await` is not measured here; it is only named by plugin id in the sampled
+   records below. `longestSynchronousWorkCpuMs` is main-thread CPU, and
+   `longestSynchronousWorkVoluntaryContextSwitches` and
+   `longestSynchronousWorkInvoluntaryContextSwitches` are process-wide counts
+   for the same interval: CPU far below wall time with many involuntary
+   switches means the thread was waiting for a core, and with many voluntary
+   switches it was waiting on a lock, disk, or another thread.
+   `Thread timeline build blocked the event loop` carries the same split as
+   `cpuDurationMs`, `voluntaryContextSwitches`, and
+   `involuntaryContextSwitches`.
    `stallAttribution` is `candidate`, with the operation in
    `stallCauseCandidate`, when a measured synchronous operation is long enough
    (within one 50 ms timer interval) to explain the maximum delay, and `unattributed`
@@ -978,10 +1330,20 @@ applied chunk.
    histogram's observation time is not the stall's end time.
    `stacks` ranks the top five sampled leaf stacks in each gap, with up to 12
    caller frames, including GC, plugin functions, native writes, and database
-   callers. Frame coordinates are one-based; cached Node source maps are used
+   callers. `owners` totals the window's sampled time per plugin
+   (`plugin:<id>`), counting a sample when any frame on its stack belongs to
+   that plugin's server code, and each ranked stack carries the same `owner`
+   (or `null`). Frame coordinates are one-based; cached Node source maps are used
    in the profile worker when available, otherwise coordinates refer to the
    generated code. Profile scanning and stack formatting run in that worker;
    the main thread only collects and transfers bounded timing windows.
+   `clockCalibration` reports the profiler-to-stall clock offset bounds in
+   milliseconds. Status `calibrated` includes the applied `offsetUs`;
+   `disjoint` means the start and end bounds disagree, and `uncertain` means
+   their intersection exceeds 10 ms. Rejected calibration leaves attribution
+   empty rather than assigning samples to the wrong window. The saved raw
+   profile retains its samples and original V8 timestamps; its save record
+   includes the same calibration diagnostic.
    `sampledMs` is elapsed sampling coverage, not CPU time; native frames can
    include waiting. Each sample contributes at most 20 ms so a long sampling
    gap cannot be blamed on one frame. `unobservedMs` reports missing coverage,
@@ -1005,11 +1367,14 @@ applied chunk.
 
 The server passes `host.read_workspace_agent_context` its project skill read
 policy: at most 1,000 non-hidden, non-excluded directories, 10 MiB per
-`SKILL.md`, and 32 MiB of JSON-encoded content in total (directory metadata,
-shared skill discovery, and workspace instructions do not count). These are a
-starting policy, not a measured requirement or transport ceiling. Files over a
-limit are skipped with server warnings; smaller later files can still fit, and
-count truncation is reported separately. Only exact-case `SKILL.md` files are
+`SKILL.md`, and 4 MiB of JSON-encoded frontmatter in total (directory metadata,
+shared skill discovery, and workspace instructions do not count). The daemon
+returns each `SKILL.md` only through its closing `---` delimiter, never the
+body; the server parses that block exactly as it would the whole file, because
+injected project skills reach the provider by path. These are a starting
+policy, not a measured requirement or transport ceiling. Files over a limit are
+skipped with server warnings; smaller later files can still fit, and count
+truncation is reported separately. Only exact-case `SKILL.md` files are
 read; symlinked skill directories or files and roots escaping the workspace are
 skipped before reading. Command lookup sets `includeAgentInstructions: false`,
 so an invalid `.bb/AGENTS.md` cannot break the command catalog; turn
@@ -1106,14 +1471,23 @@ values receive the original CSS, so a tab retained across a server update
 keeps working with its old host styles. Compressed responses are cached
 separately for the original and stripped variants.
 
-While the `narrowPluginCss` experiment is on, the app also adds
-`css-scope=owned-root-v1`. When a plugin's `app.js` never sets
-`data-bb-plugin-root` without a nearby `data-bb-plugin`, both routes then
+The app also adds `css-scope=plugin-attribute-v1`. When a plugin's `app.js`
+never sets `data-bb-plugin-root` without a nearby `data-bb-plugin`, both routes
 drop the `[data-bb-plugin-root]:not([data-bb-plugin])` alternative from that
-plugin's utility selectors, so its rules cannot match outside its own roots and
-restyles of the rest of the page stay cheap. The server checks the bundle when
-it loads the plugin; any id-less root keeps that plugin on the original CSS, and
-`bb plugin build` warns about it. Authored CSS is never rewritten.
+plugin's utility selectors and key them on `[data-bb-plugin-scope-<id>]`
+instead of `[data-bb-plugin=<id>]`; otherwise the plugin keeps the original
+CSS, and `bb plugin build` warns. Authored CSS is never rewritten. Browsers'
+ancestor filters hash attribute names but not values, so only a per-plugin
+attribute name lets the browser skip another plugin's copy of `.flex` without
+walking every ancestor of each element inside the sidebar, composer, or any
+other plugin root. Plugin roots the host renders (slot mounts, panel header
+content, and portaled overlays) carry `data-bb-plugin-scope-<id>=""` next to
+`data-bb-plugin`. For elements a plugin labels itself, including old
+`portal-scope` copies and `element.dataset.bbPlugin = id`, the app watches the
+document (`apps/app/src/lib/plugin-scope-attributes.ts`) and adds the
+attribute before the element is styled. Older tabs that send
+`css-scope=owned-root-v1` get the same selectors without the scope attribute,
+and tabs that send no scope get the original CSS.
 
 To reproduce version skew, load the production main app in Chrome, restart
 the same isolated server on the branch without reloading the tab, and open
