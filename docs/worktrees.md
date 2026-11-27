@@ -45,8 +45,10 @@ pnpm bb thread spawn \
   --prompt "..."
 ```
 
-Omit `--base-branch` for bb's smart default. Explicit values are exact:
-`main` is local and `origin/main` is remote.
+Omit `--base-branch` for bb's smart default. A bare name such as `main` uses
+`origin/main` when the local branch is equal to it or behind it, and the local
+branch when it is ahead or has diverged. `origin/main` and full refs such as
+`refs/heads/main` are used exactly as given.
 
 New worktree branches start at the selected base without tracking it as an
 upstream, even when Git's `branch.autoSetupMerge` is enabled. Publish with
@@ -110,6 +112,13 @@ pnpm install
 Contract:
 
 - The script runs with `env bash`, working directory set to the new worktree.
+- It gets the daemon's sanitized environment overlaid with your login shell's
+  environment (including its `PATH`), plus the variables you configured for the
+  machine and project. Teardown gets the same environment.
+- In a new worktree, setup starts while the thread's title, and so its branch
+  name, is still being generated: HEAD is detached at the base, and bb creates
+  the branch alongside setup. The branch exists before the agent starts. Don't
+  read the branch name in setup.
 - stdin is closed. stdout and stderr stream into the thread's provisioning
   transcript in the app.
 - A non-zero exit, a signal, or a timeout (15 minutes) fails provisioning and
@@ -117,6 +126,48 @@ Contract:
 - A bash script on every platform. On native Windows bb runs it with the bash
   that Git for Windows installs and fails with a message naming Git for Windows
   when there is none.
+
+## Warm worktrees
+
+A project can keep up to four warm worktrees per checkout: worktrees already
+created at the project's default base with `.worktreeinclude` copied and
+`.bb-env-setup.sh` finished. A new worktree thread on the default base takes
+one instead of waiting for git and the setup script, in the same order as a
+fresh worktree: in one call to the machine, bb asks the remote for its current
+default base (`git ls-remote`), checks the warm worktree and fast-forwards it
+to that commit; it then hands the warm worktree to the thread, reruns setup
+while the thread's title is generated if the worktree moved, and names the
+branch from the title last. A warm worktree at the remote's commit starts the thread without running
+setup again. A warm worktree behind it is fast-forwarded to that commit and
+`.bb-env-setup.sh` runs again before the thread starts, so a thread never
+starts on older code than a fresh worktree would. If bb restarts before the
+handover finishes, that warm worktree is deleted and the thread gets another
+one, or a fresh worktree. A setup script that skips work whose inputs did not
+change (this repository's skips `pnpm install` when the lockfile is unchanged)
+makes that second run short. If the remote can't be reached, bb uses the last
+fetched default base instead, as a fresh worktree would, and the thread's
+provisioning log says it may be out of date. The log names the commit the
+thread starts on. Named bases, existing worktrees and restores always build a
+fresh worktree, and so does a thread that finds no usable warm worktree.
+
+Turn it on per project in the Worktree plugin's settings, or with
+`bb worktree pool set <project-id> <size>` (`0` turns it off and deletes the
+idle ones); `bb worktree pool status` lists them. Every machine with a checkout
+keeps the project's count unless you give that machine its own: pick a count
+next to the machine in settings, or run
+`bb worktree pool set <project-id> <size> --host <host-id>` (`project` as the
+size makes the machine follow the project's count again). While a project keeps warm
+worktrees, bb fetches its default base every two minutes and replaces warm
+worktrees that are no longer on it (the default branch was rewritten); a warm
+worktree that is only behind is kept and moved forward when a thread takes it.
+Refills run one at a time per machine
+after a handoff, idle worktrees are replaced after eight hours, and a failed
+one is deleted and retried after ten minutes. Warm worktrees are environments
+held by the Worktree plugin (`bb environment list --held-by
+plugin:environment-git-worktree`); threads cannot join them, and deleting the
+project or removing the machine removes them. Disabling or uninstalling the
+Worktree plugin releases them, and they are then removed like any unused
+worktree once the plugin is enabled again.
 
 ## Cleanup
 
@@ -136,10 +187,20 @@ provider process, its background jobs (dev servers, MCP servers, `nohup`
 jobs), and any process you started there yourself, such as a shell you `cd`'d
 into the worktree or an editor terminal. Each process gets `SIGTERM`, then
 `SIGKILL` after a short grace period. Then `git worktree remove --force` runs
-and the directory is deleted. The branch is left behind, so work you committed
-to it survives the worktree. If you want to keep uncommitted work, commit and
-push (or open a PR) from inside the worktree before letting the thread go, and
-move your own shells out of the worktree first if you want to keep them.
+and the directory is deleted.
+
+bb then deletes the branch it created for the worktree, but only when nothing
+would be lost: no other worktree has it checked out, and every commit on it is
+on a remote, a tag, or the base it started from, or the branch was
+squash-merged into that base. Otherwise the branch is kept, so work you
+committed but never pushed survives the worktree, even if another local branch
+also has it. Branches you check out or create yourself
+inside a worktree are never deleted, and neither are the branches of worktrees
+bb did not create. Restoring an archived thread whose branch was deleted
+recreates it from the remote branch when one exists, or from the base. If you
+want to keep uncommitted work, commit and push (or open a PR) from inside the
+worktree before letting the thread go, and move your own shells out of the
+worktree first if you want to keep them.
 
 ## Run teardown with `.bb-env-teardown.sh`
 

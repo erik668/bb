@@ -1,7 +1,7 @@
 ---
 kind: instruction
 title: bb Guide — Thread lifecycle
-summary: Command reference for retrying, stopping, archiving, clearing, compacting, and deleting threads.
+summary: Command reference for retrying, stopping, archiving, clearing, compacting, and deleting threads, and stopping single background tasks.
 intent: Document how agents recover and end threads.
 editingNotes: Keep flags accurate against the CLI implementation. Run the json-flag-enforcement and command-output tests after changes.
 ---
@@ -31,6 +31,18 @@ Lifecycle:
   invalid: the recorded provider session belongs to another thread or has no
   usable identity).
 
+Background tasks:
+
+  bb thread background-tasks list [id]     List running background commands and agents
+  bb thread background-tasks stop <task-id> [id]
+                                           Stop one background task
+    --self                                 Target current thread
+
+  Stopping a background task leaves the thread and its other tasks running;
+  `bb thread stop` ends them all. Only tasks listed as stoppable can be
+  stopped (Claude Code tasks are, and so are Codex commands still running
+  after their turn ends); the task's timeline row then settles as stopped.
+
   bb thread retry [id]                     Retry the thread's failed turn
     --self                                 Target current thread
     --turn <requestId>                     Retry this turn request id specifically; fails when it is not the thread's failed turn
@@ -57,7 +69,7 @@ Lifecycle:
   `superseded`) until you send or delete it.
   SDK: `threads.retry({ threadId, turnRequestId?, sendAt?, reason? })`.
 
-  With the `resumeThreadsAfterRestart` experiment, a
+  With the `resumeThreadsAfterRestart` general setting, a
   turn cut off because a machine's daemon came back as a new process (bb quit,
   crashed, updated, or the machine restarted) gets a retry with reason "bb
   restarted", sent a few seconds later. So does an idle thread whose
@@ -78,6 +90,11 @@ Lifecycle:
   bb thread archive [id]                   Archive a thread (and children/hidden forks)
     --self                                 Archive current thread
 
+  Archiving an already-archived thread keeps its original archive time and
+  prints when it was archived; `--json` reports `alreadyArchived` and
+  `archivedAt`. The server logs each archive and unarchive with the thread IDs
+  and the caller (app, CLI with the calling BB_THREAD_ID, plugin, or API).
+
   Archive is not a hard stop: for 30 seconds a running turn and the thread's
   terminals keep going, and unarchiving within that window leaves everything in
   place. Use `thread stop` to end a run now.
@@ -92,11 +109,33 @@ Lifecycle:
   that is still running: when the machine still runs a turn for a thread the app
   shows as idle or failed, or a turn starts while the stop is being delivered,
   the stop interrupts that turn and waits for the attempt. If the interrupt
-  fails, the thread remains stopping; check `bb thread show <id> --json` before
-  treating the stop as confirmed.
+  fails, the thread remains stopping: the stop answers `progress:
+  "in-progress"` with the thread's `status`, and `bb thread stop` says the
+  thread is still stopping and exits 0; check `bb thread show <id> --json`
+  before treating the stop as confirmed. A stop after which the thread is still
+  starting or active fails with `thread_stop_unfinished` and exits non-zero.
 
   bb thread unarchive [id]                 Unarchive a thread
     --self                                 Unarchive current thread
+
+  bb thread export [id]                    Write the thread to a .jsonl.zst thread file
+    --self                                 Export current thread
+    -o, --output <path>                    Where to write it (default ./<id>.jsonl.zst)
+  bb thread import <file>                  Bring back a deleted thread from a thread file
+    --json                                 Machine-readable output (both)
+
+  A thread file is JSONL under zstd: a header line naming the thread, title,
+  project and provider, then the thread's rows, every event in sequence order,
+  and its attachments. `zstdcat <file> | jq` and `rg -z` read it without bb.
+  Import only recreates a deleted thread, never touches one that still exists,
+  and only accepts a file whose project is on this server. A deleted thread
+  can be exported until bb starts removing its rows, and imported again once
+  they are gone; a recreated archived thread counts as archived from the
+  moment it came back. Its links to a parent, source or lifecycle owner that
+  is deleted or not on this server are dropped. To move old archived threads out of the database
+  automatically, use the Storage & retention plugin's cold storage policy
+  (`bb storage retention --cold-store-after 14 --save --yes`, then
+  `bb storage cold-list` and `bb storage restore`).
 
   bb thread restore-environment [id]       Restore a destroyed workspace
     --self                                 Restore current thread
@@ -125,3 +164,5 @@ Lifecycle:
   destroyed. Deleting thread
   storage first stops processes whose working directory is inside it,
   including dev servers in nested checkouts (macOS and Linux only).
+
+Resume interrupted threads after a restart is available in Settings → General (default off). Toggle it with `bb settings general resumeThreadsAfterRestart true` or `false`, or through the SDK’s `system.updateGeneralSettings`. Existing experiment opt-ins are preserved.

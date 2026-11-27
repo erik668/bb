@@ -25,6 +25,7 @@ export const BRIDGE_REQUEST_METHODS = {
   threadArchive: "thread/archive",
   threadUnarchive: "thread/unarchive",
   threadGoalClear: "thread/goal/clear",
+  threadBackgroundTaskStop: "thread/backgroundTask/stop",
   turnStart: "turn/start",
   turnSteer: "turn/steer",
   skillsConfigure: "skills/configure",
@@ -48,7 +49,10 @@ export const modelListParamsSchema = z
   .passthrough();
 
 export const commandListParamsSchema = z
-  .object({ cwd: z.string().min(1) })
+  .object({
+    cwd: z.string().min(1),
+    envVars: z.record(z.string(), z.string()).optional(),
+  })
   .passthrough();
 
 export const commandListResultSchema = threadProviderCommandsStateSchema;
@@ -96,6 +100,14 @@ export const threadDiscardParamsSchema = threadRefParams;
 export const threadArchiveParamsSchema = threadRefParams;
 export const threadUnarchiveParamsSchema = threadRefParams;
 export const threadGoalClearParamsSchema = threadRefParams;
+
+export const threadBackgroundTaskStopParamsSchema = z
+  .object({
+    threadId: z.string().min(1),
+    providerThreadId: z.string().min(1),
+    familyId: z.string().min(1),
+  })
+  .passthrough();
 
 export const threadNameSetParamsSchema = z
   .object({

@@ -5,9 +5,8 @@ import {
   hostStorageRetryWorktreeCleanupResponseSchema,
   hostStorageRemoveExternalWorktreesResponseSchema,
   externalWorktreeSkipReasonSchema,
-  maintenanceKindSchema,
+  cleanupInputSchema,
   entryCleanupInputSchema,
-  entryCleanupStatusSchema,
 } from "./storage-types.js";
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
@@ -16,6 +15,7 @@ const daysSchema = z.number().int().min(1).max(3650).nullable();
 export const policySchema = z
   .object({
     archiveAfterDays: daysSchema,
+    coldStoreAfterDays: daysSchema.default(null),
     deleteAfterDays: daysSchema,
     deleteStorageOnArchive: z.boolean().default(false),
     deleteDevDataOnCheckoutRemoval: z.boolean().default(false),
@@ -25,6 +25,7 @@ export type Policy = z.infer<typeof policySchema>;
 export const runSchema = z.object({
   ranAt: z.number(),
   archivedCount: z.number().int().nonnegative(),
+  coldStoredCount: z.number().int().nonnegative().default(0),
   deletedCount: z.number().int().nonnegative(),
   failedCount: z.number().int().nonnegative(),
 });
@@ -36,26 +37,45 @@ export const stateSchema = z.object({
 export type State = z.infer<typeof stateSchema>;
 export const previewSchema = z.object({
   archiveCount: z.number().int().nonnegative(),
+  coldStoreCount: z.number().int().nonnegative(),
   deleteCount: z.number().int().nonnegative(),
 });
 export type Preview = z.infer<typeof previewSchema>;
+export const coldThreadSchema = z.object({
+  threadId: z.string(),
+  projectId: z.string(),
+  title: z.string().nullable(),
+  providerId: z.string(),
+  threadCreatedAt: z.number(),
+  archivedAt: z.number().nullable(),
+  state: z.enum(["moving", "stored"]),
+  storedAt: z.number().nullable(),
+  fileBytes: z.number().int().nonnegative(),
+});
+export type ColdThread = z.infer<typeof coldThreadSchema>;
+export const coldThreadListSchema = z.object({
+  threads: z.array(coldThreadSchema),
+  hasMore: z.boolean(),
+  totalCount: z.number().int().nonnegative(),
+  totalBytes: z.number().int().nonnegative(),
+  movingCount: z.number().int().nonnegative(),
+  lastStoredAt: z.number().nullable(),
+});
+export type ColdThreadList = z.infer<typeof coldThreadListSchema>;
+export const coldThreadCursorSchema = z
+  .object({ storedAt: z.number().nullable(), threadId: z.string().min(1) })
+  .strict();
+export type ColdThreadCursor = z.infer<typeof coldThreadCursorSchema>;
+export const COLD_THREAD_LIST_MAX = 200;
+const coldThreadInput = z.object({ threadId: z.string().min(1) }).strict();
 const machineInput = z.object({ hostId: z.string().min(1) }).strict();
 export const storageRpc = defineRpcContract({
   startEntryCleanup: {
     input: entryCleanupInputSchema,
     output: z.object({ id: z.string() }),
   },
-  entryCleanup: {
-    input: z.object({ id: z.string() }).strict(),
-    output: entryCleanupStatusSchema,
-  },
   startCleanup: {
-    input: z
-      .object({
-        hostId: z.string().min(1),
-        kind: maintenanceKindSchema,
-      })
-      .strict(),
+    input: cleanupInputSchema,
     output: z.null(),
   },
   hosts: { input: z.null(), output: hostStorageListResponseSchema },
@@ -67,7 +87,12 @@ export const storageRpc = defineRpcContract({
     output: hostStorageRemoveOrphansResponseSchema,
   },
   retryWorktreeCleanup: {
-    input: machineInput,
+    input: z
+      .object({
+        hostId: z.string().min(1),
+        includeUncommitted: z.boolean(),
+      })
+      .strict(),
     output: hostStorageRetryWorktreeCleanupResponseSchema,
   },
   removeExternalWorktrees: {
@@ -140,6 +165,28 @@ export const storageRpc = defineRpcContract({
       skippedCount: z.number().int().nonnegative(),
       stoppedProcessCount: z.number().int().nonnegative(),
     }),
+  },
+  coldThreads: {
+    input: z
+      .object({
+        projectId: z.string().min(1).nullable(),
+        search: z.string().min(1).nullable(),
+        limit: z.number().int().min(1).max(COLD_THREAD_LIST_MAX),
+        after: coldThreadCursorSchema.nullable(),
+      })
+      .strict(),
+    output: coldThreadListSchema,
+  },
+  restoreColdThread: {
+    input: coldThreadInput,
+    output: z.object({
+      threadId: z.string(),
+      restoredThreadIds: z.array(z.string()),
+    }),
+  },
+  deleteColdThread: {
+    input: coldThreadInput,
+    output: z.object({ ok: z.literal(true) }),
   },
   state: { input: z.null(), output: stateSchema },
   preview: { input: policySchema, output: previewSchema },

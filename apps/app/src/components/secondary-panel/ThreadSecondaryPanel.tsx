@@ -1,4 +1,3 @@
-import { ThreadInfoContentContext } from "@/components/secondary-panel/thread-info-registration";
 import {
   type CSSProperties,
   type FocusEvent,
@@ -13,6 +12,7 @@ import {
   useState,
 } from "react";
 import { useAtomValue } from "jotai";
+import { CORE_PLUGIN_ID } from "@bb/domain";
 import { Icon } from "@bb/shared-ui/icon";
 import { EmptyStatePanel } from "@bb/shared-ui/empty-state";
 import { SecondaryPanelContentSkeleton } from "./SecondaryPanelContentSkeleton";
@@ -184,7 +184,6 @@ export interface ThreadSecondaryPanelProps {
   canNavigateTabs?: boolean;
   areFixedTabsReady?: boolean;
   environmentId?: string;
-  metadataContent: ReactNode;
   tabs: readonly SecondaryPanelRenderableTab[];
   fixedTabs: readonly SecondaryPanelFixedTab[];
   onTabReorder: SecondaryPanelTabReorderHandler;
@@ -221,21 +220,13 @@ function panelTabPluginId(
     case "plugin-page-fixed":
       return tab.pluginId;
     case "plugin-fixed":
-      return tab.pluginId === "core" ? null : tab.pluginId;
+      return tab.pluginId === CORE_PLUGIN_ID ? null : tab.pluginId;
     default:
       return null;
   }
 }
 
-export function ThreadSecondaryPanel(props: ThreadSecondaryPanelProps) {
-  return (
-    <ThreadInfoContentContext.Provider value={props.metadataContent}>
-      <ThreadSecondaryPanelContent {...props} />
-    </ThreadInfoContentContext.Provider>
-  );
-}
-
-function ThreadSecondaryPanelContent({
+export function ThreadSecondaryPanel({
   activeTab,
   canNavigateTabs = true,
   areFixedTabsReady = true,
@@ -838,7 +829,7 @@ function ThreadSecondaryPanelContent({
   };
 
   const shouldEnableSidebarSplits =
-    !renderAsDrawer && splitPanelStateId !== undefined && areFixedTabsReady;
+    !renderAsDrawer && splitPanelStateId !== undefined;
   const splitTabs = shouldEnableSidebarSplits
     ? ([
         ...fixedTabs.map((fixedTab) => ({
@@ -873,6 +864,7 @@ function ThreadSecondaryPanelContent({
       canNavigateTabs={canNavigateTabs && isLayoutOpen}
       fixedTabIds={fixedTabs.map((tab) => tab.tab.id)}
       hasNewTabButton={showNewTabButton}
+      isTabListReady={areFixedTabsReady}
       onTabNavigated={(paneId, isNewTabButton) => {
         window.requestAnimationFrame(() => {
           const control = isNewTabButton

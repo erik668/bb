@@ -98,6 +98,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "copy-button",
+      "type": "registry:ui"
+    },
+    {
       "name": "delayed-loading",
       "type": "registry:ui"
     },
@@ -138,6 +142,18 @@
       "type": "registry:ui"
     },
     {
+      "name": "ime-keyboard",
+      "type": "registry:lib"
+    },
+    {
+      "name": "info-list-more-row",
+      "type": "registry:ui"
+    },
+    {
+      "name": "info-list-row",
+      "type": "registry:ui"
+    },
+    {
       "name": "inline-rename",
       "type": "registry:ui"
     },
@@ -162,11 +178,19 @@
       "type": "registry:ui"
     },
     {
+      "name": "list-loading-placeholder",
+      "type": "registry:ui"
+    },
+    {
       "name": "menu-item-hover",
       "type": "registry:ui"
     },
     {
       "name": "menubar",
+      "type": "registry:ui"
+    },
+    {
+      "name": "message-time",
       "type": "registry:ui"
     },
     {
@@ -179,6 +203,10 @@
     },
     {
       "name": "option-display",
+      "type": "registry:ui"
+    },
+    {
+      "name": "option-picker",
       "type": "registry:ui"
     },
     {
@@ -195,6 +223,10 @@
     },
     {
       "name": "pagination",
+      "type": "registry:ui"
+    },
+    {
+      "name": "picker-layout",
       "type": "registry:ui"
     },
     {
@@ -294,6 +326,10 @@
       "type": "registry:ui"
     },
     {
+      "name": "right-panel-file-visuals",
+      "type": "registry:ui"
+    },
+    {
       "name": "schedule-time",
       "type": "registry:lib"
     },
@@ -312,6 +348,14 @@
     {
       "name": "separator",
       "type": "registry:ui"
+    },
+    {
+      "name": "settings-section",
+      "type": "registry:ui"
+    },
+    {
+      "name": "shared-resize-observer",
+      "type": "registry:lib"
     },
     {
       "name": "sheet",
@@ -374,6 +418,14 @@
       "type": "registry:ui"
     },
     {
+      "name": "thread-storage-tree",
+      "type": "registry:ui"
+    },
+    {
+      "name": "thread-unarchive-button",
+      "type": "registry:ui"
+    },
+    {
       "name": "toggle",
       "type": "registry:ui"
     },
@@ -383,6 +435,10 @@
     },
     {
       "name": "tooltip",
+      "type": "registry:ui"
+    },
+    {
+      "name": "truncate-path-middle",
       "type": "registry:ui"
     },
     {
@@ -418,7 +474,19 @@
       "type": "registry:ui"
     },
     {
+      "name": "use-reset-picker-scroll",
+      "type": "registry:ui"
+    },
+    {
+      "name": "use-scroll-overflow-state",
+      "type": "registry:ui"
+    },
+    {
       "name": "use-sidebar-reorder-dnd",
+      "type": "registry:ui"
+    },
+    {
+      "name": "use-thread-storage-browser",
       "type": "registry:ui"
     },
     {

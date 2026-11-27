@@ -1,11 +1,4 @@
-import { ThreadInfoFixedTabContent } from "@/components/secondary-panel/thread-info-registration";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type ReactNode,
-} from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { PanelGroup } from "react-resizable-panels";
 import {
   ThreadSecondaryPanel,
@@ -14,7 +7,6 @@ import {
 } from "./ThreadSecondaryPanel";
 import { Icon } from "@bb/shared-ui/icon";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import {
   createGitDiffFixedPanelTab,
@@ -30,19 +22,10 @@ import {
   serializeSidebarSplitState,
   sidebarSplitStorageKey,
 } from "./sidebarSplitLayout";
-import type { WorkspaceFile } from "@bb/server-contract";
 import { StoryCard, StoryRow } from "../../../.ladle/story-card";
-import {
-  ThreadMetadataContent,
-  type ThreadMetadataContentProps,
-} from "./ThreadMetadataContent";
-import {
-  baseProps as baseMetadataProps,
-} from "./ThreadMetadataContent.fixtures";
-import { resolveRightPanelFileIconName } from "./rightPanelFileVisuals";
-import { useThreadStorageBrowser } from "./useThreadStorageBrowser";
+import { RepresentativeThreadInfo } from "@/test/fixtures/thread-info";
+import { resolveRightPanelFileIconName } from "@bb/shared-ui/right-panel-file-visuals";
 import { FilePreview } from "./FilePreview";
-import { threadListQueryKey } from "@/hooks/queries/query-keys";
 
 type ThreadSecondaryPanelTab = "git-diff" | "thread-info";
 
@@ -69,7 +52,7 @@ function createStoryFixedTabs(
       ariaLabel: "Show thread info panel",
       label: "Info",
       contentFillsRegion: true,
-      renderContent: () => <ThreadInfoFixedTabContent />,
+      renderContent: () => <RepresentativeThreadInfo />,
       leadingVisual: <Icon name="Info" />,
       onSelect: () => onSelectPanel("thread-info"),
       tab: createThreadInfoFixedPanelTab(),
@@ -134,56 +117,12 @@ interface PanelHarnessProps {
 
 function PanelHarness({ initialPanel, children }: PanelHarnessProps) {
   const [panel, setPanel] = useState(initialPanel);
-  useEffect(() => {
+  const [appliedInitialPanel, setAppliedInitialPanel] = useState(initialPanel);
+  if (appliedInitialPanel !== initialPanel) {
+    setAppliedInitialPanel(initialPanel);
     setPanel(initialPanel);
-  }, [initialPanel]);
+  }
   return children(panel, setPanel);
-}
-
-const INFO_STORAGE_FILES: readonly WorkspaceFile[] = [
-  { path: "plans/sidebar-surface-qa.md", name: "sidebar-surface-qa.md" },
-  { path: "reports/visual-regression.md", name: "visual-regression.md" },
-  { path: "screenshots/right-panel-light.png", name: "right-panel-light.png" },
-];
-
-function RepresentativeInfoContent() {
-  const [selectedStoragePath, setSelectedStoragePath] = useState<string | null>(
-    null,
-  );
-  const storageController = useThreadStorageBrowser({
-    files: INFO_STORAGE_FILES,
-    onSelectPath: setSelectedStoragePath,
-    selectedPath: selectedStoragePath,
-    threadId: "thr_story",
-  });
-  const props: ThreadMetadataContentProps = {
-    ...baseMetadataProps,
-    storage: {
-      controller: storageController,
-      filesError: null,
-    },
-  };
-  const [queryClient] = useState(() => {
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
-    });
-    client.setQueryData(
-      threadListQueryKey({
-        projectId: props.thread.projectId,
-        sourceThreadId: props.thread.id,
-        originKind: "fork",
-        archived: false,
-      }),
-      [],
-    );
-    return client;
-  });
-
-  return (
-    <QueryClientProvider client={queryClient}>
-      <ThreadMetadataContent {...props} />
-    </QueryClientProvider>
-  );
 }
 
 interface ShellArgs {
@@ -191,10 +130,7 @@ interface ShellArgs {
   includeGitDiffTab?: boolean;
 }
 
-function ShellRow({
-  initialPanel,
-  includeGitDiffTab = true,
-}: ShellArgs) {
+function ShellRow({ initialPanel, includeGitDiffTab = true }: ShellArgs) {
   return (
     <PanelHarness initialPanel={initialPanel}>
       {(panel, setPanel) => (
@@ -202,7 +138,6 @@ function ShellRow({
           <ThreadSecondaryPanel
             activeTab={createStoryFixedPanelTab(panel)}
             isOpen
-            metadataContent={<RepresentativeInfoContent />}
             fixedTabs={createStoryFixedTabs(setPanel, includeGitDiffTab)}
             tabs={[]}
             onPanelFocus={noop}
@@ -360,7 +295,6 @@ function FileTabsShellInner({
       <ThreadSecondaryPanel
         activeTab={activeTab}
         isOpen
-        metadataContent={<RepresentativeInfoContent />}
         tabs={panelTabs}
         fixedTabs={createStoryFixedTabs((panel) => {
           setActiveFilename(null);
@@ -402,10 +336,18 @@ function TerminalTabsShellInner({
   const [activeTerminalId, setActiveTerminalId] = useState(
     initialActiveTerminalId,
   );
-  useEffect(() => {
+  const [appliedTerminals, setAppliedTerminals] = useState(terminals);
+  const [appliedInitialActiveTerminalId, setAppliedInitialActiveTerminalId] =
+    useState(initialActiveTerminalId);
+  if (
+    appliedTerminals !== terminals ||
+    appliedInitialActiveTerminalId !== initialActiveTerminalId
+  ) {
+    setAppliedTerminals(terminals);
+    setAppliedInitialActiveTerminalId(initialActiveTerminalId);
     setOpenTerminals(terminals);
     setActiveTerminalId(initialActiveTerminalId);
-  }, [initialActiveTerminalId, terminals]);
+  }
   const activeTerminal =
     openTerminals.find(
       (terminal) => terminal.terminalId === activeTerminalId,
@@ -464,7 +406,6 @@ function TerminalTabsShellInner({
       <ThreadSecondaryPanel
         activeTab={activeTab}
         isOpen
-        metadataContent={<RepresentativeInfoContent />}
         tabs={panelTabs}
         fixedTabs={createStoryFixedTabs((panel) => {
           setActiveTerminalId("");
@@ -568,7 +509,6 @@ function ProductionSplitPanesStory() {
           <ThreadSecondaryPanel
             activeTab={activeTab}
             isOpen
-            metadataContent={<RepresentativeInfoContent />}
             tabs={panelTabs}
             fixedTabs={createStoryFixedTabs((panel) =>
               setActiveTab(createStoryFixedPanelTab(panel)),

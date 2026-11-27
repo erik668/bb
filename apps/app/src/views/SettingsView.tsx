@@ -1,14 +1,10 @@
 import { ApplicationLinkApprovalsSettings } from "@/components/settings/ApplicationLinkApprovalsSettings";
+import { useOpenNewThread } from "@/hooks/useOpenNewThread";
 import { MobileAppSection } from "@/components/settings/MobileAppSection";
 import { MachineEnvironmentSettings } from "@/components/settings/MachineEnvironmentSettings";
 import { MachineAccessSettings } from "@/components/settings/MachineAccessSettings";
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import {
-  Navigate,
-  useNavigate,
-  useLocation,
-  matchPath,
-} from "react-router-dom";
+import { Navigate, useLocation, matchPath } from "react-router-dom";
 import "@bb/shared-ui/icon-extended";
 import {
   builtInThemes,
@@ -44,7 +40,7 @@ import { PageShell } from "@/components/ui/page-shell.js";
 import {
   SettingsSection,
   SettingsWithControl,
-} from "@/components/ui/settings-section.js";
+} from "@bb/shared-ui/settings-section";
 import { WorkspaceOpenTargetIcon } from "@/components/workspace-open-target/WorkspaceOpenTargetIcon";
 import {
   setPreferredTheme,
@@ -54,10 +50,12 @@ import {
 import { useHostDaemon, useLocalHostDaemonAccess } from "@/hooks/useHostDaemon";
 import { useAppThemePreview } from "@/hooks/useAppThemePreview";
 import { ProvidersSettingsSection } from "@/components/settings/ProvidersSettingsSection";
-import { CodeRendererSettings } from "@/components/settings/CodeRendererSettings";
-import { SidebarThreadListSetting } from "@/components/settings/SidebarThreadListSetting";
-import { SidebarNavigationProviderSetting } from "@/components/settings/SidebarNavigationProviderSetting";
 import { SidebarFooterSettings } from "@/components/settings/SidebarFooterSettings";
+import {
+  MarkdownRendererChoicesSection,
+  FileOpenerChoicesSection,
+  PluginSlotChoiceRows,
+} from "@/components/settings/PluginChoiceSettings";
 import { SplitDimmingSetting } from "@/components/settings/SplitDimmingSetting";
 import { useSettingsNavState } from "@/components/settings/settings-nav";
 import { useRevealSettingsSearchTarget } from "@/components/settings/useRevealSettingsSearchTarget";
@@ -65,7 +63,6 @@ import { PluginsOverview } from "@/components/plugin/PluginsOverview";
 import { PluginDetailPaneView } from "@/views/ToolsView";
 import { SETTINGS_PLUGIN_ROUTE_PATH } from "@/lib/route-paths";
 import { PluginSettingsPage } from "@/components/plugin/PluginSettings";
-import { FileOpenersSettingsSection } from "@/components/settings/FileOpenersSettingsSection";
 import { VoiceInputSettingsSection } from "@/components/settings/VoiceInputSettingsSection";
 import { AiServicesSettingsSection } from "@/components/settings/AiServicesSettingsSection";
 import { CommunitySettingsSection } from "@/components/settings/CommunitySettingsSection";
@@ -85,7 +82,9 @@ import {
 } from "@/hooks/mutations/settings-mutations";
 import { useSystemConfig } from "@/hooks/queries/system-queries";
 import { useWorkspaceOpenTargets } from "@/hooks/useWorkspaceOpenTargets";
+import { useIsDesktopLocalServerActive } from "@/hooks/useServerChoices";
 import { isDesktopBrowserAvailable } from "@/lib/bb-desktop";
+import { showMutationErrorToast } from "@/lib/mutation-errors";
 import {
   FAVICON_COLOR_VALUES,
   getFaviconGlyphHref,
@@ -93,10 +92,7 @@ import {
 import { useOpenLinksInAppBrowserPreference } from "@/lib/in-app-browser-link-preference";
 import { useRewriteLocalhostLinksPreference } from "@/lib/localhost-link-rewrite-preference";
 import { localhostLinkRewriteDescription } from "@/lib/localhost-link-rewrite-description";
-import {
-  SETTINGS_ROUTE_PATH,
-  getRootComposeRoutePath,
-} from "@/lib/route-paths";
+import { SETTINGS_ROUTE_PATH } from "@/lib/route-paths";
 import { useNavigateToThreadAfterCreatePreference } from "@/lib/root-compose-create-preference";
 import { cn } from "@bb/shared-ui/lib/utils";
 import {
@@ -110,6 +106,7 @@ import {
 import { getWorkspaceOpenTargetFallbackLabel } from "@/components/workspace-open-target/workspace-open-target-display";
 import type { LocalHostDaemonAccessState } from "@/lib/local-host-daemon-access";
 import { openUrlInExternalBrowser } from "@/lib/url-open-routing";
+import { isNonImeKey } from "@bb/shared-ui/lib/ime-keyboard";
 
 const LOCAL_EDITOR_INTEGRATION_DOCS_URL =
   "https://github.com/get-bb/bb/blob/main/docs/multiple-devices.md#open-bb-from-another-browser";
@@ -170,10 +167,15 @@ interface AppearanceSettingsSectionProps {
 }
 
 interface GeneralSettingsSectionProps {
+  confirmDesktopQuit: boolean;
+  desktopQuitConfirmationAvailable: boolean;
+  onConfirmDesktopQuitChange: (enabled: boolean) => void;
   confirmThreadArchive: boolean;
   onConfirmThreadArchiveChange: (enabled: boolean) => void;
   keepHistoryAfterContextClear: boolean;
   onKeepHistoryAfterContextClearChange: (enabled: boolean) => void;
+  resumeThreadsAfterRestart: boolean;
+  onResumeThreadsAfterRestartChange: (enabled: boolean) => void;
   summarizeShellCommands: boolean;
   onSummarizeShellCommandsChange: (enabled: boolean) => void;
   desktopBrowserAvailable: boolean;
@@ -486,6 +488,23 @@ function LocalOpenTargetPreferenceControl({
   );
 }
 
+async function requestLocalOpenTargetAccess(
+  onRequestAccess: () => Promise<boolean>,
+  setPending: (pending: boolean) => void,
+): Promise<void> {
+  setPending(true);
+  try {
+    await onRequestAccess();
+  } catch (error) {
+    showMutationErrorToast({
+      error,
+      fallbackMessage: "Failed to connect to bb on this device",
+    });
+  } finally {
+    setPending(false);
+  }
+}
+
 export function LocalOpenTargetSettingsSection({
   accessState,
   directoryTargetId,
@@ -502,14 +521,8 @@ export function LocalOpenTargetSettingsSection({
     return null;
   }
 
-  const handleRequestAccess = async () => {
-    setAccessRequestPending(true);
-    try {
-      await onRequestAccess();
-    } finally {
-      setAccessRequestPending(false);
-    }
-  };
+  const handleRequestAccess = () =>
+    requestLocalOpenTargetAccess(onRequestAccess, setAccessRequestPending);
 
   if (!hasDaemon) {
     const accessDenied = accessState === "denied";
@@ -561,7 +574,7 @@ export function LocalOpenTargetSettingsSection({
             variant="outline"
             size="sm"
             disabled={accessRequestPending || accessDenied}
-            onClick={handleRequestAccess}
+            onClick={() => void handleRequestAccess()}
           >
             {buttonLabel}
           </Button>
@@ -670,11 +683,11 @@ function ManagedBranchPrefixSetting({
         onChange={(event) => setDraft(event.target.value)}
         onBlur={commit}
         onKeyDown={(event) => {
-          if (event.key === "Enter") {
+          if (isNonImeKey(event, "Enter")) {
             event.preventDefault();
             commit();
           }
-          if (event.key === "Escape") {
+          if (isNonImeKey(event, "Escape")) {
             event.preventDefault();
             setDraft(value);
           }
@@ -848,23 +861,27 @@ export function AppearanceSettingsSection({
       </SettingsSection>
       <SettingsSection title="Interface">
         <div className="space-y-5">
-          <SidebarNavigationProviderSetting />
-          <SidebarThreadListSetting />
-          <CodeRendererSettings />
+          <PluginSlotChoiceRows />
           <SidebarFooterSettings />
         </div>
       </SettingsSection>
+      <MarkdownRendererChoicesSection />
     </div>
   );
 }
 
 export function GeneralSettingsSection({
+  confirmDesktopQuit,
+  desktopQuitConfirmationAvailable,
+  onConfirmDesktopQuitChange,
   confirmThreadArchive,
   onConfirmThreadArchiveChange,
   keepHistoryAfterContextClear,
   onKeepHistoryAfterContextClearChange,
   summarizeShellCommands,
   onSummarizeShellCommandsChange,
+  resumeThreadsAfterRestart,
+  onResumeThreadsAfterRestartChange,
   desktopBrowserAvailable,
   generalSettingsDisabled,
   managedBranchPrefix,
@@ -951,6 +968,20 @@ export function GeneralSettingsSection({
             </DropdownMenu>
           </SettingsWithControl>
 
+          {desktopQuitConfirmationAvailable ? (
+            <SettingsWithControl
+              label="Ask before quitting"
+              description="Ask first when quitting the desktop app would stop agents working on this computer's bb server. Shown only while this window uses that server."
+            >
+              <Switch
+                checked={confirmDesktopQuit}
+                disabled={generalSettingsDisabled}
+                onCheckedChange={onConfirmDesktopQuitChange}
+                aria-label="Ask before quitting"
+              />
+            </SettingsWithControl>
+          ) : null}
+
           <SettingsWithControl
             label="Thread archive confirmation"
             description="Ask before archiving a thread with unarchived child threads."
@@ -972,6 +1003,18 @@ export function GeneralSettingsSection({
               disabled={generalSettingsDisabled}
               onCheckedChange={onKeepHistoryAfterContextClearChange}
               aria-label="Show messages from before a context clear"
+            />
+          </SettingsWithControl>
+
+          <SettingsWithControl
+            label="Resume interrupted threads after a restart"
+            description="Resume threads interrupted by an update, crash or restart, and tell the agent what was cut off. Queued messages send afterward."
+          >
+            <Switch
+              checked={resumeThreadsAfterRestart}
+              disabled={generalSettingsDisabled}
+              onCheckedChange={onResumeThreadsAfterRestartChange}
+              aria-label="Resume interrupted threads after a restart"
             />
           </SettingsWithControl>
 
@@ -1124,16 +1167,6 @@ const EXPERIMENT_DEFINITIONS: Record<
     description:
       "When an idle thread holds at least 100k tokens and its prompt cache has expired, the composer offers to compact before your next send. Works with supported providers (e.g. Claude Code, Pi).",
   },
-  dismissReadNotifications: {
-    label: "Clear notifications once a thread is read",
-    description:
-      "When you read a thread on any device, remove its notifications from your phones and tablets and from open bb windows and tabs. Phones need an app version that supports it.",
-  },
-  narrowPluginCss: {
-    label: "Faster plugin styles",
-    description:
-      "Load each plugin's stylesheet so it only matches that plugin's own UI, which makes style updates cheaper on pages with many plugins. Plugins built with an old portal-scope helper keep the slower stylesheet. Applies after a reload.",
-  },
   performanceDiagnostics: {
     label: "Server performance diagnostics",
     description:
@@ -1144,40 +1177,15 @@ const EXPERIMENT_DEFINITIONS: Record<
     description:
       "List plugins with updates on the Updates page, update them one by one or all at once, and count them in the sidebar updates badge.",
   },
-  resumeThreadsAfterRestart: {
-    label: "Resume interrupted threads after a restart",
+  serverRoutes: {
+    label: "Reach machines over several routes",
     description:
-      "When an update, crash or restart cuts off a running thread or stops a background command a thread is waiting on, bb resumes the thread a few seconds after it comes back and tells the agent what was cut off. Messages you queued meanwhile send after it.",
+      "Machines learn every route in Settings → Machines (such as bb connect, Tailscale, the local network or your own address) and connect over the highest one in your order that answers, moving to the next when it stops working. Lets you add a Local network route. Applies when each machine next connects.",
   },
   serverMove: {
     label: "Server move",
     description:
       "Move the bb server to another machine from Settings → Machines, and export or import server data with bb server.",
-  },
-  skipFocusedThreadNotifications: {
-    label: "Skip notifications for the thread you're viewing",
-    description:
-      "Don't show a system notification for a thread that is open in a visible, focused bb window or tab. Other threads, and the same thread in a window you're not using, still notify.",
-  },
-  threadContextCard: {
-    label: "Thread context card",
-    description:
-      "Show a thread's changes, pull request, and parent and child threads in a card at the upper-right of each thread pane instead of above the composer. A header button opens or pins it; wide panes keep it beside the transcript.",
-  },
-  threadRowMetadata: {
-    label: "Thread row metadata",
-    description:
-      "Add Metadata to the built-in thread list's Organize → Rows menu. When it is checked, plugins can show details such as a thread's pull request on a second line under its title.",
-  },
-  timelinePush: {
-    label: "Pushed timeline updates",
-    description:
-      "Send an open thread's timeline changes over the live connection instead of reloading the latest window after each update.",
-  },
-  updateWhenIdle: {
-    label: "Update when idle",
-    description:
-      "Adds a Restart and update bb automatically switch to the Updates page. While it is on, bb checks for updates every hour and restarts into a new version once no thread is running, waiting again if a thread starts before it restarts. Skip this version keeps a version from installing until a newer one appears. bb updates app apply --when-idle waits for threads once from the CLI.",
   },
 };
 export function visibleExperimentKeys(
@@ -1271,7 +1279,7 @@ export function ExperimentsSettingsSection({
 }
 
 export function SettingsView() {
-  const navigate = useNavigate();
+  const openNewThread = useOpenNewThread();
   const themePreference = useThemePreference();
   const systemConfigQuery = useSystemConfig();
   const { hasDaemon } = useHostDaemon();
@@ -1290,6 +1298,7 @@ export function SettingsView() {
   const [navigateToThreadAfterCreate, setNavigateToThreadAfterCreate] =
     useNavigateToThreadAfterCreatePreference();
   const [desktopBrowserAvailable] = useState(isDesktopBrowserAvailable);
+  const desktopQuitConfirmationAvailable = useIsDesktopLocalServerActive();
   const experiments = systemConfigQuery.data?.experiments ?? defaultExperiments;
   const updateExperimentsMutation = useUpdateExperiments();
   const generalSettings =
@@ -1331,7 +1340,7 @@ export function SettingsView() {
         disabled={systemConfigQuery.data === undefined}
         generalSettings={generalSettings}
         onGeneralSettingsChange={(next) =>
-          updateGeneralSettingsMutation.mutateAsync(next)
+          updateGeneralSettingsMutation.mutateAsync(next).catch(() => undefined)
         }
       />
     );
@@ -1361,11 +1370,9 @@ export function SettingsView() {
         onAppearanceThemePrefetch={appThemePreview.prefetchThemes}
         onAppearanceThemePreview={appThemePreview.previewTheme}
         onCreatePalette={() =>
-          navigate(getRootComposeRoutePath(), {
-            state: {
-              focusPrompt: true,
-              initialPrompt: CREATE_CUSTOM_PALETTE_PROMPT,
-            },
+          openNewThread({
+            focusPrompt: true,
+            initialPrompt: CREATE_CUSTOM_PALETTE_PROMPT,
           })
         }
         onFaviconColorChange={(faviconColor) =>
@@ -1394,7 +1401,7 @@ export function SettingsView() {
           onRequestAccess={requestAccess}
           targets={workspaceOpenTargets}
         />
-        <FileOpenersSettingsSection />
+        <FileOpenerChoicesSection />
       </>
     );
   } else if (activeSection === "projects") {
@@ -1439,6 +1446,13 @@ export function SettingsView() {
     content = (
       <>
         <GeneralSettingsSection
+          confirmDesktopQuit={generalSettings.confirmDesktopQuit}
+          desktopQuitConfirmationAvailable={desktopQuitConfirmationAvailable}
+          onConfirmDesktopQuitChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              confirmDesktopQuit: enabled,
+            })
+          }
           confirmThreadArchive={generalSettings.confirmThreadArchive}
           onConfirmThreadArchiveChange={(enabled) =>
             updateGeneralSettingsMutation.mutate({
@@ -1452,6 +1466,12 @@ export function SettingsView() {
             updateGeneralSettingsMutation.mutate({
               ...generalSettings,
               keepHistoryAfterContextClear: enabled,
+            })
+          }
+          resumeThreadsAfterRestart={generalSettings.resumeThreadsAfterRestart}
+          onResumeThreadsAfterRestartChange={(enabled) =>
+            updateGeneralSettingsMutation.mutate({
+              resumeThreadsAfterRestart: enabled,
             })
           }
           summarizeShellCommands={generalSettings.summarizeShellCommands}

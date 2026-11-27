@@ -18,9 +18,12 @@ import {
 import { PluginComposerCommands } from "@/components/plugin/PluginComposerCommands";
 import {
   APP_COMPOSER_SELECTOR,
-  composerOwnsCommand,
-  resolveComposerCommandScope,
-} from "@/lib/composer-command-ownership";
+  isActiveComposerShell,
+  registerActiveComposerCandidate,
+} from "@/lib/active-composer";
+import { useAppNavigationSurfaceId } from "@/lib/app-navigation-host";
+import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
 import { registerPaneComposerFocus } from "@/lib/pane-composer-focus";
 import { registerThreadMentionDropTarget } from "@/lib/thread-mention-drop";
 import {
@@ -42,7 +45,7 @@ export interface ComposerRootHost {
     | ((layout: { height: number; isOpen: boolean }) => void)
     | null;
   runsPluginCommands: boolean;
-  isFocusedPane: boolean;
+  composerHost: PluginComposerHost | null;
 }
 
 export const ComposerRootHostContext = createContext<ComposerRootHost | null>(
@@ -99,14 +102,14 @@ export function ComposerRoot({
     );
   }
   const { key, registerEditor, attachEditor, onFocusCommand } = host;
-  const { runsPluginCommands } = host;
-  const { isFocusedPane } = host;
+  const { runsPluginCommands, composerHost } = host;
+  const surface = useAppNavigationSurfaceId();
   const editorRef = useRef(editor);
   useLayoutEffect(() => {
     editorRef.current = editor;
   });
 
-  const stateKey = JSON.stringify(editor.state);
+  const layout = editor.state.layout;
   const publishedRef = useRef<{ key: string; unregister: () => void } | null>(
     null,
   );
@@ -125,7 +128,7 @@ export function ComposerRoot({
         isPopupOpen: () => editorRef.current.isPopupOpen(),
       }),
     };
-  }, [key, registerEditor, stateKey]);
+  }, [key, registerEditor, layout]);
   useEffect(() => () => publishedRef.current?.unregister(), []);
   useLayoutEffect(() => attachEditor(() => editorRef.current), [attachEditor]);
 
@@ -136,25 +139,27 @@ export function ComposerRoot({
       reportMenuLayout({ height: 0, isOpen: false });
       return;
     }
-    let active = true;
-    let resizeObserver: ResizeObserver | null = null;
+    const subscription: {
+      active: boolean;
+      unobserveMenu: (() => void) | null;
+    } = { active: true, unobserveMenu: null };
     queueMicrotask(() => {
       const menu = menuRef?.current ?? null;
-      if (!active || menu === null) return;
-      const reportOpenLayout = () => {
-        reportMenuLayout({
-          height: menu.getBoundingClientRect().height,
-          isOpen: true,
-        });
+      if (!subscription.active || menu === null) return;
+      const readHeight = () => menu.getBoundingClientRect().height;
+      const reportOpenLayout = (height: number) => {
+        reportMenuLayout({ height, isOpen: true });
       };
-      reportOpenLayout();
+      reportOpenLayout(readHeight());
       if (typeof ResizeObserver === "undefined") return;
-      resizeObserver = new ResizeObserver(reportOpenLayout);
-      resizeObserver.observe(menu);
+      subscription.unobserveMenu = observeSharedResize(menu, {
+        read: readHeight,
+        write: reportOpenLayout,
+      });
     });
     return () => {
-      active = false;
-      resizeObserver?.disconnect();
+      subscription.active = false;
+      subscription.unobserveMenu?.();
       reportMenuLayout({ height: 0, isOpen: false });
     };
   }, [menuOpen, menuRef, reportMenuLayout]);
@@ -178,17 +183,23 @@ export function ComposerRoot({
     };
   }, [rootRef]);
 
-  const ownsTarget = (target: EventTarget | null) =>
-    composerOwnsCommand(
-      resolveComposerCommandScope({
-        composer: rootRef.current?.closest(APP_COMPOSER_SELECTOR) ?? null,
-        target,
-        isFocusedPane,
+  useLayoutEffect(
+    () =>
+      registerActiveComposerCandidate({
+        shell: () => rootRef.current?.closest(APP_COMPOSER_SELECTOR) ?? null,
+        surface,
+        host: composerHost,
       }),
+    [composerHost, rootRef, surface],
+  );
+  const ownsCommand = (target: EventTarget | null) =>
+    isActiveComposerShell(
+      rootRef.current?.closest(APP_COMPOSER_SELECTOR) ?? null,
+      target,
     );
 
   return (
-    <ComposerCommandOwnerProvider value={ownsTarget}>
+    <ComposerCommandOwnerProvider value={ownsCommand}>
       {onFocusCommand !== undefined ? (
         <ComposerCommand command="composer.focus" run={onFocusCommand} />
       ) : null}

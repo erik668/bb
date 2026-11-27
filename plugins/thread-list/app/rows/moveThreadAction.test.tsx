@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { cleanup, waitFor } from "@testing-library/react";
+import { experimental_makeActionContext } from "@get-bb/plugin-sdk/testing";
 import { createStore, Provider } from "jotai";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -46,6 +47,7 @@ function makeTarget(
     pinnedAt: null,
     sectionId: "sec_a",
     isUnread: false,
+    isHidden: false,
     status: "idle",
     environment: null,
     ...overrides,
@@ -62,26 +64,22 @@ interface Collected {
 function Probe({ collected }: { collected: { current: Collected | null } }) {
   const useData = moveThreadAction.useData;
   if (useData === undefined) throw new Error("Move reads its destinations");
-  const data = useData({ threadIds: [] });
+  const data = useData({ threadIds: [], experimental_threads: [] });
   const sdk: PluginBrowserBbSdk = useSdk();
   const navigate: BbNavigate = useBbNavigate();
-  const experimental_panel = experimental_useAppPanel();
+  const panel = experimental_useAppPanel();
   collected.current = {
     item: (thread) =>
       moveThreadAction.item({
         thread,
         data,
-        sdk,
-        navigate,
-        experimental_panel,
+        ...experimental_makeActionContext({ sdk, navigate, panel }),
       }),
     bulkItem: (threads) =>
       moveThreadAction.experimental_bulkItem?.({
         threads,
         data,
-        sdk,
-        navigate,
-        experimental_panel,
+        ...experimental_makeActionContext({ sdk, navigate, panel }),
       }) ?? null,
   };
   return null;
@@ -181,6 +179,7 @@ describe("Move to section", () => {
   it.each([
     ["a child thread", makeTarget({ parentThreadId: "thr_parent" })],
     ["an archived thread", makeTarget({ archivedAt: 5 })],
+    ["a hidden thread", makeTarget({ isHidden: true })],
   ])("is hidden for %s", async (_label, thread) => {
     const { item, hydrated } = renderMove();
     await hydrated();
@@ -196,7 +195,7 @@ describe("Move to section", () => {
   it("moves an unpinned thread with one update", async () => {
     const { item, sdkCalls, hydrated } = renderMove();
     await hydrated();
-    run(item(makeTarget()), "sec_b");
+    await run(item(makeTarget()), "sec_b");
     await waitFor(() =>
       expect(sdkCalls).toEqual([
         {
@@ -211,7 +210,7 @@ describe("Move to section", () => {
     const { item, sdkCalls, hydrated } = renderMove();
     await hydrated();
     const pinned = makeTarget({ pinnedAt: 2 });
-    run(item(pinned), "threads");
+    await run(item(pinned), "threads");
     await waitFor(() =>
       expect(sdkCalls).toEqual([
         { method: "threads.unpin", args: [{ threadId: "thr_move" }] },
@@ -222,7 +221,7 @@ describe("Move to section", () => {
       ]),
     );
     sdkCalls.length = 0;
-    run(item(pinned), "sec_a");
+    await run(item(pinned), "sec_a");
     await waitFor(() =>
       expect(sdkCalls).toEqual([
         { method: "threads.unpin", args: [{ threadId: "thr_move" }] },

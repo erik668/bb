@@ -1,10 +1,8 @@
-import { eq } from "drizzle-orm";
 import {
   closeSession,
   getSessionById,
-  hostDaemonSessions,
   listActiveHostThreads,
-  listHostThreadIds,
+  listHostThreadIdsWithInterruptiblePendingInteractions,
   type HostDaemonSessionRow,
 } from "@bb/db";
 import type {
@@ -52,6 +50,7 @@ interface HandleHostSessionOpenedArgs {
   hostId: string;
   openedSession: HostDaemonSessionRow;
   previousSession: HostDaemonSessionRow | null;
+  turnCommandThreadIds: string[];
   undeliveredEventThreadIds: string[];
 }
 
@@ -149,6 +148,7 @@ export async function handleHostSessionOpened(
     activeThreadIds: args.activeThreads.map((thread) => thread.threadId),
     hostId: args.hostId,
     sameDaemonInstance,
+    turnCommandThreadIds: args.turnCommandThreadIds,
     undeliveredEventThreadIds: args.undeliveredEventThreadIds,
   });
 
@@ -196,6 +196,21 @@ export function handleDaemonSessionSilent(
   });
 }
 
+export function handleDaemonSessionResumeExpired(
+  deps: DaemonSocketClosedDeps,
+  args: HandleDaemonSocketClosedArgs,
+): void {
+  deps.logger.warn(
+    { reconnectGraceMs: HOST_RECONNECT_GRACE_MS, sessionId: args.sessionId },
+    "Daemon did not reconnect within the grace period; ending its session",
+  );
+  deps.hub.closeDaemonSessionSocket(args.sessionId, "expired");
+  handleDaemonSessionLost(deps, {
+    reason: "expired",
+    sessionId: args.sessionId,
+  });
+}
+
 function handleDaemonSessionLost(
   deps: DaemonSocketClosedDeps,
   args: HandleDaemonSessionLostArgs,
@@ -203,11 +218,7 @@ function handleDaemonSessionLost(
   deps.hub.unregisterDaemon(args.sessionId);
   deps.sharedPorts.clearHostConnectCapability(args.sessionId);
 
-  const session = deps.db
-    .select()
-    .from(hostDaemonSessions)
-    .where(eq(hostDaemonSessions.id, args.sessionId))
-    .get();
+  const session = getSessionById(deps.db, { sessionId: args.sessionId });
   if (!session || session.status !== "active") {
     return;
   }
@@ -238,11 +249,7 @@ export function handleHostRemoved(
   deps: Omit<DaemonSocketClosedDeps, "sharedPorts">,
   args: HandleHostRemovedArgs,
 ): void {
-  const session = deps.db
-    .select()
-    .from(hostDaemonSessions)
-    .where(eq(hostDaemonSessions.id, args.sessionId))
-    .get();
+  const session = getSessionById(deps.db, { sessionId: args.sessionId });
   if (
     !session ||
     session.status !== "active" ||
@@ -344,12 +351,8 @@ function notifyHostThreadRuntimeStatusChanged(
     environmentHostId: hostId,
     threads: listActiveHostThreads(deps.db, { hostId }),
   });
-  for (const threadId of listHostThreadIds(deps.db, { hostId })) {
-    deps.hub.notifyThread(
-      threadId,
-      ["status-changed"],
-      metadataByThreadId.get(threadId),
-    );
+  for (const [threadId, metadata] of metadataByThreadId) {
+    deps.hub.notifyThread(threadId, ["status-changed"], metadata);
   }
 }
 
@@ -358,7 +361,9 @@ function interruptPendingInteractionsForHostThreads(
   args: { hostId: string; reason: string },
 ): void {
   deps.pendingInteractions.interruptPendingInteractionsForThreadIds({
-    threadIds: listHostThreadIds(deps.db, { hostId: args.hostId }),
+    threadIds: listHostThreadIdsWithInterruptiblePendingInteractions(deps.db, {
+      hostId: args.hostId,
+    }),
     reason: args.reason,
   });
 }

@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { useStore } from "jotai";
+import { useOpenNewThread } from "@/hooks/useOpenNewThread";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import { matchPath, useLocation, useNavigate } from "react-router-dom";
 import type {
@@ -21,6 +22,7 @@ import { Icon, type IconName } from "@bb/shared-ui/icon";
 import {
   useAppCommandRunner,
   useAppCommandShortcut,
+  useIsAppCommandAvailable,
   useIsAppCommandModifierHeld,
 } from "@/components/commands/AppCommandProvider";
 import { PluginItemIcon } from "@/components/plugin/PluginIcon";
@@ -114,30 +116,51 @@ export function SidebarNavigationIcon({
   );
 }
 
+function stabilizeItems(
+  previous: readonly ExperimentalSidebarNavigationItem[],
+  items: readonly ExperimentalSidebarNavigationItem[],
+): readonly ExperimentalSidebarNavigationItem[] {
+  const previousById = new Map(previous.map((item) => [item.id, item]));
+  const list = items.map((item) => {
+    const prior = previousById.get(item.id);
+    return prior && isSameSidebarNavigationItem(prior, item) ? prior : item;
+  });
+  const unchanged =
+    list.length === previous.length &&
+    list.every((item, index) => item === previous[index]);
+  return unchanged ? previous : list;
+}
+
 function useStableItems(
   items: readonly ExperimentalSidebarNavigationItem[],
 ): readonly ExperimentalSidebarNavigationItem[] {
-  const previousRef = useRef<{
-    byId: Map<string, ExperimentalSidebarNavigationItem>;
-    list: readonly ExperimentalSidebarNavigationItem[];
-  }>({ byId: new Map(), list: [] });
-  return useMemo(() => {
-    const previous = previousRef.current;
-    const byId = new Map<string, ExperimentalSidebarNavigationItem>();
-    const list = items.map((item) => {
-      const prior = previous.byId.get(item.id);
-      const stable =
-        prior && isSameSidebarNavigationItem(prior, item) ? prior : item;
-      byId.set(item.id, stable);
-      return stable;
+  const [stable, setStable] = useState(() => ({ source: items, list: items }));
+  if (stable.source !== items) {
+    const next = { source: items, list: stabilizeItems(stable.list, items) };
+    setStable(next);
+    return next.list;
+  }
+  return stable.list;
+}
+
+async function disableNavigationPlugin({
+  disable,
+  label,
+}: {
+  disable: () => Promise<unknown>;
+  label: string;
+}): Promise<void> {
+  try {
+    await disable();
+    appToast.success(`${label} disabled`);
+  } catch (error) {
+    appToast.error(`Failed to disable ${label}`, {
+      description: error instanceof Error ? error.message : String(error),
     });
-    const unchanged =
-      list.length === previous.list.length &&
-      list.every((item, index) => item === previous.list[index]);
-    const next = unchanged ? previous.list : list;
-    previousRef.current = { byId, list: next };
-    return next;
-  }, [items]);
+    throw error;
+  } finally {
+    await invalidatePluginList({ queryClient: appQueryClient });
+  }
 }
 
 function isSettingsPathname(pathname: string): boolean {
@@ -175,13 +198,11 @@ export function SidebarNavigationModelProvider({
   const navigate = useNavigate();
   const commandRunner = useAppCommandRunner();
   const splitActions = usePaneContentSplitActions();
+  const openNewThread = useOpenNewThread();
   const setPluginEnabled = useSetPluginEnabled();
   const newThreadShortcut = useAppCommandShortcut("thread.new");
   const threadSearchShortcut = useAppCommandShortcut("thread.search");
-  const searchThreadsDisabled = !commandRunner.isCommandAvailable(
-    "thread.search",
-    null,
-  );
+  const searchThreadsDisabled = !useIsAppCommandAvailable("thread.search");
   const newThreadDisabled = host.onNewChat === undefined;
 
   const rawItems = useMemo(() => {
@@ -245,6 +266,7 @@ export function SidebarNavigationModelProvider({
     isHomeActive,
     items,
     navigate,
+    openNewThread,
     rowsById,
     setPluginEnabled,
     splitActions,
@@ -257,6 +279,7 @@ export function SidebarNavigationModelProvider({
       isHomeActive,
       items,
       navigate,
+      openNewThread,
       rowsById,
       setPluginEnabled,
       splitActions,
@@ -287,7 +310,7 @@ export function SidebarNavigationModelProvider({
     return {
       activate(itemId, options) {
         const found = lookup(itemId);
-        if (!found || found.item.isDisabled || found.item.isLoading) return;
+        if (!found || found.item.isDisabled) return;
         const { current, row, item } = found;
         const content = getSidebarNavigationRowContent(row);
         const legacySplit =
@@ -304,7 +327,8 @@ export function SidebarNavigationModelProvider({
         switch (row.action.kind) {
           case "new-thread":
             if (target === "split") {
-              if (content) openInSplit(current, content, item.label);
+              current.host.onNavigate?.();
+              current.openNewThread({ split: true });
               return;
             }
             if (target === "tab") {
@@ -383,21 +407,11 @@ export function SidebarNavigationModelProvider({
         const pluginId = found?.row.ownerPluginId;
         if (!found || !pluginId) return;
         const { current, item } = found;
-        try {
-          await current.setPluginEnabled(
-            pluginId,
-            false,
-            current.host.onNavigate,
-          );
-          appToast.success(`${item.label} disabled`);
-        } catch (error) {
-          appToast.error(`Failed to disable ${item.label}`, {
-            description: error instanceof Error ? error.message : String(error),
-          });
-          throw error;
-        } finally {
-          await invalidatePluginList({ queryClient: appQueryClient });
-        }
+        await disableNavigationPlugin({
+          disable: () =>
+            current.setPluginEnabled(pluginId, false, current.host.onNavigate),
+          label: item.label,
+        });
       },
     };
   }, [store]);

@@ -3,7 +3,6 @@ import {
   createQueuedThreadMessage,
   getQueuedThreadMessage,
   getThread,
-  listEvents,
   setQueuedThreadMessageGroupBoundary,
 } from "@bb/db";
 import {
@@ -36,6 +35,7 @@ import {
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const WORKSPACE_PATH = "/tmp/queued-message-update";
 const HOUR_MS = 3_600_000;
@@ -52,6 +52,7 @@ afterEach(() => {
 function recordDispatchHookCalls(): string[][] {
   const calls: string[][] = [];
   const registry: HookRegistry = {
+    "thread.delete_finalize": [],
     "message.dispatch": [
       {
         pluginId: "send-time-test",
@@ -66,6 +67,7 @@ function recordDispatchHookCalls(): string[][] {
     listHooks: (hook) => registry[hook],
     invokeHook: (_pluginId, _label, run) => invokePluginInline(run),
     decisionTimeoutMs: 10_000,
+    isLoadingPlugins: () => false,
   });
   return calls;
 }

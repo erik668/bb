@@ -49,6 +49,7 @@ describe("internal session protocol version", () => {
               protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
               activeThreads: [],
               openThreadWork: [],
+              turnCommandThreadIds: [],
               undeliveredEventThreadIds: [],
               loadedEnvironments: [],
             }),
@@ -96,6 +97,7 @@ describe("internal session protocol version", () => {
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
           activeThreads: [],
           openThreadWork: [],
+          turnCommandThreadIds: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
         }),
@@ -142,6 +144,7 @@ describe("internal session protocol version", () => {
             protocolVersion: 188,
             activeThreads: [],
             openThreadWork: [],
+            turnCommandThreadIds: [],
             undeliveredEventThreadIds: [],
             loadedEnvironments: [],
           }),
@@ -179,6 +182,7 @@ describe("internal session protocol version", () => {
             protocolVersion: preLocalApiPortProtocolVersion,
             activeThreads: [],
             openThreadWork: [],
+            turnCommandThreadIds: [],
             undeliveredEventThreadIds: [],
             loadedEnvironments: [],
           }),
@@ -209,8 +213,10 @@ describe("internal session protocol version", () => {
           protocolVersion: staleProtocolVersion,
           activeThreads: [],
           openThreadWork: [],
+          turnCommandThreadIds: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
+          route: null,
         },
       });
 
@@ -247,8 +253,10 @@ describe("internal session protocol version", () => {
           protocolVersion: staleProtocolVersion,
           activeThreads: [],
           openThreadWork: [],
+          turnCommandThreadIds: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
+          route: null,
         },
       });
       expect(await forcedRetry.json()).toMatchObject({
@@ -267,8 +275,10 @@ describe("internal session protocol version", () => {
           protocolVersion: staleProtocolVersion,
           activeThreads: [],
           openThreadWork: [],
+          turnCommandThreadIds: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
+          route: null,
         },
       });
       expect(await consumedRetry.json()).toMatchObject({
@@ -287,8 +297,10 @@ describe("internal session protocol version", () => {
           protocolVersion: HOST_DAEMON_PROTOCOL_VERSION,
           activeThreads: [],
           openThreadWork: [],
+          turnCommandThreadIds: [],
           undeliveredEventThreadIds: [],
           loadedEnvironments: [],
+          route: null,
         },
       });
       expect(accepted.status).toBe(201);

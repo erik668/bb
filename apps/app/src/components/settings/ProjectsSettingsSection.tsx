@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { arrayMove } from "@dnd-kit/sortable";
 import type { Host } from "@bb/domain";
@@ -25,7 +25,7 @@ import {
   SettingsBadge,
   SettingsRow,
   SettingsSection,
-} from "@/components/ui/settings-section";
+} from "@bb/shared-ui/settings-section";
 import {
   useDeleteProject,
   useReorderProject,
@@ -34,11 +34,11 @@ import {
 import { selectHosts, useHosts } from "@/hooks/queries/host-queries";
 import { useSidebarNavigation } from "@/hooks/queries/sidebar-navigation-query";
 import { useQuickCreateProject } from "@/hooks/useQuickCreateProject";
-import { getSettingsProjectRoutePath } from "@/lib/route-paths";
 import {
   SortableSettingsRowList,
   useSortableSettingsRow,
 } from "./sortable-settings-rows";
+import { getSettingsTargetPath } from "@/components/settings/settings-sections";
 
 const PROJECTS_SECTION_DESCRIPTION =
   "Repositories bb can work in. Drag to change the order projects appear in the sidebar.";
@@ -135,7 +135,7 @@ function SortableProjectRow({
     label: project.name,
   });
   const navigate = useNavigate();
-  const detailPath = getSettingsProjectRoutePath(project.id);
+  const detailPath = getSettingsTargetPath({ projectId: project.id });
   const remoteLabel =
     project.gitRemoteUrl === null
       ? null
@@ -150,7 +150,7 @@ function SortableProjectRow({
       style={style}
       className={cn(
         "items-start",
-        isDragging && "relative z-10 rounded-md bg-card opacity-90 shadow-lift",
+        isDragging && "relative z-10 rounded-md bg-card shadow-lift",
       )}
     >
       {handle}
@@ -159,7 +159,7 @@ function SortableProjectRow({
         className="group -mx-2 flex min-w-0 flex-1 cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 transition-colors hover:bg-state-hover focus-within:bg-state-hover"
         onClick={(event) => {
           if (targetsResourceAction(event)) return;
-          navigate(detailPath);
+          void navigate(detailPath);
         }}
       >
         <Link
@@ -232,9 +232,11 @@ export function ProjectsSettingsSection() {
   const [optimisticOrder, setOptimisticOrder] = useState<string[] | null>(null);
 
   const serverProjects = sidebarNavigationQuery.data?.projects;
-  useEffect(() => {
+  const [orderedProjects, setOrderedProjects] = useState(serverProjects);
+  if (orderedProjects !== serverProjects) {
+    setOrderedProjects(serverProjects);
     setOptimisticOrder(null);
-  }, [serverProjects]);
+  }
   const projects = useMemo(() => {
     if (!serverProjects) return undefined;
     if (!optimisticOrder) return serverProjects;

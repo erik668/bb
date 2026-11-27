@@ -21,10 +21,11 @@ import {
   applyPluginCss,
   createPluginFrontendReconcileScheduler,
   createPluginFrontendReconcileState,
-  disposePluginFrontends,
+  discardPluginFrontends,
   fetchFrontendCandidates,
   reconcilePluginFrontends,
   type PluginFrontendCandidate,
+  type PluginFrontendCandidates,
   type PluginFrontendReconcileDeps,
 } from "./plugin-frontend";
 import {
@@ -39,7 +40,7 @@ import {
   removePluginSlotRegistrations,
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
-  usePluginSlots,
+  usePluginSlotKind,
 } from "./plugin-slots";
 import {
   getPluginThreadRowStatus,
@@ -50,10 +51,6 @@ import { PLUGIN_PANEL_ROUTE_PATH } from "./route-paths";
 import { applyAppThemeCss } from "./themes";
 import { PluginPanelView } from "@/views/PluginPanelView";
 import { makeInstalledPlugin } from "@/test/fixtures/plugins";
-import { makeSystemConfig } from "@/test/fixtures/system-config";
-import { systemConfigQueryKey } from "@/hooks/queries/query-keys";
-import { appQueryClient } from "./app-query-client";
-import { defaultExperiments } from "@bb/domain";
 import { pluginListQueryOptions } from "@/hooks/queries/plugin-settings-queries";
 
 function candidate(
@@ -72,6 +69,9 @@ function candidate(
       sdkVersion: "0.1.0",
       compatible: true,
       runtimeSlots: [],
+      staticChunkUrls: [],
+      lazyChunkUrls: [],
+      lazyRuntimeSlots: [],
       ...overrides,
     },
   };
@@ -147,7 +147,7 @@ function renderIntoBody(element: ReactElement): HTMLDivElement {
 }
 
 function MountedHomepageSections() {
-  const { homepageSections } = usePluginSlots();
+  const homepageSections = usePluginSlotKind("homepageSections");
   return createElement(
     "div",
     null,
@@ -210,7 +210,7 @@ function cssHrefs(pluginId: string): Array<string | null> {
 }
 
 function pluginSheet(pluginId: string, version: string): string {
-  return `/api/v1/plugins/${pluginId}/assets/app.css?h=${version}&host-tailwind=${HOST_TAILWIND_VERSION}`;
+  return `/api/v1/plugins/${pluginId}/assets/app.css?h=${version}&host-tailwind=${HOST_TAILWIND_VERSION}&css-scope=plugin-attribute-v1`;
 }
 
 function fireLoad(link: Element | null | undefined): void {
@@ -249,7 +249,7 @@ function accountPoolListResponse(
 }
 
 interface TestReconcileDeps extends PluginFrontendReconcileDeps {
-  fetchCandidates: Mock<() => Promise<PluginFrontendCandidate[]>>;
+  fetchCandidates: Mock<() => Promise<PluginFrontendCandidates>>;
   importModule: Mock<(url: string) => Promise<unknown>>;
   removeRegistrations: Mock<typeof removePluginSlotRegistrations>;
   setRegistrations: Mock<typeof setPluginSlotRegistrations>;
@@ -257,11 +257,12 @@ interface TestReconcileDeps extends PluginFrontendReconcileDeps {
 
 function makeDeps(initial: PluginFrontendCandidate[] = []): TestReconcileDeps {
   return {
-    fetchCandidates: vi.fn(
-      async (): Promise<PluginFrontendCandidate[]> => initial,
-    ),
-    importModule: vi.fn(
-      async (_url: string): Promise<unknown> => pluginModule("hello"),
+    fetchCandidates: vi.fn(async (): Promise<PluginFrontendCandidates> => ({
+      candidates: initial,
+      startingPluginIds: [],
+    })),
+    importModule: vi.fn(async (_url: string): Promise<unknown> =>
+      pluginModule("hello"),
     ),
     importRetryDelaysMs: [],
     applyCss: vi.fn(),
@@ -271,10 +272,14 @@ function makeDeps(initial: PluginFrontendCandidate[] = []): TestReconcileDeps {
     resetCrashedSlots: vi.fn(),
     setRegistrations: vi.fn(),
     removeRegistrations: vi.fn(),
+    setLoadingPlugins: vi.fn(),
+    settlePluginLoad: vi.fn(),
     beginSlotBatch: () => () => {},
     flushSlotBatch: vi.fn(),
     warn: vi.fn(),
     priorityPluginIds: () => [],
+    restoredLazyParts: () => [],
+    whenScreenPainted: () => Promise.resolve(),
   };
 }
 
@@ -298,7 +303,11 @@ function reconcileHarness(
     deps.removeRegistrations = vi.fn(removePluginSlotRegistrations);
   }
   const reconcile = (next?: PluginFrontendCandidate[]): Promise<void> => {
-    if (next) deps.fetchCandidates.mockResolvedValue(next);
+    if (next)
+      deps.fetchCandidates.mockResolvedValue({
+        candidates: next,
+        startingPluginIds: [],
+      });
     return reconcilePluginFrontends(state, deps);
   };
   return { state, deps, reconcile };
@@ -314,7 +323,7 @@ async function loadHelloThenFetchInventory(
   const queryClient = newQueryClient();
   vi.stubGlobal("fetch", vi.fn(fetchInventory));
   harness.deps.fetchCandidates = vi.fn(() =>
-    fetchFrontendCandidates(queryClient),
+    fetchFrontendCandidates(queryClient, "await-refresh"),
   );
   return harness;
 }
@@ -354,9 +363,12 @@ describe("reconcilePluginFrontends", () => {
         vi.fn(async () => accountPoolListResponse({ status })),
       );
 
-      await expect(fetchFrontendCandidates(newQueryClient())).resolves.toEqual([
-        candidate("account-pool", "v1"),
-      ]);
+      await expect(
+        fetchFrontendCandidates(newQueryClient(), "await-refresh"),
+      ).resolves.toEqual({
+        candidates: [candidate("account-pool", "v1")],
+        startingPluginIds: [],
+      });
     },
   );
 
@@ -396,13 +408,14 @@ describe("reconcilePluginFrontends", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       const cancel = start(queryClient);
-      const candidates = fetchFrontendCandidates(queryClient);
+      const candidates = fetchFrontendCandidates(queryClient, "await-refresh");
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       cancel();
 
-      await expect(candidates).resolves.toEqual([
-        candidate("account-pool", "v1"),
-      ]);
+      await expect(candidates).resolves.toEqual({
+        candidates: [candidate("account-pool", "v1")],
+        startingPluginIds: [],
+      });
       expect(fetchMock).toHaveBeenCalledTimes(2);
     },
   );
@@ -1205,7 +1218,56 @@ describe("reconcilePluginFrontends", () => {
     );
   });
 
-  it("keeps independent instances per app window and tears each down once", async () => {
+  it("cleans up content scripts on an unloading page without unmounting plugin UI", async () => {
+    autoLoadPluginStylesheets();
+    const { state, deps, reconcile } = reconcileHarness(
+      [candidate("hello", "v1")],
+      { realCss: true, realSlots: true },
+    );
+    const events: string[] = [];
+    const signals: AbortSignal[] = [];
+    deps.importModule.mockResolvedValue({
+      default: definePluginApp((app) => {
+        app.slots.homepageSection({
+          id: "section",
+          title: "Section",
+          component: () => createElement("div", null, "hello section"),
+        });
+        for (const id of ["first", "second"]) {
+          app.contentScripts.register({
+            id,
+            mount({ signal }) {
+              signals.push(signal);
+              return () => {
+                events.push(`dispose:${id}:${signal.aborted}`);
+              };
+            },
+          });
+        }
+      }),
+    });
+    const container = renderIntoBody(createElement(MountedHomepageSections));
+    await act(async () => {
+      await reconcile();
+    });
+    expect(container.textContent).toContain("hello section");
+
+    act(() => discardPluginFrontends(state, deps));
+    discardPluginFrontends(state, deps);
+    await flushAsyncWork();
+
+    expect(events).toEqual(["dispose:second:true", "dispose:first:true"]);
+    expect(signals.map((signal) => signal.aborted)).toEqual([true, true]);
+    expect(container.textContent).toContain("hello section");
+    expect(cssLinks("hello")).toHaveLength(1);
+    expect(deps.removeRegistrations).not.toHaveBeenCalled();
+
+    await reconcile([candidate("hello", "v2")]);
+    expect(deps.importModule).toHaveBeenCalledTimes(1);
+    expect(events).toHaveLength(2);
+  });
+
+  it("keeps independent instances per app window and discards each once", async () => {
     const signals: AbortSignal[] = [];
     const cleanup = vi.fn();
     const module = contentScriptModule({
@@ -1224,30 +1286,31 @@ describe("reconcilePluginFrontends", () => {
     expect(signals).toHaveLength(2);
     expect(signals[0]).not.toBe(signals[1]);
 
-    await disposePluginFrontends(windowA.state, windowA.deps);
-    await disposePluginFrontends(windowA.state, windowA.deps);
+    discardPluginFrontends(windowA.state, windowA.deps);
+    discardPluginFrontends(windowA.state, windowA.deps);
+    await flushAsyncWork();
     expect(signals[0]?.aborted).toBe(true);
     expect(signals[1]?.aborted).toBe(false);
     expect(cleanup).toHaveBeenCalledTimes(1);
 
-    await disposePluginFrontends(windowB.state, windowB.deps);
+    discardPluginFrontends(windowB.state, windowB.deps);
+    await flushAsyncWork();
     expect(signals[1]?.aborted).toBe(true);
     expect(cleanup).toHaveBeenCalledTimes(2);
   });
 
-  it("aborts a pending mount on app teardown and never commits it afterward", async () => {
+  it("aborts a pending mount when the page unloads and never commits it afterward", async () => {
     const { state, deps, reconcile } = reconcileHarness([
       candidate("hello", "v1"),
     ]);
     const cleanup = vi.fn();
+    const signals: AbortSignal[] = [];
     let resolveMount: ((dispose: () => void) => void) | undefined;
-    let retainedSetter: ThreadRowStatusSetter;
     deps.importModule.mockResolvedValue(
       contentScriptModule({
         id: "pending",
-        mount: ({ experimental_setThreadRowStatus }) => {
-          retainedSetter = experimental_setThreadRowStatus;
-          retainedSetter?.("thr_pending", runningStatus("Pending activation"));
+        mount: ({ signal }) => {
+          signals.push(signal);
           return new Promise<() => void>((resolve) => {
             resolveMount = resolve;
           });
@@ -1257,20 +1320,14 @@ describe("reconcilePluginFrontends", () => {
 
     const pending = reconcile();
     await vi.waitFor(() => expect(resolveMount).toBeTypeOf("function"));
-    expect(getPluginThreadRowStatus("thr_pending")?.label).toBe(
-      "Pending activation",
-    );
-    await disposePluginFrontends(state, deps);
-    expect(getPluginThreadRowStatus("thr_pending")).toBeNull();
-    retainedSetter?.("thr_pending", runningStatus("Late pending activation"));
-    expect(getPluginThreadRowStatus("thr_pending")).toBeNull();
+    discardPluginFrontends(state, deps);
+    expect(signals[0]?.aborted).toBe(true);
     resolveMount?.(cleanup);
     await pending;
 
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(deps.setRegistrations).not.toHaveBeenCalled();
     expect(state.activeGenerations.size).toBe(0);
-    expect(state.diagnostics.size).toBe(0);
   });
 
   it("removes a stale CSS link when the new bundle ships no CSS", async () => {
@@ -1327,34 +1384,26 @@ describe("reconcilePluginFrontends", () => {
 describe("applyPluginCss", () => {
   afterEach(() => {
     resetPluginCssForTest();
-    appQueryClient.removeQueries({ queryKey: systemConfigQueryKey() });
     vi.useRealTimers();
   });
 
   const sheet = (hash: string) =>
-    `/assets/app.css?h=${hash}&host-tailwind=${HOST_TAILWIND_VERSION}`;
+    `/assets/app.css?h=${hash}&host-tailwind=${HOST_TAILWIND_VERSION}&css-scope=plugin-attribute-v1`;
 
-  it.each([
-    [false, sheet("aaa")],
-    [true, `${sheet("aaa")}&css-scope=owned-root-v1`],
-  ])(
-    "requests the narrow stylesheet only when narrowPluginCss is %s",
-    (narrowPluginCss, href) => {
-      appQueryClient.setQueryData(
-        systemConfigQueryKey(),
-        makeSystemConfig({
-          experiments: { ...defaultExperiments, narrowPluginCss },
-        }),
-      );
-      retainPluginCss("hello");
-      applyPluginCss("hello", "/assets/app.css?h=aaa");
-      expect(cssHrefs("hello")[0]).toBe(href);
-    },
-  );
+  it("keys plugin UI labeled the old way once it requests a stylesheet", async () => {
+    retainPluginCss("hello");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
+    const overlay = document.createElement("div");
+    overlay.dataset.bbPlugin = "hello";
+    document.body.append(overlay);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overlay.hasAttribute("data-bb-plugin-scope-hello")).toBe(true);
+    overlay.remove();
+  });
 
   it("keeps the same element for an unchanged URL and removes it on null", () => {
     retainPluginCss("hello");
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     const first = cssLinks("hello")[0];
     expect(first?.getAttribute("href")).toBe(sheet("aaa"));
     prefetchPluginCss("/assets/prefetched.css");
@@ -1362,11 +1411,13 @@ describe("applyPluginCss", () => {
       document
         .querySelector("link[data-bb-plugin-css-prefetch]")
         ?.getAttribute("href"),
-    ).toBe(`/assets/prefetched.css?host-tailwind=${HOST_TAILWIND_VERSION}`);
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    ).toBe(
+      `/assets/prefetched.css?host-tailwind=${HOST_TAILWIND_VERSION}&css-scope=plugin-attribute-v1`,
+    );
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     expect(cssLinks("hello")[0]).toBe(first);
 
-    applyPluginCss("hello", null);
+    void applyPluginCss("hello", null);
     expect(cssLinks("hello")).toHaveLength(0);
   });
 
@@ -1463,7 +1514,7 @@ describe("applyPluginCss", () => {
 
   it("preloads inactive CSS and removes the sheet only after its final consumer releases", async () => {
     vi.useFakeTimers();
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     expect(cssPreloads("hello")).toHaveLength(1);
     expect(cssPreloads("hello")[0]?.fetchPriority).not.toBe("low");
     expect(cssPreloads("hello")[0]?.getAttribute("href")).toBe(sheet("aaa"));
@@ -1488,7 +1539,7 @@ describe("applyPluginCss", () => {
 
   it("keeps the same sheet when a consumer retains within the grace window", async () => {
     vi.useFakeTimers();
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(cssPreloads("hello")[0]);
     const releaseFirst = retainPluginCss("hello");
     const first = cssLinks("hello")[0];
@@ -1512,7 +1563,7 @@ describe("applyPluginCss", () => {
 
   it("reattaches the sheet when its load completes during the grace and a consumer retains", async () => {
     vi.useFakeTimers();
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(cssPreloads("hello")[0]);
     const releaseFirst = retainPluginCss("hello");
     const first = cssLinks("hello")[0];
@@ -1538,12 +1589,12 @@ describe("applyPluginCss", () => {
 
   it("adopts a changed URL that finishes loading during the grace and reuses it on retain", async () => {
     vi.useFakeTimers();
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(cssPreloads("hello")[0]);
     const releaseFirst = retainPluginCss("hello");
     fireLoad(cssLinks("hello")[0]);
 
-    applyPluginCss("hello", "/assets/app.css?h=bbb");
+    void applyPluginCss("hello", "/assets/app.css?h=bbb");
     const fresh = cssLinks("hello")[1];
     expect(fresh?.getAttribute("href")).toBe(sheet("bbb"));
     releaseFirst();
@@ -1565,17 +1616,17 @@ describe("applyPluginCss", () => {
   it("applies a URL that is republished after a flip-flop discarded its in-flight sheet", async () => {
     vi.useFakeTimers();
     retainPluginCss("hello");
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(cssLinks("hello")[0]);
 
-    applyPluginCss("hello", "/assets/app.css?h=bbb");
+    void applyPluginCss("hello", "/assets/app.css?h=bbb");
     const inflight = cssLinks("hello")[1];
     expect(inflight?.getAttribute("href")).toBe(sheet("bbb"));
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(inflight);
     expect(cssHrefs("hello")).toEqual([sheet("aaa")]);
 
-    applyPluginCss("hello", "/assets/app.css?h=bbb");
+    void applyPluginCss("hello", "/assets/app.css?h=bbb");
     expect(cssHrefs("hello")).toEqual([sheet("aaa"), sheet("bbb")]);
     retainPluginCss("hello");
     expect(cssLinks("hello")).toHaveLength(2);
@@ -1588,14 +1639,14 @@ describe("applyPluginCss", () => {
 
   it("removes the sheet at once and cancels the timer when the URL is cleared during the grace", async () => {
     vi.useFakeTimers();
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(cssPreloads("hello")[0]);
     const release = retainPluginCss("hello");
     expect(cssLinks("hello")).toHaveLength(1);
 
     release();
     expect(vi.getTimerCount()).toBe(1);
-    applyPluginCss("hello", null);
+    void applyPluginCss("hello", null);
     expect(cssLinks("hello")).toHaveLength(0);
     expect(cssPreloads("hello")).toHaveLength(0);
     expect(vi.getTimerCount()).toBe(0);
@@ -1607,14 +1658,14 @@ describe("applyPluginCss", () => {
 
   it("swaps to one preload of the new URL when it changes during the grace", async () => {
     vi.useFakeTimers();
-    applyPluginCss("hello", "/assets/app.css?h=aaa");
+    void applyPluginCss("hello", "/assets/app.css?h=aaa");
     fireLoad(cssPreloads("hello")[0]);
     const release = retainPluginCss("hello");
     fireLoad(cssLinks("hello")[0]);
     expect(cssLinks("hello")).toHaveLength(1);
 
     release();
-    applyPluginCss("hello", "/assets/app.css?h=bbb");
+    void applyPluginCss("hello", "/assets/app.css?h=bbb");
     expect(cssLinks("hello")).toHaveLength(0);
     const preloadHrefs = () =>
       cssPreloads("hello").map((l) => l.getAttribute("href"));
@@ -1633,7 +1684,7 @@ describe("applyPluginCss", () => {
     const palette = document.getElementById("bb-app-theme");
     expect(palette?.textContent).toBe(paletteCss);
 
-    applyPluginCss("palette-owner", "/assets/app.css?h=palette-owner");
+    void applyPluginCss("palette-owner", "/assets/app.css?h=palette-owner");
     fireLoad(cssPreloads("palette-owner")[0]);
     expect(cssLinks("palette-owner")).toHaveLength(0);
     expect(document.getElementById("bb-app-theme")).toBe(palette);

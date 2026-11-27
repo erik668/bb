@@ -437,7 +437,7 @@ describe("injected skill source discovery", () => {
 
     const builtinNames = sources.map((source) => source.name);
     expect(builtinNames).toContain("bb-cli");
-    expect(builtinNames).toContain("submit-a-plugin");
+    expect(builtinNames).toContain("publish-a-plugin");
     expect(builtinNames).toContain("safe-bb-upgrade");
     for (const source of sources) {
       expect(source.sourceType).toBe("builtin");

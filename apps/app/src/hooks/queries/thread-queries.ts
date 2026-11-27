@@ -65,11 +65,9 @@ import {
 } from "./query-keys";
 import { ARCHIVED_THREADS_PAGE_SIZE } from "./archived-threads-page-size";
 import { ingestThreadDetailBootstrap } from "../cache-owners/thread-detail-cache-owner";
-import { clearThreadTimelineUnseenEvents } from "../cache-owners/thread-timeline-unseen-events";
 import {
-  isCachedThreadTimelinePushEnabled,
+  applyFetchedThreadTimeline,
   resolveThreadTimelineSegmentLimit,
-  syncThreadTimelineSubscriptionTag,
 } from "../cache-owners/thread-timeline-push-owner";
 import { markStreamTrace } from "@/lib/stream-trace";
 import { THREAD_OPEN_CACHE_GC_MS } from "../cache-owners/thread-open-cache-owner";
@@ -109,7 +107,7 @@ type ThreadPendingInteractionsQueryOptions = QueryOptions;
 
 interface UseThreadsFilters extends Omit<
   ThreadListFilters,
-  "archived" | "projectId"
+  "archived" | "limit" | "offset" | "projectId"
 > {
   archived: boolean;
   projectId?: string;
@@ -176,7 +174,7 @@ interface GetThreadMentionCandidatePlaceholderArgs {
 const THREAD_MENTION_CANDIDATE_FILTERS = {
   archived: false,
   limit: THREAD_MENTION_CANDIDATE_LIMIT,
-} satisfies UseThreadsFilters;
+} satisfies ThreadListFilters;
 
 function buildThreadSubsetListFilters({
   filters,
@@ -338,6 +336,30 @@ export function useArchivedThreads(
   return useInfiniteQuery(archivedThreadsQueryOptions(filters, options));
 }
 
+const LIST_EVERY_THREAD_PAGE_SIZE = 500;
+
+interface ListEveryThreadArgs extends Omit<
+  ThreadListFilters,
+  "limit" | "offset"
+> {
+  signal: AbortSignal;
+}
+
+async function listEveryThread(
+  args: ListEveryThreadArgs,
+): Promise<ThreadListResponse> {
+  const threads: ThreadListResponse = [];
+  for (let offset = 0; ; offset += LIST_EVERY_THREAD_PAGE_SIZE) {
+    const page = await sdk.threads.list({
+      ...args,
+      limit: LIST_EVERY_THREAD_PAGE_SIZE,
+      offset,
+    });
+    threads.push(...page);
+    if (page.length < LIST_EVERY_THREAD_PAGE_SIZE) return threads;
+  }
+}
+
 export function useThreads(filters: UseThreadsFilters, options?: QueryOptions) {
   const { projectId, ...rest } = filters;
   const enabled = (options?.enabled ?? true) && Boolean(projectId);
@@ -350,7 +372,7 @@ export function useThreads(filters: UseThreadsFilters, options?: QueryOptions) {
   return useQuery<ThreadListResponse>({
     queryKey,
     queryFn: ({ signal }) =>
-      sdk.threads.list({
+      listEveryThread({
         ...rest,
         projectId: requireThreadId(projectId ?? "", "useThreads"),
         signal,
@@ -467,7 +489,7 @@ export function childThreadsFallbackQueryOptions({
         ? threadListQueryKey({ archived: false, parentThreadId })
         : disabledThreadListQueryKey({ archived: false }),
     queryFn: ({ signal }) =>
-      sdk.threads.list({
+      listEveryThread({
         archived: false,
         parentThreadId: requireThreadId(
           parentThreadId ?? "",
@@ -509,7 +531,6 @@ export function useProjectThreadSubset({
   filters,
   projectId,
 }: UseProjectThreadSubsetArgs): UseProjectThreadSubsetResult {
-  const queryClient = useQueryClient();
   const enabled = (enabledOption ?? true) && Boolean(projectId);
   useThreadListRealtimeSubscription({ enabled });
   const { hasParent, parentThreadId } = filters;
@@ -519,21 +540,15 @@ export function useProjectThreadSubset({
       : disabledThreadListQueryKey(
           projectId ? { archived: false, projectId } : { archived: false },
         );
-  const activeProjectThreadListIsCached =
-    enabled &&
-    projectId !== undefined &&
-    queryClient.getQueryData<ThreadListResponse>(
-      threadListQueryKey({ archived: false, projectId }),
-    ) !== undefined;
   const activeProjectThreadsQuery = useQuery<ThreadListResponse>({
     queryKey: activeProjectThreadListQueryKey,
     queryFn: ({ signal }) =>
-      sdk.threads.list({
+      listEveryThread({
         archived: false,
         projectId: requireThreadId(projectId ?? "", "useProjectThreadSubset"),
         signal,
       }),
-    enabled: enabled && activeProjectThreadListIsCached,
+    enabled: (query) => enabled && query.state.data !== undefined,
     staleTime: THREAD_LIST_STALE_TIME_MS,
   });
   const hasActiveProjectThreadList =
@@ -844,13 +859,10 @@ export async function fetchThreadTimeline({
   const merged = await mergeThreadTimelineDelta(previous, response, () =>
     sdk.threads.timeline({ threadId, signal, ...pageArgs }),
   );
-  const pushed = isCachedThreadTimelinePushEnabled(queryClient)
-    ? queryClient.getQueryData<ThreadTimelineResponse>(queryKey)
-    : undefined;
+  const pushed = queryClient.getQueryData<ThreadTimelineResponse>(queryKey);
   const timeline =
     pushed !== undefined && pushed.maxSeq > merged.maxSeq ? pushed : merged;
-  clearThreadTimelineUnseenEvents(queryClient, threadId, timeline.maxSeq);
-  syncThreadTimelineSubscriptionTag(queryClient, threadId, timeline.tag);
+  applyFetchedThreadTimeline(queryClient, threadId, timeline);
   markStreamTrace("bb:timeline-applied", {
     threadId,
     maxSeq: timeline.maxSeq,

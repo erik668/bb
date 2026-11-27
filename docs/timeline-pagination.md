@@ -11,11 +11,29 @@ completed context clear is the history floor unless the
 `keepHistoryAfterContextClear` general setting is on; then pages continue
 across it to the start of the thread.
 
-A page owns an event window `[start, end)`. It returns projected rows whose
-`sourceSeqStart` falls inside that window, in display order. Context loaded
-outside the window helps render those rows but does not change ownership. Each
-response returns a row identity once, including when repeated lifecycle events
-produce the same projected row more than once.
+A page owns an event window `[start, end)`. It returns the projected rows whose
+`sourceSeqStart` falls inside that window. Every row is shown in
+`sourceSeqStart` order, so pages concatenated in cursor order show rows in the
+order of one full build. A collapsed summary of a turn's work starts at its
+first summarized item. Context loaded outside the window helps render the rows
+a page owns but does not change ownership. Each response returns a row
+identity once, including when repeated lifecycle events produce the same
+projected row more than once.
+
+To render the rows it owns the same way a full build does, a page also loads
+the turns that have events in its window, the requests and turn lifecycle
+events across the loaded range, and the `turn/started` event of any turn a
+steer in its context targets, including a steer that was rejected.
+
+Provider warnings, model fallbacks, and plugin interactions such as secret
+requests can be recorded with thread scope while a turn runs. The projection
+groups them into the root turn running at their first event, and they display
+inside that turn. A page that loads such a row also loads the turn it joins, a
+page that loads a turn also loads the thread rows that join it, and a page that
+loads one lifecycle event of a thread-scoped interaction loads all of them,
+because the interaction's row starts at its first event. The latest-window memo rebuilds instead of
+appending such a row when its turn or the interaction's earlier events are not
+in the held selection.
 Visible user rows, including accepted steers, define conversation segments
 inside the window; the leading segment can be partial. Hidden and empty
 requests do not count as visible segments. The response takes up to
@@ -39,13 +57,22 @@ previous versions return the existing 400 reload response because their group
 boundaries and leaf offsets can differ. Older history is only advertised with
 a cursor, including when an edge contains no visible rows.
 
-Display order is turn-by-turn until a user message lands inside another turn:
-after that message everything is ordered by source sequence. A turn spans from
-its first event or accepted request to its `turn/completed` event, or stays
-open while it is running; events that arrive after completion, such as a
-background command finishing, do not extend it. The projection applies this
-rule to the events it loaded, and the server evaluates the same rule over the
-whole thread so a budgeted page orders rows the way the full history does.
+A completed turn collapses each run of its work into one summary row. A run
+ends at any visible user message that lands inside the turn before its final
+reply: a message from you, a manager, or another agent that starts or steers a
+different turn. The turn's work after that message becomes the next summary row,
+so the message shows where it was sent. A turn spans from its `turn/started`
+event to its `turn/completed` event, or stays open while it is running; events
+that arrive after completion, such as a background command finishing, do not
+extend it. Delegated child turns render inside their delegation row and do not
+split root turns. A page loads each turn it shows in full, along with the
+requests across it, so it builds every summary row the way a full build does.
+
+A rejected steer is a row ordered by its request. A steer still waiting for
+the running turn to accept it is live state, like `activeThinking`: it is not a
+row on any page, and the latest page returns it in `pendingSteers`. The app and
+`bb thread log` show pending steers after the rows. Once the turn accepts a
+steer, it becomes a row, with the same id, at the point where it was accepted.
 
 `timelinePage.historySnapshot` identifies the history tip, grouping version,
 and display surface. A walk excludes subsequent appends. Earlier events can
@@ -77,6 +104,14 @@ walk. The Ladle story `thread/timeline/Scrollback` with
 the open story) checks that the scrolled-back row stays put while the latest
 window changes and that a full walk shows every row once, in order.
 
+`apps/server/test/services/threads/timeline-read-equivalence-*.test.ts` checks
+on generated event logs that every served latest window equals an uncached
+build and that a fresh paged walk equals one full build;
+`timeline-guard-coverage.test.ts` fails when the generator stops producing an
+event kind a full build can display that is not listed with a reason. The
+`test:timeline-history` gate runs the same walk over every thread of a copied
+real database; see "Timeline History Walk" in `docs/debugging-and-qa.md`.
+
 A latest page sends omitted rows whose `sourceSeqEnd` reaches its window start
 in `timelinePage.olderRowUpdates` instead of in `olderRowsSourceSeqEnd`, such as
 a running background delegation that started on an older page. Each update
@@ -86,8 +121,6 @@ same id and ignores rows it has not loaded, including on repeat refreshes of
 the same snapshot. Updates share the page byte budget
 with the returned rows. Updates that do not fit the remaining budget, and leaves
 omitted by a content cut, still count toward `olderRowsSourceSeqEnd`.
-
-`summaryOnly=true` returns head state without timeline rows or older-row updates.
 
 `completedTurnDisplay` reports whether the page projected finished turns as
 collapsed "Worked for" rows or flat rows. It is part of the display surface: a
@@ -120,9 +153,14 @@ The 4 MiB response target and event setting determine content-page boundaries
 after grouping. At least one indivisible row is returned, even if it exceeds
 the target. Complete-group queries and grouping work can exceed those budgets.
 
-Latest plan/todo and goal snapshots are head state, returned even when they
-fall outside the selected rows; they do not widen the page. The client merge
-guard describes omitted conversation rows, not head-state rows.
+Head state is the thread's current to-dos, provider commands, session options,
+extension states (such as goals), plan prompt mode, model fallback, and context
+usage. `readThreadHeadState` reads each from its latest stored state events, so
+its cost does not grow with the page or the turn. The latest page embeds that
+result; it is not derived from the selected rows and does not widen the page.
+`GET /threads/:id/head-state` returns the same values without building a page.
+Active thinking, active workflows, and active background commands are not head
+state: they come from projecting the latest page.
 
 `GET /api/v1/threads/:id/timeline/turn-summary-details` and
 `sdk.threads.timelineTurnSummaryDetails` retain the existing `turnId`,
@@ -131,7 +169,10 @@ guard describes omitted conversation rows, not head-state rows.
 older page. These pages have their own `historySnapshot` and use the same
 recursive merge. A page holds at most 200 leaves and targets 1 MiB. The app
 loads the newest page when a summary is expanded and requests older pages only
-when the user asks for earlier activity.
+when the user asks for earlier activity. The server projects a turn once per
+snapshot and inputs, and serves every page of that walk and a repeat expand
+from the kept projection (32 projections, 32 MiB, per database connection). A
+new event, a history rewrite or an expiring output preview projects it again.
 
 Without `itemId`, the response covers the whole turn and command and tool
 output longer than 4,000 characters is previewed. With `itemId`, pass the range
@@ -191,7 +232,14 @@ still holds the window it served under that tag, it answers with a delta,
 answers with the full window. `delta` holds:
 
 - `afterTag`: the tag of the window the delta applies to;
-- `upsertRows`: rows that are new or whose content changed;
+- `upsertRows`: rows new to the window, in full;
+- `patchRows`, only when a row the base window holds changed: `{ id, ops }`
+  per changed row, where each op addresses a JSON path inside the row.
+  `["append", path, text]` appends to a string that grew at its end, which is
+  how streamed message text, reasoning and command output travel, so a push
+  carries only the new text, not the whole row. `["set", path, value]`
+  replaces a value or adds a key or array element, and `["delete", path]`
+  removes a key;
 - `rowOrder`, only when membership or order changed: the new order as a list
   of row ids new to the window and `[start, length]` ranges of the base
   window's rows, by position;
@@ -208,12 +256,14 @@ only costs a full window.
 
 `applyThreadTimelineDelta` from `@bb/server-contract` rebuilds the full window,
 or returns `null` when the held window's tag differs from `afterTag` or the
-delta does not fit its rows; the client then reads again with its own tag. The
+delta does not fit its rows, including a patch op whose path or value type
+does not match the held row, or one that changes a row's `id` or `kind`; the
+client then reads again with its own tag. The
 client keeps optimistic rows after the server's rows, so ranges still address
 the base window. `sdk.threads.timeline` returns a full window unless it is
 given `afterTag`.
 
-With the `timelinePush` experiment, the server pushes a full window or a delta
+While a thread view is open, the server pushes a full window or a delta
 over the WebSocket after events are appended. A `subscribe` message tells the
 server which window the client holds: `timelineTags` maps each
 `thread-timeline` target key to the tag the client holds, or to `null` before
@@ -302,8 +352,15 @@ cache. The app requests user items while the table of contents is visible and
 assistant items only while its Agent messages tab is open. Active
 threads reuse completed outline items from a bounded in-memory cache (16 threads,
 8 million characters) and reproject only the tail; history rewrites, context
-clears, metadata or display changes, and writes from another database connection
-force a rebuild. Eviction only affects performance.
+clears, provider or display changes, and writes from another database connection
+force a rebuild. A change of the thread's status or title does not: the kept
+items come only from turns that have completed, whose streamed text
+`turn/completed` has already frozen, and from user messages, which render the
+same under every status; the checkpoint never passes a steer that is still
+pending, and the title only names operation rows, which the outline drops. The
+tail is always projected with the current status. Background tasks in the kept
+history do not prevent reuse, but a later event for one of them, like a child
+event of a kept tool call, forces a rebuild. Eviction only affects performance.
 
 ## Catch-up feedback
 
@@ -397,9 +454,14 @@ the reading row never moves without the reader unless the content cannot hold
 it, and a reader's scroll is never moved. It runs 200 sequences by default; set
 `KEEPER_MODEL_SEEDS` for a deeper local run.
 
-Every layout change is reconciled before paint. Triggers are ResizeObservers on
-the root, its content, and every mounted row, plus each windowed list's layout
-effect after a commit. Within one reconciliation:
+Every layout change is reconciled before paint, after the browser has laid it
+out. Triggers are ResizeObservers on the root, its content, and every mounted
+row. Rows, the message overflow toggles, and markdown table geometry share one
+read-then-write observer (`observeSharedResize`): it reads every changed
+element first, applies all writes together (React state included), and then
+reconciles each affected owner once. Nothing reads layout while rows mount: no
+ref callback or layout effect under the timeline measures, so mounting never
+forces a layout ahead of the browser's own. Within one reconciliation:
 
 1. A scroll the owner did not make is folded into the position before the
    layout is read, even when its scroll event has not arrived yet. During an
@@ -419,7 +481,11 @@ effect after a commit. Within one reconciliation:
 4. It writes the target, clamped to the scroll extent. Attached means the
    maximum.
 5. Lists check that the visible range is mounted. If the viewport would show a
-   spacer, they render the rows synchronously before paint. The check uses the
+   spacer, they render the rows in the next animation frame callback, before
+   that frame's layout, never inside the scroll event; a scroll event fires just
+   before animation frame callbacks, so the rows still mount in the frame the
+   scroll lands in. Keys inserted inside the mounted range, or appended after a
+   range that reaches the end, mount in the same render. The check uses the
    heights the spacers were rendered with and the measured heights of mounted
    rows, so it describes what is on screen, not newer measurements the spacers
    have not used yet.

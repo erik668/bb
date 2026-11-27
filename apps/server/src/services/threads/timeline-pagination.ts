@@ -1,4 +1,7 @@
-import { paginateTimelineContents } from "./timeline-content-pagination.js";
+import {
+  paginateTimelineContents,
+  timelineRowsJsonBytes,
+} from "./timeline-content-pagination.js";
 import type { TimelineContentCursor } from "./timeline-snapshot.js";
 import {
   timelineRowChildren,
@@ -63,34 +66,31 @@ function buildTimelineLogicalSegments(
   const bounds = [
     ownedSequenceStart,
     ...new Set(
-      args.rows.flatMap((row) =>
-        row.kind === "conversation" &&
-        row.role === "user" &&
-        row.sourceSeqStart > ownedSequenceStart &&
-        row.sourceSeqStart < ownedSequenceEnd
-          ? [row.sourceSeqStart]
-          : [],
-      ),
+      args.rows.flatMap((row) => {
+        const sequence = row.sourceSeqStart;
+        return row.kind === "conversation" &&
+          row.role === "user" &&
+          sequence > ownedSequenceStart &&
+          sequence < ownedSequenceEnd
+          ? [sequence]
+          : [];
+      }),
     ),
   ].sort((left, right) => left - right);
-  const segments = bounds.map(
-    (sequenceStart): TimelineLogicalSegment => ({
-      rows: [],
-      sequenceStart,
-    }),
-  );
+  const segments = bounds.map((sequenceStart): TimelineLogicalSegment => ({
+    rows: [],
+    sequenceStart,
+  }));
   for (const row of args.rows) {
-    if (
-      row.sourceSeqStart < ownedSequenceStart ||
-      row.sourceSeqStart >= ownedSequenceEnd
-    ) {
+    const sequence = row.sourceSeqStart;
+    if (sequence < ownedSequenceStart || sequence >= ownedSequenceEnd) {
       continue;
     }
     let start = 0;
     let end = bounds.length;
     while (start + 1 < end) {
       const middle = Math.floor((start + end) / 2);
-      if (bounds[middle]! <= row.sourceSeqStart) start = middle;
+      if (bounds[middle]! <= sequence) start = middle;
       else end = middle;
     }
     segments[start]!.rows.push(row);
@@ -99,6 +99,16 @@ function buildTimelineLogicalSegments(
   if (populated[0] !== undefined)
     populated[0].sequenceStart = ownedSequenceStart;
   return populated;
+}
+
+function firstLeafSourceSeqStart(rows: readonly TimelineRow[]): number | null {
+  let row = rows[0];
+  if (row === undefined) return null;
+  for (;;) {
+    const first = timelineRowChildren(row)?.[0];
+    if (first === undefined) return row.sourceSeqStart;
+    row = first;
+  }
 }
 
 function timelineRowChangesFrom(
@@ -161,15 +171,14 @@ export function paginateTimelineRows(
       timelineRowChangesFrom(row, windowStart),
     );
     const reported =
-      Buffer.byteLength(JSON.stringify(updates)) > remainingBytes
-        ? []
-        : changed;
+      timelineRowsJsonBytes(updates) > remainingBytes ? [] : changed;
     return {
       olderRowsSourceSeqEnd: omitted
         .filter((row) => !reported.includes(row))
-        .reduce<
-          number | null
-        >((sourceSeqEnd, row) => Math.max(sourceSeqEnd ?? 0, row.sourceSeqEnd), omittedContentSourceSeqEnd),
+        .reduce<number | null>(
+          (sourceSeqEnd, row) => Math.max(sourceSeqEnd ?? 0, row.sourceSeqEnd),
+          omittedContentSourceSeqEnd,
+        ),
       ...(reported.length > 0 ? { olderRowUpdates: updates } : {}),
     };
   };
@@ -196,7 +205,7 @@ export function paginateTimelineRows(
     for (const row of contents.rows) returnedRows.set(row.id, row);
     returnedSegmentCount += 1;
     remainingLeaves -= contents.end - contents.start;
-    remainingBytes -= Buffer.byteLength(JSON.stringify(contents.rows));
+    remainingBytes -= timelineRowsJsonBytes(contents.rows);
     if (contents.start > 0 || remainingLeaves <= 0 || remainingBytes <= 0) {
       const hasOlderRows =
         contents.start > 0 ||
@@ -209,7 +218,12 @@ export function paginateTimelineRows(
         olderCursor: hasOlderRows
           ? timelineWindowCursor(segment.sequenceStart)
           : null,
-        ...omittedRows(contents.partialRowsSourceSeqEnd, segment.sequenceStart),
+        ...omittedRows(
+          contents.partialRowsSourceSeqEnd,
+          contents.start > 0
+            ? (firstLeafSourceSeqStart(contents.rows) ?? segment.sequenceStart)
+            : segment.sequenceStart,
+        ),
         contentCursor:
           contents.start > 0
             ? {

@@ -31,6 +31,7 @@ import { fileURLToPath } from "node:url";
 import { createManagedProcessStop } from "./managed-process.mjs";
 
 const HTTP_WAIT_TIMEOUT_MS = 60_000;
+const LOG_TAIL_LINES = 80;
 const HTTP_WAIT_INTERVAL_MS = 250;
 const PLUGIN_LOAD_TIMEOUT_MS = 60_000;
 const PLUGIN_LOAD_INTERVAL_MS = 1_000;
@@ -138,6 +139,14 @@ function waitForProcessExit(childProcess) {
   });
 }
 
+function waitForProcessOutput(childProcess) {
+  return new Promise((resolvePromise) => {
+    childProcess.once("close", (code, signal) => {
+      resolvePromise({ code, signal });
+    });
+  });
+}
+
 function resolveLaunch(command, args) {
   if (
     process.platform === "win32" &&
@@ -187,7 +196,7 @@ async function runCommand({ args, command, cwd = tempRoot, env = {}, label }) {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const output = collectProcessOutput(childProcess);
-  const result = await waitForProcessExit(childProcess);
+  const result = await waitForProcessOutput(childProcess);
   if (result.code !== 0) {
     throw new Error(
       `${label} failed with ${result.code ?? result.signal}\n${formatProcessOutput(output)}`,
@@ -295,6 +304,31 @@ async function readPortCollisionDetails(processRef, logPaths) {
   return PORT_COLLISION_PATTERN.test(details) ? details : null;
 }
 
+async function readLogTails(logPaths) {
+  const sections = [];
+  for (const directory of new Set(
+    logPaths.map((logPath) => dirname(logPath)),
+  )) {
+    let entries = [];
+    try {
+      entries = await readdir(directory);
+    } catch (error) {
+      if (error.code !== "ENOENT") throw error;
+    }
+    for (const entry of entries
+      .filter((name) => name.endsWith(".log"))
+      .sort()) {
+      const contents = await readFile(join(directory, entry), "utf8");
+      const lines = contents.trimEnd().split("\n");
+      if (lines.length === 1 && lines[0] === "") continue;
+      sections.push(
+        `${join(directory, entry)} (last ${Math.min(lines.length, LOG_TAIL_LINES)} of ${lines.length} lines):\n${lines.slice(-LOG_TAIL_LINES).join("\n")}`,
+      );
+    }
+  }
+  return sections.join("\n\n");
+}
+
 async function retryPortCollisions(label, run) {
   for (let attempt = 1; attempt <= PORT_COLLISION_MAX_ATTEMPTS; attempt += 1) {
     try {
@@ -314,7 +348,7 @@ async function retryPortCollisions(label, run) {
 }
 
 async function waitForHttp({
-  acceptResponse = () => true,
+  acceptResponse = async () => true,
   label,
   portCollisionLogPaths = [],
   processRef,
@@ -350,7 +384,7 @@ async function waitForHttp({
     await delay(HTTP_WAIT_INTERVAL_MS);
   }
   throw new Error(
-    `Timed out waiting for ${label} at ${url}\n${formatProcessOutput(processRef.output)}`,
+    `Timed out waiting for ${label} at ${url}\n${formatProcessOutput(processRef.output)}\n\n${await readLogTails(portCollisionLogPaths)}`,
   );
 }
 
@@ -632,6 +666,23 @@ function waitForJsonRpcResponse({ childProcess, id, label, output }) {
   });
 }
 
+function isolatedHomeEnv(name) {
+  const home = join(tempRoot, "home", name);
+  const homeEnv = {
+    HOME: home,
+    USERPROFILE: home,
+    APPDATA: join(home, "AppData", "Roaming"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    CLAUDE_CONFIG_DIR: join(home, ".claude"),
+    CODEX_HOME: join(home, ".codex"),
+    PI_CODING_AGENT_DIR: join(home, ".pi", "agent"),
+  };
+  for (const directory of Object.values(homeEnv)) {
+    mkdirSync(directory, { recursive: true });
+  }
+  return homeEnv;
+}
+
 /**
  * Bridges are never spawned directly: the runtime runs the packed bootstrap
  * and hands it the bridge module plus the plugin scope. Driving it the same
@@ -640,6 +691,7 @@ function waitForJsonRpcResponse({ childProcess, id, label, output }) {
 function spawnPackedBridge({ bridgePath, packageDir, pluginId }) {
   const dataDir = join(tempRoot, "bridge-data", pluginId);
   mkdirSync(dataDir, { recursive: true });
+  const homeEnv = isolatedHomeEnv(`bridge-${pluginId}`);
   return spawn(
     process.execPath,
     [
@@ -648,7 +700,11 @@ function spawnPackedBridge({ bridgePath, packageDir, pluginId }) {
       pluginId,
       dataDir,
     ],
-    { cwd: tempRoot, stdio: ["pipe", "pipe", "pipe"] },
+    {
+      cwd: tempRoot,
+      env: { ...process.env, ...homeEnv, ...smokeProcessEnv },
+      stdio: ["pipe", "pipe", "pipe"],
+    },
   );
 }
 
@@ -688,7 +744,7 @@ async function smokeBridgeModelList({
   );
   const modelListResponse = await modelListResponsePromise;
   childProcess.stdin.end();
-  const result = await waitForProcessExit(childProcess);
+  const result = await waitForProcessOutput(childProcess);
   if (result.code !== 0) {
     throw new Error(
       `${label} failed with ${result.code ?? result.signal}\n${formatProcessOutput(output)}`,
@@ -1122,6 +1178,7 @@ async function smokeFullStackAttempt(binDir, sdkDir, attempt) {
         String(daemonPort),
       ]),
       env: {
+        ...isolatedHomeEnv(`full-stack-${attempt}`),
         BB_LOG_LEVEL: "info",
       },
       label: "bb-app full stack",
@@ -1176,7 +1233,7 @@ async function smokeFullStackAttempt(binDir, sdkDir, attempt) {
         }),
     });
     process.stdout.write(
-      "bb-app tarball smoke: fork memory policy and workflow exclusion passed\n",
+      "bb-app tarball smoke: fork memory policy and upstream workflows passed\n",
     );
     // Keep Awake reconciles even its default disabled state, so reaching this
     // log proves the packed daemon found its companion worker, downloaded the
@@ -1257,6 +1314,7 @@ async function smokeDaemonJoinAttempt(binDir, attempt) {
         String(firstDaemonReservation.port),
       ]),
       env: {
+        ...isolatedHomeEnv(`join-server-${attempt}`),
         BB_LOG_LEVEL: "warn",
         BB_SERVER_LAUNCH_ID: serverLaunchId,
       },
@@ -1284,6 +1342,7 @@ async function smokeDaemonJoinAttempt(binDir, attempt) {
           String(spec.reservation.port),
         ]),
         env: {
+          ...isolatedHomeEnv(basename(spec.dataDir)),
           BB_LOG_LEVEL: "info",
           BB_SERVER_URL: staleEnvServerUrl,
         },
@@ -1379,7 +1438,7 @@ try {
   await timed("plugin host worker bundle", () =>
     smokePluginHostWorkerBundle(installedPackageDir),
   );
-  if (process.platform === "linux" || process.platform === "darwin") {
+  if (["linux", "darwin", "win32"].includes(process.platform)) {
     const results = await Promise.allSettled([
       timed("full stack", () => smokeFullStack(installedBinDir, sdkDir)),
       timed("daemon join", () => smokeDaemonJoin(installedBinDir)),

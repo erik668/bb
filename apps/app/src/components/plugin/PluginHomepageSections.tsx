@@ -1,26 +1,37 @@
 import {
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginHomepageSectionSlot,
 } from "@/lib/plugin-slots";
-import { useRouteState } from "@/hooks/useRouteState";
 import { getPluginHomepageSectionAnchor } from "@/lib/plugin-homepage-section";
+import { PLUGIN_SLOT_REVEAL, useOrderedReveal } from "@/lib/lazy-parts";
 import { PluginSlotMount } from "./PluginSlotMount";
 
-export function PluginHomepageSections() {
-  const { homepageSections } = usePluginSlots();
+export function PluginHomepageSections({
+  projectId,
+}: {
+  projectId: string | null;
+}) {
+  const homepageSections = usePluginSlotKind("homepageSections");
   if (homepageSections.length === 0) return null;
-  return <PluginHomepageSectionList sections={homepageSections} />;
+  return (
+    <PluginHomepageSectionList
+      projectId={projectId}
+      sections={homepageSections}
+    />
+  );
 }
 
 function PluginHomepageSectionList({
+  projectId,
   sections,
 }: {
+  projectId: string | null;
   sections: readonly PluginHomepageSectionSlot[];
 }) {
-  const { projectId } = useRouteState();
+  const revealed = useOrderedReveal(sections, PLUGIN_SLOT_REVEAL);
   return (
     <div className="mt-6 space-y-6" data-testid="plugin-homepage-sections">
-      {sections.map((section) => (
+      {revealed.map((section) => (
         <section
           key={`${section.pluginId}/${section.id}/${section.generation}`}
           id={getPluginHomepageSectionAnchor(section.pluginId, section.id)}
@@ -34,7 +45,7 @@ function PluginHomepageSectionList({
             slotKind="homepageSection"
             slotId={section.id}
           >
-            <section.component projectId={projectId ?? null} />
+            <section.component projectId={projectId} />
           </PluginSlotMount>
         </section>
       ))}

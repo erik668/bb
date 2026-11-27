@@ -11,6 +11,7 @@ import {
 import { threadEnvironmentUnavailableApiErrorSchema } from "@bb/server-contract";
 import { action, CliExitError } from "../../action.js";
 import { createCliBbSdk } from "../../client.js";
+import { outputJson, reportOperation } from "../../command-result.js";
 import { requireTextInput, TEXT_FILE_HELP_SUFFIX } from "../../text-input.js";
 import {
   BbHttpError,
@@ -21,7 +22,6 @@ import type { QueuedMessageWaitingOn } from "@bb/domain";
 import {
   collectOption,
   confirmDestructiveAction,
-  outputJson,
   parseReasoningLevel,
   prependErrorContext,
   requireThreadIdOrSelf,
@@ -300,34 +300,43 @@ export function registerActionsCommands(
         async (id: string | undefined, opts: ThreadArchiveCommandOptions) => {
           const threadId = requireThreadIdOrSelf(id, opts);
           const sdk = createCliBbSdk(getUrl());
-          let archivedThreadIds: string[] = [threadId];
+          let archivedThreadIds: string[];
           try {
-            const result = await sdk.threads.archive({ threadId });
-            archivedThreadIds = result.archivedThreadIds;
+            archivedThreadIds = (await sdk.threads.archive({ threadId }))
+              .archivedThreadIds;
           } catch (err: unknown) {
             throw prependErrorContext(
               `Failed to archive thread ${threadId}`,
               err,
             );
           }
+          const alreadyArchived = !archivedThreadIds.includes(threadId);
+          const { archivedAt } = await sdk.threads.get({ threadId });
           if (
             outputJson(opts, {
               ok: true,
               threadId,
+              alreadyArchived,
+              archivedAt,
               archivedThreadIds,
             })
           ) {
             return;
           }
+          const headline = !alreadyArchived
+            ? `Thread ${threadId} archived`
+            : archivedAt === null
+              ? `Thread ${threadId} was already archived`
+              : `Thread ${threadId} was already archived at ${new Date(archivedAt).toLocaleString()}`;
           const cascadedCount = archivedThreadIds.filter(
             (archivedId) => archivedId !== threadId,
           ).length;
           if (cascadedCount === 0) {
-            console.log(`Thread ${threadId} archived`);
+            console.log(headline);
             return;
           }
           console.log(
-            `Thread ${threadId} archived (${cascadedCount} related thread${cascadedCount === 1 ? "" : "s"} also archived)`,
+            `${headline} (${cascadedCount} related thread${cascadedCount === 1 ? "" : "s"} ${alreadyArchived ? "" : "also "}archived)`,
           );
         },
       ),
@@ -605,7 +614,9 @@ export function registerActionsCommands(
           });
           if (outputJson(opts, { threadId: id, ...response })) return;
           console.log(
-            opts.compactFirst === true
+            opts.compactFirst === true &&
+              response.delivery === "queued" &&
+              response.queuedMessage.waitingOn?.kind === "thread-busy"
               ? `Thread ${id} compacting; the message sends when compaction finishes`
               : describeThreadTellOutcome(id, response),
           );
@@ -646,18 +657,34 @@ export function registerActionsCommands(
       ),
     );
 
+  parent
+    .command("stop [id]")
+    .description("Stop work and release the loaded agent runtime")
+    .option("--self", "Target the current thread (from BB_THREAD_ID)")
+    .option("--json", "Print machine-readable JSON output")
+    .action(
+      action(async (id: string | undefined, opts: ThreadActionOptions) => {
+        const threadId = requireThreadIdOrSelf(id, opts);
+        const result = await createCliBbSdk(getUrl()).threads.stop({
+          threadId,
+        });
+        reportOperation(
+          opts,
+          { ...result, threadId },
+          {
+            complete: `Thread ${threadId} stopped`,
+            inProgress: `Thread ${threadId} is still stopping; check it with bb thread show ${threadId}`,
+          },
+        );
+      }),
+    );
+
   for (const { name, description, method, done } of [
-    {
-      name: "stop",
-      description: "Stop work and release the loaded agent runtime",
-      method: "stop",
-      done: "stopped",
-    },
     {
       name: "compact",
       description: "Request compaction of an idle or errored thread's context",
       method: "compact",
-      done: "context compaction requested",
+      done: "compacted its context",
     },
     {
       name: "clear",
@@ -687,9 +714,18 @@ export function registerActionsCommands(
         action(async (id: string | undefined, opts: ThreadActionOptions) => {
           const threadId = requireThreadIdOrSelf(id, opts);
           const sdk = createCliBbSdk(getUrl());
-          await sdk.threads[method]({ threadId });
-          if (outputJson(opts, { ok: true, threadId })) return;
-          console.log(`Thread ${threadId} ${done}`);
+          const result = await sdk.threads[method]({ threadId });
+          reportOperation(
+            opts,
+            { ...result, threadId },
+            {
+              complete: `Thread ${threadId} ${done}`,
+              inProgress:
+                method === "compact"
+                  ? `Thread ${threadId} context compaction requested`
+                  : `Thread ${threadId} ${done}; the provider is still finishing`,
+            },
+          );
         }),
       );
   }
@@ -747,10 +783,11 @@ async function withRestoreEnvironmentHint(
   if (!parsed.success || parsed.data.details.reason !== "destroyed") {
     return error;
   }
-  const { canRestoreEnvironment } = await sdk.threads.get({ threadId });
+  const thread = await sdk.threads.get({ threadId }).catch(() => null);
+  if (thread === null) return error;
   return new CliExitError(error.message, 1, {
     code: parsed.data.code,
-    hint: canRestoreEnvironment
+    hint: thread.canRestoreEnvironment
       ? `Its workspace was removed. Restore it with \`bb thread restore-environment ${threadId}\`, then send again.`
       : "Its workspace was removed and its environment provider cannot restore it. Start a new thread to continue.",
   });

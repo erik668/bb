@@ -39,6 +39,7 @@ import {
 import {
   desktopSessionSetCookie,
   issueDesktopSessionCookie,
+  recordDesktopSessionUse,
   verifyDesktopSessionCookie,
 } from "./desktop-session.js";
 import { serveWithCache } from "./cache.js";
@@ -90,18 +91,6 @@ import {
   tunnelServing,
   type TunnelLiveness,
 } from "./tunnel-liveness.js";
-import {
-  handleGatePresence,
-  handleGatePresenceBatch,
-  handleGateResolve,
-  handleGateResolveBatch,
-} from "./gate-api.js";
-import {
-  GATE_PRESENCE_BATCH_PATH,
-  GATE_PRESENCE_PATH,
-  GATE_RESOLVE_BATCH_PATH,
-  GATE_RESOLVE_PATH,
-} from "@bb/tunnel-contract/next";
 
 export { TunnelDO };
 
@@ -484,23 +473,6 @@ const gate = {
     const url = resolveConnectRequestUrl(request.url, request.headers, runtime);
     const host = resolveConnectRequestHost(request.headers, runtime);
     const parsed = parseVisitorHost(host, env.BASE_DOMAIN);
-    if (
-      parsed === null ||
-      (parsed.target === null && RESERVED_HANDLES.has(parsed.handle))
-    ) {
-      if (url.pathname === GATE_RESOLVE_PATH) {
-        return handleGateResolve(request, env, ctx);
-      }
-      if (url.pathname === GATE_PRESENCE_PATH) {
-        return handleGatePresence(request, env);
-      }
-      if (url.pathname === GATE_RESOLVE_BATCH_PATH) {
-        return handleGateResolveBatch(request, env, ctx);
-      }
-      if (url.pathname === GATE_PRESENCE_BATCH_PATH) {
-        return handleGatePresenceBatch(request, env);
-      }
-    }
     if (parsed === null || parsed.target === null) {
       if (url.pathname === "/api/connect/servers") {
         return handleListAccountServers(request, env);
@@ -538,7 +510,12 @@ const gate = {
       db,
       isTunnelDial ? { fresh: true } : undefined,
     );
-    if (!resolved) return text(`bb connect: no server for "${label}"\n`, 404);
+    if (!resolved) {
+      return text(
+        `bb connect: no server for "${label}"\n`,
+        isTunnelDial ? 403 : 404,
+      );
+    }
 
     const routingKey =
       resolved.kind === "machine" ? resolved.routingKey : label;
@@ -714,6 +691,9 @@ const gate = {
         )
       : null;
     const desktopUserId = verifiedDesktop?.userId ?? null;
+    if (verifiedDesktop?.unrecordedUse) {
+      ctx.waitUntil(recordDesktopSessionUse(verifiedDesktop.unrecordedUse, db));
+    }
     if (!sessionUserId && !desktopUserId) {
       return signInPage(label, appUrl, url.toString());
     }

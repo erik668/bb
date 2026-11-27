@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { SystemProviderState, TerminalSession } from "@bb/server-contract";
+import type {
+  OnboardingFailureDetail,
+  SystemProviderState,
+  TerminalSession,
+} from "@bb/server-contract";
 import {
   operationFailureReason,
   resolveSignInCommand,
@@ -13,32 +17,40 @@ import {
 
 const SIGN_IN_POLL_INTERVAL_MS = 3_000;
 
-export type SignInMethod = "local" | "remote";
-
 interface SignInSession {
   providerId: string;
   session: TerminalSession;
-  method: SignInMethod;
-  hasAlternateMethod: boolean;
 }
 
 type SignInOutcome = "ready" | "exited" | "failed" | "cancelled";
 
 type SignInFailureReason =
-  | OperationFailureReason
-  | "no_host"
-  | "command_failed"
-  | "unsupported";
+  OperationFailureReason | "no_host" | "command_failed" | "unsupported";
 
 interface SignInExit {
   exitCode: number | null;
   at: number;
-  rowOpen: boolean;
 }
 
 export type RefetchProviderStates = (options: {
   cancelRefetch: boolean;
 }) => void;
+
+interface SignInFailureDetail {
+  detail: OnboardingFailureDetail;
+  exitCode?: number;
+}
+
+function signInExitFailure({ exitCode }: SignInExit): SignInFailureDetail {
+  if (exitCode === null) return { detail: "signal" };
+  const detail =
+    exitCode === 127
+      ? "not_found"
+      : exitCode === 126
+        ? "permission"
+        : "exit_nonzero";
+  return { detail, exitCode };
+}
 
 function exitOutcome(exit: SignInExit, ready: boolean): SignInOutcome {
   if (ready) return "ready";
@@ -85,7 +97,6 @@ function withoutEntry<K, V>(map: ReadonlyMap<K, V>, key: K): ReadonlyMap<K, V> {
 }
 
 export function useAgentSignIns({
-  redesign,
   entry,
   hostId,
   states,
@@ -94,7 +105,6 @@ export function useAgentSignIns({
   terminals,
   refetchStates,
 }: {
-  redesign: boolean;
   entry: OnboardingEntry;
   hostId: string | null;
   states: readonly SystemProviderState[] | undefined;
@@ -131,6 +141,7 @@ export function useAgentSignIns({
       providerId: string,
       outcome: SignInOutcome | "started",
       failureReason?: SignInFailureReason,
+      failure?: SignInFailureDetail,
     ) =>
       recordTelemetryEvent({
         name: "onboarding_sign_in",
@@ -141,18 +152,24 @@ export function useAgentSignIns({
           ...(failureReason === undefined
             ? {}
             : { failure_reason: failureReason }),
+          ...(failure === undefined ? {} : { failure_detail: failure.detail }),
+          ...(failure?.exitCode === undefined
+            ? {}
+            : { exit_code: failure.exitCode }),
         },
       }),
     [entry],
   );
 
   const recordOutcome = useCallback(
-    (providerId: string, outcome: SignInOutcome) =>
-      record(
-        providerId,
-        outcome,
-        outcome === "failed" ? "command_failed" : undefined,
-      ),
+    (
+      providerId: string,
+      outcome: SignInOutcome,
+      failure?: SignInFailureDetail,
+    ) =>
+      outcome === "failed"
+        ? record(providerId, outcome, "command_failed", failure)
+        : record(providerId, outcome),
     [record],
   );
 
@@ -163,11 +180,16 @@ export function useAgentSignIns({
   };
 
   const closeRow = useCallback(
-    (providerId: string, outcome: SignInOutcome | null, refetch: boolean) => {
+    (
+      providerId: string,
+      outcome: SignInOutcome | null,
+      refetch: boolean,
+      failure?: SignInFailureDetail,
+    ) => {
       const current = signInsRef.current.get(providerId);
       if (current === undefined) return;
       signInsRef.current.delete(providerId);
-      if (outcome !== null) recordOutcome(providerId, outcome);
+      if (outcome !== null) recordOutcome(providerId, outcome, failure);
       setSignIns(new Map(signInsRef.current));
       setViews((previous) => withoutEntry(previous, providerId));
       terminals.close(current.session.id);
@@ -189,18 +211,18 @@ export function useAgentSignIns({
       const exit = takeExit(providerId);
       if (exit === undefined) return;
       const outcome = exitOutcome(exit, ready);
-      if (!exit.rowOpen) {
-        recordOutcome(providerId, outcome);
-        return;
-      }
       if (!ready) setFailedProviderIds((ids) => withKey(ids, providerId));
-      closeRow(providerId, outcome, false);
+      closeRow(providerId, outcome, false, signInExitFailure(exit));
     },
-    [closeRow, recordOutcome, takeExit],
+    [closeRow, takeExit],
   );
 
   const end = useCallback(
-    (providerId: string, outcome: SignInOutcome = "cancelled") => {
+    (
+      providerId: string,
+      outcome: SignInOutcome = "cancelled",
+      failure?: SignInFailureDetail,
+    ) => {
       if (!signInsRef.current.has(providerId)) {
         const request = requestsRef.current.get(providerId);
         if (request !== undefined) {
@@ -210,7 +232,7 @@ export function useAgentSignIns({
         return;
       }
       takeExit(providerId);
-      closeRow(providerId, outcome, true);
+      closeRow(providerId, outcome, true, failure);
     },
     [closeRow, takeExit],
   );
@@ -246,7 +268,7 @@ export function useAgentSignIns({
     (providerId: string) => {
       if (!signInsRef.current.has(providerId)) return;
       setFailedProviderIds((ids) => withKey(ids, providerId));
-      end(providerId, "failed");
+      end(providerId, "failed", { detail: "login_failed" });
     },
     [end],
   );
@@ -259,29 +281,19 @@ export function useAgentSignIns({
       ) {
         return;
       }
-      exitsRef.current.set(providerId, {
-        exitCode,
-        at: Date.now(),
-        rowOpen: redesign,
-      });
+      exitsRef.current.set(providerId, { exitCode, at: Date.now() });
       setExits(new Map(exitsRef.current));
-      if (!redesign) {
-        if (exitCode !== 0) {
-          setFailedProviderIds((ids) => withKey(ids, providerId));
-        }
-        closeRow(providerId, null, false);
-      }
       refetchStates({ cancelRefetch: true });
     },
-    [closeRow, redesign, refetchStates],
+    [refetchStates],
   );
 
   useEffect(() => {
     for (const [providerId, exit] of exits) {
       if (statesSettledAt <= exit.at) continue;
-      resolveExit(providerId, agentReady(states, providerId));
+      resolveExitRef.current(providerId, agentReady(states, providerId));
     }
-  }, [exits, resolveExit, states, statesSettledAt]);
+  }, [exits, states, statesSettledAt]);
 
   const setView = useCallback((providerId: string, view: AgentSignInView) => {
     setViews((previous) =>
@@ -295,11 +307,11 @@ export function useAgentSignIns({
   useEffect(() => {
     if (activeCount === 0) return;
     const interval = window.setInterval(
-      () => refetchStates({ cancelRefetch: !redesign }),
+      () => refetchStates({ cancelRefetch: false }),
       SIGN_IN_POLL_INTERVAL_MS,
     );
     return () => window.clearInterval(interval);
-  }, [activeCount, redesign, refetchStates]);
+  }, [activeCount, refetchStates]);
 
   useEffect(() => {
     for (const providerId of signIns.keys()) {
@@ -310,32 +322,18 @@ export function useAgentSignIns({
     }
   }, [end, signIns, states]);
 
-  const start = async (providerId: string, requestedMethod?: SignInMethod) => {
+  const start = async (providerId: string) => {
     const state = states?.find((entry) => entry.providerId === providerId);
     if (hostId === null || state === undefined) {
       record(providerId, "failed", hostId === null ? "no_host" : "not_found");
       return;
     }
-    const method =
-      requestedMethod ?? (isLocalHost(hostId) ? "local" : "remote");
-    const command = resolveSignInCommand(state, method === "local");
+    const command = resolveSignInCommand(state, isLocalHost(hostId));
     if (command === null) {
       record(providerId, "failed", "unsupported");
       return;
     }
-    if (exitsRef.current.get(providerId)?.rowOpen === false) {
-      resolveExit(providerId, agentReady(states, providerId));
-    }
-    if (redesign) {
-      end(providerId);
-    } else {
-      for (const other of [...signInsRef.current.keys()]) end(other);
-      for (const other of requestsRef.current.keys()) {
-        if (other !== providerId) bumpRequest(other);
-      }
-      setStartingProviderIds(new Set());
-      setFailedProviderIds(new Set());
-    }
+    end(providerId);
     setFailedProviderIds((ids) => withoutKey(ids, providerId));
     const request = bumpRequest(providerId);
     setStartingProviderIds((ids) => withKey(ids, providerId));
@@ -357,15 +355,7 @@ export function useAgentSignIns({
       terminals.close(session.id);
       return;
     }
-    signInsRef.current.set(providerId, {
-      providerId,
-      session,
-      method,
-      hasAlternateMethod:
-        state.localLoginCommand !== null &&
-        state.loginCommand !== null &&
-        state.localLoginCommand !== state.loginCommand,
-    });
+    signInsRef.current.set(providerId, { providerId, session });
     setViews((previous) => withoutEntry(previous, providerId));
     setStartingProviderIds((ids) => withoutKey(ids, providerId));
     setSignIns(new Map(signInsRef.current));

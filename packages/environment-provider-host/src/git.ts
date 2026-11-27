@@ -5,13 +5,21 @@ import {
   type GitTimeoutOptions,
   type DefaultBranchRefs,
   type GitRepo,
+  type ResolvedBranchRef,
+  branchRefCandidates,
   createGitQueries,
   pathExists,
   runGit as runSharedGit,
   trimOutput,
 } from "./workspace-git.js";
-export { pathExists, WorkspaceError };
-export type { GitCommandResult, GitProcessOptions, DefaultBranchRefs, GitRepo };
+export { branchRefCandidates, pathExists, WorkspaceError };
+export type {
+  GitCommandResult,
+  GitProcessOptions,
+  DefaultBranchRefs,
+  GitRepo,
+  ResolvedBranchRef,
+};
 
 export interface RunGitOptions extends GitProcessOptions {
   cwd: string;
@@ -19,6 +27,7 @@ export interface RunGitOptions extends GitProcessOptions {
   allowFailure?: boolean;
   env?: NodeJS.ProcessEnv;
   signal?: AbortSignal;
+  input?: string;
 }
 
 type GitRepositoryState = "not_git" | "no_commits" | "has_commits";
@@ -92,7 +101,7 @@ export const {
   getWorkspaceGitOperation,
   hasUncommittedChanges,
   hasRef,
-  readBranchRelation,
+  resolveBranchRef,
   readDefaultBranch,
   readDefaultBranchRefs,
 } = createGitQueries(runGit);

@@ -8,6 +8,7 @@ import {
   type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import {
   experimental_useAppPanel,
   definePluginApp,
@@ -111,6 +112,11 @@ import {
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { usePortalScopeProps } from "@/lib/portal-scope";
+import { isNonImeKey } from "@/lib/ime-keyboard";
+import {
+  handleEditorLinkClick,
+  isAllowedEditorLink,
+} from "./editor-links.js";
 
 interface Vault {
   id: string;
@@ -160,6 +166,21 @@ function encodePath(value: string): string {
 function dirname(value: string): string {
   const index = value.lastIndexOf("/");
   return index < 0 ? "" : value.slice(0, index);
+}
+
+function documentLinkPath(notePath: string, href: string): string | null {
+  if (/^[/#?]/.test(href) || href.includes("\\")) return null;
+  try {
+    const target = new URL(
+      href,
+      `https://docs.invalid/${encodePath(notePath)}`,
+    );
+    if (target.search || target.hash) return null;
+    const path = decodeURIComponent(target.pathname.slice(1));
+    return /\.(md|mdx|markdown)$/i.test(path) ? path : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeRelative(base: string, relative: string): string {
@@ -437,12 +458,16 @@ function TiptapEditor(props: {
   notePath: string;
   onUpload(file: File): Promise<{ markdownPath: string }>;
   onMarkdownChange(markdown: string): void;
+  onOpenDocument?(path: string): void;
   value: string;
   baseMarkdown?: string | null;
   inline?: boolean;
   disabled?: boolean;
   active?: boolean;
 }) {
+  const navigate = useBbNavigate();
+  const navigateRef = useRef(navigate);
+  navigateRef.current = navigate;
   const {
     previewBaseUrl,
     notePath,
@@ -518,7 +543,12 @@ function TiptapEditor(props: {
       extensions: [
         StarterKit,
         createProposalDiff({ getBaseDocument: () => baselineRef.current }),
-        Link.configure({ openOnClick: false, autolink: true }),
+        Link.configure({
+          openOnClick: false,
+          autolink: true,
+          isAllowedUri: (href, { defaultValidate }) =>
+            isAllowedEditorLink(href, defaultValidate),
+        }),
         Image.configure({ allowBase64: false }),
         TightTaskList,
         TaskItem.configure({ nested: true }),
@@ -549,8 +579,21 @@ function TiptapEditor(props: {
           "aria-label": "Document content",
           "aria-multiline": "true",
         },
+        handleDOMEvents: {
+          click: (_view, event) =>
+            handleEditorLinkClick(event, {
+              url: (href) => navigateRef.current.openUrl(href),
+              relative: (href) => {
+                const path = documentLinkPath(latest.current.notePath, href);
+                const openDocument = latest.current.onOpenDocument;
+                if (path === null || !openDocument) return false;
+                openDocument(path);
+                return true;
+              },
+            }),
+        },
         handleKeyDown(view, event) {
-          if (!inline || event.key !== "Escape") return false;
+          if (!inline || !isNonImeKey(event, "Escape")) return false;
           view.dom.blur();
           return true;
         },
@@ -1022,12 +1065,12 @@ function InlineDocument({
   useEffect(() => {
     const content = contentRef.current;
     if (!openInTab || !content) return;
-    const measure = () =>
-      setTruncated(content.getBoundingClientRect().height > 400);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(content);
-    return () => observer.disconnect();
+    const measure = () => content.getBoundingClientRect().height > 400;
+    setTruncated(measure());
+    return observeSharedResize(content, {
+      read: measure,
+      write: setTruncated,
+    });
   }, [state.loaded, openInTab]);
   const proposal = state.base?.proposal ?? null;
   const sha256 = state.base?.sha256 ?? "";
@@ -1224,6 +1267,11 @@ function InlineDocument({
                 )}
                 <TiptapEditor
                   value={state.draft}
+                  onOpenDocument={(path) =>
+                    navigate.toPluginPanel("docs", {
+                      subPath: `${document.vaultId}/${path}`,
+                    })
+                  }
                   baseMarkdown={pending?.baseContent ?? null}
                   inline
                   disabled={state.busy || state.missing || truncated}
@@ -1421,6 +1469,7 @@ function SavedDocumentEditor({
   session,
   onUpload,
   onSaveCopy,
+  onOpenDocument,
   errorHint = "",
   active = true,
 }: {
@@ -1428,6 +1477,7 @@ function SavedDocumentEditor({
   session: DocumentSession;
   onUpload(file: File): Promise<{ markdownPath: string }>;
   onSaveCopy?(): void;
+  onOpenDocument?(path: string): void;
   errorHint?: string;
   active?: boolean;
 }) {
@@ -1453,6 +1503,7 @@ function SavedDocumentEditor({
       />
       <TiptapEditor
         value={state.draft}
+        onOpenDocument={onOpenDocument}
         active={active}
         disabled={state.busy || state.missing}
         previewBaseUrl={state.base?.previewBaseUrl ?? ""}
@@ -1508,6 +1559,7 @@ function NotePane({
       state={state}
       session={session}
       active={active}
+      onOpenDocument={onOpen}
       onSaveCopy={() =>
         void saveCopy().then((created) => {
           if (created !== null) onOpen(created);
@@ -1778,7 +1830,7 @@ function NotesSidebarNavigation(props: NotesSidebarNavigationProps) {
               value={props.query}
               onChange={(event) => props.onQueryChange(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key !== "Escape") return;
+                if (!isNonImeKey(event, "Escape")) return;
                 props.onQueryChange("");
                 props.onSearchOpenChange(false);
               }}

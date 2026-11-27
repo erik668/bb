@@ -1,4 +1,10 @@
 import {
+  operationComplete,
+  operationInProgress,
+} from "../services/lib/operation-response.js";
+import { searchWorkspaceFolderPaths } from "../services/projects/workspace-path-search.js";
+import { listEnvironmentExtraFolderPaths } from "../services/environments/environment-workspace-folders.js";
+import {
   projectMachineEnvironmentView,
   replaceMachineEnvironment,
 } from "../services/machines/environment-settings.js";
@@ -14,10 +20,12 @@ import {
   getProjectExecutionDefaults,
   getPublicProjectByLocalPathSource,
   deleteProjectSource,
+  deleteProjectSourceFolder,
   getProjectSourceByHost,
   getProjectSourceForProject,
   listProjectExecutionDefaultsByProjectIds,
   listPublicProjects,
+  listProjectSourceFolders,
   listProjectSourcesByProjectIds,
   listThreadSections,
   listThreadsWithPendingInteractionStateForProjects,
@@ -26,6 +34,7 @@ import {
   updateProjectSource,
   setProjectGitRemoteUrlIfMissing,
   type ReorderProjectResult,
+  getEnvironment,
 } from "@bb/db";
 import {
   projectListIncludeOptionSchema,
@@ -54,10 +63,7 @@ import {
   requirePublicProject,
   requirePublicStandardProject,
 } from "../services/lib/entity-lookup.js";
-import {
-  isWindowsHostPath,
-  PROMPT_HISTORY_ENTRY_LIMIT,
-} from "@bb/domain";
+import { isWindowsHostPath, PROMPT_HISTORY_ENTRY_LIMIT } from "@bb/domain";
 import { toThreadListEntryResponses } from "../services/threads/thread-runtime-display.js";
 import { callHostRetryableOnlineRpc } from "../services/hosts/online-rpc.js";
 import {
@@ -65,6 +71,10 @@ import {
   registerProjectSourceOnHost,
   projectSourceHostConflict,
 } from "../services/projects/project-source-setup.js";
+import {
+  addProjectSourceFolder,
+  updateProjectSourceFolder,
+} from "../services/projects/project-source-folders.js";
 import {
   deleteProjectSkill,
   listProjectSkillFiles,
@@ -81,7 +91,6 @@ import {
   beginProjectDeletion,
   requestProjectDeletionAdvance,
 } from "../services/projects/project-deletion.js";
-import { resolveDefaultWorktreeBaseBranch } from "../services/projects/worktree-base-branch.js";
 import { listProjectPromptHistory } from "../services/prompt-history.js";
 import { parsePathKindInclusion } from "./path-list-inclusion.js";
 import {
@@ -101,7 +110,7 @@ import {
 import { resolveSharedSkills } from "../services/skills/shared-skills.js";
 import {
   providerHasNativeRootSurface,
-  scanProviderNativeRoots,
+  listProviderNativeCommands,
 } from "../services/providers/native-roots.js";
 import { assertUsableHostId } from "../services/hosts/primary-host.js";
 import { listProviderLiveCommands } from "../services/providers/provider-live-commands.js";
@@ -548,7 +557,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     }
     beginProjectDeletion(deps, { projectId: id });
     requestProjectDeletionAdvance(deps, { projectId: id });
-    return context.json({ ok: true });
+    return context.json(operationInProgress());
   });
 
   post(routes.createSource, async (context, payload) => {
@@ -668,7 +677,78 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     if (!deleted) {
       throw new ApiError(404, "invalid_request", "Project source not found");
     }
-    return context.json({ ok: true });
+    return context.json(operationComplete());
+  });
+
+  get(routes.listSourceFolders, (context) => {
+    const projectId = context.req.param("id");
+    requirePublicStandardProject(deps.db, projectId);
+    const source = requireProjectSource(deps, {
+      projectId,
+      sourceId: context.req.param("sourceId"),
+    });
+    return context.json(listProjectSourceFolders(deps.db, source.id));
+  });
+
+  post(routes.addSourceFolder, async (context, payload) => {
+    const projectId = context.req.param("id");
+    requirePublicStandardProject(deps.db, projectId);
+    const source = requireProjectSource(deps, {
+      projectId,
+      sourceId: context.req.param("sourceId"),
+    });
+    assertUsableHostId(deps, { hostId: source.hostId });
+    assertPathMatchesHostPlatform(deps, {
+      hostId: source.hostId,
+      path: payload.path,
+    });
+    return context.json(
+      await addProjectSourceFolder(deps, { path: payload.path, source }),
+      201,
+    );
+  });
+
+  patch(routes.updateSourceFolder, async (context, payload) => {
+    const projectId = context.req.param("id");
+    requirePublicStandardProject(deps.db, projectId);
+    const source = requireProjectSource(deps, {
+      projectId,
+      sourceId: context.req.param("sourceId"),
+    });
+    assertUsableHostId(deps, { hostId: source.hostId });
+    assertPathMatchesHostPlatform(deps, {
+      hostId: source.hostId,
+      path: payload.path,
+    });
+    return context.json(
+      await updateProjectSourceFolder(deps, {
+        folderId: context.req.param("folderId"),
+        path: payload.path,
+        source,
+      }),
+    );
+  });
+
+  del(routes.removeSourceFolder, (context) => {
+    const projectId = context.req.param("id");
+    requirePublicStandardProject(deps.db, projectId);
+    const source = requireProjectSource(deps, {
+      projectId,
+      sourceId: context.req.param("sourceId"),
+    });
+    const deleted = deleteProjectSourceFolder(deps.db, deps.hub, {
+      projectId,
+      projectSourceId: source.id,
+      folderId: context.req.param("folderId"),
+    });
+    if (!deleted) {
+      throw new ApiError(
+        404,
+        "invalid_request",
+        "Project source folder not found",
+      );
+    }
+    return context.json(operationComplete());
   });
 
   get(routes.files, async (context, query) => {
@@ -704,8 +784,6 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     const projectId = context.req.param("id");
     requirePublicProject(deps.db, projectId);
 
-    const limit = parseFileListLimit(query.limit);
-
     const target = resolveProjectWorkspaceTarget(deps, {
       projectId,
       environmentId: query.environmentId,
@@ -715,23 +793,28 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
       includeFiles: query.includeFiles,
       includeDirectories: query.includeDirectories,
     });
-    const result = await callHostRetryableOnlineRpc(deps, {
-      hostId: target.hostId,
-      signal: context.req.raw.signal,
-      timeoutMs: COMMAND_TIMEOUT_MS,
-      command: {
-        type: "host.list_paths",
-        path: target.path,
-        ...(query.query ? { query: query.query } : {}),
-        limit,
-        includeFiles: inclusion.includeFiles,
+    const environment =
+      query.environmentId === undefined
+        ? null
+        : getEnvironment(deps.db, query.environmentId);
+    return context.json(
+      await searchWorkspaceFolderPaths(deps, {
+        folders: query.folders ?? "all",
+        extraFolders: listEnvironmentExtraFolderPaths(deps.db, {
+          additionalPaths: environment?.additionalPaths ?? [],
+          hostId: target.hostId,
+          mainPath: target.path,
+          projectId,
+        }),
+        hostId: target.hostId,
         includeDirectories: inclusion.includeDirectories,
-        includeHidden: WORKSPACE_PATH_LIST_INCLUDE_HIDDEN,
-        respectGitIgnore: true,
-        excludeNames: [...DEFAULT_PATH_LIST_EXCLUDE_NAMES],
-      },
-    });
-    return context.json({ paths: result.paths, truncated: result.truncated });
+        includeFiles: inclusion.includeFiles,
+        limit: parseFileListLimit(query.limit),
+        mainPath: target.path,
+        query: query.query,
+        signal: context.req.raw.signal,
+      }),
+    );
   });
 
   get(routes.commands, async (context, query) => {
@@ -752,8 +835,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
       if (!providerHasNativeRootSurface(registration)) {
         return { commands: [] };
       }
-      return scanProviderNativeRoots(deps, {
-        type: "host.list_commands",
+      return listProviderNativeCommands(deps, {
         registration,
         hostId: workspace.hostId,
         cwd: workspace.cwd,
@@ -774,6 +856,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
             hostId: workspace.hostId,
             workspacePath: workspace.cwd,
             includeAgentInstructions: false,
+            folderPaths: [],
           });
     const [result, liveCommands, workspaceSkills] = await Promise.all([
       listProviderCommands(),
@@ -885,16 +968,16 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
     });
     const branchQuery = normalizeBranchQuery(query.query);
     const selectedBranch = normalizeBranchQuery(query.selectedBranch);
-    const inspectionPromise = callHostRetryableOnlineRpc(deps, {
-      hostId: source.hostId,
-      timeoutMs: COMMAND_TIMEOUT_MS,
-      command: {
-        type: "host.inspect_git_source",
-        path: source.path,
-        remoteRefresh,
-      },
-    });
-    const readBranchOptions = () =>
+    const [inspection, branchOptions] = await Promise.all([
+      callHostRetryableOnlineRpc(deps, {
+        hostId: source.hostId,
+        timeoutMs: COMMAND_TIMEOUT_MS,
+        command: {
+          type: "host.inspect_git_source",
+          path: source.path,
+          remoteRefresh,
+        },
+      }),
       callHostRetryableOnlineRpc(deps, {
         hostId: source.hostId,
         timeoutMs: COMMAND_TIMEOUT_MS,
@@ -904,22 +987,11 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
           ...(branchQuery ? { query: branchQuery } : {}),
           ...(selectedBranch ? { selectedBranch } : {}),
           limit: parseBranchListLimit(query.limit),
-          remoteRefresh: "none",
+          remoteRefresh,
         },
-      });
-    const branchOptionsPromise =
-      remoteRefresh === "background"
-        ? readBranchOptions()
-        : inspectionPromise.then(readBranchOptions);
-    const [inspection, branchOptions] = await Promise.all([
-      inspectionPromise,
-      branchOptionsPromise,
+      }),
     ]);
-    const result = { ...inspection, ...branchOptions };
-    return {
-      ...result,
-      defaultWorktreeBaseBranch: resolveDefaultWorktreeBaseBranch(result),
-    };
+    return { ...inspection, ...branchOptions };
   };
 
   get(routes.branches, async (context, query) =>
@@ -980,7 +1052,7 @@ export function registerProjectRoutes(app: Hono, deps: AppDeps): void {
       targetProjectId,
       payload.paths,
     );
-    return context.json({ ok: true as const });
+    return context.json(operationComplete());
   });
 
   get(routes.attachmentContent, async (context, query) => {

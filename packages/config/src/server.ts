@@ -21,7 +21,6 @@ import {
   BB_APP_URL_ENV,
   BB_APP_SURFACE_ENV,
   BB_APP_VERSION_ENV,
-  BB_CONNECT_GATE_KEYS_URL_ENV,
   BB_EXTERNAL_URL_ENV,
   BB_INHERITED_SKILLS_ROOTS_ENV,
   BB_MARKETPLACE_URL_ENV,
@@ -32,12 +31,11 @@ import {
   BB_CLI_LAUNCHER_ENV,
   BB_TELEMETRY_ENV,
   BB_PERF_DIAGNOSTICS_ENV,
+  BB_QUERY_PLAN_AUDIT_ENV,
   BB_SKIP_ONBOARDING_ENV,
-  BB_SETUP_GUIDE_VARIANT_ENV,
   DEFAULT_BB_APP_URL,
   DEFAULT_BB_APP_SURFACE,
   DEFAULT_BB_APP_VERSION,
-  DEFAULT_BB_CONNECT_GATE_KEYS_URL,
   DEFAULT_BB_EXTERNAL_URL,
   DEFAULT_BB_MARKETPLACE_URL,
   DEFAULT_BB_POSTHOG_API_KEY,
@@ -45,7 +43,6 @@ import {
   DEFAULT_BB_TELEMETRY,
   parseServerBindHost,
   type ServerBindHost,
-  type SetupGuideVariant,
 } from "./env-vars.js";
 import { loadFeatureFlags } from "./feature-flags.js";
 import { assignIfDefined } from "./objects.js";
@@ -60,7 +57,6 @@ export interface ServerConfig
   BB_APP_URL: string;
   BB_APP_SURFACE: AppSurface;
   BB_APP_VERSION: string;
-  BB_CONNECT_GATE_KEYS_URL: string;
   BB_DEV_APP_PORT?: number;
   BB_EXTERNAL_URL: string;
   BB_HOST_DAEMON_PORT: number;
@@ -73,8 +69,8 @@ export interface ServerConfig
   BB_CLI_LAUNCHER?: string;
   BB_TELEMETRY: boolean;
   BB_PERF_DIAGNOSTICS: boolean;
+  BB_QUERY_PLAN_AUDIT: boolean;
   BB_SKIP_ONBOARDING: boolean;
-  BB_SETUP_GUIDE_VARIANT?: SetupGuideVariant;
   featureFlags: FeatureFlags;
 }
 
@@ -133,12 +129,6 @@ export function loadServerConfig(
       definition: BB_APP_VERSION_ENV,
       env: loader.env,
     }),
-    BB_CONNECT_GATE_KEYS_URL: readEnvVarWithDefault({
-      context: loader.context,
-      defaultValue: DEFAULT_BB_CONNECT_GATE_KEYS_URL,
-      definition: BB_CONNECT_GATE_KEYS_URL_ENV,
-      env: loader.env,
-    }),
     BB_EXTERNAL_URL: readEnvVarWithDefault({
       context: loader.context,
       defaultValue: DEFAULT_BB_EXTERNAL_URL,
@@ -178,6 +168,12 @@ export function loadServerConfig(
     BB_PERF_DIAGNOSTICS: readEnvVarWithDefault({
       context: loader.context,
       definition: BB_PERF_DIAGNOSTICS_ENV,
+      env: loader.env,
+      defaultValue: false,
+    }),
+    BB_QUERY_PLAN_AUDIT: readEnvVarWithDefault({
+      context: loader.context,
+      definition: BB_QUERY_PLAN_AUDIT_ENV,
       env: loader.env,
       defaultValue: false,
     }),
@@ -247,15 +243,6 @@ export function loadServerConfig(
     value: readOptionalEnvVar({
       context: loader.context,
       definition: BB_APP_SOURCE_COMMIT_ENV,
-      env: loader.env,
-    }),
-  });
-  assignIfDefined({
-    key: "BB_SETUP_GUIDE_VARIANT",
-    target: config,
-    value: readOptionalEnvVar({
-      context: loader.context,
-      definition: BB_SETUP_GUIDE_VARIANT_ENV,
       env: loader.env,
     }),
   });

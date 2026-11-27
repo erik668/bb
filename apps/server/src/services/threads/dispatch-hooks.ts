@@ -45,21 +45,39 @@ export type DispatchAttemptKind = PluginDispatchAttemptKind;
  * guarantee: everything a handler returns is validated here and a malformed
  * decision fails the attempt with the plugin named, exactly like a throw.
  */
+const waitDecisionTimeSchema = z
+  .number()
+  .int()
+  .nonnegative()
+  .nullable()
+  .optional();
+
 const messageDispatchHookDecisionSchema = z.discriminatedUnion("action", [
   z.object({ action: z.literal("proceed") }),
-  z.object({
-    action: z.literal("wait"),
-    reason: z.string().min(1).max(QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH),
-    sendAt: z.number().int().nonnegative().nullable().optional(),
-  }),
+  z
+    .object({
+      action: z.literal("wait"),
+      reason: z.string().min(1).max(QUEUED_MESSAGE_WAIT_REASON_MAX_LENGTH),
+      recheckAt: waitDecisionTimeSchema,
+      sendAt: waitDecisionTimeSchema,
+    })
+    .refine(
+      (decision) =>
+        decision.recheckAt === undefined || decision.sendAt === undefined,
+      {
+        message:
+          "and recheckAt are both set; sendAt is the old name of recheckAt",
+        path: ["sendAt"],
+      },
+    ),
   z.object({ action: z.literal("reject"), message: z.string().min(1) }),
 ]);
 
 export interface MessageDispatchWaitDecision {
   pluginId: string;
   reason: string;
-  /** Becomes the queued row's `sendAt`, so core's due sweep re-attempts then. */
-  sendAt: number | null;
+  /** Becomes the queued row's `recheckAt`, so core's due sweep re-asks then. */
+  recheckAt: number | null;
 }
 
 export type MessageDispatchHookPassOutcome =
@@ -133,15 +151,26 @@ const DISPATCH_REQUEUE_MIN_INTERVAL_MS = 1_000;
  * server does not accumulate one per thread ever drained.
  */
 const lastRequeuedAtByThreadId = new Map<string, number>();
+const lastRequeuedAtByThreadPlugin = new Map<string, number>();
 
-export function noteDispatchRequeued(threadId: string): void {
-  const now = Date.now();
-  for (const [id, at] of lastRequeuedAtByThreadId) {
+function threadPluginKey(threadId: string, pluginId: string): string {
+  return `${threadId}\0${pluginId}`;
+}
+
+function forgetExpired(entries: Map<string, number>, now: number): void {
+  for (const [key, at] of entries) {
     if (now - at >= DISPATCH_REQUEUE_MIN_INTERVAL_MS) {
-      lastRequeuedAtByThreadId.delete(id);
+      entries.delete(key);
     }
   }
+}
+
+export function noteDispatchRequeued(threadId: string, pluginId: string): void {
+  const now = Date.now();
+  forgetExpired(lastRequeuedAtByThreadId, now);
+  forgetExpired(lastRequeuedAtByThreadPlugin, now);
   lastRequeuedAtByThreadId.set(threadId, now);
+  lastRequeuedAtByThreadPlugin.set(threadPluginKey(threadId, pluginId), now);
 }
 
 /**
@@ -151,6 +180,16 @@ export function noteDispatchRequeued(threadId: string): void {
  */
 export function isDispatchRequeuedRecently(threadId: string): boolean {
   const at = lastRequeuedAtByThreadId.get(threadId);
+  return at !== undefined && Date.now() - at < DISPATCH_REQUEUE_MIN_INTERVAL_MS;
+}
+
+export function isPluginDispatchRequeuedRecently(
+  threadId: string,
+  pluginId: string,
+): boolean {
+  const at = lastRequeuedAtByThreadPlugin.get(
+    threadPluginKey(threadId, pluginId),
+  );
   return at !== undefined && Date.now() - at < DISPATCH_REQUEUE_MIN_INTERVAL_MS;
 }
 
@@ -442,26 +481,31 @@ export async function runMessageDispatchHookPass(
         waits.push({
           pluginId: hook.pluginId,
           reason: decision.reason,
-          sendAt: decision.sendAt ?? null,
+          recheckAt: decision.recheckAt ?? decision.sendAt ?? null,
         });
         continue;
       }
     }
 
-    const waiter = waits[0];
+    const queuedOwner = request.queuedMessages[0]?.waitingOn;
+    const ownerId =
+      queuedOwner?.kind === "plugin"
+        ? queuedOwner.pluginId
+        : request.pluginSubmission?.pluginId;
+    const waiter =
+      waits.find((entry) => entry.pluginId === ownerId) ?? waits[0];
     if (waiter === undefined) {
       await request.continueAfterHooks?.();
       return { kind: "proceed" };
     }
-    return { kind: "wait", waiter, additionalWaiters: waits.slice(1) };
+    return {
+      kind: "wait",
+      waiter,
+      additionalWaiters: waits.filter((entry) => entry !== waiter),
+    };
   });
 }
 
-/**
- * The wait reason for a pass, naming every plugin that voted to wait. The
- * first waiter owns the row, so its reason leads; the rest are appended so the
- * user sees the whole picture on one card rather than one card per plugin.
- */
 export function dispatchWaitReasonForPass(
   outcome: Extract<MessageDispatchHookPassOutcome, { kind: "wait" }>,
 ): string {

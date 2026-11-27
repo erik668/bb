@@ -22,6 +22,7 @@ import type {
   PluginWireLookup,
 } from "../services/plugins/plugin-service.js";
 import type { LoadedPlugin } from "../services/plugins/plugin-service-internal.js";
+import type { PluginCssScope } from "../services/plugins/app-bundle.js";
 import type {
   PluginMentionTrigger,
   PluginWebSocketRouteRecord,
@@ -121,6 +122,12 @@ export async function pluginCliResponse(
   });
 }
 
+function pluginCssScope(requested: string | undefined): PluginCssScope {
+  if (requested === "plugin-attribute-v1") return "plugin-attribute";
+  if (requested === "owned-root-v1") return "owned-root";
+  return "legacy";
+}
+
 const compressBrotli = promisify(brotliCompress);
 const compressGzip = promisify(gzip);
 const MIN_COMPRESSED_APP_ASSET_BYTES = 1_024;
@@ -202,7 +209,7 @@ function parsePluginMentionTrigger(
 function localAuthProblem(
   context: Context,
   deps: PluginRoutesDeps,
-): WireAuthProblem | null {
+): BrowserRequestProblem | null {
   return browserRequestProblem(context, deps, {
     requireJsonForMutation: true,
   });
@@ -502,6 +509,7 @@ export function registerPluginRoutes(
       query,
       projectId: projectId !== null && projectId.length > 0 ? projectId : null,
       threadId: threadId !== null && threadId.length > 0 ? threadId : null,
+      signal: context.req.raw.signal,
     });
     return context.json({ ok: true, groups });
   });
@@ -571,18 +579,44 @@ export function registerPluginRoutes(
     const hostTailwind =
       spec.kind === "css" &&
       context.req.query("host-tailwind") === HOST_TAILWIND_VERSION;
-    const ownedRoot =
-      spec.kind === "css" && context.req.query("css-scope") === "owned-root-v1";
+    const scope =
+      spec.kind === "css"
+        ? pluginCssScope(context.req.query("css-scope"))
+        : "legacy";
     let bytes: Buffer;
     try {
-      bytes = await asset.read({ hostTailwind, ownedRoot });
+      bytes = await asset.read({ hostTailwind, scope });
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
     return appAssetResponse(context, bytes, {
-      assetKey: `${hash}:${spec.kind}:${hostTailwind}:${ownedRoot}`,
+      assetKey: `${hash}:${spec.kind}:${hostTailwind}:${scope}`,
       cache: appAssetCompressionCache,
       contentType: spec.contentType,
+      cacheControl: "public, max-age=31536000, immutable",
+      contentHash: asset.hash,
+    });
+  });
+
+  app.get("/plugin-app-assets/:hash/chunks/:file", async (context) => {
+    const hash = context.req.param("hash");
+    const file = context.req.param("file");
+    const asset = /^[a-f0-9]{16}$/u.test(hash)
+      ? plugins.getAppChunkByHash(hash, file)
+      : undefined;
+    if (!asset) {
+      return context.json({ ok: false, error: "unknown plugin asset" }, 404);
+    }
+    let bytes: Buffer;
+    try {
+      bytes = await asset.read({ hostTailwind: false, scope: "legacy" });
+    } catch {
+      return context.json({ ok: false, error: "bundle file missing" }, 404);
+    }
+    return appAssetResponse(context, bytes, {
+      assetKey: `${hash}:chunk:${file}`,
+      cache: appAssetCompressionCache,
+      contentType: APP_ASSET_CONTENT_TYPES["app.js"].contentType,
       cacheControl: "public, max-age=31536000, immutable",
       contentHash: asset.hash,
     });
@@ -638,11 +672,13 @@ export function registerPluginRoutes(
     const hostTailwind =
       spec.kind === "css" &&
       context.req.query("host-tailwind") === HOST_TAILWIND_VERSION;
-    const ownedRoot =
-      spec.kind === "css" && context.req.query("css-scope") === "owned-root-v1";
+    const scope =
+      spec.kind === "css"
+        ? pluginCssScope(context.req.query("css-scope"))
+        : "legacy";
     let bytes: Buffer;
     try {
-      bytes = await asset.read({ hostTailwind, ownedRoot });
+      bytes = await asset.read({ hostTailwind, scope });
     } catch {
       return context.json({ ok: false, error: "bundle file missing" }, 404);
     }
@@ -651,7 +687,7 @@ export function registerPluginRoutes(
       asset.hash,
     );
     return appAssetResponse(context, bytes, {
-      assetKey: `${context.req.param("id")}:${spec.kind}:${hostTailwind}:${ownedRoot}`,
+      assetKey: `${context.req.param("id")}:${spec.kind}:${hostTailwind}:${scope}`,
       cache: appAssetCompressionCache,
       contentType: spec.contentType,
       cacheControl,
@@ -712,14 +748,17 @@ export function registerPluginRoutes(
     const json: unknown = await context.req.json().catch(() => null);
     const body = pluginApplyUpdateRequestSchema.safeParse(json);
     if (!body.success) {
-      return context.json({ error: "expected an empty JSON object" }, 400);
+      return context.json(
+        { error: 'expected { "range"?: string, "expectedVersion"?: string }' },
+        400,
+      );
     }
     const pluginId = context.req.param("id");
     const job = updateJobs.start({
       pluginId,
       displayName: plugins.getDisplayName(pluginId),
       run: async () => {
-        const outcome = await plugins.applyUpdate(pluginId);
+        const outcome = await plugins.applyUpdate(pluginId, body.data);
         if (!outcome.ok) throw new Error(outcome.error);
         return outcome.result;
       },
@@ -800,17 +839,19 @@ export function registerPluginRoutes(
   });
 
   app.post("/plugins/:id/enable", async (context) => {
-    const plugin = await plugins.setEnabled(context.req.param("id"), true);
-    if (!plugin)
+    const outcome = await plugins.setEnabled(context.req.param("id"), true);
+    if (!outcome)
       return context.json({ ok: false, error: "unknown plugin" }, 404);
-    return context.json({ ok: true, plugin });
+    if (!outcome.ok) return context.json(outcome, 422);
+    return context.json(outcome);
   });
 
   app.post("/plugins/:id/disable", async (context) => {
-    const plugin = await plugins.setEnabled(context.req.param("id"), false);
-    if (!plugin)
+    const outcome = await plugins.setEnabled(context.req.param("id"), false);
+    if (!outcome)
       return context.json({ ok: false, error: "unknown plugin" }, 404);
-    return context.json({ ok: true, plugin });
+    if (!outcome.ok) return context.json(outcome, 422);
+    return context.json(outcome);
   });
 
   const NOT_RUNNING = {
@@ -835,12 +876,18 @@ export function registerPluginRoutes(
       );
     }
     try {
-      const view = await plugins.updateSettings(
+      const outcome = await plugins.updateSettings(
         context.req.param("id"),
         body.data.values,
       );
-      if (!view) return context.json(NOT_RUNNING, 404);
-      return context.json({ ok: true, ...view });
+      if (!outcome) return context.json(NOT_RUNNING, 404);
+      if (!outcome.ok) {
+        return context.json(
+          { ok: false, error: outcome.error, ...outcome.view },
+          422,
+        );
+      }
+      return context.json({ ok: true, ...outcome.view });
     } catch (error) {
       if (error instanceof PluginSettingsValidationError) {
         return context.json({ ok: false, error: error.message }, 400);
@@ -951,7 +998,10 @@ export function registerPluginRoutes(
     context.header("Cache-Control", "no-store");
     const problem = localAuthProblem(context, deps);
     if (problem) {
-      return context.json({ ok: false, error: problem.error }, problem.status);
+      return context.json(
+        { ok: false, error: { code: problem.code, message: problem.error } },
+        problem.status,
+      );
     }
     const callerResolution = plugins.resolveRpcCaller(
       context.req.header(PLUGIN_RPC_CALLER_HEADER),
@@ -960,7 +1010,10 @@ export function registerPluginRoutes(
       return context.json(
         {
           ok: false,
-          error: `the ${PLUGIN_RPC_CALLER_HEADER} token isn't a running plugin's caller token`,
+          error: {
+            code: "invalid_caller",
+            message: `the ${PLUGIN_RPC_CALLER_HEADER} token isn't a running plugin's caller token`,
+          },
         },
         403,
       );
@@ -985,11 +1038,26 @@ export function registerPluginRoutes(
     }
     const lookup = plugins.getRpcHandler(id, method);
     if (lookup.outcome === "unknown-plugin") {
-      return context.json({ ok: false, error: `unknown plugin "${id}"` }, 404);
+      return context.json(
+        {
+          ok: false,
+          error: {
+            code: "plugin_not_found",
+            message: `unknown plugin "${id}"`,
+          },
+        },
+        404,
+      );
     }
     if (lookup.outcome === "not-running") {
       return context.json(
-        { ok: false, error: notRunningError(id, lookup) },
+        {
+          ok: false,
+          error: {
+            code: "plugin_not_running",
+            message: notRunningError(id, lookup),
+          },
+        },
         503,
       );
     }
@@ -1028,6 +1096,11 @@ export function registerPluginRoutes(
             invalid_output: 500,
             non_json_result: 500,
             unknown_method: 404,
+            plugin_not_found: 404,
+            plugin_not_running: 503,
+            invalid_caller: 403,
+            forbidden_origin: 403,
+            unsupported_media_type: 415,
             transport_error: 500,
             invalid_response: 500,
             unknown_error: 500,

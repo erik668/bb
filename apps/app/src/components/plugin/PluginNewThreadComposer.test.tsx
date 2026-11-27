@@ -1,10 +1,19 @@
 // @vitest-environment jsdom
 
-import { useEffect, useState, type ReactNode } from "react";
+import { unavailablePluginActionContext } from "@/lib/plugin-action-context-provider";
+import { createPluginPanelController } from "@/lib/plugin-panel-controller";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Provider } from "jotai";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   defaultAppSettings,
+  type Environment,
   PERSONAL_PROJECT_ID,
   type ThreadListEntry,
   type ThreadSessionOption,
@@ -39,15 +48,24 @@ import {
   type NewThreadComposerState,
 } from "@/components/promptbox/NewThreadComposer";
 import { setComposerSelectionSettleTimeoutForTest } from "@/components/promptbox/composer-selection-settle";
-import type { PluginComposerHost } from "@/components/plugin/plugin-composer-host";
+import type {
+  ComposerDraftStore,
+  PluginComposerHost,
+} from "@/components/plugin/plugin-composer-host";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { encodeReuseValue } from "@/components/pickers/environment-picker-value";
-import { useRootComposeReuseEnvironment } from "@/lib/root-compose-selection";
+import {
+  useRootComposeReuseEnvironment,
+  useSetRootComposeProjectId,
+} from "@/lib/root-compose-selection";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
-import { makeThreadListEntry } from "@bb/test-helpers/domain-fixtures";
+import {
+  makeEnvironment,
+  makeThreadListEntry,
+} from "@bb/test-helpers/domain-fixtures";
 import { createDeferredPromise } from "@bb/test-helpers";
 import type { PromptDraftAttachment } from "@bb/client-core";
 import { makeProjectWithThreadsResponse } from "@/test/fixtures/projects";
@@ -63,10 +81,13 @@ import {
   serializeFixedPanelTabsState,
 } from "@/lib/fixed-panel-tabs-state";
 import { buildPluginPaletteActions } from "@/lib/command-palette/palette-plugin-actions";
-import { getFocusedAppPanelController } from "@/lib/app-fixed-tab-navigation";
+import { getFocusedAppPanelController } from "@/lib/app-navigation-host";
 import { useFixedPanelTabsState } from "@/lib/fixed-panel-tabs";
 import { openPluginDetailsInWorkspace } from "./plugin-detail-opener";
 import { PluginNewThreadComposer } from "./PluginNewThreadComposer";
+import { PluginContext } from "./plugin-context";
+import { initialPromptSeedFromComposer } from "@/lib/plugin-composer-handle";
+import { buildPluginEditThreadPrompt } from "@/lib/resource-edit-prompt";
 
 function PanedRootComposeView() {
   return (
@@ -107,10 +128,29 @@ const mocks = vi.hoisted(() => ({
   serverAccessReady: true,
   machineProviders: [] as SystemMachineProvider[],
   modelsLoading: false,
+  modelsLoadingListeners: new Set<() => void>(),
   permissionCeiling: undefined as "accept-edits" | "auto" | "full" | undefined,
   modelSessionOptions: undefined as ThreadSessionOption[] | undefined,
   openCreateDialogThen: vi.fn(),
 }));
+
+beforeEach(() => {
+  vi.mocked(sdk.environments.get).mockReset();
+});
+
+function subscribeToModelsLoading(onChange: () => void) {
+  mocks.modelsLoadingListeners.add(onChange);
+  return () => {
+    mocks.modelsLoadingListeners.delete(onChange);
+  };
+}
+
+function setModelsLoading(loading: boolean) {
+  act(() => {
+    mocks.modelsLoading = loading;
+    for (const listener of mocks.modelsLoadingListeners) listener();
+  });
+}
 
 vi.mock("@/views/RootComposePanelCommandHandlers", () => ({
   RootComposePanelCommandHandlers: ({
@@ -180,6 +220,7 @@ vi.mock("@/hooks/queries/plugin-settings-queries", () => ({
 
 vi.mock("@/lib/sdk", () => ({
   sdk: {
+    environments: { get: vi.fn() },
     projects: { attachments: { copy: mocks.copyAttachments } },
     system: {
       experimental_recordTelemetryEvent: vi
@@ -281,6 +322,7 @@ vi.mock("@/hooks/queries/host-queries", () => ({
 
 vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemProviders: () => ({ data: undefined }),
+  useProviderDirectory: () => ({ data: undefined }),
   useSystemProviderStates: () => ({ data: undefined, isPending: false }),
   useKnownProviderModelCatalogScope: () => undefined,
   useHostProviderCliStatus: () => ({ data: undefined }),
@@ -295,19 +337,26 @@ vi.mock("@/hooks/queries/system-queries", () => ({
             displayName: "bb connect",
             description: "Use a private getbb.app address.",
             pluginId: "connect",
+            routeKind: "relay",
+            enabled: true,
             availability: mocks.serverAccessReady
               ? { status: "available", serverUrl: "https://sawyer.getbb.app" }
               : { status: "setup-required", message: "Pair with bb connect" },
+            urls: mocks.serverAccessReady ? ["https://sawyer.getbb.app"] : [],
           },
         ],
-        defaultProviderId: "connect",
-        effectiveUrl: "https://sawyer.getbb.app",
+        effectiveUrl: null,
         urlSource: null,
+        localNetwork: {
+          bindHost: "127.0.0.1",
+          addresses: [],
+          listenerError: null,
+        },
       },
     },
   }),
   useSystemExecutionOptions: () =>
-    mocks.modelsLoading
+    useSyncExternalStore(subscribeToModelsLoading, () => mocks.modelsLoading)
       ? {
           data: undefined,
           isLoading: true,
@@ -477,6 +526,19 @@ function latestPromptBoxProps(): Record<string, any> {
   return props as Record<string, any>;
 }
 
+function promptBoxDraft(): ComposerDraftStore {
+  return latestPromptBoxProps().draft;
+}
+
+function promptBoxText(): string {
+  return promptBoxDraft().getCurrent().text;
+}
+
+function typeInPromptBox(text: string): void {
+  const draft = promptBoxDraft();
+  draft.setDraft({ ...draft.getCurrent(), text, mentions: [] });
+}
+
 function RootReuseProbe() {
   const [reuseEnvironment, setReuseEnvironment] =
     useRootComposeReuseEnvironment();
@@ -500,7 +562,7 @@ function ForkSeedSurface({ composer }: { composer: NewThreadComposerState }) {
 
 function composerElement(
   seed: NewThreadRequest,
-  onSubmit: (request: NewThreadRequest) => void,
+  onSubmit: (request: NewThreadRequest) => void | Promise<void>,
   draftKey: string,
 ) {
   return (
@@ -523,7 +585,7 @@ function composerElement(
 
 function renderComposer(
   seed: NewThreadRequest,
-  onSubmit: (request: NewThreadRequest) => void,
+  onSubmit: (request: NewThreadRequest) => void | Promise<void>,
   draftKey: string,
 ) {
   return render(composerElement(seed, onSubmit, draftKey));
@@ -763,7 +825,7 @@ describe("PluginNewThreadComposer seeding", () => {
     );
   }
 
-  it("re-renders only the prompt box, not the composer surface, while typing", () => {
+  it("re-renders neither the composer surface nor the prompt box while typing", () => {
     const surfaceStates: NewThreadComposerState[] = [];
     render(
       <Provider>
@@ -786,7 +848,7 @@ describe("PluginNewThreadComposer seeding", () => {
       </Provider>,
     );
     act(() => {
-      latestPromptBoxProps().onChange("h", []);
+      typeInPromptBox("h");
     });
     const surfaceRendersAfterFirstKey = surfaceStates.length;
     const promptBoxRendersAfterFirstKey = mocks.promptBoxProps.length;
@@ -794,15 +856,13 @@ describe("PluginNewThreadComposer seeding", () => {
     const text = "hello world";
     for (let length = 2; length <= text.length; length += 1) {
       act(() => {
-        latestPromptBoxProps().onChange(text.slice(0, length), []);
+        typeInPromptBox(text.slice(0, length));
       });
     }
 
     expect(surfaceStates.length).toBe(surfaceRendersAfterFirstKey);
-    expect(mocks.promptBoxProps.length - promptBoxRendersAfterFirstKey).toBe(
-      text.length - 1,
-    );
-    expect(latestPromptBoxProps().value).toBe("hello world");
+    expect(mocks.promptBoxProps.length).toBe(promptBoxRendersAfterFirstKey);
+    expect(promptBoxText()).toBe("hello world");
     expect(new Set(surfaceStates.map((state) => state.promptDraft)).size).toBe(
       1,
     );
@@ -990,7 +1050,7 @@ describe("PluginNewThreadComposer seeding", () => {
     expect(submitted).toHaveLength(1);
     expect(submitted[0]).toEqual(STORED_REQUEST);
     await waitFor(() => {
-      expect(latestPromptBoxProps().value).toBe("");
+      expect(promptBoxText()).toBe("");
     });
   });
 
@@ -1045,7 +1105,7 @@ describe("PluginNewThreadComposer seeding", () => {
       </MemoryRouter>,
     );
     await waitFor(() => {
-      expect(latestPromptBoxProps().value).toBe(text);
+      expect(promptBoxText()).toBe(text);
       expect(latestPromptBoxProps().disabled).toBe(false);
     });
     await submit();
@@ -1219,9 +1279,7 @@ describe("PluginNewThreadComposer seeding", () => {
     });
 
     await waitFor(() => {
-      expect(latestPromptBoxProps().value).toBe(
-        "updated through the Composer API",
-      );
+      expect(promptBoxText()).toBe("updated through the Composer API");
     });
   });
 
@@ -1229,7 +1287,9 @@ describe("PluginNewThreadComposer seeding", () => {
     const submitted: NewThreadRequest[] = [];
     renderComposer(
       STORED_REQUEST,
-      (request) => submitted.push(request),
+      (request) => {
+        submitted.push(request);
+      },
       "plugin-submission",
     );
 
@@ -1245,7 +1305,7 @@ describe("PluginNewThreadComposer seeding", () => {
     });
 
     expect(submitted).toHaveLength(1);
-    expect(submitted[0]).toMatchObject({ pluginSubmission });
+    expect(submitted[0]?.pluginSubmission).toEqual(pluginSubmission);
   });
 
   it("does not demote a project the replayed bootstrap does not know yet", async () => {
@@ -1507,6 +1567,48 @@ describe("PluginNewThreadComposer seeding", () => {
     });
   });
 
+  it("starts an unseeded composer on the remembered New thread project, as bb's New thread does", async () => {
+    function PickInNewThread() {
+      const setRootComposeProjectId = useSetRootComposeProjectId();
+      useLayoutEffect(() => setRootComposeProjectId("proj_1"));
+      return null;
+    }
+    const submitted: NewThreadRequest[] = [];
+    const composer = (
+      <PluginNewThreadComposer
+        draftKey="unseeded-project"
+        initialPrompt="hello"
+        onSubmit={(request) => {
+          submitted.push(request);
+        }}
+      />
+    );
+    const view = render(
+      <Provider>
+        <MemoryRouter>
+          <PickInNewThread />
+        </MemoryRouter>
+      </Provider>,
+    );
+    view.rerender(
+      <Provider>
+        <MemoryRouter>
+          <PickInNewThread />
+          {composer}
+        </MemoryRouter>
+      </Provider>,
+    );
+
+    await waitFor(() => {
+      expect(latestPromptBoxProps().project.value).toBe("proj_1");
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await submit();
+
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.projectId).toBe("proj_1");
+  });
+
   it("keeps project defaults when no seed props are passed", async () => {
     const submitted: NewThreadRequest[] = [];
     render(
@@ -1662,9 +1764,9 @@ describe("PluginNewThreadComposer seeding", () => {
           defaultShortcut: null,
           id: "inspect",
           title: "Inspect project",
-          run: ({ experimental_panel }) => {
+          run: ({ panel }) => {
             accepted.push(
-              experimental_panel.openTab({
+              panel.openTab({
                 tab: {
                   id: "inspect-project",
                   context: { kind: "thread" },
@@ -1679,7 +1781,13 @@ describe("PluginNewThreadComposer seeding", () => {
       ],
       threadId: null,
       projectId: null,
-      panel: getFocusedAppPanelController(),
+      actionContext: (pluginId) => ({
+        ...unavailablePluginActionContext(pluginId),
+        panel: createPluginPanelController(
+          pluginId,
+          getFocusedAppPanelController,
+        ),
+      }),
     });
     await act(async () => {
       command.run();
@@ -1828,6 +1936,87 @@ describe("PluginNewThreadComposer seeding", () => {
     });
   });
 
+  it("reuses an explicitly targeted environment without sidebar threads", async () => {
+    vi.mocked(sdk.environments.get).mockResolvedValue(
+      makeEnvironment({
+        id: "env_existing",
+        projectId: "proj_1",
+        hostId: "host_1",
+      }),
+    );
+    window.localStorage.setItem("bb.root-compose.project-id", "proj_1");
+    const router = createMemoryRouter(
+      [{ path: "/", element: <PanedRootComposeView /> }],
+      {
+        initialEntries: [
+          { pathname: "/", state: { reuseEnvironmentId: "env_existing" } },
+        ],
+      },
+    );
+    render(
+      <Provider>
+        <RouterProvider router={router} />
+      </Provider>,
+    );
+
+    await waitFor(() => {
+      expect(router.state.location.state).toBeNull();
+      expect(latestPromptBoxProps().modeConfig.environment.value).toBe(
+        encodeReuseValue("env_existing"),
+      );
+    });
+    expect(latestPromptBoxProps().modeConfig.worktree.options).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ environmentId: "env_existing" }),
+      ]),
+    );
+  });
+
+  it.each([
+    { status: "ready" as const, expected: encodeReuseValue("env_existing") },
+    {
+      status: "destroyed" as const,
+      expected: "provider:project-checkout",
+    },
+  ])(
+    "restores a tab-stored reuse without sidebar threads ($status)",
+    async ({ status, expected }) => {
+      vi.mocked(sdk.environments.get).mockResolvedValue(
+        makeEnvironment({
+          id: "env_existing",
+          projectId: "proj_1",
+          hostId: "host_1",
+          status,
+        }),
+      );
+      window.localStorage.setItem("bb.root-compose.project-id", "proj_1");
+      window.sessionStorage.setItem(
+        "bb.root-compose.reuse-environment",
+        encodeReuseValue("env_existing"),
+      );
+      const router = createMemoryRouter(
+        [{ path: "/", element: <PanedRootComposeView /> }],
+        { initialEntries: ["/"] },
+      );
+      render(
+        <Provider>
+          <RouterProvider router={router} />
+        </Provider>,
+      );
+
+      await waitFor(() =>
+        expect(sdk.environments.get).toHaveBeenCalledWith(
+          expect.objectContaining({ environmentId: "env_existing" }),
+        ),
+      );
+      await waitFor(() =>
+        expect(latestPromptBoxProps().modeConfig.environment.value).toBe(
+          expected,
+        ),
+      );
+    },
+  );
+
   it("closes visible plugin details before an underlying terminal", async () => {
     const terminal = createTerminalFixedPanelTab({
       terminalId: "terminal-under-details",
@@ -1863,9 +2052,9 @@ describe("PluginNewThreadComposer seeding", () => {
         </QueryClientProvider>
       </Provider>,
     );
-    act(() =>
-      openPluginDetailsInWorkspace({ pluginId: "docs", title: "Docs" }),
-    );
+    act(() => {
+      openPluginDetailsInWorkspace({ pluginId: "docs", title: "Docs" });
+    });
     const command = screen.getByRole("button", { name: "Close panel command" });
     expect(command.dataset.activeDetail).toBe("docs");
     fireEvent.click(command);
@@ -2103,7 +2292,7 @@ describe("PluginNewThreadComposer seeding", () => {
     );
 
     await waitFor(() => {
-      expect(latestPromptBoxProps().value).toBe("Create a kanban plugin");
+      expect(promptBoxText()).toBe("Create a kanban plugin");
     });
     await waitFor(() => {
       expect(router.state.location.state).toBeNull();
@@ -2118,6 +2307,131 @@ describe("PluginNewThreadComposer seeding", () => {
     );
     consoleError.mockRestore();
     expect(updateDepthErrors).toEqual([]);
+  });
+
+  it("seeds core's plugin-edit hand-off with a path mention pill", async () => {
+    window.localStorage.setItem("bb.root-compose.project-id", "proj_1");
+    const rootDraft = getPromptDraftAccessor({ kind: "new-thread" });
+    const router = createMemoryRouter(
+      [{ path: "/", element: <PanedRootComposeView /> }],
+      {
+        initialEntries: [
+          {
+            pathname: "/",
+            state: {
+              focusPrompt: true,
+              initialPrompt: initialPromptSeedFromComposer(
+                buildPluginEditThreadPrompt({
+                  name: "Pattern Atlas",
+                  path: "/Users/me/plugins/pattern-atlas",
+                }),
+                null,
+              ),
+              replaceInitialPrompt: true,
+            },
+          },
+        ],
+      },
+    );
+    render(
+      <Provider>
+        <RouterProvider router={router} />
+      </Provider>,
+    );
+
+    const text =
+      'Edit the bb plugin "Pattern Atlas" at @/Users/me/plugins/pattern-atlas/. I want to ';
+    await waitFor(() => {
+      expect(rootDraft.getCurrent().text).toBe(text);
+    });
+    expect(rootDraft.getCurrent().mentions).toEqual([
+      {
+        start: 38,
+        end: 71,
+        resource: {
+          kind: "path",
+          source: "workspace",
+          entryKind: "directory",
+          path: "/Users/me/plugins/pattern-atlas",
+          label: "pattern-atlas",
+        },
+      },
+    ]);
+  });
+
+  it("submits a plugin's structured seed with its own mention resolved to the plugin", async () => {
+    const onSubmit = vi.fn<(request: NewThreadRequest) => void>();
+    render(
+      <MemoryRouter>
+        <PluginContext.Provider value="obsidian">
+          <PluginNewThreadComposer
+            draftKey="structured-seed"
+            defaultProjectId="proj_1"
+            initialPrompt={[
+              "Ask about ",
+              { provider: "notes", id: "daily/2026-11-22", label: "Daily" },
+            ]}
+            onSubmit={onSubmit}
+          />
+        </PluginContext.Provider>
+      </MemoryRouter>,
+    );
+    await waitFor(() => {
+      expect(promptBoxText()).toBe("Ask about @Daily");
+      expect(latestPromptBoxProps().disabled).toBe(false);
+    });
+    await submit();
+    expect(onSubmit.mock.calls[0]?.[0].input).toEqual([
+      {
+        type: "text",
+        text: "Ask about @Daily",
+        mentions: [
+          {
+            start: 10,
+            end: 16,
+            resource: {
+              kind: "plugin",
+              pluginId: "obsidian",
+              itemId: "notes:daily/2026-11-22",
+              label: "Daily",
+              icon: null,
+            },
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("opens empty and warns instead of crashing the slot for a seed insert() would reject", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      render(
+        <MemoryRouter>
+          <PluginContext.Provider value="obsidian">
+            <p>Plugin panel content</p>
+            <PluginNewThreadComposer
+              draftKey="invalid-structured-seed"
+              defaultProjectId="proj_1"
+              initialPrompt={[
+                "Ask about ",
+                { provider: "notes:daily", id: "x", label: "Daily" },
+              ]}
+              onSubmit={vi.fn()}
+            />
+          </PluginContext.Provider>
+        </MemoryRouter>,
+      );
+      await waitFor(() => {
+        expect(screen.getByTestId("new-thread-prompt-box")).toBeTruthy();
+      });
+      expect(screen.getByText("Plugin panel content")).toBeTruthy();
+      expect(promptBoxText()).toBe("");
+      expect(warn).toHaveBeenCalledWith(
+        '[plugin:obsidian] NewThreadComposer ignored its initialPrompt: Invalid mention provider id "notes:daily".',
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("ignores a repeated submit while the first submission is pending", async () => {
@@ -2138,7 +2452,7 @@ describe("PluginNewThreadComposer seeding", () => {
       pressSubmit();
     });
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(latestPromptBoxProps().value).toBe("");
+    expect(promptBoxText()).toBe("");
 
     await act(async () => {
       finishSubmit?.();
@@ -2162,17 +2476,17 @@ describe("PluginNewThreadComposer seeding", () => {
       pressSubmit();
     });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(latestPromptBoxProps().value).toBe("");
+    expect(promptBoxText()).toBe("");
     await act(async () => {
       failSubmit?.();
     });
     await waitFor(() => {
       expect(latestPromptBoxProps().isSubmitting).toBe(false);
     });
-    expect(latestPromptBoxProps().value).toBe("review every PR for slop");
+    expect(promptBoxText()).toBe("review every PR for slop");
   });
 
-  it("does not replace a new draft when submission fails", async () => {
+  it("merges a failed submission ahead of a new draft", async () => {
     let failSubmit: (() => void) | null = null;
     const onSubmit = vi.fn(
       () =>
@@ -2189,8 +2503,10 @@ describe("PluginNewThreadComposer seeding", () => {
       pressSubmit();
     });
     await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1));
-    expect(latestPromptBoxProps().value).toBe("");
-    act(() => latestPromptBoxProps().onChange("next thread", []));
+    expect(promptBoxText()).toBe("");
+    act(() => {
+      typeInPromptBox("next thread");
+    });
     await act(async () => {
       failSubmit?.();
     });
@@ -2198,7 +2514,7 @@ describe("PluginNewThreadComposer seeding", () => {
     await waitFor(() => {
       expect(latestPromptBoxProps().isSubmitting).toBe(false);
     });
-    expect(latestPromptBoxProps().value).toBe("next thread");
+    expect(promptBoxText()).toBe("review every PR for slop\n\nnext thread");
   });
 
   it("accepts overlapping uploads and stays busy until every batch settles", async () => {
@@ -2230,7 +2546,7 @@ describe("PluginNewThreadComposer seeding", () => {
       });
       await secondBatch;
     });
-    expect(latestPromptBoxProps().attachments.items).toHaveLength(1);
+    expect(promptBoxDraft().getCurrent().attachments).toHaveLength(1);
     expect(latestPromptBoxProps().attachments.pendingUploads).toHaveLength(1);
     expect(latestPromptBoxProps().attachments.isAttaching).toBe(true);
     await act(async () => {
@@ -2244,7 +2560,7 @@ describe("PluginNewThreadComposer seeding", () => {
     });
     expect(latestPromptBoxProps().attachments.isAttaching).toBe(false);
     expect(latestPromptBoxProps().attachments.pendingUploads).toHaveLength(0);
-    expect(latestPromptBoxProps().attachments.items).toHaveLength(1);
+    expect(promptBoxDraft().getCurrent().attachments).toHaveLength(1);
     expect(latestPromptBoxProps().attachments.error).toBe(
       "Could not reach the server. Check that it is running and try again.",
     );
@@ -2270,7 +2586,7 @@ describe("PluginNewThreadComposer seeding", () => {
       ]);
     });
     await waitFor(() => {
-      expect(latestPromptBoxProps().attachments.items).toHaveLength(1);
+      expect(promptBoxDraft().getCurrent().attachments).toHaveLength(1);
     });
     await act(async () => {
       await latestPromptBoxProps().project.onChange("proj_2");
@@ -2282,7 +2598,7 @@ describe("PluginNewThreadComposer seeding", () => {
       paths: [".bb/attachments/notes.txt"],
     });
     expect(latestPromptBoxProps().project.value).toBe("proj_1");
-    expect(latestPromptBoxProps().attachments.items).toHaveLength(1);
+    expect(promptBoxDraft().getCurrent().attachments).toHaveLength(1);
   });
 });
 
@@ -3043,7 +3359,9 @@ describe("NewThreadComposer setSelection", () => {
     render(rootLikeElement("proj_1"));
     const host = currentHost();
     const initial = host.getSelection?.();
-    act(() => latestPromptBoxProps().execution.model.onChange("gpt-5.6-sol"));
+    act(() => {
+      latestPromptBoxProps().execution.model.onChange("gpt-5.6-sol");
+    });
     await waitFor(() => {
       expect(host.getSelection?.()?.model).toBe("gpt-5.6-sol");
     });
@@ -3074,6 +3392,70 @@ describe("NewThreadComposer setSelection", () => {
     if (failure !== null) throw failure;
     return result as unknown as ExperimentalComposerSelection;
   }
+
+  it.each(
+    ["root", "component-local"].flatMap((surface) =>
+      ["ready", "destroyed", "missing"].map((status) => ({ surface, status })),
+    ),
+  )(
+    "settles an explicit reuse selection without sidebar threads ($surface, $status)",
+    async ({ surface, status }) => {
+      const response = createDeferredPromise<Environment>();
+      vi.mocked(sdk.environments.get).mockReturnValue(response.promise);
+      if (surface === "root") {
+        render(rootLikeElement("proj_1"));
+      } else {
+        renderComposer(STORED_REQUEST, () => undefined, "explicit-reuse");
+      }
+      const host = currentHost();
+      const environment = {
+        type: "reuse" as const,
+        environmentId: "env_existing",
+      };
+      const selection = host.setSelection!({ environment });
+      let selectionSettled = false;
+      void selection.then(() => {
+        selectionSettled = true;
+      });
+      await waitFor(() =>
+        expect(sdk.environments.get).toHaveBeenCalledWith(
+          expect.objectContaining({ environmentId: "env_existing" }),
+        ),
+      );
+      expect(selectionSettled).toBe(false);
+      await act(async () => {
+        if (status === "missing") {
+          response.reject(
+            new BbHttpError({
+              body: null,
+              code: "not_found",
+              status: 404,
+              message: "Not found",
+            }),
+          );
+        } else {
+          response.resolve(
+            makeEnvironment({
+              id: "env_existing",
+              projectId: "proj_1",
+              hostId: "host_1",
+              status: status === "destroyed" ? "destroyed" : "ready",
+            }),
+          );
+        }
+      });
+      const result = await settled(selection);
+      if (status === "ready") {
+        expect(result.environment).toEqual(environment);
+      } else {
+        expect(result.environment).toMatchObject({
+          type: "provider",
+          environmentProviderId: "project-checkout",
+        });
+      }
+      expect(host.getSelection?.()?.environment).toEqual(result.environment);
+    },
+  );
 
   it("switches the project first and remembers the environment and machine for the new project", async () => {
     render(rootLikeElement("proj_2"));
@@ -3224,7 +3606,7 @@ describe("NewThreadComposer setSelection", () => {
 
   it("waits for the model catalog before reporting, bounded by the settle timeout", async () => {
     mocks.modelsLoading = true;
-    const view = render(rootLikeElement("proj_1"));
+    render(rootLikeElement("proj_1"));
     let result: ExperimentalComposerSelection | null = null;
     void currentHost().setSelection!({ permissionMode: "accept-edits" }).then(
       (value) => {
@@ -3238,8 +3620,7 @@ describe("NewThreadComposer setSelection", () => {
     });
     expect(result).toBeNull();
 
-    mocks.modelsLoading = false;
-    view.rerender(rootLikeElement("proj_1"));
+    setModelsLoading(false);
     await waitFor(() => {
       expect(result).not.toBeNull();
     });
@@ -3250,8 +3631,7 @@ describe("NewThreadComposer setSelection", () => {
     });
 
     setComposerSelectionSettleTimeoutForTest(150);
-    mocks.modelsLoading = true;
-    view.rerender(rootLikeElement("proj_1"));
+    setModelsLoading(true);
     const bounded = await settled(
       currentHost().setSelection!({ permissionMode: "full" }),
       2_000,

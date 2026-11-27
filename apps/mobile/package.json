@@ -11,6 +11,7 @@
     "build:android:dev": "bash scripts/build-android-dev.sh",
     "prebuild": "expo prebuild",
     "typecheck": "tsrs --noEmit",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "lint": "oxlint app src scripts plugins metro.config.js app.config.js",
     "test": "vitest run --config vitest.config.ts",
     "theme:generate": "node --conditions=source --import tsx scripts/generate-native-theme.ts",
@@ -25,6 +26,7 @@
     "@bb/mobile-bridge": "workspace:*",
     "@bb/sdk": "workspace:*",
     "@bb/server-contract": "workspace:*",
+    "@bb/text-utils": "workspace:*",
     "@expo/ui": "58.0.27",
     "@gorhom/bottom-sheet": "^5.2.14",
     "@hugeicons/core-free-icons": "~4.3.4",
@@ -84,6 +86,7 @@
     "tailwindcss": "4.3.3",
     "tsrs": "0.18.0-ts7.1.0-dev.20260929",
     "typescript": "npm:@typescript/typescript6@^6.0.2",
-    "vitest": "^4.1.12"
+    "vitest": "^4.1.12",
+    "yaml": "^2.9.1"
   }
 }

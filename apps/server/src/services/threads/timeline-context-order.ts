@@ -1,25 +1,58 @@
-import type { TimelineRow } from "@bb/server-contract";
-import {
-  isExternalUserBoundaryForTurn,
-  type ExternalUserBoundaryMessage,
-  type ExternalUserBoundaryTurnSpan,
-} from "@bb/thread-view";
+import { threadEventJoinsRunningTurn } from "@bb/thread-view";
 import {
   getDatabaseDataVersion,
-  getFirstParentedTimelineBoundarySequence,
   getThreadEventRewriteGeneration,
-  getTimelineGroupingContextChangesInRange,
+  hasTimelineGroupingContextChangesInRange,
   listTimelineOrderingContext,
   type DbConnection,
+  type StoredEventRow,
 } from "@bb/db";
+import { decodeStoredEventRowCached } from "./stored-event-decode-cache.js";
 
 export interface TimelineClientRequestContext {
   acceptedSequences: readonly number[];
   requestedSequences: readonly number[];
 }
 
+export interface TimelineTurnBlock {
+  completionSequence: number | null;
+  startedSequence: number;
+  turnId: string;
+}
+
+export function rootTurnRunningAtSequence(
+  turnBlocks: readonly TimelineTurnBlock[],
+  sequence: number,
+): TimelineTurnBlock | null {
+  let running: TimelineTurnBlock | null = null;
+  for (const block of turnBlocks) {
+    if (block.startedSequence >= sequence) continue;
+    if (
+      block.completionSequence !== null &&
+      block.completionSequence < sequence
+    ) {
+      continue;
+    }
+    if (running === null || block.startedSequence > running.startedSequence) {
+      running = block;
+    }
+  }
+  return running;
+}
+
+export function rootTurnJoinedByThreadRow(
+  db: DbConnection,
+  row: StoredEventRow,
+  turnBlocks: readonly TimelineTurnBlock[],
+): TimelineTurnBlock | null {
+  return row.turnId === null &&
+    threadEventJoinsRunningTurn(decodeStoredEventRowCached(db, row))
+    ? rootTurnRunningAtSequence(turnBlocks, row.sequence)
+    : null;
+}
+
 export interface TimelineGroupingContext {
-  orderingBoundarySequence: number | null;
+  turnBlocks: readonly TimelineTurnBlock[];
   acceptedTurnIds: ReadonlyMap<string, string>;
   clientRequestIdsBySequence: ReadonlyMap<number, string>;
   clientRequests: ReadonlyMap<string, TimelineClientRequestContext>;
@@ -31,14 +64,6 @@ interface TimelineGroupingContextArgs {
   threadId: string;
 }
 
-interface TimelineOrderingContext {
-  acceptedTurnIds: ReadonlyMap<string, string>;
-  clientRequestIdsBySequence: ReadonlyMap<number, string>;
-  boundarySequence: number | null;
-  boundaryScanThroughSequence: number;
-  clientRequests: ReadonlyMap<string, TimelineClientRequestContext>;
-}
-
 type TimelineOrderingContextRow = ReturnType<
   typeof listTimelineOrderingContext
 >[number];
@@ -47,15 +72,16 @@ interface TimelineOrderingContextLog {
   dataVersion: number;
   generation: number;
   rows: TimelineOrderingContextRow[];
+  threadId: string;
   throughSequence: number;
 }
 
 interface TimelineGroupingContextEntry {
-  orderingContext: TimelineOrderingContext;
   context: TimelineGroupingContext;
   dataVersion: number;
   generation: number;
   maxSeq: number;
+  threadId: string;
 }
 
 const GROUPING_CONTEXT_KEY_LIMIT = 128;
@@ -75,6 +101,24 @@ const orderingContextLogs = new WeakMap<
 export function clearTimelineOrderingContextCache(db: DbConnection): void {
   orderingContexts.delete(db);
   orderingContextLogs.delete(db);
+}
+
+export function forgetTimelineGroupingContexts(
+  db: DbConnection,
+  threadId: string,
+): void {
+  const contexts = orderingContexts.get(db);
+  if (contexts !== undefined) {
+    for (const [key, entries] of contexts) {
+      if (entries[0]?.threadId === threadId) contexts.delete(key);
+    }
+  }
+  const logs = orderingContextLogs.get(db);
+  if (logs !== undefined) {
+    for (const [key, log] of logs) {
+      if (log.threadId === threadId) logs.delete(key);
+    }
+  }
 }
 
 function sequenceCut(
@@ -114,6 +158,7 @@ function listOrderingContextRows(
       dataVersion,
       generation,
       rows: [],
+      threadId: args.threadId,
       throughSequence: args.sequenceStart - 1,
     };
   }
@@ -160,22 +205,20 @@ function findReusableEntry(
   db: DbConnection,
   args: TimelineGroupingContextArgs,
   entries: readonly TimelineGroupingContextEntry[],
-):
-  | { entry: TimelineGroupingContextEntry; parentedChanged: boolean }
-  | undefined {
+): TimelineGroupingContextEntry | undefined {
   const exact = entries.find((entry) => entry.maxSeq === args.maxSeq);
-  if (exact !== undefined) return { entry: exact, parentedChanged: false };
+  if (exact !== undefined) return exact;
   for (const side of ["below", "above"] as const) {
     const entry = nearestEntry(entries, args.maxSeq, side);
     if (entry === undefined) continue;
-    const changes = getTimelineGroupingContextChangesInRange(db, {
+    const changed = hasTimelineGroupingContextChangesInRange(db, {
       afterSequence: Math.min(entry.maxSeq, args.maxSeq),
       threadId: args.threadId,
       throughSequence: Math.max(entry.maxSeq, args.maxSeq),
     });
-    if (changes.ordering) continue;
-    if (!changes.parented && side === "below") entry.maxSeq = args.maxSeq;
-    return { entry, parentedChanged: changes.parented };
+    if (changed) continue;
+    if (side === "below") entry.maxSeq = args.maxSeq;
+    return entry;
   }
   return undefined;
 }
@@ -198,31 +241,24 @@ export function getTimelineGroupingContext(
   );
   cache.delete(key);
   const reusable = findReusableEntry(db, args, entries);
-  if (reusable !== undefined && !reusable.parentedChanged) {
+  if (reusable !== undefined) {
     cache.set(key, [
-      reusable.entry,
-      ...entries.filter((entry) => entry !== reusable.entry),
+      reusable,
+      ...entries.filter((entry) => entry !== reusable),
     ]);
-    return reusable.entry.context;
+    return reusable.context;
   }
-  const orderingContext =
-    reusable?.entry.orderingContext ??
-    computeTimelineOrderingContext(
-      listOrderingContextRows(db, args, key, generation, dataVersion),
-    );
-  const parentedBoundary = getFirstParentedTimelineBoundarySequence(db, args);
-  const context: TimelineGroupingContext = {
-    clientRequestIdsBySequence: orderingContext.clientRequestIdsBySequence,
-    acceptedTurnIds: orderingContext.acceptedTurnIds,
-    clientRequests: orderingContext.clientRequests,
-    orderingBoundarySequence:
-      parentedBoundary !== null &&
-      parentedBoundary <= orderingContext.boundaryScanThroughSequence
-        ? parentedBoundary
-        : (orderingContext.boundarySequence ?? parentedBoundary),
-  };
+  const context = computeTimelineGroupingContext(
+    listOrderingContextRows(db, args, key, generation, dataVersion),
+  );
   cache.set(key, [
-    { context, orderingContext, dataVersion, generation, maxSeq: args.maxSeq },
+    {
+      context,
+      dataVersion,
+      generation,
+      maxSeq: args.maxSeq,
+      threadId: args.threadId,
+    },
     ...entries.slice(0, GROUPING_CONTEXT_ENTRIES_PER_KEY - 1),
   ]);
   if (cache.size > GROUPING_CONTEXT_KEY_LIMIT) {
@@ -246,11 +282,11 @@ function clientRequestContext(
   return request;
 }
 
-function computeTimelineOrderingContext(
+function computeTimelineGroupingContext(
   context: readonly TimelineOrderingContextRow[],
-): TimelineOrderingContext {
-  const spans = new Map<string, ExternalUserBoundaryTurnSpan>();
-  const accepted = new Map<string, { sequence: number; turnId: string }>();
+): TimelineGroupingContext {
+  const turnBlocks = new Map<string, TimelineTurnBlock>();
+  const acceptedTurnIds = new Map<string, string>();
   const clientRequestIdsBySequence = new Map<number, string>();
   const clientRequests = new Map<
     string,
@@ -266,10 +302,7 @@ function computeTimelineOrderingContext(
     }
     if (row.turnId === null) continue;
     if (row.type === "turn/input/accepted" && row.clientRequestId !== null) {
-      accepted.set(row.clientRequestId, {
-        sequence: row.sequence,
-        turnId: row.turnId,
-      });
+      acceptedTurnIds.set(row.clientRequestId, row.turnId);
       clientRequestIdsBySequence.set(row.sequence, row.clientRequestId);
       clientRequestContext(
         clientRequests,
@@ -279,110 +312,29 @@ function computeTimelineOrderingContext(
     if (
       row.type === "turn/started" &&
       row.parentToolCallId === null &&
-      !spans.has(row.turnId)
+      !turnBlocks.has(row.turnId)
     ) {
-      spans.set(row.turnId, {
+      turnBlocks.set(row.turnId, {
         completionSequence: null,
-        sequenceStart: row.sequence,
+        startedSequence: row.sequence,
         turnId: row.turnId,
       });
     }
-    const span = spans.get(row.turnId);
+    const block = turnBlocks.get(row.turnId);
     if (
-      span !== undefined &&
+      block !== undefined &&
       row.type === "turn/completed" &&
-      span.completionSequence === null
+      block.completionSequence === null
     ) {
-      span.completionSequence = row.sequence;
-    }
-  }
-  const requests = context.filter(
-    (row) => row.type === "client/turn/requested" && row.requestId !== null,
-  );
-  for (const row of requests) {
-    const acceptance = accepted.get(row.requestId!);
-    const span =
-      acceptance === undefined ? undefined : spans.get(acceptance.turnId);
-    if (span !== undefined) {
-      span.sequenceStart = Math.min(span.sequenceStart, row.sequence);
-    }
-  }
-  let boundary: number | null = null;
-  let boundaryScanThroughSequence = -Infinity;
-  const orderedSpans = [...spans.values()].sort(
-    (left, right) => left.sequenceStart - right.sequenceStart,
-  );
-  let nextSpan = 0;
-  let longest: ExternalUserBoundaryTurnSpan | null = null;
-  let secondLongest: ExternalUserBoundaryTurnSpan | null = null;
-  const spanEnd = (span: ExternalUserBoundaryTurnSpan | null): number =>
-    span === null ? -Infinity : (span.completionSequence ?? Infinity);
-  for (const row of requests) {
-    if (row.hasVisibleUserInput !== 1) continue;
-    const acceptance = accepted.get(row.requestId!);
-    const steered =
-      acceptance !== undefined &&
-      row.expectedTurnId !== null &&
-      acceptance.turnId === row.expectedTurnId;
-    const message: ExternalUserBoundaryMessage = {
-      sequence: steered ? acceptance.sequence : row.sequence,
-      turnId: acceptance?.turnId ?? row.expectedTurnId,
-    };
-    boundaryScanThroughSequence = Math.max(
-      boundaryScanThroughSequence,
-      message.sequence,
-    );
-    while (
-      nextSpan < orderedSpans.length &&
-      orderedSpans[nextSpan]!.sequenceStart < message.sequence
-    ) {
-      const span = orderedSpans[nextSpan]!;
-      if (spanEnd(span) > spanEnd(longest)) {
-        secondLongest = longest;
-        longest = span;
-      } else if (spanEnd(span) > spanEnd(secondLongest)) {
-        secondLongest = span;
-      }
-      nextSpan += 1;
-    }
-    const candidate =
-      longest !== null && longest.turnId === message.turnId
-        ? secondLongest
-        : longest;
-    if (
-      candidate !== null &&
-      isExternalUserBoundaryForTurn(candidate, message)
-    ) {
-      boundary = message.sequence;
-      break;
+      block.completionSequence = row.sequence;
     }
   }
   return {
+    acceptedTurnIds,
     clientRequestIdsBySequence,
-    boundarySequence: boundary,
-    boundaryScanThroughSequence,
     clientRequests,
-    acceptedTurnIds: new Map(
-      [...accepted].map(([requestId, entry]) => [requestId, entry.turnId]),
+    turnBlocks: [...turnBlocks.values()].sort(
+      (left, right) => left.startedSequence - right.startedSequence,
     ),
   };
-}
-
-export function orderTimelineRowsUsingContext(
-  rows: readonly TimelineRow[],
-  boundary: number | null,
-): TimelineRow[] {
-  if (boundary === null) return [...rows];
-  const index = rows.findIndex((row) => row.sourceSeqStart >= boundary);
-  if (index < 0) return [...rows];
-  return [
-    ...rows.slice(0, index),
-    ...rows
-      .slice(index)
-      .sort(
-        (left, right) =>
-          left.sourceSeqStart - right.sourceSeqStart ||
-          left.sourceSeqEnd - right.sourceSeqEnd,
-      ),
-  ];
 }

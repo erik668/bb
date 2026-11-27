@@ -76,13 +76,11 @@ function parentItemId(event: ThreadEventWithMeta["event"]): string | null {
   return "parentToolCallId" in event ? (event.parentToolCallId ?? null) : null;
 }
 
-function hasBackgroundState(events: ThreadEventWithMeta[]): boolean {
-  return events.some(
-    ({ event }) =>
-      "item" in event &&
-      (event.item.type === "backgroundTask" ||
-        event.item.type === "delegation"),
-  );
+function backgroundItemId(event: ThreadEventWithMeta["event"]): string | null {
+  return "item" in event &&
+    (event.item.type === "backgroundTask" || event.item.type === "delegation")
+    ? event.item.id
+    : null;
 }
 
 function isThreadError(event: ThreadEventWithMeta["event"]): boolean {
@@ -98,7 +96,6 @@ function canReuse(
   checkpoint: Checkpoint,
   events: ThreadEventWithMeta[],
 ): boolean {
-  if (hasBackgroundState(events)) return false;
   let hasTailTurn = false;
   return events.every(({ event }) => {
     if (event.type === "turn/started") hasTailTurn = true;
@@ -107,7 +104,7 @@ function canReuse(
       return false;
     if (
       "item" in event &&
-      event.item.type === "toolCall" &&
+      (event.item.type === "toolCall" || backgroundItemId(event) !== null) &&
       checkpoint.parentItemIds.has(event.item.id)
     )
       return false;
@@ -134,9 +131,7 @@ function canReuse(
 function nextCheckpoint(
   projection: ConversationOutlineProjection,
   previous: Checkpoint,
-  orderingBoundarySequence: number | null,
 ): Checkpoint {
-  if (hasBackgroundState(projection.events)) return previous;
   const activeTurns = new Set<string>();
   const pendingRequests = new Set<string>();
   let completedBoundary = previous.sequenceStart;
@@ -157,12 +152,7 @@ function nextCheckpoint(
       pendingRequests.delete(event.requestId);
     if (event.scope.kind !== "turn") continue;
     if (event.type === "turn/started") {
-      if (
-        activeTurns.size === 0 &&
-        (orderingBoundarySequence === null ||
-          completedBoundary <= orderingBoundarySequence)
-      )
-        boundary = completedBoundary;
+      if (activeTurns.size === 0) boundary = completedBoundary;
       activeTurns.add(event.scope.turnId);
     }
     if (event.type === "turn/completed") {
@@ -180,7 +170,10 @@ function nextCheckpoint(
     if (event.scope.kind === "turn") turnIds.add(event.scope.turnId);
     const parentId = parentItemId(event);
     if (parentId !== null) parentItemIds.add(parentId);
-    if ("item" in event && event.item.type === "toolCall")
+    if (
+      "item" in event &&
+      (event.item.type === "toolCall" || backgroundItemId(event) !== null)
+    )
       parentItemIds.add(event.item.id);
     const requestId = referencedRequestId(event);
     if (requestId !== null) requestIds.add(requestId);
@@ -228,7 +221,6 @@ export function projectConversationOutlineIncrementally(args: {
   key: string;
   maxSeq: number;
   historySequenceStart: number;
-  orderingBoundarySequence: number | null;
   resolveProjectionState: (
     sequenceStart: number,
     previous: ConversationOutlineProjectionState | null,
@@ -265,8 +257,6 @@ export function projectConversationOutlineIncrementally(args: {
     entry.dataVersion === dataVersion &&
     entry.generation === generation &&
     entry.historySequenceStart === args.historySequenceStart &&
-    (args.orderingBoundarySequence === null ||
-      entry.checkpoint.sequenceStart <= args.orderingBoundarySequence) &&
     entry.maxSeq <= args.maxSeq;
   const previousState = canReuseEntry ? entry.projectionState : null;
   const projectionState = args.resolveProjectionState(
@@ -311,11 +301,7 @@ export function projectConversationOutlineIncrementally(args: {
     ...checkpoint.items,
     ...projection.items.map(({ item }) => item),
   ];
-  const next = nextCheckpoint(
-    projection,
-    checkpoint,
-    args.orderingBoundarySequence,
-  );
+  const next = nextCheckpoint(projection, checkpoint);
   if (next.sequenceStart > args.historySequenceStart) {
     const chars =
       next === entry?.checkpoint

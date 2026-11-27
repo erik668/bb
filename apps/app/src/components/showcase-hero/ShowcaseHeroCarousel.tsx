@@ -3,6 +3,7 @@ import { requestComposerFocus } from "@/lib/composer-focus-requests";
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useMemo,
   useRef,
   useState,
@@ -15,10 +16,10 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { PluginNewThreadComposer } from "@/components/plugin/PluginNewThreadComposer";
 import { useCreateThread } from "@/hooks/mutations/thread-runtime-mutations";
 import { getPromptDraftAccessor } from "@/hooks/usePromptDraftStorage";
-import { getThreadRoutePath } from "@/lib/route-paths";
 import { ShowcaseFrame } from "./ShowcaseFrame";
 import type { ShowcaseArchetype, ShowcaseScenes } from "./showcase-archetype";
 import { accentInk, accentTint, neutral } from "./showcase-tokens";
+import { openThread } from "@/lib/split-layout/openThread";
 
 const SLIDE_MS = 5000;
 
@@ -132,23 +133,20 @@ export function ShowcaseHeroCarousel({
   );
 
   const handledRequestNonce = useRef<number | null>(null);
-  useEffect(() => {
-    if (composerDisabled) return;
-    if (
-      openRequest === null ||
-      openRequest.nonce === handledRequestNonce.current
-    ) {
+  const applyOpenRequest = useEffectEvent((request: typeof openRequest) => {
+    if (request === null || request.nonce === handledRequestNonce.current) {
       return;
     }
-    handledRequestNonce.current = openRequest.nonce;
-    // oxlint-disable-next-line react/set-state-in-effect
+    handledRequestNonce.current = request.nonce;
     setSeedAndNotify(
-      openRequest.close === true
-        ? null
-        : (openRequest.seed ?? composer.promptPrefix),
-      { replaceDraft: !openRequest.close && openRequest.seed !== undefined },
+      request.close === true ? null : (request.seed ?? composer.promptPrefix),
+      { replaceDraft: !request.close && request.seed !== undefined },
     );
-  }, [composer.promptPrefix, composerDisabled, openRequest, setSeedAndNotify]);
+  });
+  useEffect(() => {
+    if (composerDisabled) return;
+    applyOpenRequest(openRequest);
+  }, [composerDisabled, openRequest]);
 
   useEffect(() => {
     if (paused) return;
@@ -310,12 +308,11 @@ export function ShowcaseHeroCarousel({
                     executionInputSources: request.executionInputSources,
                     environment: request.environment,
                   });
-                  navigate(
-                    getThreadRoutePath({
-                      projectId: thread.projectId ?? request.projectId,
-                      threadId: thread.id,
-                    }),
-                  );
+                  openThread({
+                    navigate,
+                    projectId: thread.projectId ?? request.projectId,
+                    threadId: thread.id,
+                  });
                 }}
               />
             </div>

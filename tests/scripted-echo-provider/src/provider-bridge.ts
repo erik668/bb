@@ -16,6 +16,7 @@ import {
   modelListParamsSchema,
   skillsConfigureParamsSchema,
   threadArchiveParamsSchema,
+  threadBackgroundTaskStopParamsSchema,
   threadDiscardParamsSchema,
   threadForkParamsSchema,
   threadGoalClearParamsSchema,
@@ -48,6 +49,7 @@ const scriptedMethodSchema = z.enum([
   "thread/unarchive",
   "thread/name/set",
   "thread/goal/clear",
+  "thread/backgroundTask/stop",
   "skills/configure",
 ]);
 export const scriptedEchoOptionsSchema = z
@@ -56,6 +58,7 @@ export const scriptedEchoOptionsSchema = z
     turnStartResponseDelayMs: z.number().int().nonnegative().optional(),
     turnStartErrorAfterMs: z.number().int().nonnegative().optional(),
     steerResponseDelayMs: z.number().int().nonnegative().optional(),
+    steerFindsNewTurn: z.boolean().optional(),
     answerStartWithoutIdentity: z.boolean().optional(),
     identityAfterResponse: z.boolean().optional(),
     identityNotificationsBeforeTurn: z
@@ -102,6 +105,7 @@ export const scriptedEchoOptionsSchema = z
     uniqueProviderThreadIds: z.boolean().optional(),
     failStopForThreadIds: z.array(z.string().min(1)).optional(),
     emitIdentityOnSigterm: z.boolean().optional(),
+    reconfiguresSkills: z.boolean().optional(),
   })
   .strict();
 export type ScriptedEchoOptions = z.infer<typeof scriptedEchoOptionsSchema>;
@@ -158,6 +162,7 @@ type JsonRpcId = string | number;
 interface ActiveTurn {
   providerTurnId: string;
   timer: NodeJS.Timeout | null;
+  approvalAfterSteer: (TurnPlan & { approvalKind: ApprovalKind }) | null;
 }
 
 interface Session {
@@ -244,6 +249,8 @@ const APPROVAL_KINDS: readonly ApprovalKind[] = [
 
 interface TurnPlan {
   approvalKind: ApprovalKind | null;
+  approvalAfterSteerKind: ApprovalKind | null;
+  withdrawApproval: boolean;
   delayMs: number;
   questionRequested: boolean;
   responseText: string;
@@ -255,6 +262,7 @@ interface TurnPlan {
   recoverNowKind: ProviderRecoveryHint["kind"] | null;
   backgroundTask: boolean;
   settleBackgroundTasks: boolean;
+  stream: { chunks: number; intervalMs: number } | null;
 }
 
 function promptText(input: readonly PromptInput[]): string {
@@ -278,7 +286,13 @@ function parseTurnPlan(inputText: string): TurnPlan {
     /(?:^|\s)call_tool:([^\s]+)(?:\s|$)/u.exec(inputText);
   const approvalKind =
     APPROVAL_KINDS.find((kind) => kind === approvalMatch?.[1]) ?? null;
+  const approvalAfterSteerMatch =
+    /(?:^|\s)approve_after_steer:([^\s]+)(?:\s|$)/u.exec(inputText);
+  const approvalAfterSteerKind =
+    APPROVAL_KINDS.find((kind) => kind === approvalAfterSteerMatch?.[1]) ??
+    null;
   const holdMatch = /(?:^|\s)hold_turn(?:\s|$)/u.exec(inputText);
+  const streamMatch = /(?:^|\s)stream:(\d+):(\d+)(?:\s|$)/u.exec(inputText);
   const failMatch = /(?:^|\s)fail_turn:([^\s]+)(?:\s|$)/u.exec(inputText);
   const prestartFailMatch = /(?:^|\s)prestart_fail:([^\s]+)(?:\s|$)/u.exec(
     inputText,
@@ -298,6 +312,8 @@ function parseTurnPlan(inputText: string): TurnPlan {
     backgroundTask: /(?:^|\s)bg_task(?:\s|$)/u.test(inputText),
     settleBackgroundTasks: /(?:^|\s)bg_task_done(?:\s|$)/u.test(inputText),
     approvalKind,
+    approvalAfterSteerKind,
+    withdrawApproval: /(?:^|\s)withdraw_approval(?:\s|$)/u.test(inputText),
     delayMs: delayMatch?.[1] === undefined ? 0 : Number(delayMatch[1]),
     questionRequested: questionMatch !== null,
     responseText:
@@ -305,6 +321,13 @@ function parseTurnPlan(inputText: string): TurnPlan {
     toolName: toolMatch?.[1] ?? null,
     toolTurnResolved: unresolvedToolMatch === null,
     holdTurn: holdMatch !== null,
+    stream:
+      streamMatch?.[1] === undefined || streamMatch[2] === undefined
+        ? null
+        : {
+            chunks: Number(streamMatch[1]),
+            intervalMs: Number(streamMatch[2]),
+          },
     failure:
       failureText === undefined
         ? null
@@ -313,6 +336,29 @@ function parseTurnPlan(inputText: string): TurnPlan {
             beforeTurn: prestartFailMatch !== null,
           },
   };
+}
+
+function requestApproval(
+  session: Session,
+  providerTurnId: string,
+  plan: TurnPlan & { approvalKind: ApprovalKind },
+): JsonRpcId {
+  const requestId = sendRequest(
+    BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest,
+    {
+      providerThreadId: session.providerThreadId,
+      threadId: session.threadId,
+      turnId: providerTurnId,
+      payload: approvalPayload(plan.approvalKind, `approval-${providerTurnId}`),
+    },
+  );
+  pendingReplies.set(requestId, {
+    kind: "approval",
+    threadId: session.threadId,
+    responseText: plan.responseText,
+    delayMs: plan.delayMs,
+  });
+  return requestId;
 }
 
 function approvalPayload(
@@ -476,6 +522,7 @@ function openBackgroundTask(session: Session, providerTurnId: string): void {
         taskStatus: "running",
         skipTranscript: false,
         foreground: false,
+        stoppable: true,
       },
       providerTurnId,
     },
@@ -524,6 +571,62 @@ function scheduleCompletion(
   }, delayMs);
 }
 
+function streamCompletion(
+  session: Session,
+  stream: { chunks: number; intervalMs: number },
+): void {
+  const turn = session.activeTurn;
+  if (turn === null) {
+    return;
+  }
+  const { providerTurnId } = turn;
+  session.messageCount += 1;
+  const key = { providerItemId: `msg-${session.messageCount}` };
+  emitDeltas(session.threadId, [
+    {
+      kind: "item.open",
+      key,
+      item: { type: "agentMessage", text: "" },
+      providerTurnId,
+    },
+  ]);
+  let sent = 0;
+  let text = "";
+  const step = () => {
+    if (session.activeTurn !== turn) {
+      return;
+    }
+    if (sent === stream.chunks) {
+      clearActiveTurn(session);
+      emitDeltas(session.threadId, [
+        {
+          kind: "item.textClose",
+          key,
+          channel: "agentMessage",
+          text,
+          providerTurnId,
+        },
+        { kind: "turn.boundary", status: "completed", providerTurnId },
+      ]);
+      return;
+    }
+    sent += 1;
+    const chunk = `Streamed chunk ${sent}.\n`;
+    text += chunk;
+    emitDeltas(session.threadId, [
+      {
+        kind: "item.textDelta",
+        key,
+        channel: "agentMessage",
+        text: chunk,
+        providerTurnId,
+      },
+    ]);
+    turn.timer = setTimeout(step, stream.intervalMs);
+  };
+  turn.timer = setTimeout(step, stream.intervalMs);
+}
+
 function beginTurn(args: {
   session: Session;
   input: readonly PromptInput[];
@@ -568,7 +671,14 @@ function beginTurn(args: {
   }
   session.turnCount += 1;
   const providerTurnId = `turn-${session.turnCount}`;
-  session.activeTurn = { providerTurnId, timer: null };
+  session.activeTurn = {
+    providerTurnId,
+    timer: null,
+    approvalAfterSteer:
+      plan.approvalAfterSteerKind === null
+        ? null
+        : { ...plan, approvalKind: plan.approvalAfterSteerKind },
+  };
 
   const deltas: ThreadDelta[] = [];
   if (args.clientRequestId !== undefined) {
@@ -588,7 +698,7 @@ function beginTurn(args: {
     settleBackgroundTasks(session);
   }
 
-  if (plan.holdTurn) {
+  if (plan.holdTurn || plan.approvalAfterSteerKind !== null) {
     emitRecoveryHint(session.threadId, plan.recoverKind);
     return;
   }
@@ -609,24 +719,17 @@ function beginTurn(args: {
   }
 
   if (plan.approvalKind !== null) {
-    const requestId = sendRequest(
-      BRIDGE_INBOUND_REQUEST_METHODS.interactionRequest,
-      {
-        providerThreadId: session.providerThreadId,
-        threadId: session.threadId,
-        turnId: providerTurnId,
-        payload: approvalPayload(
-          plan.approvalKind,
-          `approval-${providerTurnId}`,
-        ),
-      },
-    );
-    pendingReplies.set(requestId, {
-      kind: "approval",
-      threadId: session.threadId,
-      responseText: plan.responseText,
-      delayMs: plan.delayMs,
+    const requestId = requestApproval(session, providerTurnId, {
+      ...plan,
+      approvalKind: plan.approvalKind,
     });
+    if (plan.withdrawApproval) {
+      setTimeout(() => {
+        if (!pendingReplies.delete(requestId)) return;
+        notify(BRIDGE_NOTIFICATION_METHODS.requestCancelled, { requestId });
+        scheduleCompletion(session, "Approval withdrawn", 0);
+      }, plan.delayMs);
+    }
     return;
   }
   if (plan.questionRequested) {
@@ -665,6 +768,10 @@ function beginTurn(args: {
       toolName: plan.toolName,
       delayMs: plan.delayMs,
     });
+    return;
+  }
+  if (plan.stream !== null) {
+    streamCompletion(session, plan.stream);
     return;
   }
   scheduleCompletion(
@@ -907,7 +1014,10 @@ const handlers: Record<string, RequestHandler> = {
         approvalEnforcedBy: processOptions.approvalEnforcedBy ?? "runtime",
         grammarVersions: [THREAD_DELTA_GRAMMAR_V3, THREAD_DELTA_GRAMMAR_V3],
         steerMode: "inject",
-        skills: { configure: true },
+        skills: {
+          configure: true,
+          reconfigure: processOptions.reconfiguresSkills === true,
+        },
       },
     });
   },
@@ -1131,7 +1241,30 @@ const handlers: Record<string, RequestHandler> = {
       });
       return;
     }
-    const providerTurnId = session.activeTurn.providerTurnId;
+    if (options.steerFindsNewTurn === true) {
+      completeTurn(session, "completed", "finished before the steer");
+      session.turnCount += 1;
+      const newTurnId = `turn-${session.turnCount}`;
+      session.activeTurn = {
+        providerTurnId: newTurnId,
+        timer: null,
+        approvalAfterSteer: null,
+      };
+      emitDeltas(session.threadId, [
+        { kind: "turn.open", providerTurnId: newTurnId },
+      ]);
+      const message = `expected active turn id \`${parsed.data.expectedTurnId}\` but found \`${newTurnId}\``;
+      io.sendError(id, BRIDGE_JSON_RPC_ERRORS.NO_ACTIVE_TURN, message, {
+        recovery: {
+          kind: "staleTurn",
+          message,
+          retryable: false,
+        } satisfies ProviderRecoveryHint,
+      });
+      return;
+    }
+    const activeTurn = session.activeTurn;
+    const providerTurnId = activeTurn.providerTurnId;
     const acceptSteer = (): void => {
       emitDeltas(session.threadId, [
         {
@@ -1141,6 +1274,11 @@ const handlers: Record<string, RequestHandler> = {
         },
       ]);
       io.sendResult(id, {});
+      const approvalPlan = activeTurn.approvalAfterSteer;
+      if (approvalPlan !== null && session.activeTurn === activeTurn) {
+        activeTurn.approvalAfterSteer = null;
+        requestApproval(session, providerTurnId, approvalPlan);
+      }
     };
     if (options.steerResponseDelayMs === undefined) {
       acceptSteer();
@@ -1246,6 +1384,47 @@ const handlers: Record<string, RequestHandler> = {
         { kind: "thread.name", name: parsed.data.title },
       ]);
     }
+  },
+
+  [BRIDGE_REQUEST_METHODS.threadBackgroundTaskStop]: (id, params) => {
+    const parsed = threadBackgroundTaskStopParamsSchema.safeParse(params);
+    if (!parsed.success) {
+      invalidParams(
+        id,
+        BRIDGE_REQUEST_METHODS.threadBackgroundTaskStop,
+        parsed.error.issues,
+      );
+      return;
+    }
+    const { familyId, threadId } = parsed.data;
+    const open = openBackgroundTasks.get(threadId) ?? [];
+    const task = open.find((candidate) => candidate.familyId === familyId);
+    if (task === undefined) {
+      io.sendError(id, -32000, `Unknown background task: ${familyId}`);
+      return;
+    }
+    openBackgroundTasks.set(
+      threadId,
+      open.filter((candidate) => candidate !== task),
+    );
+    io.sendResult(id, {});
+    emitDeltas(threadId, [
+      {
+        kind: "item.close",
+        key: { providerItemId: task.providerItemId },
+        status: "interrupted",
+        item: {
+          type: "backgroundTask",
+          familyId,
+          taskType: "workflow",
+          description: "scripted background task",
+          status: "interrupted",
+          taskStatus: "stopped",
+          skipTranscript: false,
+          foreground: false,
+        },
+      },
+    ]);
   },
 
   [BRIDGE_REQUEST_METHODS.threadGoalClear]: (id, params) => {

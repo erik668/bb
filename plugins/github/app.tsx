@@ -50,6 +50,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyState } from "./components/empty-state.js";
+import { isNonImeKey } from "@/lib/ime-keyboard";
 
 type IssueDetail = PluginRpcResult<
   (typeof githubRpcContract)["getIssue"]
@@ -403,7 +404,7 @@ function FilterBar({
   };
 
   const onKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "Escape") {
+    if (isNonImeKey(event, "Escape")) {
       setOpen(false);
       return;
     }
@@ -417,7 +418,7 @@ function FilterBar({
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setHighlight((active - 1 + suggestions.length) % suggestions.length);
-    } else if (event.key === "Enter" || event.key === "Tab") {
+    } else if (isNonImeKey(event, "Enter") || event.key === "Tab") {
       event.preventDefault();
       accept(suggestions[active]);
     }
@@ -607,13 +608,13 @@ function RowMenu({ item }: { item: Item }) {
         ) : null}
         {item.kind === "issue" ? (
           <DropdownMenuItem
-            onSelect={() =>
-              setIssueState(
+            onSelect={() => {
+              void setIssueState(
                 item.repo,
                 item.number,
                 item.state === "OPEN" ? "closed" : "open",
-              ).catch((error: unknown) => toast.error(errorText(error)))
-            }
+              ).catch((error: unknown) => toast.error(errorText(error)));
+            }}
           >
             {item.state === "OPEN" ? "Close issue" : "Reopen issue"}
           </DropdownMenuItem>
@@ -1799,9 +1800,78 @@ function PullDetailView({
   );
 }
 
+const ALL_REPOS = "all";
+const PROJECT_REPOS = "project";
+
+function defaultPullScope(projectRepos: string[]): string {
+  if (projectRepos.length === 0) return ALL_REPOS;
+  if (projectRepos.length === 1) return projectRepos[0]!;
+  return PROJECT_REPOS;
+}
+
+function scopeIncludes(
+  scope: string,
+  projectRepos: string[],
+  repo: string,
+): boolean {
+  if (scope === ALL_REPOS) return true;
+  if (scope === PROJECT_REPOS) return projectRepos.includes(repo);
+  return scope === repo;
+}
+
+function scopeLabel(scope: string): string {
+  if (scope === ALL_REPOS) return "the tracked repos";
+  if (scope === PROJECT_REPOS) return "this project's repos";
+  return scope;
+}
+
+function PullScopeSelect({
+  scope,
+  projectRepos,
+  onScopeChange,
+}: {
+  scope: string;
+  projectRepos: string[];
+  onScopeChange: (scope: string) => void;
+}) {
+  const { status } = useStatus();
+  const repos = useMemo(() => {
+    const tracked = status?.repos.map((entry) => entry.repo) ?? [];
+    return [
+      ...projectRepos,
+      ...tracked.filter((repo) => !projectRepos.includes(repo)),
+    ];
+  }, [status, projectRepos]);
+  if (repos.length <= 1) return null;
+  return (
+    <Select value={scope} onValueChange={onScopeChange}>
+      <SelectTrigger aria-label="Repository" className="h-8 w-full text-sm">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {projectRepos.length > 1 ? (
+          <SelectItem value={PROJECT_REPOS}>
+            This project ({projectRepos.length} repos)
+          </SelectItem>
+        ) : null}
+        {repos.map((repo) => (
+          <SelectItem key={repo} value={repo}>
+            {repo}
+          </SelectItem>
+        ))}
+        <SelectItem value={ALL_REPOS}>All repositories</SelectItem>
+      </SelectContent>
+    </Select>
+  );
+}
+
 function PullPickerList({
+  scope,
+  projectRepos,
   onPick,
 }: {
+  scope: string;
+  projectRepos: string[];
   onPick: (repo: string, number: number) => void;
 }) {
   const { items, error } = useItems("pr");
@@ -1817,9 +1887,14 @@ function PullPickerList({
       </DelayedLoading>
     );
   }
-  const open = items.filter((item) => item.state === "OPEN");
+  const open = items.filter(
+    (item) =>
+      item.state === "OPEN" && scopeIncludes(scope, projectRepos, item.repo),
+  );
   if (open.length === 0) {
-    return <EmptyState message="No open pull requests in the tracked repos." />;
+    return (
+      <EmptyState message={`No open pull requests in ${scopeLabel(scope)}.`} />
+    );
   }
   return (
     <div className="@container/github-picker overflow-hidden rounded-lg border border-border bg-card">
@@ -1850,6 +1925,8 @@ function PullPickerList({
 function PullPanelTab({ threadId }: ExperimentalThreadActionTabProps) {
   const rpc = useRpc<typeof githubRpcContract>();
   const [resolved, setResolved] = useState(false);
+  const [projectRepos, setProjectRepos] = useState<string[] | null>(null);
+  const [chosenScope, setChosenScope] = useState<string | null>(null);
   const [selected, setSelected] = useState<{
     repo: string;
     number: number;
@@ -1868,21 +1945,40 @@ function PullPanelTab({ threadId }: ExperimentalThreadActionTabProps) {
         if (!cancelled) setResolved(true);
       },
     );
+    rpc.call("threadRepos", { threadId }).then(
+      (result) => {
+        if (!cancelled) setProjectRepos(result.repos);
+      },
+      () => {
+        if (!cancelled) setProjectRepos([]);
+      },
+    );
     return () => {
       cancelled = true;
     };
   }, [rpc, threadId]);
 
-  if (!resolved) {
+  if (!resolved || (selected === null && projectRepos === null)) {
     return <DetailSkeleton />;
   }
   if (selected === null) {
+    const repos = projectRepos ?? [];
+    const scope = chosenScope ?? defaultPullScope(repos);
     return (
-      <div className="flex flex-col gap-3">
-        <p className="text-xs text-muted-foreground">
-          No pull request is linked to this thread yet — pick one:
-        </p>
+      <div className="flex flex-col">
+        <div className="sticky -top-4 z-10 -mt-4 flex flex-col gap-3 bg-sidebar pt-4 pb-3">
+          <p className="text-xs text-muted-foreground">
+            No pull request is linked to this thread yet — pick one:
+          </p>
+          <PullScopeSelect
+            scope={scope}
+            projectRepos={repos}
+            onScopeChange={setChosenScope}
+          />
+        </div>
         <PullPickerList
+          scope={scope}
+          projectRepos={repos}
           onPick={(repo, number) =>
             setSelected({ repo, number, environmentId: null })
           }

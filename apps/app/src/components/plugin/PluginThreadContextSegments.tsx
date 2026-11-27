@@ -1,4 +1,12 @@
-import { useLayoutEffect, useState, type ReactNode } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type RefCallback,
+} from "react";
+import { useOrderedReveal } from "@/lib/lazy-parts";
 import type {
   ExperimentalThreadContextSegmentInput,
   ExperimentalThreadContextSegmentProps,
@@ -6,17 +14,14 @@ import type {
 } from "@get-bb/plugin-sdk";
 import { compareGroupedPlacement } from "@/lib/grouped-placement";
 import {
-  usePluginSlots,
+  usePluginSlotKind,
   type PluginThreadContextSegmentSlot,
 } from "@/lib/plugin-slots";
 import { PluginSlotMount } from "./PluginSlotMount";
-
-export const CORE_THREAD_CONTEXT_OWNER = "bb--core";
+import type { CoreContributionSlot } from "@/lib/core-contributions";
 
 export type CoreThreadContextSegment =
-  ExperimentalThreadContextSegmentRegistration & {
-    pluginId: typeof CORE_THREAD_CONTEXT_OWNER;
-  };
+  CoreContributionSlot<"threadContextSegments">;
 
 export type ThreadContextSegmentEntry =
   | { owner: "core"; slot: CoreThreadContextSegment }
@@ -53,25 +58,79 @@ type VisibilityReport = (
   visible: boolean | null,
 ) => void;
 
+type VisibilityHostProps = {
+  input: ExperimentalThreadContextSegmentInput;
+  onVisible: VisibilityReport;
+};
+
+const visibilityHosts = new WeakMap<
+  ExperimentalThreadContextSegmentRegistration,
+  { Visibility: ComponentType<VisibilityHostProps> }
+>();
+
+function useReportVisibility(
+  slot: ExperimentalThreadContextSegmentRegistration,
+  threadId: string,
+  visible: unknown,
+  onVisible: VisibilityReport,
+) {
+  if (typeof visible !== "boolean") {
+    throw new Error("useVisible must return a boolean");
+  }
+  useLayoutEffect(() => {
+    onVisible(slot, threadId, visible);
+    return () => onVisible(slot, threadId, null);
+  }, [slot, threadId, visible, onVisible]);
+}
+
+function visibilityHostFor(
+  slot: ExperimentalThreadContextSegmentRegistration & {
+    useVisible: NonNullable<
+      ExperimentalThreadContextSegmentRegistration["useVisible"]
+    >;
+  },
+) {
+  const existing = visibilityHosts.get(slot);
+  if (existing !== undefined) return existing;
+  function SegmentVisibility({ input, onVisible }: VisibilityHostProps) {
+    const visible = slot.useVisible(input);
+    useReportVisibility(slot, input.threadId, visible, onVisible);
+    return null;
+  }
+  const host = { Visibility: SegmentVisibility };
+  visibilityHosts.set(slot, host);
+  return host;
+}
+
+function hasUseVisible(
+  slot: ExperimentalThreadContextSegmentRegistration,
+): slot is Parameters<typeof visibilityHostFor>[0] {
+  return slot.useVisible !== undefined;
+}
+
+function AlwaysVisible({
+  slot,
+  input,
+  onVisible,
+}: {
+  slot: ExperimentalThreadContextSegmentRegistration;
+} & VisibilityHostProps) {
+  useReportVisibility(slot, input.threadId, true, onVisible);
+  return null;
+}
+
 function Visibility({
   slot,
   input,
   onVisible,
 }: {
   slot: ExperimentalThreadContextSegmentRegistration;
-  input: ExperimentalThreadContextSegmentInput;
-  onVisible: VisibilityReport;
-}) {
-  const visible = slot.useVisible ? slot.useVisible(input) : true;
-  if (typeof visible !== "boolean") {
-    throw new Error("useVisible must return a boolean");
+} & VisibilityHostProps) {
+  if (!hasUseVisible(slot)) {
+    return <AlwaysVisible slot={slot} input={input} onVisible={onVisible} />;
   }
-  const { threadId } = input;
-  useLayoutEffect(() => {
-    onVisible(slot, threadId, visible);
-    return () => onVisible(slot, threadId, null);
-  }, [slot, threadId, visible, onVisible]);
-  return null;
+  const host = visibilityHostFor(slot);
+  return <host.Visibility input={input} onVisible={onVisible} />;
 }
 
 function entryKey(entry: ThreadContextSegmentEntry, threadId: string): string {
@@ -115,14 +174,25 @@ export function useThreadContextSegments(
   entries: readonly ThreadContextSegmentEntry[];
   observers: ReactNode;
 } {
-  const { threadContextSegments } = usePluginSlots();
-  const entries = sortThreadContextSegments([
-    ...core.map((slot) => ({ owner: "core" as const, slot })),
-    ...threadContextSegments.map((slot) => ({
-      owner: "plugin" as const,
-      slot,
-    })),
-  ]);
+  const threadContextSegments = usePluginSlotKind("threadContextSegments");
+  const { threadId } = input;
+  const entries = useOrderedReveal(
+    sortThreadContextSegments([
+      ...core.map((slot) => ({ owner: "core" as const, slot })),
+      ...threadContextSegments.map((slot) => ({
+        owner: "plugin" as const,
+        slot,
+      })),
+    ]),
+    {
+      key: (entry) => entryKey(entry, threadId),
+      parts: (entry) => [
+        entry.slot.summary,
+        entry.slot.action,
+        entry.slot.details,
+      ],
+    },
+  );
   const [visibility, setVisibility] = useState<
     ReadonlyMap<
       ExperimentalThreadContextSegmentRegistration,
@@ -152,7 +222,6 @@ export function useThreadContextSegments(
         });
       },
   );
-  const { threadId } = input;
   return {
     entries: entries.filter(({ slot }) => {
       if (slot.useVisible === undefined) return true;
@@ -169,6 +238,91 @@ export function useThreadContextSegments(
           onVisible={onVisible}
         />
       )),
+  };
+}
+
+type SegmentFocusTarget = "toggle" | "collapse";
+
+interface SegmentFocusHandles {
+  elements: Record<SegmentFocusTarget, HTMLElement | null>;
+  toggleRef: RefCallback<HTMLElement>;
+  collapseRef: RefCallback<HTMLElement>;
+}
+
+function createSegmentFocusRegistry() {
+  const handles = new Map<string, SegmentFocusHandles>();
+  let pending: { key: string; target: SegmentFocusTarget } | null = null;
+  const refFor =
+    (
+      elements: SegmentFocusHandles["elements"],
+      target: SegmentFocusTarget,
+    ): RefCallback<HTMLElement> =>
+    (element) => {
+      elements[target] = element;
+      return () => {
+        if (elements[target] === element) elements[target] = null;
+      };
+    };
+  const handlesFor = (key: string): SegmentFocusHandles => {
+    const existing = handles.get(key);
+    if (existing !== undefined) return existing;
+    const elements: SegmentFocusHandles["elements"] = {
+      toggle: null,
+      collapse: null,
+    };
+    const created = {
+      elements,
+      toggleRef: refFor(elements, "toggle"),
+      collapseRef: refFor(elements, "collapse"),
+    };
+    handles.set(key, created);
+    return created;
+  };
+  return {
+    handlesFor,
+    toggle(key: string, isExpanded: boolean, toggle: () => void) {
+      const { elements } = handlesFor(key);
+      const focused = document.activeElement;
+      const hasFocus =
+        focused !== null &&
+        (elements.toggle?.contains(focused) === true ||
+          elements.collapse?.contains(focused) === true);
+      pending = hasFocus
+        ? { key, target: isExpanded ? "toggle" : "collapse" }
+        : null;
+      toggle();
+    },
+    flush() {
+      const next = pending;
+      pending = null;
+      if (next !== null) handles.get(next.key)?.elements[next.target]?.focus();
+    },
+  };
+}
+
+export type ThreadContextSegmentDisclosure = Pick<
+  ExperimentalThreadContextSegmentProps,
+  "isExpanded" | "onToggle" | "toggleRef" | "collapseRef"
+>;
+
+export function useThreadContextSegmentDisclosure(
+  expandedSegment: string | null,
+  onToggleSegment: (key: string) => void,
+): (key: string) => ThreadContextSegmentDisclosure {
+  const [registry] = useState(createSegmentFocusRegistry);
+  useEffect(() => {
+    registry.flush();
+  }, [expandedSegment, registry]);
+  return (key) => {
+    const { toggleRef, collapseRef } = registry.handlesFor(key);
+    const isExpanded = expandedSegment === key;
+    return {
+      isExpanded,
+      onToggle: () =>
+        registry.toggle(key, isExpanded, () => onToggleSegment(key)),
+      toggleRef,
+      collapseRef,
+    };
   };
 }
 

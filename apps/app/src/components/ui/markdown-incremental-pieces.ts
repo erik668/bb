@@ -11,6 +11,7 @@ import ReactMarkdown, {
   type UrlTransform,
 } from "react-markdown";
 import type { Nodes, Root } from "mdast";
+import type { Processor } from "unified";
 import { EXIT, visit } from "unist-util-visit";
 import {
   EMPTY_MOUNTED_MESSAGE_DIRECTIVES,
@@ -53,17 +54,14 @@ interface MarkdownPieceSummary {
   endsOpen: boolean;
   endsWithIndentedCode: boolean;
   hasGlobalConstructs: boolean;
+  hasHtml: boolean;
   lastTopLevelType: string | null;
 }
 
 interface ResolvedMarkdownPieces {
   children: readonly ReactNode[];
+  hasHtml: boolean;
   mounts: readonly MountedMessageDirective[];
-}
-
-interface MarkdownElementProps {
-  children?: ReactNode;
-  node?: object;
 }
 
 interface MarkdownPieceEntry {
@@ -77,6 +75,7 @@ interface MarkdownPieceEntry {
 export interface MarkdownPieceCache {
   config: MarkdownPieceRenderConfig | null;
   entries: readonly MarkdownPieceEntry[];
+  htmlPrefix: string | null;
   latchedWholeDocumentPrefix: string | null;
   resolved: { body: string; result: ResolvedMarkdownPieces } | null;
 }
@@ -90,8 +89,15 @@ interface ParseMarkdownPieceArgs {
   config: MarkdownPieceRenderConfig;
   indexBase: number;
   offsets: ReadonlyMap<string, number>;
+  reusesParsedTree: boolean;
   source: string;
   sourceOffset: number;
+}
+
+interface ParsedMarkdownTree {
+  messageDirectiveRegistry: MessageDirectiveRegistry | null;
+  remarkPlugins: MarkdownPluginList;
+  tree: ReturnType<NonNullable<Processor["parser"]>>;
 }
 
 const MARKDOWN_BLANK_LINE_PATTERN = /^[ \t]*$/u;
@@ -117,11 +123,15 @@ const MARKDOWN_GLOBAL_CONSTRUCT_TYPES = new Set([
   "footnoteReference",
 ]);
 const UNKEYED_MARKDOWN_ROOT_NAME = "#unkeyed";
+const PARSED_MARKDOWN_SOURCE_BUDGET = 512 * 1024;
+const parsedMarkdownTrees = new Map<string, ParsedMarkdownTree>();
+let parsedMarkdownSourceLength = 0;
 const EMPTY_MARKDOWN_TAG_COUNTS: ReadonlyMap<string, number> = new Map();
 const EMPTY_MARKDOWN_PIECE_SUMMARY: MarkdownPieceSummary = {
   endsOpen: false,
   endsWithIndentedCode: false,
   hasGlobalConstructs: false,
+  hasHtml: false,
   lastTopLevelType: null,
 };
 
@@ -275,6 +285,15 @@ function markdownTreeHasGlobalConstructs(tree: Root): boolean {
   return found;
 }
 
+function markdownTreeHasHtml(tree: Root): boolean {
+  let found = false;
+  visit(tree, "html", () => {
+    found = true;
+    return EXIT;
+  });
+  return found;
+}
+
 function endsWithIndentedMarkdownCode(tree: Root, source: string): boolean {
   const last = tree.children[tree.children.length - 1];
   if (last?.type !== "code") {
@@ -293,8 +312,44 @@ function remarkMarkdownPieceSummary(target: MarkdownPieceSummaryTarget) {
       hasGlobalConstructs:
         (source.includes("]:") || source.includes("[^")) &&
         markdownTreeHasGlobalConstructs(tree),
+      hasHtml: source.includes("<") && markdownTreeHasHtml(tree),
       lastTopLevelType: tree.children[tree.children.length - 1]?.type ?? null,
     };
+  };
+}
+
+function remarkReuseParsedTree(
+  this: Processor,
+  config: MarkdownPieceRenderConfig,
+): void {
+  const parse = this.parser!;
+  this.parser = (document, file) => {
+    if (document.length > PARSED_MARKDOWN_SOURCE_BUDGET) {
+      return parse(document, file);
+    }
+    const cached = parsedMarkdownTrees.get(document);
+    if (cached !== undefined) {
+      parsedMarkdownTrees.delete(document);
+      parsedMarkdownSourceLength -= document.length;
+    }
+    const tree =
+      cached !== undefined &&
+      cached.remarkPlugins === config.remarkPlugins &&
+      cached.messageDirectiveRegistry === config.messageDirectiveRegistry
+        ? cached.tree
+        : parse(document, file);
+    parsedMarkdownTrees.set(document, {
+      messageDirectiveRegistry: config.messageDirectiveRegistry,
+      remarkPlugins: config.remarkPlugins,
+      tree,
+    });
+    parsedMarkdownSourceLength += document.length;
+    for (const oldest of parsedMarkdownTrees.keys()) {
+      if (parsedMarkdownSourceLength <= PARSED_MARKDOWN_SOURCE_BUDGET) break;
+      parsedMarkdownTrees.delete(oldest);
+      parsedMarkdownSourceLength -= oldest.length;
+    }
+    return structuredClone(tree);
   };
 }
 
@@ -351,6 +406,7 @@ function parseMarkdownPiece({
   config,
   indexBase,
   offsets,
+  reusesParsedTree,
   source,
   sourceOffset,
 }: ParseMarkdownPieceArgs): MarkdownPieceEntry {
@@ -390,6 +446,9 @@ function parseMarkdownPiece({
       };
     });
   });
+  if (reusesParsedTree) {
+    remarkPlugins.push([remarkReuseParsedTree, config]);
+  }
   const element = ReactMarkdown({
     children: source,
     components: config.components,
@@ -472,6 +531,7 @@ function resolveIncrementalMarkdownPieceEntries(
             config,
             indexBase: mountCount,
             offsets,
+            reusesParsedTree: false,
             source: body.slice(start, end),
             sourceOffset: start,
           });
@@ -488,6 +548,7 @@ function resolveIncrementalMarkdownPieceEntries(
         config,
         indexBase: mountCount,
         offsets,
+        reusesParsedTree: false,
         source: body.slice(start, end),
         sourceOffset: start,
       });
@@ -508,53 +569,25 @@ function resolveIncrementalMarkdownPieceEntries(
   return entries;
 }
 
-function refreshMarkdownElementTree(child: ReactNode): ReactNode {
-  if (Array.isArray(child)) {
-    return child.map(refreshMarkdownElementTree);
-  }
-  if (!isValidElement<MarkdownElementProps>(child)) {
-    return child;
-  }
-  const { children, node } = child.props;
-  const props = node === undefined ? undefined : { node: { ...node } };
-  if (children === undefined) {
-    return cloneElement(child, props);
-  }
-  if (Array.isArray(children)) {
-    return cloneElement(
-      child,
-      props,
-      ...children.map(refreshMarkdownElementTree),
-    );
-  }
-  return cloneElement(child, props, refreshMarkdownElementTree(children));
-}
-
 function buildResolvedMarkdownPieces(
   entries: readonly MarkdownPieceEntry[],
-  previousEntries: readonly MarkdownPieceEntry[],
 ): ResolvedMarkdownPieces {
-  const reusedEntries = new Set(previousEntries);
   const children: ReactNode[] = [];
   const mounts: MountedMessageDirective[] = [];
+  let hasHtml = false;
   for (const entry of entries) {
-    const reused = reusedEntries.has(entry);
+    hasHtml ||= entry.summary.hasHtml;
     if (entry.children.length > 0) {
       if (children.length > 0) {
         children.push("\n");
       }
-      for (const child of entry.children) {
-        children.push(reused ? refreshMarkdownElementTree(child) : child);
-      }
+      children.push(...entry.children);
     }
-    for (const mount of entry.mounts) {
-      mounts.push(
-        reused ? { ...mount, attributes: { ...mount.attributes } } : mount,
-      );
-    }
+    mounts.push(...entry.mounts);
   }
   return {
     children,
+    hasHtml,
     mounts: mounts.length === 0 ? EMPTY_MOUNTED_MESSAGE_DIRECTIVES : mounts,
   };
 }
@@ -563,6 +596,7 @@ export function createMarkdownPieceCache(): MarkdownPieceCache {
   return {
     config: null,
     entries: [],
+    htmlPrefix: null,
     latchedWholeDocumentPrefix: null,
     resolved: null,
   };
@@ -576,6 +610,7 @@ export function resolveMarkdownPieces(
   if (cache.config !== config) {
     cache.config = config;
     cache.entries = [];
+    cache.htmlPrefix = null;
     cache.latchedWholeDocumentPrefix = null;
     cache.resolved = null;
   }
@@ -595,6 +630,7 @@ export function resolveMarkdownPieces(
       config,
       indexBase: 0,
       offsets: EMPTY_MARKDOWN_TAG_COUNTS,
+      reusesParsedTree: previousEntries.length === 0,
       source: body,
       sourceOffset: 0,
     });
@@ -607,8 +643,29 @@ export function resolveMarkdownPieces(
   } else {
     cache.latchedWholeDocumentPrefix = null;
   }
-  const result = buildResolvedMarkdownPieces(entries, previousEntries);
+  const result = buildResolvedMarkdownPieces(entries);
   cache.entries = entries;
   cache.resolved = { body, result };
   return result;
+}
+
+export function resolveMarkdownPiecesUnlessHtml(
+  cache: MarkdownPieceCache,
+  config: MarkdownPieceRenderConfig,
+  body: string,
+): ResolvedMarkdownPieces | null {
+  if (
+    cache.config === config &&
+    cache.htmlPrefix !== null &&
+    body.startsWith(cache.htmlPrefix)
+  ) {
+    return null;
+  }
+  const resolved = resolveMarkdownPieces(cache, config, body);
+  if (!resolved.hasHtml) {
+    cache.htmlPrefix = null;
+    return resolved;
+  }
+  cache.htmlPrefix = body;
+  return null;
 }

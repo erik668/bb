@@ -1,6 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { makeTempDir } from "@bb/test-helpers";
+import {
+  DEFAULT_BRANCH_REF_CASES,
+  createBranchRefFixture,
+} from "bb-environment-provider-host/testing/branch-ref-cases";
 import { describe, expect, it } from "vitest";
 import { dispatchOnlineRpcCommand } from "../../src/command-dispatch.js";
 import { createHarness, runGitCommand } from "./dispatch-helpers.js";
@@ -214,6 +218,29 @@ describe("host.inspect_git_checkout dispatch", () => {
 });
 
 describe("host.inspect_git_source dispatch", () => {
+  it.each(DEFAULT_BRANCH_REF_CASES)(
+    "resolves the default worktree base: $name",
+    async (testCase) => {
+      const fixture = await createBranchRefFixture(
+        await makeTempDir("bb-host-branches-base-ref-"),
+        testCase,
+        { originHead: true },
+      );
+      const result = await dispatchOnlineRpcCommand(
+        {
+          type: "host.inspect_git_source",
+          path: fixture.path,
+          remoteRefresh: "background",
+        },
+        createHarness().dispatchOptions(),
+        new AbortController().signal,
+      );
+      expect(result).toMatchObject({
+        defaultWorktreeBaseBranch: testCase.expected.ref,
+      });
+    },
+  );
+
   it("reports checkout and default-ref metadata without branch pages", async () => {
     const repoPath = await initBranchRepo();
     const harness = createHarness();
@@ -235,6 +262,7 @@ describe("host.inspect_git_source dispatch", () => {
       hasUncommittedChanges: false,
       operation: { kind: "none" },
       originDefaultBranch: null,
+      defaultWorktreeBaseBranch: "main",
     });
   });
 
@@ -261,6 +289,7 @@ describe("host.inspect_git_source dispatch", () => {
         defaultBranch: "main",
         defaultBranchRelation: "equal",
         originDefaultBranch: "origin/main",
+        defaultWorktreeBaseBranch: "origin/main",
       });
       await waitForFile(refreshStartedPath);
     } finally {
@@ -280,6 +309,7 @@ describe("host.inspect_git_source dispatch", () => {
       defaultBranch: "main",
       defaultBranchRelation: "local-behind",
       originDefaultBranch: "origin/main",
+      defaultWorktreeBaseBranch: "origin/main",
     });
   });
 
@@ -310,6 +340,7 @@ describe("host.inspect_git_source dispatch", () => {
       defaultBranch: "main",
       defaultBranchRelation: "local-behind",
       originDefaultBranch: "origin/main",
+      defaultWorktreeBaseBranch: "origin/main",
     });
   });
 
@@ -449,6 +480,7 @@ describe("host.inspect_git_source dispatch", () => {
       hasUncommittedChanges: false,
       operation: { kind: "none" },
       originDefaultBranch: null,
+      defaultWorktreeBaseBranch: null,
     });
   });
 
@@ -474,6 +506,7 @@ describe("host.inspect_git_source dispatch", () => {
       hasUncommittedChanges: false,
       operation: { kind: "none" },
       originDefaultBranch: null,
+      defaultWorktreeBaseBranch: null,
     });
   });
 });
@@ -488,7 +521,7 @@ describe("host.list_branch_options dispatch", () => {
         type: "host.list_branch_options",
         path: repoPath,
         limit: 50,
-        remoteRefresh: "none",
+        remoteRefresh: "background",
       },
       harness.dispatchOptions(),
       new AbortController().signal,
@@ -516,7 +549,7 @@ describe("host.list_branch_options dispatch", () => {
         type: "host.list_branch_options",
         path: repoPath,
         limit: 50,
-        remoteRefresh: "none",
+        remoteRefresh: "background",
       },
       harness.dispatchOptions(),
       new AbortController().signal,
@@ -540,7 +573,7 @@ describe("host.list_branch_options dispatch", () => {
         path: repoPath,
         query: "release",
         limit: 1,
-        remoteRefresh: "none",
+        remoteRefresh: "background",
       },
       harness.dispatchOptions(),
       new AbortController().signal,
@@ -570,7 +603,7 @@ describe("host.list_branch_options dispatch", () => {
         type: "host.list_branch_options",
         path: repoPath,
         limit: 1,
-        remoteRefresh: "none",
+        remoteRefresh: "background",
       },
       harness.dispatchOptions(),
       new AbortController().signal,
@@ -582,7 +615,7 @@ describe("host.list_branch_options dispatch", () => {
     expect(result.remoteBranchesTruncated).toBe(true);
   });
 
-  it("returns cached refs while a remote refresh continues in the background", async () => {
+  it("returns cached refs during a background refresh and waits for it when blocking", async () => {
     const repoPath = await initBranchRepo();
     const remotePath = await makeTempDir("bb-host-branch-options-remote-");
     await runGitCommand(["init", "--bare"], { cwd: remotePath });
@@ -626,6 +659,9 @@ describe("host.list_branch_options dispatch", () => {
       },
     );
     const harness = createHarness();
+    let refreshedPromise:
+      | ReturnType<typeof dispatchOnlineRpcCommand<"host.list_branch_options">>
+      | undefined;
 
     const resultPromise = dispatchOnlineRpcCommand(
       {
@@ -653,31 +689,23 @@ describe("host.list_branch_options dispatch", () => {
         },
       });
       await waitForFile(refreshStartedPath);
-    } finally {
-      await fs.writeFile(releaseRefreshPath, "release\n", "utf8");
-      await dispatchOnlineRpcCommand(
+      refreshedPromise = dispatchOnlineRpcCommand(
         {
-          type: "host.inspect_git_source",
+          type: "host.list_branch_options",
           path: repoPath,
+          query: "remote-only",
+          limit: 50,
           remoteRefresh: "blocking",
         },
         harness.dispatchOptions(),
         new AbortController().signal,
       );
+    } finally {
+      await fs.writeFile(releaseRefreshPath, "release\n", "utf8");
     }
 
-    const refreshed = await dispatchOnlineRpcCommand(
-      {
-        type: "host.list_branch_options",
-        path: repoPath,
-        query: "remote-only",
-        limit: 50,
-        remoteRefresh: "none",
-      },
-      harness.dispatchOptions(),
-      new AbortController().signal,
-    );
-    expect(refreshed.remoteBranches).toContain("origin/feature/remote-only");
+    const refreshed = await refreshedPromise;
+    expect(refreshed?.remoteBranches).toContain("origin/feature/remote-only");
   });
 
   it("classifies selected refs before filtering and pagination", async () => {
@@ -700,7 +728,7 @@ describe("host.list_branch_options dispatch", () => {
         query: "release",
         selectedBranch: "upstream/main",
         limit: 1,
-        remoteRefresh: "none",
+        remoteRefresh: "background",
       },
       harness.dispatchOptions(),
       new AbortController().signal,
@@ -726,7 +754,7 @@ describe("host.list_branch_options dispatch", () => {
         type: "host.list_branch_options",
         path: root,
         limit: 50,
-        remoteRefresh: "none",
+        remoteRefresh: "background",
       },
       harness.dispatchOptions(),
       new AbortController().signal,
@@ -748,7 +776,7 @@ describe("host.list_branch_options dispatch", () => {
           path: sourcePath,
           selectedBranch: "main",
           limit: 50,
-          remoteRefresh: "none",
+          remoteRefresh: "background",
         },
         harness.dispatchOptions(),
         new AbortController().signal,
@@ -762,30 +790,5 @@ describe("host.list_branch_options dispatch", () => {
         selectedBranch: { kind: "missing", name: "main" },
       });
     }
-  });
-
-  it("does not start a remote refresh when the caller opts out", async () => {
-    const repoPath = await initBranchRepo();
-    const harness = createHarness();
-
-    const result = await dispatchOnlineRpcCommand(
-      {
-        type: "host.list_branch_options",
-        path: repoPath,
-        selectedBranch: "main",
-        limit: 1,
-        remoteRefresh: "none",
-      },
-      harness.dispatchOptions(),
-      new AbortController().signal,
-    );
-
-    expect(result).toEqual({
-      branches: ["main"],
-      branchesTruncated: true,
-      remoteBranches: [],
-      remoteBranchesTruncated: false,
-      selectedBranch: { kind: "local", name: "main" },
-    });
   });
 });

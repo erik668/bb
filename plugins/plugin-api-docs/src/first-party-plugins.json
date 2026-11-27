@@ -85,6 +85,11 @@
     "icon": "Star"
   },
   {
+    "id": "bb--server-switcher",
+    "name": "Server switcher",
+    "icon": "ComputerCloud"
+  },
+  {
     "id": "memory",
     "name": "Memory",
     "icon": "Brain"
@@ -153,6 +158,11 @@
     "id": "tasks",
     "name": "Tasks",
     "icon": "ListTodo"
+  },
+  {
+    "id": "workflows",
+    "name": "Workflows",
+    "icon": "Workflow"
   },
   {
     "id": "environment-git-worktree",

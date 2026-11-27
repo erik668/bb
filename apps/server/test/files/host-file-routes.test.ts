@@ -128,9 +128,12 @@ describe("host file routes", () => {
             ok: true,
             result: {
               path: command.path,
-              content: file.bytes
-                .subarray(command.offset, command.offset + command.length)
-                .toString("base64"),
+              content: new Uint8Array(
+                file.bytes.subarray(
+                  command.offset,
+                  command.offset + command.length,
+                ),
+              ),
               offset: command.offset,
               mimeType: file.mimeType,
               modifiedAtMs: 1234,
@@ -251,7 +254,8 @@ describe("host file routes", () => {
       expect(commands).toEqual([
         {
           type: "host.list_paths",
-          path: "/notes",
+          rootPaths: ["/notes"],
+          followRootSymlink: false,
           limit: 1000,
           includeFiles: true,
           includeDirectories: true,
@@ -261,7 +265,8 @@ describe("host file routes", () => {
         },
         {
           type: "host.list_paths",
-          path: "/notes",
+          rootPaths: ["/notes"],
+          followRootSymlink: false,
           limit: 1000,
           includeFiles: true,
           includeDirectories: true,

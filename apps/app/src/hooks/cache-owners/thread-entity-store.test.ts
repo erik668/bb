@@ -115,9 +115,10 @@ describe("thread entity store", () => {
     });
     updateCachedThreadListStatusState(s.queryClient, "t1", {
       status: "active",
-      runtime: { displayStatus: "active" },
+      runtime: { displayStatus: "active", failure: null },
       activity: server[0]!.activity,
       latestAttentionAt: 20,
+      statusChangedAt: 11,
       updatedAt: 11,
     });
     await s.fetchList(s.lateKey, () => server);
@@ -202,9 +203,10 @@ describe("thread entity store", () => {
     });
     updateCachedThreadListStatusState(s.queryClient, "t1", {
       status: "active",
-      runtime: { displayStatus: "active" },
+      runtime: { displayStatus: "active", failure: null },
       activity: server[0]!.activity,
       latestAttentionAt: 12,
+      statusChangedAt: 12,
       updatedAt: 12,
     });
     let finishReadBack!: () => void;
@@ -217,7 +219,7 @@ describe("thread entity store", () => {
                 entry(threadId, {
                   pinnedAt: 7,
                   status: "active",
-                  runtime: { displayStatus: "active" },
+                  runtime: { displayStatus: "active", failure: null },
                   updatedAt: 12,
                 }),
               ])
@@ -280,9 +282,10 @@ describe("thread entity store", () => {
     ] as const)
       updateCachedThreadListStatusState(s.queryClient, "t1", {
         status,
-        runtime: { displayStatus: status },
+        runtime: { displayStatus: status, failure: null },
         activity: server[0]!.activity,
         latestAttentionAt: updatedAt,
+        statusChangedAt: updatedAt,
         updatedAt,
       });
     expect(s.describeRows(s.sidebarRows())).toEqual(["t2:null:idle"]);
@@ -390,7 +393,10 @@ describe("thread entity store", () => {
 
   it("shows the server's idle status when a stop is confirmed after the thread already went idle", async () => {
     const server = [
-      entry("t1", { status: "active", runtime: { displayStatus: "active" } }),
+      entry("t1", {
+        status: "active",
+        runtime: { displayStatus: "active", failure: null },
+      }),
     ];
     const s = setup(server);
     const transaction = await beginStopThreadTransaction({
@@ -400,9 +406,10 @@ describe("thread entity store", () => {
     });
     updateCachedThreadListStatusState(s.queryClient, "t1", {
       status: "idle",
-      runtime: { displayStatus: "idle" },
+      runtime: { displayStatus: "idle", failure: null },
       activity: server[0]!.activity,
       latestAttentionAt: 11,
+      statusChangedAt: 11,
       updatedAt: 11,
     });
     expect(s.describeRows(s.sidebarRows())).toEqual(["t1:null:stopping"]);
@@ -441,9 +448,10 @@ describe("thread entity store", () => {
     ] as const)
       updateCachedThreadListStatusState(s.queryClient, "t1", {
         status,
-        runtime: { displayStatus: status },
+        runtime: { displayStatus: status, failure: null },
         activity: server[0]!.activity,
         latestAttentionAt: updatedAt,
+        statusChangedAt: updatedAt,
         updatedAt,
       });
     expect(s.describeRows(s.sidebarRows())).toEqual(["t1:null:active"]);
@@ -458,7 +466,7 @@ describe("thread entity store", () => {
       queryClient: s.queryClient,
       realtimeConnected: true,
       request,
-      result: { ok: true, delivery: "sent" },
+      result: { ok: true, delivery: "sent", messageSequence: 1 },
       transaction,
     });
     await vi.waitFor(() =>

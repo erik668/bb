@@ -4,10 +4,12 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  type RefObject,
 } from "react";
 import { useBottomAnchoredScroll } from "@/components/ui/bottom-anchored-scroll-body.js";
 
 const AUTO_LOAD_OLDER_ROWS_PREFETCH_MARGIN_PX = 600;
+const AUTO_LOAD_OLDER_ROWS_PREFETCH_SCREENS = 3;
 
 interface UseAutoLoadOlderRowsArgs {
   hasOlderTimelineRows: boolean;
@@ -30,11 +32,32 @@ function isSentinelWithinPrefetchRange({
 }): boolean {
   const scrollRect = scrollElement.getBoundingClientRect();
   const sentinelRect = sentinel.getBoundingClientRect();
+  const margin = Math.max(
+    AUTO_LOAD_OLDER_ROWS_PREFETCH_MARGIN_PX,
+    scrollRect.height * AUTO_LOAD_OLDER_ROWS_PREFETCH_SCREENS,
+  );
   return (
-    sentinelRect.bottom >=
-      scrollRect.top - AUTO_LOAD_OLDER_ROWS_PREFETCH_MARGIN_PX &&
+    sentinelRect.bottom >= scrollRect.top - margin &&
     sentinelRect.top <= scrollRect.bottom
   );
+}
+
+type OlderRowsLoadPhase = "idle" | "loading" | "settled";
+
+async function runOlderRowsLoad(
+  onLoadOlderRows: () => Promise<void> | void,
+  loadPhaseRef: RefObject<OlderRowsLoadPhase>,
+  setAutoLoadFailed: (failed: boolean) => void,
+  setSettledLoads: (update: (count: number) => number) => void,
+): Promise<void> {
+  try {
+    await onLoadOlderRows();
+  } catch {
+    setAutoLoadFailed(true);
+  } finally {
+    loadPhaseRef.current = "settled";
+    setSettledLoads((count) => count + 1);
+  }
 }
 
 export function useAutoLoadOlderRows({
@@ -44,8 +67,9 @@ export function useAutoLoadOlderRows({
 }: UseAutoLoadOlderRowsArgs): AutoLoadOlderRows {
   const bottomAnchor = useBottomAnchoredScroll();
   const sentinelNodeRef = useRef<HTMLElement | null>(null);
-  const loadInFlightRef = useRef(false);
+  const loadPhaseRef = useRef<OlderRowsLoadPhase>("idle");
   const [autoLoadFailed, setAutoLoadFailed] = useState(false);
+  const [, setSettledLoads] = useState(0);
 
   const sentinelRef = useCallback((node: HTMLElement | null) => {
     sentinelNodeRef.current = node;
@@ -61,17 +85,14 @@ export function useAutoLoadOlderRows({
     if (!onLoadOlderRows) {
       return;
     }
-    loadInFlightRef.current = true;
-    void (async () => {
-      try {
-        await onLoadOlderRows();
-      } catch {
-        setAutoLoadFailed(true);
-      } finally {
-        loadInFlightRef.current = false;
-      }
-    })();
-  }, [onLoadOlderRows]);
+    loadPhaseRef.current = "loading";
+    void runOlderRowsLoad(
+      onLoadOlderRows,
+      loadPhaseRef,
+      setAutoLoadFailed,
+      setSettledLoads,
+    );
+  }, [onLoadOlderRows, setSettledLoads]);
 
   const loadOlderRows = useCallback(() => {
     setAutoLoadFailed(false);
@@ -89,6 +110,7 @@ export function useAutoLoadOlderRows({
       isLoadingOlderTimelineRows,
       startLoad,
     };
+    if (loadPhaseRef.current === "settled") loadPhaseRef.current = "idle";
   });
 
   const loadIfSentinelInRange = useCallback(() => {
@@ -96,7 +118,7 @@ export function useAutoLoadOlderRows({
     if (
       !live.isAutoLoadEnabled ||
       live.isLoadingOlderTimelineRows ||
-      loadInFlightRef.current
+      loadPhaseRef.current !== "idle"
     ) {
       return;
     }
@@ -113,21 +135,29 @@ export function useAutoLoadOlderRows({
   const positionKeeper = bottomAnchor?.positionKeeper ?? null;
   useEffect(() => {
     if (positionKeeper === null) return;
-    let timeout: number | null = null;
+    const scheduled: { timeout: number | null } = { timeout: null };
     const unsubscribe = positionKeeper.subscribePosition(() => {
-      timeout ??= window.setTimeout(() => {
-        timeout = null;
+      if (scheduled.timeout !== null) return;
+      scheduled.timeout = window.setTimeout(() => {
+        scheduled.timeout = null;
         loadIfSentinelInRange();
       }, 0);
     });
     return () => {
       unsubscribe();
-      if (timeout !== null) window.clearTimeout(timeout);
+      if (scheduled.timeout !== null) window.clearTimeout(scheduled.timeout);
     };
   }, [loadIfSentinelInRange, positionKeeper]);
 
   useEffect(() => {
-    loadIfSentinelInRange();
+    let timeout: number | null = null;
+    const frame = window.requestAnimationFrame(() => {
+      timeout = window.setTimeout(loadIfSentinelInRange, 0);
+    });
+    return () => {
+      window.cancelAnimationFrame(frame);
+      if (timeout !== null) window.clearTimeout(timeout);
+    };
   }, [
     isAutoLoadEnabled,
     isLoadingOlderTimelineRows,

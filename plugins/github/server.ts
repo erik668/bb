@@ -9,7 +9,7 @@ import {
   cliCommand,
   defineCli,
   type BbPluginApi,
-  type PluginCliResult,
+  experimental_sliceUtf16Head as sliceUtf16Head,
 } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 
@@ -222,6 +222,10 @@ export const githubRpcContract = defineRpcContract({
   commentPull: {
     input: itemInputSchema.extend({ body: nonBlankStringSchema }).strict(),
     output: okResultSchema,
+  },
+  threadRepos: {
+    input: z.object({ threadId: z.string().min(1) }).strict(),
+    output: z.object({ repos: z.array(repoNameSchema) }).strict(),
   },
   pullForThread: {
     input: z.object({ threadId: z.string().min(1) }).strict(),
@@ -639,20 +643,31 @@ export default async function plugin(bb: BbPluginApi) {
     return authProbe;
   }
 
-  let repoCache: { repos: RepoInfo[]; fetchedAt: number } | null = null;
+  let repoCache: {
+    repos: RepoInfo[];
+    projectRepos: Map<string, string[]>;
+    fetchedAt: number;
+  } | null = null;
 
   let ignoredExtraRepos: string[] = [];
   let lastIgnoredExtraReposKey: string | null = null;
 
   async function discoverRepos(force = false): Promise<RepoInfo[]> {
+    return (await discoverRepoCache(force)).repos;
+  }
+
+  async function discoverRepoCache(
+    force = false,
+  ): Promise<NonNullable<typeof repoCache>> {
     if (
       !force &&
       repoCache !== null &&
       Date.now() - repoCache.fetchedAt < 60_000
     ) {
-      return repoCache.repos;
+      return repoCache;
     }
     const byRepo = new Map<string, RepoInfo>();
+    const projectRepos = new Map<string, string[]>();
     try {
       const projects = await bb.sdk.projects.list();
       for (const project of projects) {
@@ -665,8 +680,13 @@ export default async function plugin(bb: BbPluginApi) {
               5_000,
             );
             const repo = parseGithubRemote(stdout);
-            if (repo !== null && !byRepo.has(repo)) {
+            if (repo === null) continue;
+            if (!byRepo.has(repo)) {
               byRepo.set(repo, { repo, projectId: project.id });
+            }
+            const ownRepos = projectRepos.get(project.id) ?? [];
+            if (!ownRepos.includes(repo)) {
+              projectRepos.set(project.id, [...ownRepos, repo]);
             }
           } catch {}
         }
@@ -689,9 +709,12 @@ export default async function plugin(bb: BbPluginApi) {
       }
     }
     ignoredExtraRepos = parsed.ignored;
-    const repos = [...byRepo.values()];
-    repoCache = { repos, fetchedAt: Date.now() };
-    return repos;
+    repoCache = {
+      repos: [...byRepo.values()],
+      projectRepos,
+      fetchedAt: Date.now(),
+    };
+    return repoCache;
   }
 
   const db = bb.storage.database();
@@ -1009,7 +1032,7 @@ export default async function plugin(bb: BbPluginApi) {
     const thread = await bb.sdk.threads.spawn({
       projectId,
       environment: { type: "project-default" },
-      title: `${ref}: ${title}`.slice(0, 120),
+      title: sliceUtf16Head(`${ref}: ${title}`, 120),
       prompt,
     });
     await addLink({
@@ -1453,6 +1476,12 @@ export default async function plugin(bb: BbPluginApi) {
       return { ok: true };
     },
 
+    async threadRepos({ threadId }) {
+      const thread = await bb.sdk.threads.get({ threadId });
+      const { projectRepos } = await discoverRepoCache();
+      return { repos: projectRepos.get(thread.projectId) ?? [] };
+    },
+
     async pullForThread({ threadId }) {
       let environmentId: string | null = null;
       try {
@@ -1648,17 +1677,6 @@ export default async function plugin(bb: BbPluginApi) {
     },
   });
 
-  async function guarded(
-    run: () => Promise<PluginCliResult>,
-  ): Promise<PluginCliResult> {
-    try {
-      return await run();
-    } catch (error) {
-      if (error instanceof PluginCliError) throw error;
-      throw new PluginCliError(errorMessage(error));
-    }
-  }
-
   function cachedItemSummary(item: CachedItem) {
     return {
       repo: item.repo,
@@ -1695,39 +1713,37 @@ export default async function plugin(bb: BbPluginApi) {
           description: "Emit the cached rows as JSON instead of a text table",
         },
       },
-      run(input) {
-        return guarded(async () => {
-          const repo = requireRepoName(input.positionals.repo);
-          const items = listCachedItems({
-            kind,
-            ...(repo === undefined ? {} : { repo }),
-            state: "open",
-          });
-          if (input.options.json) {
-            return {
-              exitCode: 0,
-              stdout: JSON.stringify({
-                ok: true,
-                items: items.map(cachedItemSummary),
-              }),
-            };
-          }
-          if (items.length === 0) {
-            return {
-              exitCode: 0,
-              stdout: "Nothing cached. Run `bb github sync` first.",
-            };
-          }
+      async run(input) {
+        const repo = requireRepoName(input.positionals.repo);
+        const items = listCachedItems({
+          kind,
+          ...(repo === undefined ? {} : { repo }),
+          state: "open",
+        });
+        if (input.options.json) {
           return {
             exitCode: 0,
-            stdout: items
-              .map(
-                (item) =>
-                  `${item.repo}#${item.number}\t[${item.state}]\t${item.title}`,
-              )
-              .join("\n"),
+            stdout: JSON.stringify({
+              ok: true,
+              items: items.map(cachedItemSummary),
+            }),
           };
-        });
+        }
+        if (items.length === 0) {
+          return {
+            exitCode: 0,
+            stdout: "Nothing cached. Run `bb github sync` first.",
+          };
+        }
+        return {
+          exitCode: 0,
+          stdout: items
+            .map(
+              (item) =>
+                `${item.repo}#${item.number}\t[${item.state}]\t${item.title}`,
+            )
+            .join("\n"),
+        };
       },
     });
   }
@@ -1748,45 +1764,43 @@ export default async function plugin(bb: BbPluginApi) {
                 "Emit the repositories as JSON, including extraRepos entries that were ignored",
             },
           },
-          run(input) {
-            return guarded(async () => {
-              const repos = await discoverRepos(true);
-              const warning =
-                ignoredExtraRepos.length > 0
-                  ? {
-                      stderr: `${describeIgnoredExtraRepos(ignoredExtraRepos)}\n`,
-                    }
-                  : {};
-              if (input.options.json) {
-                return {
-                  exitCode: 0,
-                  stdout: JSON.stringify({
-                    ok: true,
-                    repos,
-                    ignoredExtraRepos,
-                  }),
-                  ...warning,
-                };
-              }
-              if (repos.length === 0) {
-                return {
-                  exitCode: 0,
-                  stdout:
-                    "No tracked repos. Attach a project with a GitHub remote or set extraRepos.",
-                  ...warning,
-                };
-              }
+          async run(input) {
+            const repos = await discoverRepos(true);
+            const warning =
+              ignoredExtraRepos.length > 0
+                ? {
+                    stderr: `${describeIgnoredExtraRepos(ignoredExtraRepos)}\n`,
+                  }
+                : {};
+            if (input.options.json) {
               return {
                 exitCode: 0,
-                stdout: repos
-                  .map(
-                    (entry) =>
-                      `${entry.repo}${entry.projectId !== null ? `\t(${entry.projectId})` : ""}`,
-                  )
-                  .join("\n"),
+                stdout: JSON.stringify({
+                  ok: true,
+                  repos,
+                  ignoredExtraRepos,
+                }),
                 ...warning,
               };
-            });
+            }
+            if (repos.length === 0) {
+              return {
+                exitCode: 0,
+                stdout:
+                  "No tracked repos. Attach a project with a GitHub remote or set extraRepos.",
+                ...warning,
+              };
+            }
+            return {
+              exitCode: 0,
+              stdout: repos
+                .map(
+                  (entry) =>
+                    `${entry.repo}${entry.projectId !== null ? `\t(${entry.projectId})` : ""}`,
+                )
+                .join("\n"),
+              ...warning,
+            };
           },
         }),
         issues: listCachedItemsCommand("issue"),
@@ -1799,16 +1813,14 @@ export default async function plugin(bb: BbPluginApi) {
               description: "Emit the refreshed repo and item counts as JSON",
             },
           },
-          run(input) {
-            return guarded(async () => {
-              const { repos, items } = await syncAll(true);
-              return {
-                exitCode: 0,
-                stdout: input.options.json
-                  ? JSON.stringify({ ok: true, repos, items })
-                  : `Synced ${items} item(s) across ${repos} repo(s).`,
-              };
-            });
+          async run(input) {
+            const { repos, items } = await syncAll(true);
+            return {
+              exitCode: 0,
+              stdout: input.options.json
+                ? JSON.stringify({ ok: true, repos, items })
+                : `Synced ${items} item(s) across ${repos} repo(s).`,
+            };
           },
         }),
       },

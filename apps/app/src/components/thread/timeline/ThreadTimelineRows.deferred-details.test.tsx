@@ -99,6 +99,59 @@ describe("deferred timeline details", () => {
     expect(screen.queryByText("Load earlier activity")).toBeNull();
   });
 
+  it("keeps a settled turn's activity on screen while its growing range reloads", async () => {
+    let releaseReload: (() => void) | undefined;
+    timelineTurnSummaryDetails.mockImplementation(async (input) => {
+      if (input.sourceSeqEnd !== "40") {
+        await new Promise<void>((resolve) => {
+          releaseReload = resolve;
+        });
+      }
+      return {
+        olderCursor: null,
+        rows: [
+          conversationRow({
+            id: "turn-message",
+            text: "Started the dev server.",
+            threadId: "thr_main",
+            turnId: "turn_1",
+          }),
+        ],
+      };
+    });
+    const { wrapper: Wrapper } = createQueryClientTestHarness();
+    const renderTurn = (sourceSeqEnd: number) => (
+      <MemoryRouter>
+        <Wrapper>
+          <ThreadTimelineRows
+            initialExpanded={new Set(["turn_1"])}
+            threadId="thr_main"
+            timelineRows={[
+              turnRow({
+                id: "turn_1",
+                sourceSeqEnd,
+                threadId: "thr_main",
+                turnId: "turn_1",
+              }),
+            ]}
+            threadRuntimeDisplayStatus="idle"
+          />
+        </Wrapper>
+      </MemoryRouter>
+    );
+    const view = render(renderTurn(40));
+    expect(await screen.findByText("Started the dev server.")).toBeTruthy();
+
+    view.rerender(renderTurn(41));
+
+    await vi.waitFor(() =>
+      expect(timelineTurnSummaryDetails).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.getByText("Started the dev server.")).toBeTruthy();
+    expect(screen.queryByText("Loading turn details...")).toBeNull();
+    releaseReload?.();
+  });
+
   it("loads earlier turn activity only when asked", async () => {
     timelineTurnSummaryDetails.mockImplementation(async (input) =>
       input.beforeCursor === undefined
@@ -144,6 +197,74 @@ describe("deferred timeline details", () => {
     });
     expect(screen.queryByText("Load earlier activity")).toBeNull();
   });
+
+  it.each([
+    { deferredChildren: false, retainedOutput: false },
+    { deferredChildren: true, retainedOutput: false },
+    { deferredChildren: false, retainedOutput: true },
+    { deferredChildren: true, retainedOutput: true },
+  ])(
+    "loads subagent command details in the enclosing delegation scope: %j",
+    async ({ deferredChildren, retainedOutput }) => {
+      const loaded = commandRow({
+        callId: "child-command",
+        command: "inspect-child",
+        output: "SUBAGENT COMMAND OUTPUT",
+        sourceSeqStart: 20,
+        sourceSeqEnd: 22,
+        threadId: "thr_main",
+        turnId: "child-turn",
+      });
+      const child: TimelineRow = retainedOutput
+        ? {
+            ...loaded,
+            output: "preview",
+            outputPreview: {
+              experimental_fullOutputAvailability: "available",
+              totalChars: loaded.output.length,
+            },
+          }
+        : { ...loaded, output: "", contentDeferred: true };
+      const delegation = delegationRow({
+        callId: "agent-call",
+        childRows: [child],
+        sourceSeqStart: 12,
+        sourceSeqEnd: 30,
+        threadId: "thr_main",
+        turnId: "parent-turn",
+      });
+      timelineTurnSummaryDetails.mockImplementation(async (input) => ({
+        olderCursor: null,
+        rows: input.itemId === "agent-call" ? [delegation] : [loaded],
+      }));
+
+      renderExpandedRow(
+        deferredChildren ? { ...delegation, childRows: null } : delegation,
+      );
+      const header = await screen.findByText(/inspect-child/);
+      fireEvent.pointerDown(header);
+
+      await vi.waitFor(() => {
+        expect(timelineTurnSummaryDetails).toHaveBeenCalledWith(
+          expect.objectContaining({
+            itemId: loaded.callId,
+            sourceSeqEnd: "30",
+            sourceSeqStart: "12",
+            threadId: "thr_main",
+            turnId: "parent-turn",
+          }),
+        );
+      });
+      fireEvent.click(header);
+
+      expect(await screen.findByText(/SUBAGENT COMMAND OUTPUT/)).toBeTruthy();
+      expect(
+        timelineTurnSummaryDetails.mock.calls.filter(
+          ([input]) => input.itemId === loaded.callId,
+        ),
+      ).toHaveLength(1);
+    },
+  );
 
   it("loads a deferred command's output by item when it is expanded", async () => {
     const loaded = commandRow({

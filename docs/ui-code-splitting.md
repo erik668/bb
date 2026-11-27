@@ -10,7 +10,7 @@ app-local contract, not a Plugin SDK API. App code sorts into three tiers:
 | `intent`  | Rare UI, such as customization, setup dialogs and context-menu contents | `defineSplit({ tier: "intent" })`  |
 
 The router's page components in `App.tsx` stay plain `React.lazy`: they suspend
-into the shared route boundary that marks route content painted, and a
+into the shared route boundary that marks the screen painted, and a
 per-component boundary would mark it before the page loads.
 
 ## Declare a boundary
@@ -94,14 +94,19 @@ Use it from an explicit owner for data demand or related features, such as
 warming panel tab code when the right panel opens.
 
 A preload-tier split needs no registration: defining it queues it, and
-`RouteContentPaintSignal` in `App.tsx` starts the queue with
-`startSplitPreloading()`, and marks route content painted only after critical
-loads settle. On pages with expected surface providers (including the plugin
+`ScreenPaintSignal` starts the queue with `startSplitPreloading()`, and marks
+the screen painted only after critical loads settle. Every top-level screen
+renders it: the main app routes and the first-run onboarding screen. A screen
+that renders neither, such as the auth callback, falls back to a deadline:
+`whenScreenPainted()` resolves at the signal or 3 seconds after the page
+started, whichever comes first, so work waiting on it is delayed, never
+stranded. On pages with expected surface providers (including the plugin
 that owned the open thread panel tab last session) or a plugin panel, the plugin runtime download and shared plugin-list query start alongside system
 config. Priority plugin bundles and styles preload as soon as the list resolves.
 Activation still waits for system config. Pages without expected providers or a plugin panel
-retain deferred boot after route paint and browser idle, with a 1.5-second
-fallback. Plugin activation does not wait for the toaster to mount; startup
+retain deferred boot after the screen paints and browser idle, with a 1.5-second
+fallback. Once booted, plugins the page does not need wait for the screen paint
+before downloading. Plugin activation does not wait for the toaster to mount; startup
 notifications queue until it attaches, including custom plugin toasts.
 SDK Markdown, source-code, and diff wrappers use preload-tier splits. After
 plugin registration settles, the app also queues the selected built-in source
@@ -128,6 +133,13 @@ artifacts keep their own zod so they still load on older hosts. Other runtime sl
 compatibility. SDK component splits remain separate from this mechanism:
 runtime slots must be installed before a plugin module evaluates, while SDK
 components can load when rendered or warmed at idle.
+
+A chunk's shim awaits its host-loaded slots before the chunk evaluates, and it
+only runs once the chunk has downloaded. So the chunk's slot download does not
+wait behind the chunk, `bb plugin build` rewrites every dynamic import of a
+chunk to call `loadRuntimeSlot` for the host-loaded slots in that chunk's static
+import closure that the entry does not already load. The chunk and those slots
+download together, and the shim's later call joins the pending load.
 
 Splits defined by modules that load later (a route
 chunk, for example) join the queue and drain at the next idle period. Tests do
@@ -161,8 +173,85 @@ meantime. With `keepMounted: true`, a split stays mounted after `mountWhen`
 turns false again, so closing preserves its state. Downloading never mounts:
 preload does not render hidden UI or run its effects.
 
+Background UI mounted outside the route content, such as the toaster, passes
+`suspends: false`. The split renders `loading` until its module arrives and then
+mounts it without a Suspense boundary. Any boundary that switches between
+fallback and content makes React hold the next retry reveal anywhere in the app
+for 300 ms, so a background split that suspends and reveals while the route is
+still loading delays the route's own content by up to 300 ms.
+
 Keep the existing persistent responsive drawer's deferred realization and
 retained content. Avoid rendering a split merely to preload it.
+
+## Core contributions and plugin surfaces
+
+Core contributions (`apps/app/src/core-contributions/`) are registered from
+modules that load with the app, so everything their registration file imports
+statically lands in that payload. They cannot import `defineSplit`:
+`bb/core-contribution-imports` limits them to the public SDK. They split with
+`experimental_lazy` from `@get-bb/plugin-sdk/app`, the same call plugins use:
+
+```tsx
+const ThreadOutline = experimental_lazy(
+  () => import("./components/ThreadOutline"),
+);
+
+export default definePluginApp((app) => {
+  app.slots.experimental_threadRailOutline({
+    id: "outline",
+    component: ThreadOutline,
+  });
+});
+```
+
+The registration file keeps ids, groups and order. The component module lives
+in `src/core-contributions/components/` and default-exports the component.
+`experimental_lazy` is `lazyComponent` in `src/lib/lazy-component.tsx` for both
+callers: the core binding and the plugin runtime serve the same function. It is
+a `preload`-tier `defineSplit`, so it warms at idle once critical loads and
+plugin frontends settle, gets the same download retries, and renders the loaded
+component directly on later mounts. A final load failure throws into the
+surrounding slot boundary.
+
+Stacking slot hosts call `useOrderedReveal` from `src/lib/lazy-parts.ts`, one
+rule for bb's entries and plugins' alike: an entry shows once every entry above
+it is ready. A lazy entry still loading after `ORDERED_REVEAL_BOUND_MS`
+(3 seconds) stops holding the entries below it: they show what is ready, and
+the late entry is inserted in its place when it arrives, moving the entries
+below it once. A missing row is worse than one shift on a slow link. Eager
+entries that register later still appear in their place. Restored-part
+loading and core page preparation find lazy components through
+`PLUGIN_APP_COMPONENT_FIELDS` in the SDK's collector, where every slot kind
+lists its component fields.
+
+Before plugin frontends load, `restoredLazyParts` (`src/lib/restored-lazy-parts.ts`)
+lists the parts the restored screen shows: a plugin's settings sections on its
+settings page, the nav panel on its own page, and on a thread route the open
+right-panel tab from the thread's saved panel state (a plugin tab, a plugin
+panel action, or every plugin's Info rows and sections when Info is open). A
+plugin a listed part names prefetches its lazy chunks with its bundle. As soon
+as a plugin's registrations are collected, its listed lazy parts start loading
+instead of waiting for render or idle warming. A plugin's own page or settings
+page publishes its registrations once the parts that page shows load, bounded
+the same way; the other listed parts do not hold anything. Lazy parts the
+screen does not show wait for idle warming. Core contributions register at startup (`src/lib/core-contribution-parts.ts`
+lists them), and the thread route starts their lazy parts alongside the thread
+view chunk, so a part the page shows, such as the rail outline, arrives with
+the page instead of after it. bb's Info rows and sections are not in that
+list: when `restoredLazyParts` lists the Info tab, the plugin loader starts them
+with the plugins' restored parts (`startRestoredCoreContributionParts`).
+
+The bound comes from Slow 4G (562.5 ms RTT, 1.44 Mbps) cold loads: a lazy
+chunk a host waited on at render took 2.1 to 2.8 seconds while the app's
+other bundles shared the link (bb connect's settings sections 2.4 s, the
+automations panel 2.8 s, the rail outline 2.7 s), and about 0.6 seconds
+uncontended. Three seconds covers those loads, and one stuck chunk cannot
+hold the entries below it for longer.
+
+`src/core-contributions/components/*` is a split boundary for `boot`,
+`ThreadPage` and `NewThreadPage`, so a component module that becomes eager fails
+the budget check. Pattern entries ending in `/*` match the modules directly in
+that directory and fail when they match none.
 
 ## Enforce the boundary
 
@@ -229,6 +318,39 @@ Keep code-loading and data-loading reviews separate: releasing the split may
 reveal another loading state while the feature fetches data. Keep focus and
 close controls usable, preserve panel geometry, and check the transition to
 real content. Do not add artificial production delays for screenshots.
+
+## Test lazy boundaries
+
+In `@bb/app` tests, every dynamic `import()` in app source stays pending until
+the test settles it. `vite-test-lazy-imports.ts` wraps each call and
+`src/test/setup.ts` holds the result for the duration of each test. A module
+already loaded before the current test is held too: the setup mocks
+`defineSplit` and React's `lazy` so that a split or lazy component an earlier
+test or file loaded renders its loading state on its first render in each later
+test. A module loaded earlier in the same test renders at once. A test therefore
+never depends on how fast a chunk transforms on the runner or on a sibling test
+having loaded it first:
+
+- Testing Library `findBy*` and `waitFor` settle pending imports before they
+  poll, let imports flow while polling, and settle again before returning.
+- Before a synchronous assertion on lazy content, `await settleLazyModules()`
+  from `@/test/lazy-modules`. It resolves once every import has loaded,
+  including imports that loading starts, and React has committed.
+- `await settleLazyModules(operation)` awaits a promise whose chain loads code,
+  such as booting plugin frontends, and lets its imports load meanwhile.
+- To assert a loading state, render and assert synchronously or poll with
+  `vi.waitFor`, which does not settle. The hold replaces deferred promises in
+  `vi.mock` factories. Keep a factory gate only to make an import fail.
+- Collection-time `await Split.preload()` keeps a heavy module's first
+  transform out of every test in a suite and marks the split as prepared for
+  that file, so its tests render it at once.
+- A test of Suspense or `defineSplit` mechanics itself calls
+  `vi.unmock("react")` and `vi.unmock("@/lib/define-split")`, as
+  `define-split.test.tsx` does.
+
+A test that fails while an import or gated module is pending reports the held
+or loading specifiers in its error, for example `split:remote-path-browser
+(held)`.
 
 ## Choosing a policy
 

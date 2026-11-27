@@ -153,6 +153,50 @@ function parentCall(turnId: string, itemId: string): RowSpec {
   };
 }
 
+function backgroundTask(
+  turnId: string | null,
+  taskId: string,
+  status: "pending" | "progress" | "completed" | "failed",
+): RowSpec {
+  return {
+    type:
+      status === "pending"
+        ? "item/started"
+        : status === "progress"
+          ? "item/backgroundTask/progress"
+          : "item/backgroundTask/completed",
+    turnId,
+    itemId: taskId,
+    itemKind: "backgroundTask",
+    data: {
+      providerThreadId: "provider-memo",
+      item: {
+        type: "backgroundTask",
+        id: taskId,
+        taskType: "local_bash",
+        description: `Background ${taskId}`,
+        status: status === "progress" ? "pending" : status,
+        taskStatus:
+          status === "pending" || status === "progress" ? "running" : status,
+        skipTranscript: false,
+        foreground: false,
+      },
+    },
+  };
+}
+
+function backgroundTurn(index: number): RowSpec[] {
+  const turnId = `background-turn-${index}`;
+  const taskId = `task-${index}`;
+  return [
+    started(turnId),
+    backgroundTask(turnId, taskId, "pending"),
+    message(turnId, `Started ${index}`),
+    completed(turnId),
+    backgroundTask(null, taskId, "completed"),
+  ];
+}
+
 function load(
   testThread: TestThread,
   completedTurnDisplay: CompletedTurnDisplay = "collapse",
@@ -429,6 +473,66 @@ describe("incremental conversation outlines", () => {
     },
   );
 
+  it.each(["collapse", "flat"] as const)(
+    "only reads the live tail after background tasks that finished after their turns (%s)",
+    (display) => {
+      withTestThread((testThread) => {
+        appendRows(testThread, [
+          ...Array.from({ length: 100 }, (_, index) =>
+            backgroundTurn(index),
+          ).flat(),
+          started("live"),
+          delta("live", "Live"),
+        ]);
+        expectMatchesFull(testThread, display);
+        for (const rows of [
+          [delta("live", " continued")],
+          [message("live", "Finished"), completed("live")],
+          backgroundTurn(100),
+          [started("next"), delta("next", "Next")],
+        ]) {
+          appendRows(testThread, rows);
+          const selected = countSelectedEventRows(testThread, () =>
+            expectMatchesFull(testThread, display),
+          );
+          expect(selected).toBeLessThan(25);
+        }
+      });
+    },
+  );
+
+  it.each(["completed", "failed", "progress"] as const)(
+    "matches a full rebuild when a background task from retained history reports later (%s)",
+    (update) => {
+      withTestThread((testThread) => {
+        appendRows(testThread, [
+          ...Array.from({ length: 30 }, (_, index) =>
+            backgroundTurn(index),
+          ).flat(),
+          started("spawning"),
+          backgroundTask("spawning", "late-task", "pending"),
+          message("spawning", "Spawned"),
+          completed("spawning"),
+          ...Array.from({ length: 30 }, (_, index) =>
+            backgroundTurn(index + 30),
+          ).flat(),
+          started("live"),
+          delta("live", "Live"),
+        ]);
+        expectMatchesFull(testThread);
+        appendRows(testThread, [delta("live", " more")]);
+        expectMatchesFull(testThread);
+        appendRows(testThread, [
+          backgroundTask(null, "late-task", update),
+          delta("live", " after task"),
+        ]);
+        expectMatchesFull(testThread);
+        appendRows(testThread, [message("live", "Done"), completed("live")]);
+        expectMatchesFull(testThread);
+      });
+    },
+  );
+
   it("rebuilds when a previously unaccepted request joins a later turn", () => {
     withTestThread((testThread) => {
       appendRows(testThread, [request("creq_abcdefghij")]);
@@ -466,6 +570,35 @@ describe("incremental conversation outlines", () => {
         expectMatchesFull(testThread);
       }
     });
+  });
+
+  describe("keeps checkpointed items when the thread's status or title changes, because the checkpoint holds only finished turns", () => {
+    it.each([
+      {
+        change: "status",
+        why: "turn/completed has frozen every streamed text in those turns and user messages render under every status",
+        thread: { status: "idle" },
+      },
+      {
+        change: "title",
+        why: "the title names only operation rows, which the outline drops",
+        thread: { title: "Renamed thread" },
+      },
+    ] as const)(
+      "reads only the tail after a $change change: $why",
+      ({ thread }) =>
+        withTestThread((testThread) => {
+          seed(testThread, 100);
+          expectMatchesFull(testThread);
+          testThread.thread = { ...testThread.thread, ...thread };
+          const count = countSelectedEventRows(testThread, () => {
+            load(testThread);
+          });
+          expect(count).toBeGreaterThan(0);
+          expect(count).toBeLessThan(20);
+          expectMatchesFull(testThread);
+        }),
+    );
   });
 
   it.each([

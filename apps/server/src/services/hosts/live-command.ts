@@ -1,12 +1,10 @@
-import { getEnvironment } from "@bb/db";
-import { resolveHostEnvironment } from "./host-environment.js";
 import { randomUUID } from "node:crypto";
 import {
   type HostDaemonCommand,
   type HostDaemonCommandResult,
   type HostDaemonSettledCommandType,
 } from "@bb/host-daemon-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, HostConnectionLostApiError } from "../../errors.js";
 import {
   buildCommandResultSettlementDeps,
   type CommandResultPostCommitAction,
@@ -108,7 +106,19 @@ interface LiveHostCommandBaseLogFields {
 
 const EXPECTED_LIVE_HOST_COMMAND_ERROR_CODES = new Set(["provision_cancelled"]);
 
+export const HOST_CONNECTION_LOST_ERROR_CODE = "host_connection_lost";
+
+export function isHostUnavailableReportCode(errorCode: string): boolean {
+  return (
+    errorCode === "host_unavailable" ||
+    errorCode === HOST_CONNECTION_LOST_ERROR_CODE
+  );
+}
+
 function commandFailureCode(error: Error): string {
+  if (error instanceof HostConnectionLostApiError) {
+    return HOST_CONNECTION_LOST_ERROR_CODE;
+  }
   if (error instanceof ApiError) {
     return error.body.code;
   }
@@ -237,25 +247,9 @@ export async function runLiveHostCommand<
   try {
     const call = callHostOnlineRpcForWork;
     const sourceCommand: HostDaemonCommand = args.command;
-    const command = {
-      ...args.command,
-      ...(sourceCommand.type === "environment.attach"
-        ? {
-            contributedEnv:
-              sourceCommand.setupScriptTimeoutMs === null
-                ? []
-                : await resolveHostEnvironment(deps, {
-                    hostId: args.hostId,
-                    projectId:
-                      getEnvironment(deps.db, sourceCommand.environmentId)
-                        ?.projectId ?? null,
-                  }),
-          }
-        : {}),
-    };
     noteTurnTraceCommandSent({ command: sourceCommand, hostId: args.hostId });
     const result = await call(deps, {
-      command,
+      command: args.command,
       hostId: args.hostId,
       timeoutMs: args.timeoutMs,
     });
@@ -281,29 +275,45 @@ export async function runLiveHostCommand<
     ) {
       throw normalized;
     }
-    const failureReport = buildLiveHostCommandFailureReport({
+    await settleLiveHostCommandFailure(deps, {
       command: args.command,
-      completedAt: Date.now(),
-      error: normalized,
       execution,
+      error: normalized,
     });
-    try {
-      await applyLiveHostCommandReport(deps, {
-        command: args.command,
-        execution,
-        report: failureReport,
-      });
-    } catch (settlementError) {
-      deps.logger.error(
-        {
-          err: settlementError,
-          commandType: args.command.type,
-          originalError: normalized,
-        },
-        "Live command failure settlement failed",
-      );
-    }
     throw normalized;
+  }
+}
+
+export async function settleLiveHostCommandFailure<
+  TType extends HostDaemonSettledCommandType,
+>(
+  deps: CommandResultSideEffectsDeps,
+  args: {
+    command: HostDaemonCommandForType<TType>;
+    execution: HostDaemonCommandExecutionRecord;
+    error: Error;
+  },
+): Promise<void> {
+  try {
+    await applyLiveHostCommandReport(deps, {
+      command: args.command,
+      execution: args.execution,
+      report: buildLiveHostCommandFailureReport({
+        command: args.command,
+        completedAt: Date.now(),
+        error: args.error,
+        execution: args.execution,
+      }),
+    });
+  } catch (settlementError) {
+    deps.logger.error(
+      {
+        err: settlementError,
+        commandType: args.command.type,
+        originalError: args.error,
+      },
+      "Live command failure settlement failed",
+    );
   }
 }
 
@@ -315,8 +325,10 @@ export function startLiveHostCommand<
 ): void {
   const execution =
     args.execution ?? createLiveHostCommandExecution(args.hostId);
-  void runLiveHostCommand(deps, { ...args, execution })
-    .catch((error) => {
+  void (async () => {
+    try {
+      await runLiveHostCommand(deps, { ...args, execution });
+    } catch (error) {
       const normalized =
         error instanceof Error ? error : new Error(String(error));
       const handlerArgs: LiveHostCommandErrorHandlerArgs<TType> = {
@@ -338,8 +350,7 @@ export function startLiveHostCommand<
         return;
       }
       args.onError?.(handlerArgs);
-    })
-    .finally(async () => {
+    } finally {
       try {
         await args.onSettled?.();
       } catch (error) {
@@ -348,5 +359,6 @@ export function startLiveHostCommand<
           "Live command settled callback failed",
         );
       }
-    });
+    }
+  })();
 }

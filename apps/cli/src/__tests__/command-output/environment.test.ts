@@ -228,7 +228,10 @@ describe("bb environment command output", () => {
   );
 
   it("bb environment delete reports requested cleanup and its lifecycle", async () => {
-    const remove = vi.fn(async () => ({ ok: true as const }));
+    const remove = vi.fn(async () => ({
+      ok: true as const,
+      progress: "in-progress" as const,
+    }));
     const get = vi.fn(async () =>
       fixtures.makeEnvironment({
         id: "env-delete",
@@ -237,7 +240,7 @@ describe("bb environment command output", () => {
         lifecycle: {
           phase: "teardown",
           retireAt: null,
-          teardown: { status: "running", attempt: 1 },
+          teardown: { status: "running", attempt: 1, needsRecovery: false },
         },
       }),
     );
@@ -261,8 +264,17 @@ describe("bb environment command output", () => {
           kind: "directory",
           path: "apps/cli",
           name: "cli",
-          score: 1,
+          score: 2,
           positions: [5],
+          folderPath: null,
+        },
+        {
+          kind: "directory",
+          path: "packages/cli",
+          name: "cli",
+          score: 1,
+          positions: [9],
+          folderPath: "/work/shared",
         },
       ],
       truncated: true,
@@ -295,6 +307,7 @@ describe("bb environment command output", () => {
     });
     expect(collectLogLines(vi.mocked(console.log))).toEqual([
       "directory\tapps/cli",
+      "directory\t/work/shared/packages/cli",
       "(results truncated)",
     ]);
   });

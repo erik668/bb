@@ -71,11 +71,7 @@ export function spawnHostProcess(
     env: launch.env,
     windowsHide: options.windowsHide ?? true,
   };
-  if (
-    process.platform === "win32" &&
-    !options.shell &&
-    /[\\/]/u.test(command)
-  ) {
+  if (process.platform === "win32" && !options.shell) {
     const parsed = parse(launch.command, launch.args, spawnOptions);
     return observe(
       parsed.file
@@ -101,7 +97,13 @@ export function forkHostProcess(
       ? hostToolchain.node({ env, cwd: options.cwd })
       : options.execPath;
   return observe(
-    nodeFork(modulePath, args, { ...options, env, execArgv, execPath }),
+    nodeFork(modulePath, args, {
+      ...options,
+      env,
+      execArgv,
+      execPath,
+      windowsHide: options.windowsHide ?? true,
+    }),
   );
 }
 
@@ -228,6 +230,7 @@ export function spawnHostProcessSync(
   const result = crossSpawn.sync(launch.command, launch.args, {
     ...options,
     env: launch.env,
+    windowsHide: options.windowsHide ?? true,
   });
   hostToolchain.invalidateFailure(result.error ?? result.status);
   return result;

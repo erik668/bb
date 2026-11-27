@@ -1,5 +1,6 @@
+import { performance } from "node:perf_hooks";
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   encodeClientTurnRequestIdNumber,
   LOCAL_WORKFLOW_TASK_TYPE,
@@ -16,10 +17,7 @@ import {
   threads,
 } from "@bb/db";
 import { pruneThreadEventHistory } from "../../../src/services/system/event-pruning.js";
-import {
-  clearTimelineOrderingContextCache,
-  getTimelineGroupingContext,
-} from "../../../src/services/threads/timeline-context-order.js";
+import { clearTimelineOrderingContextCache } from "../../../src/services/threads/timeline-context-order.js";
 import type { ThreadTimelinePageRequest } from "../../../src/services/threads/timeline-pagination.js";
 import {
   countTimelineSelectionMemoEntries,
@@ -711,7 +709,12 @@ function advanceSettledThreadPruning(
     .set({ status: "idle" })
     .where(eq(threads.id, testThread.thread.id))
     .run();
-  return advanceThreadPruning(testThread.db, policy);
+  const now = vi.spyOn(performance, "now").mockReturnValue(0);
+  try {
+    return advanceThreadPruning(testThread.db, policy);
+  } finally {
+    now.mockRestore();
+  }
 }
 
 function pruneUsageSnapshots(testThread: TestThread): void {
@@ -729,8 +732,10 @@ describe("latest timeline selection memo", () => {
   it("matches a cold build over randomized streaming, out-of-order deltas, rewrites, prunes and context clears", () => {
     let reused = 0;
     let rebuilt = 0;
+    let narrowerReused = 0;
     for (let seed = 1; seed <= SEEDS; seed += 1) {
       const random = createRandom(seed);
+      const narrowerOrder = createRandom(seed + 1_000);
       withTestThread((testThread) => {
         const state = initialState();
         for (let step = 0; step < STEPS; step += 1) {
@@ -764,11 +769,27 @@ describe("latest timeline selection memo", () => {
           }
           const label = JSON.stringify({ seed, step });
           const includeDiagnosticOperations = random() < 0.2;
+          const narrowerArgs: BuildArgs = {
+            ...latestArgs("default", includeDiagnosticOperations),
+            page: { kind: "latest", segmentLimit: 1 },
+          };
+          const narrowerFirst = narrowerOrder() < 0.5;
+          if (narrowerFirst) {
+            expectWarmEqualsCold(testThread, narrowerArgs, `${label} narrower`);
+          }
           const warm = expectWarmEqualsCold(
             testThread,
             latestArgs("default", includeDiagnosticOperations),
             label,
           );
+          if (!narrowerFirst) {
+            const narrower = expectWarmEqualsCold(
+              testThread,
+              narrowerArgs,
+              `${label} narrower`,
+            );
+            if (selectionWasReused(narrower.profile)) narrowerReused += 1;
+          }
           if (selectionWasReused(warm.profile)) {
             reused += 1;
           } else {
@@ -792,6 +813,7 @@ describe("latest timeline selection memo", () => {
     }
     expect(reused).toBeGreaterThan(SEEDS * 10);
     expect(rebuilt).toBeGreaterThan(SEEDS * 15);
+    expect(narrowerReused).toBeGreaterThan(SEEDS * 10);
   }, 120_000);
 
   it("reuses the selection for fetched turns, parents without rows and childless tool calls", () => {
@@ -1015,11 +1037,7 @@ describe("latest timeline selection memo", () => {
         messageStarted("turn-2", "message-2"),
         messageDelta("turn-2", "message-2", "two\n"),
       ]);
-      const initial = expectWarmEqualsCold(
-        testThread,
-        args,
-        "initial",
-      );
+      const initial = expectWarmEqualsCold(testThread, args, "initial");
       expect({
         goal: initial.response.extensionStates[CODEX_GOAL_KIND],
         todos: initial.response.pendingTodos?.items.map((item) => item.text),
@@ -1063,16 +1081,10 @@ describe("latest timeline selection memo", () => {
     });
   });
 
-  it("reorders rows when a parented excluded row extends a delegating span past a user request", () => {
+  it("keeps rows in source order when a parented excluded row extends a delegating span past a user request", () => {
     withTestThread((testThread) => {
       const state = initialState();
       const args = latestArgs("default");
-      const boundary = (maxSeq: number) =>
-        getTimelineGroupingContext(testThread.coldDb, {
-          maxSeq,
-          sequenceStart: 0,
-          threadId: testThread.thread.id,
-        }).orderingBoundarySequence;
       const rowStarts = (page: BuiltTimelinePage) =>
         page.response.rows.map((row) => row.sourceSeqStart);
       const message = (id: string) =>
@@ -1081,30 +1093,23 @@ describe("latest timeline selection memo", () => {
           text: id,
           type: "agentMessage",
         });
-      const steerSeq = append(testThread, [
+      append(testThread, [
         ...startTurn(state),
         agentToolCall("item/started", "turn-1", "agent-1"),
         userRequest(2, { kind: "new-turn" }, "Steer"),
       ]);
-      const requestSeq = append(testThread, [
+      append(testThread, [
         acceptedInput(2, "turn-1"),
         message("message-1"),
         agentToolCall("item/started", "turn-1", "agent-2"),
         userRequest(3, { kind: "new-turn" }, "Queued"),
       ]);
-      const beforeSeq = append(testThread, [
-        message("message-2"),
-        completeTurn(state, "turn-1"),
-      ]);
+      append(testThread, [message("message-2"), completeTurn(state, "turn-1")]);
       const before = expectWarmEqualsCold(testThread, args, "before");
-      expect(boundary(beforeSeq)).toBe(requestSeq);
-      expect(rowStarts(before)).toEqual([1, 4, 5, 8, 7, 9, 10]);
+      expect(rowStarts(before)).toEqual([1, 4, 5, 7, 8, 9, 10]);
 
-      const maxSeq = append(testThread, [
-        contextUsage("turn-1", 42, "agent-1"),
-      ]);
+      append(testThread, [contextUsage("turn-1", 42, "agent-1")]);
       const after = expectWarmEqualsCold(testThread, args, "after");
-      expect(boundary(maxSeq)).toBe(steerSeq);
       expect(rowStarts(after)).toEqual([1, 4, 5, 7, 8, 9, 10]);
       expect(selectionWasReused(after.profile)).toBe(true);
     });

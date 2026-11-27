@@ -126,6 +126,7 @@ function createTurnSubmitCommand(
       providerId: args.providerId ?? "fake",
       providerThreadId: args.providerThreadId ?? "provider-thread-router",
       instructions: "Be a helpful coding agent.",
+      additionalWorkspaceFolders: [],
       dynamicTools: [],
       contributedEnv: [],
       injectedSkillSources: [],
@@ -159,6 +160,7 @@ function createThreadStartCommand(): ThreadStartCommand {
       permissionEscalation: null,
     },
     instructions: "Be a helpful coding agent.",
+    additionalWorkspaceFolders: [],
     dynamicTools: [],
     contributedEnv: [],
     injectedSkillSources: [],
@@ -186,11 +188,9 @@ function textPromptInput(text: string): TextPromptInput {
 function createEnvironmentProvisionCommand(): EnvironmentProvisionCommand {
   return {
     type: "environment.attach",
-    contributedEnv: [],
     environmentId: "env-router",
     initiator: null,
     path: "/tmp/env-router",
-    setupScriptTimeoutMs: null,
   };
 }
 
@@ -261,7 +261,8 @@ describe("CommandRouter", () => {
         requestId: "paths-cancelled",
         command: {
           type: "host.list_paths",
-          path: root,
+          rootPaths: [root],
+          followRootSymlink: false,
           query: "alpha",
           limit: 5,
           includeFiles: true,
@@ -299,7 +300,8 @@ describe("CommandRouter", () => {
         requestId: "paths-kept",
         command: {
           type: "host.list_paths",
-          path: root,
+          rootPaths: [root],
+          followRootSymlink: false,
           query: "alpha",
           limit: 5,
           includeFiles: true,
@@ -419,6 +421,7 @@ describe("CommandRouter", () => {
     const stopTask = runRouterCommand({
       command: {
         type: "thread.stop",
+        aimedAt: null,
         intent: "interrupt",
         environmentId: "env-router",
         threadId: "thread-router-start",
@@ -443,6 +446,47 @@ describe("CommandRouter", () => {
     expect(harness.runtimeState.stoppedThreadId).toBe("thread-router-start");
     expect(harness.runtime.hasThread("thread-router-start")).toBe(false);
   });
+
+  it.each([
+    ["succeeds", true],
+    ["fails", false],
+  ] as const)(
+    "reports a thread while its turn.submit runs, until the submit %s",
+    async (_outcome, succeeds) => {
+      const harness = createHarness({ workspacePath: "/tmp/env-router" });
+      await harness.manager.ensureEnvironment({
+        environmentId: "env-router",
+        workspacePath: "/tmp/env-router",
+      });
+      const turnEntered = createDeferredPromise<void>();
+      const releaseTurn = createDeferredPromise<void>();
+      const originalRunTurn = harness.runtime.runTurn;
+      harness.runtime.runTurn = async (args) => {
+        turnEntered.resolve();
+        await releaseTurn.promise;
+        if (!succeeds) {
+          throw new Error("The provider refused the turn");
+        }
+        return originalRunTurn(args);
+      };
+      const router = createRouter(harness);
+
+      const turnTask = runRouterCommand({
+        command: createTurnSubmitCommand({ text: "still staging" }),
+        requestId: "turn-in-flight",
+        router,
+      });
+      await turnEntered.promise;
+      expect(router.listThreadIdsHandlingTurnCommands()).toEqual([
+        "thread-router",
+      ]);
+
+      releaseTurn.resolve();
+      expect((await turnTask).ok).toBe(succeeds);
+      await flushAsyncWork();
+      expect(router.listThreadIdsHandlingTurnCommands()).toEqual([]);
+    },
+  );
 
   it("orders interactive.resolve after an in-flight turn.submit on the same thread", async () => {
     const harness = createHarness({ workspacePath: "/tmp/env-router" });
@@ -620,6 +664,7 @@ describe("CommandRouter", () => {
     const stopTask = runRouterCommand({
       command: {
         type: "thread.stop",
+        aimedAt: null,
         intent: "interrupt",
         environmentId: "env-router",
         threadId: "thread-stop",

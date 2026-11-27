@@ -19,17 +19,12 @@ import {
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { pluginSdkAppImplementation } from "@/lib/plugin-sdk-app-impl";
-import {
-  useBbContext,
-  useBbNavigate,
-  useRpc,
-  useSettings,
-} from "@/lib/plugin-sdk-hooks";
+import { useBbContext } from "@/lib/plugin-bb-context";
+import { useBbNavigate, useRpc, useSettings } from "@/lib/plugin-sdk-hooks";
 import { resetAllCrashedPluginSlotsForTest } from "./PluginSlotMount";
 import { PluginAppOverlays } from "./PluginAppOverlays";
 import { makePluginRegistrationSet as registrationSet } from "@/test/fixtures/plugins";
 import { LocationProbe } from "@/test/location-probe";
-import { SidebarThreadEntriesTestProvider } from "@/test/sidebarThreadEntriesTestProvider";
 
 vi.mock("@/components/dialogs/ThreadDeleteDialog", () => ({
   ThreadDeleteDialog: () => null,
@@ -61,23 +56,15 @@ vi.mock("@/hooks/queries/system-queries", () => ({
   useSystemConfig: () => ({ data: undefined }),
 }));
 
-vi.mock("@/hooks/queries/sidebar-navigation-query", () => ({
-  useSidebarNavigation: () => ({
-    data: {
-      personalProject: { id: "personal", name: "Personal", threads: [] },
-      projects: [],
-    },
-    isError: false,
-  }),
-}));
+const useSidebarThreadActions =
+  pluginSdkAppImplementation.experimental_useSidebarThreadActions;
 
 function PortaledProbe() {
   const context = useBbContext();
   const navigate = useBbNavigate();
   const rpc = useRpc();
   const settings = useSettings();
-  const sidebarThreadActions =
-    pluginSdkAppImplementation.experimental_useSidebarThreadActions();
+  const sidebarThreadActions = useSidebarThreadActions();
   const [rpcResult, setRpcResult] = useState("idle");
 
   return (
@@ -184,16 +171,14 @@ describe("PluginAppOverlays", () => {
 
     render(
       <QueryClientProvider client={queryClient}>
-        <SidebarThreadEntriesTestProvider>
-          <MemoryRouter initialEntries={["/projects/proj_1/threads/thr_1"]}>
-            <RouteNavigationProvider>
-              <ThreadActionsProvider>
-                <PluginAppOverlays />
-                <LocationProbe />
-              </ThreadActionsProvider>
-            </RouteNavigationProvider>
-          </MemoryRouter>
-        </SidebarThreadEntriesTestProvider>
+        <MemoryRouter initialEntries={["/projects/proj_1/threads/thr_1"]}>
+          <RouteNavigationProvider>
+            <ThreadActionsProvider>
+              <PluginAppOverlays />
+              <LocationProbe />
+            </ThreadActionsProvider>
+          </RouteNavigationProvider>
+        </MemoryRouter>
       </QueryClientProvider>,
     );
 

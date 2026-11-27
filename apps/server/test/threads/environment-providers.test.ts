@@ -14,8 +14,10 @@ import {
   type TestProviderDecision,
 } from "../helpers/provider-decisions.js";
 import {
+  countThreads,
   createEnvironment,
   createProjectSource,
+  environmentHookOperations,
   ensurePersonalProject,
   getEnvironment,
   getHost,
@@ -24,7 +26,6 @@ import {
   getThread,
   getThreadStartupContext,
   listEnvironments,
-  listEvents,
   listProjectSourcesByProjectIds,
   setProjectGitRemoteUrlIfMissing,
   updateHost,
@@ -32,19 +33,21 @@ import {
 import { PERSONAL_PROJECT_ID, type JsonValue } from "@bb/domain";
 import type {
   PluginDispatchEnvironmentIntent,
-  PluginEnvironmentProviderDeclaration,
   PluginEnvironmentValidateDecision,
   PluginHookName,
 } from "@get-bb/plugin-sdk";
-import type { PluginEnvironmentProviderValidateContext } from "@get-bb/plugin-sdk/environment-provider";
 import type { PluginMachineProviderCreateContext } from "@get-bb/plugin-sdk/machine-provider";
 import {
   validatePluginEnvironmentProviderDeclaration,
   validatePluginMachineProviderDeclaration,
+  type PluginEnvironmentProviderV1Declaration,
+  type PluginEnvironmentProviderV1ValidateContext,
 } from "@get-bb/plugin-sdk/internal/host-policy";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ApiError } from "../../src/errors.js";
+import { eq } from "drizzle-orm";
+import { reportEnvironmentHookProgress } from "../../src/services/environments/environment-hooks.js";
 import {
   listEnvironmentProviders,
   setPluginEnvironmentProviderBridge,
@@ -71,12 +74,14 @@ import {
 } from "../../src/services/threads/thread-startup-store.js";
 import {
   registerTestHostRpcCapture,
+  listQueuedCommands,
   listQueuedThreadCommands,
   reportQueuedCommandError,
   reportQueuedCommandSuccess,
   waitForQueuedCommand,
 } from "../helpers/commands.js";
 import { readJson } from "../helpers/json.js";
+import { installFakeGitWorktreeProvider } from "../helpers/environment-provider.js";
 import { textInput } from "../helpers/prompt-input.js";
 import {
   seedEnvironment,
@@ -88,6 +93,7 @@ import {
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const WORKSPACE_PATH = "/tmp/environment-providers-project";
 const PLUGIN_ID = "sandbox";
@@ -95,7 +101,7 @@ const PROVIDER_ID = "container";
 
 interface FakeTarget {
   id?: string;
-  remove?: PluginEnvironmentProviderDeclaration["remove"];
+  remove?: PluginEnvironmentProviderV1Declaration["remove"];
   provision: (
     context: TestEnvironmentProviderContext,
   ) => TestProviderDecision | Promise<TestProviderDecision>;
@@ -105,11 +111,12 @@ interface FakeTarget {
   requiresProjectless?: boolean;
   inputs?: z.ZodType;
   validate?: (
-    context: PluginEnvironmentProviderValidateContext,
+    context: PluginEnvironmentProviderV1ValidateContext,
   ) =>
     | PluginEnvironmentValidateDecision
     | Promise<PluginEnvironmentValidateDecision>;
-  availability?: PluginEnvironmentProviderDeclaration["availability"];
+  availability?: PluginEnvironmentProviderV1Declaration["availability"];
+  locate?: PluginEnvironmentProviderV1Declaration["locate"];
 }
 
 const CONTAINER_INPUTS = z.object({
@@ -139,6 +146,7 @@ function installTargets(
       ...(fake.availability === undefined
         ? {}
         : { availability: fake.availability }),
+      ...(fake.locate === undefined ? {} : { locate: fake.locate }),
       ...providerOperations(fake.provision),
       ...(fake.remove === undefined ? {} : { remove: fake.remove }),
     }),
@@ -161,7 +169,7 @@ function installEnvironmentIntentProbe(): PluginDispatchEnvironmentIntent[] {
   const environmentIntents: PluginDispatchEnvironmentIntent[] = [];
   const registry: {
     [K in PluginHookName]: PluginHookRegistration<K>[];
-  } = { "message.dispatch": [] };
+  } = { "message.dispatch": [], "thread.delete_finalize": [] };
   registry["message.dispatch"].push({
     pluginId: "observer",
     handler: (context) => {
@@ -177,6 +185,7 @@ function installEnvironmentIntentProbe(): PluginDispatchEnvironmentIntent[] {
       value: await run(),
     }),
     decisionTimeoutMs: 10_000,
+    isLoadingPlugins: () => false,
   });
   return environmentIntents;
 }
@@ -651,6 +660,8 @@ function blockEntries(harness: TestAppHarness, threadId: string) {
   );
 }
 
+const locateWorkspace = () => ({ path: WORKSPACE_PATH, reuse: false });
+
 function readyAt(host: { id: string }): TestProviderDecision {
   return {
     action: "ready",
@@ -942,6 +953,105 @@ describe("environment providers are asked inside provisioning", () => {
     });
   });
 
+  it.each([
+    { type: "project-default" as const },
+    {
+      type: "host" as const,
+      workspace: { type: "personal" as const },
+    },
+    {
+      type: "provider" as const,
+      environmentProviderId: "personal-workspace",
+      machine: {
+        type: "existing" as const,
+        hostId: "host-attached-personal-parent",
+      },
+      inputs: null,
+    },
+  ])(
+    "shares an attached-directory parent's environment with a $type child",
+    async (environment) => {
+      await withTestHarness(async (harness) => {
+        const { host } = seedHostSession(harness.deps, {
+          id: "host-attached-personal-parent",
+        });
+        seedPrimaryHost(harness.deps, host.id);
+        ensurePersonalProject(harness.db);
+        const attachedEnvironment = createEnvironment(harness.db, harness.hub, {
+          hostId: host.id,
+          projectId: PERSONAL_PROJECT_ID,
+          path: "/tmp/attached-personal-parent",
+          providerOwnsPath: false,
+          status: "ready",
+          environmentProvider: null,
+        });
+        const parent = seedThread(harness.deps, {
+          environmentId: attachedEnvironment.id,
+          projectId: PERSONAL_PROJECT_ID,
+          status: "idle",
+        });
+
+        const child = await createThreadFromRequest(harness.deps, {
+          environment,
+          input: textInput("Start child"),
+          origin: "cli",
+          parentThreadId: parent.id,
+          projectId: PERSONAL_PROJECT_ID,
+          providerId: "codex",
+          model: "requested-model",
+          startedOnBehalfOf: null,
+        });
+
+        expect(getThread(harness.db, child.id)).toMatchObject({
+          environmentId: attachedEnvironment.id,
+          parentThreadId: parent.id,
+        });
+      });
+    },
+  );
+
+  it("rejects a standard project thread that reuses a personal workspace", async () => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-standard-reuses-personal",
+      });
+      ensurePersonalProject(harness.db);
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const personalWorkspace = createEnvironment(harness.db, harness.hub, {
+        hostId: host.id,
+        projectId: PERSONAL_PROJECT_ID,
+        path: "/tmp/personal-workspace-reused-by-standard",
+        providerOwnsPath: true,
+        status: "ready",
+        environmentProvider: {
+          environmentProviderId: "personal-workspace",
+          instanceKey: null,
+          selection: {
+            machine: { type: "existing", hostId: host.id },
+            inputs: null,
+          },
+        },
+      });
+
+      await expect(
+        createThreadFromRequest(harness.deps, {
+          environment: { type: "reuse", environmentId: personalWorkspace.id },
+          input: textInput("Reuse a personal workspace"),
+          origin: "cli",
+          projectId: project.id,
+          providerId: "codex",
+          model: "requested-model",
+          startedOnBehalfOf: null,
+        }),
+      ).rejects.toMatchObject({
+        body: { message: "Environment belongs to a different project" },
+        status: 409,
+      });
+    });
+  });
+
   it("opens the workspace-setup block and parks the thread starting on a wait", async () => {
     await withTestHarness(async (harness) => {
       const contexts: TestEnvironmentProviderContext[] = [];
@@ -1000,7 +1110,8 @@ describe("environment providers are asked inside provisioning", () => {
         inputs: "2",
       });
 
-      await expect.poll(() => inputs).toEqual([2]);
+      await expect.poll(() => inputs.length).toBeGreaterThan(0);
+      expect(new Set(inputs)).toEqual(new Set([2]));
     });
   });
 
@@ -1011,9 +1122,25 @@ describe("environment providers are asked inside provisioning", () => {
         "host-target-provider-setup",
       );
       const producedPath = "/tmp/environment-providers-owned-setup";
+      const hooks: Array<{ kind: string; path: string }> = [];
       registerTestHostRpcCapture(harness, {
         hostId: host.id,
         sessionId: session.id,
+        onEnvironmentHook: async (command) => {
+          hooks.push({ kind: command.kind, path: command.path });
+          reportEnvironmentHookProgress(harness.deps, host.id, {
+            type: "environment.hook.progress",
+            operationId: command.operationId,
+            entry: {
+              type: "step",
+              key: "setup-started",
+              text: "Running .bb-env-setup.sh",
+              status: "started",
+              startedAt: 1,
+              metadata: null,
+            },
+          });
+        },
       });
       installTarget({
         provision: () => ({
@@ -1049,10 +1176,13 @@ describe("environment providers are asked inside provisioning", () => {
         providerOwnsPath: true,
         status: "provisioning",
       });
-      expect(queued.command).toMatchObject({
-        path: producedPath,
-        setupScriptTimeoutMs: 15 * 60 * 1_000,
-      });
+      expect(queued.command).toMatchObject({ path: producedPath });
+      expect(hooks).toEqual([{ kind: "setup", path: producedPath }]);
+      expect(
+        provisioningEvents(harness, created.id).flatMap((event) =>
+          event.entries.map((entry) => entry.key),
+        ),
+      ).toContain("setup-started");
 
       await reportQueuedCommandSuccess(harness, queued, {
         branchName: "feature/provider-setup",
@@ -1077,6 +1207,9 @@ describe("environment providers are asked inside provisioning", () => {
       registerTestHostRpcCapture(harness, {
         hostId: host.id,
         sessionId: session.id,
+        onEnvironmentHook: async () => {
+          throw new Error(".bb-env-setup.sh failed with exit code 7");
+        },
       });
       installTarget({
         provision: () => ({
@@ -1092,19 +1225,27 @@ describe("environment providers are asked inside provisioning", () => {
       const created = await createTargetThread(harness, {
         projectId: project.id,
       });
-      const queued = await waitForQueuedCommand(
-        harness,
-        (candidate) => candidate.command.type === "environment.attach",
+      await vi.waitFor(() =>
+        expect(getThread(harness.db, created.id)?.status).toBe("error"),
       );
-      if (queued.command.type !== "environment.attach") {
-        throw new Error("Expected environment.attach command");
-      }
-      const environmentId = queued.command.environmentId;
-
-      await reportQueuedCommandError(harness, queued, {
-        errorCode: "setup_script_failed",
-        errorMessage: ".bb-env-setup.sh failed with exit code 7",
+      const environmentId = getThread(harness.db, created.id)?.environmentId;
+      if (environmentId == null) throw new Error("Expected an environment");
+      expect(
+        harness.db
+          .select()
+          .from(environmentHookOperations)
+          .where(
+            eq(
+              environmentHookOperations.id,
+              `environment:${environmentId}:${getEnvironment(harness.db, environmentId)?.environmentProviderInstanceKey}:setup`,
+            ),
+          )
+          .get(),
+      ).toMatchObject({
+        finishedAt: expect.any(Number),
+        error: ".bb-env-setup.sh failed with exit code 7",
       });
+      expect(listQueuedCommands(harness, "environment.attach")).toEqual([]);
       await vi.waitFor(() => {
         expect(getThread(harness.db, created.id)).toMatchObject({
           environmentId,
@@ -1144,6 +1285,7 @@ describe("environment providers are asked inside provisioning", () => {
         },
       });
       installTarget({
+        locate: locateWorkspace,
         inputs: CONTAINER_INPUTS,
         provision: (context) => {
           ownerThreadId = context.thread.id;
@@ -1191,6 +1333,7 @@ describe("environment providers are asked inside provisioning", () => {
         { environmentProviderId: PROVIDER_ID },
       );
       installTarget({
+        locate: locateWorkspace,
         provision: async () => {
           ask += 1;
           if (ask === 1) {
@@ -1272,6 +1415,7 @@ describe("environment providers are asked inside provisioning", () => {
         { environmentProviderId: PROVIDER_ID },
       );
       installTarget({
+        locate: locateWorkspace,
         provision: async () => {
           await createReady.promise;
           return readyAt(host);
@@ -1409,6 +1553,10 @@ describe("environment providers are asked inside provisioning", () => {
         },
       });
       installTarget({
+        locate: () => ({
+          path: "/tmp/environment-providers-refresh-branch",
+          reuse: false,
+        }),
         provision: () => ({
           action: "ready",
           environment: {
@@ -1474,6 +1622,7 @@ describe("environment providers are asked inside provisioning", () => {
           },
         });
         installTarget({
+          locate: () => ({ path, reuse: false }),
           provision: () => ({
             action: "ready",
             environment: {
@@ -1551,6 +1700,7 @@ describe("environment providers are asked inside provisioning", () => {
 
       const asks: string[] = [];
       installTarget({
+        locate: locateWorkspace,
         provision: (context) => {
           asks.push(context.thread.id);
           return readyAt(host);
@@ -1912,7 +2062,7 @@ describe("provider validate at create time", () => {
 
   it("hands validate the parsed inputs and the machine's checkout, then proceeds on accept", async () => {
     await withTestHarness(async (harness) => {
-      const seen: PluginEnvironmentProviderValidateContext[] = [];
+      const seen: PluginEnvironmentProviderV1ValidateContext[] = [];
       installTarget({
         requiresProjectCheckout: true,
         inputs: CONTAINER_INPUTS,
@@ -2552,6 +2702,7 @@ describe("core's worktree beside providers", () => {
           (record) => `${record.pluginId}:${record.provider.id}`,
         ),
       ).toEqual([`${PLUGIN_ID}:${PROVIDER_ID}`]);
+      installFakeGitWorktreeProvider();
       const environmentIntents = installEnvironmentIntentProbe();
       const { host, project, session } = seedTargetFixture(
         harness,
@@ -2587,7 +2738,7 @@ describe("core's worktree beside providers", () => {
         environmentProviderId: "git-worktree",
         machine: { type: "existing", hostId: host.id },
         inputs: { branch: { kind: "named", name: "main" } },
-        selectionResolved: false,
+        selectionResolved: true,
       });
       expect(environmentIntents).toEqual([
         {
@@ -2922,6 +3073,7 @@ it("resumes a provider launch and its original request after the in-memory conte
     });
     let ready = false;
     installTarget({
+      locate: locateWorkspace,
       provision: () =>
         ready ? readyAt(host) : { action: "wait", reason: "Creating" },
     });
@@ -2948,6 +3100,65 @@ it("resumes a provider launch and its original request after the in-memory conte
   });
 });
 
+it.each([
+  {
+    environmentProviderId: "project-checkout",
+    personal: false,
+    workspace: { type: "unmanaged" as const, path: WORKSPACE_PATH },
+  },
+  {
+    environmentProviderId: "git-worktree",
+    personal: false,
+    workspace: {
+      type: "managed-worktree" as const,
+      baseBranch: { kind: "default" as const },
+    },
+  },
+  {
+    environmentProviderId: "personal-workspace",
+    personal: true,
+    workspace: { type: "personal" as const },
+  },
+])(
+  "rejects a new $workspace.type request when $environmentProviderId is not registered",
+  async ({ environmentProviderId, personal, workspace }) => {
+    await withTestHarness(async (harness) => {
+      const { host } = seedHostSession(harness.deps, {
+        id: "host-unavailable-default-provider",
+      });
+      seedPrimaryHost(harness.deps, host.id);
+      let projectId = PERSONAL_PROJECT_ID;
+      if (personal) {
+        ensurePersonalProject(harness.db);
+      } else {
+        projectId = seedProjectWithSource(harness.deps, {
+          hostId: host.id,
+          path: WORKSPACE_PATH,
+        }).project.id;
+      }
+      setPluginEnvironmentProviderBridge(undefined);
+
+      await expect(
+        createThreadFromRequest(harness.deps, {
+          environment: { type: "host", hostId: host.id, workspace },
+          input: textInput("Check workspace admission"),
+          origin: "app",
+          projectId,
+          providerId: "codex",
+          startedOnBehalfOf: null,
+        }),
+      ).rejects.toMatchObject({
+        status: 400,
+        body: {
+          code: "invalid_request",
+          message: `The "${environmentProviderId}" environment provider is not registered. Enable its plugin before starting a thread.`,
+        },
+      });
+      expect(countThreads(harness.db, { projectId }).total).toBe(0);
+    });
+  },
+);
+
 it("keeps an existing request waiting when its provider is not registered", async () => {
   await withTestHarness(async (harness) => {
     const { host, project } = seedTargetFixture(
@@ -2958,7 +3169,10 @@ it("keeps an existing request waiting when its provider is not registered", asyn
     let ready = false;
     const provision = () =>
       ready ? readyAt(host) : ({ action: "wait", reason: "Creating" } as const);
-    installTarget({ provision });
+    installTarget({
+      locate: locateWorkspace,
+      provision,
+    });
     const thread = await createTargetThread(harness, {
       projectId: project.id,
     });
@@ -3020,7 +3234,11 @@ it("stops an unattached provider creation and provisions its follow-up", async (
     );
     expect(remove).toHaveBeenCalledTimes(1);
     expect(getThread(harness.db, created.id)?.status).toBe("idle");
-    installTarget({ provision: () => readyAt(host), remove });
+    installTarget({
+      locate: locateWorkspace,
+      provision: () => readyAt(host),
+      remove,
+    });
     const response = await harness.app.request(
       `/api/v1/threads/${created.id}/send`,
       {

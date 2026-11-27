@@ -59,6 +59,9 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes.interruption",
       "threadTimelineResponseSchema.rows.systemMessageSubject.outcomes.interruption.cause",
       "threadTimelineResponseSchema.timelinePage.olderRowUpdates.systemMessageSubject.outcomes.interruption.cause",
+      "threadTimelineResponseSchema.pendingSteers.systemMessageSubject.outcomes",
+      "threadTimelineResponseSchema.pendingSteers.systemMessageSubject.outcomes.interruption",
+      "threadTimelineResponseSchema.pendingSteers.systemMessageSubject.outcomes.interruption.cause",
       "sendQueuedMessageResponseSchema.queuedMessage.systemNotice.subject.outcomes",
       "sendQueuedMessageResponseSchema.queuedMessage.systemNotice.subject.outcomes.interruption",
       "sendQueuedMessageResponseSchema.queuedMessage.systemNotice.subject.outcomes.interruption.cause",
@@ -551,7 +554,6 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
       "threadTimelineQuerySchema.segmentLimit",
       "threadTimelineQuerySchema.beforeAnchorSeq",
       "threadTimelineQuerySchema.beforeAnchorId",
-      "threadTimelineQuerySchema.summaryOnly",
       "threadTimelineQuerySchema.afterTag",
       "threadTimelineQuerySchema.deferContent",
     ],
@@ -572,8 +574,8 @@ const OPTIONAL_SERVER_FIELD_GROUPS: readonly OptionalServerFieldGroup[] = [
   },
   {
     reason:
-      "Timeline deltas carry rowOrder only when membership or ordering changed.",
-    fields: ["timelineDeltaSchema.rowOrder"],
+      "Timeline deltas carry rowOrder only when membership or ordering changed, and patchRows only when a row the base window holds changed.",
+    fields: ["timelineDeltaSchema.rowOrder", "timelineDeltaSchema.patchRows"],
   },
   {
     reason:
@@ -1164,10 +1166,12 @@ describe("server-contract canonical schemas", () => {
           deletedAt: null,
           lastReadAt: null,
           latestAttentionAt: 2,
+          statusChangedAt: 2,
           createdAt: 1,
           updatedAt: 2,
           runtime: {
             displayStatus: "idle",
+            failure: null,
           },
           activity: {
             activeWorkflowCount: 0,
@@ -1180,6 +1184,8 @@ describe("server-contract canonical schemas", () => {
           environmentName: null,
           environmentBranchName: "bb/test",
           environmentPath: null,
+          environmentStatus: "provisioning",
+          environmentHostLifecycle: "active",
           environmentProviderId: "git-worktree",
           environmentIsWorktree: true,
           environmentWorkspaceDisplayKind: "managed-worktree",
@@ -1195,6 +1201,8 @@ describe("server-contract canonical schemas", () => {
         environmentName: null,
         environmentBranchName: "bb/test",
         environmentPath: null,
+        environmentStatus: "provisioning",
+        environmentHostLifecycle: "active",
         environmentProviderId: "git-worktree",
         environmentIsWorktree: true,
         environmentWorkspaceDisplayKind: "managed-worktree",

@@ -11,13 +11,15 @@ import {
 } from "../lib/plugin-frontend-lazy";
 import { frontendPriorityPluginIds } from "../lib/plugin-surface-providers";
 import { holdSplitPreloads } from "../lib/split-prefetch";
-import { whenRouteContentPainted } from "../lib/route-content-paint";
+import { whenScreenPainted } from "../lib/screen-paint";
 import { getPluginPanelRoutePluginId } from "../lib/route-paths";
+import { namesPlugin, restoredPageLazyParts } from "../lib/restored-lazy-parts";
 import { useSystemConfig } from "./queries/system-queries";
 import { pluginListQueryOptions } from "./queries/plugin-settings-queries";
 import { appQueryClient } from "../lib/app-query-client";
 import { prefetchPluginModule } from "../lib/plugin-module-preload";
 import { prefetchPluginCss } from "../lib/plugin-css";
+import { warmPluginRuntimeGroups } from "../lib/plugin-runtime-groups";
 
 export const PLUGIN_FRONTEND_SETTLE_FLOOR_MS = 15_000;
 const PRIORITY_PRELOAD_HOLD_MAX_MS = 10_000;
@@ -28,6 +30,7 @@ export function usePluginFrontendBoot(): void {
   useEffect(() => {
     const pathname = window.location.pathname;
     const priorityPluginIds = frontendPriorityPluginIds(pathname);
+    const pageParts = restoredPageLazyParts(pathname);
     let cancelled = false;
     void appQueryClient
       .fetchQuery(pluginListQueryOptions({ enabled: true }))
@@ -45,8 +48,13 @@ export function usePluginFrontendBoot(): void {
           }
           const bundle = plugin.app.bundle;
           if (bundle === null || !bundle.compatible) continue;
+          warmPluginRuntimeGroups(bundle.runtimeSlots);
           prefetchPluginModule(bundle.jsUrl);
+          for (const url of bundle.staticChunkUrls) prefetchPluginModule(url);
           if (bundle.cssUrl !== null) prefetchPluginCss(bundle.cssUrl);
+          if (pageParts.some((part) => namesPlugin(part, pluginId))) {
+            for (const url of bundle.lazyChunkUrls) prefetchPluginModule(url);
+          }
         }
       })
       .catch(() => {});
@@ -86,7 +94,7 @@ export function usePluginFrontendBoot(): void {
       return cleanup;
     }
     const cancelBoot = scheduleDeferredPluginFrontendBoot(boot, {
-      whenRoutePainted: whenRouteContentPainted,
+      whenScreenPainted: whenScreenPainted,
       requestIdle: requestBrowserIdle,
       setTimeout: (callback, ms) => window.setTimeout(callback, ms),
       clearTimeout: (id) => window.clearTimeout(id),

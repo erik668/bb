@@ -21,15 +21,13 @@ import {
   advanceEnvironmentProvisioning,
   cancelProviderEnvironmentCreation,
 } from "../environments/environment-engine.js";
-import { runtimeErrorLogFields } from "../lib/error-log-fields.js";
 import { requestQueuedMessageDispatch } from "./queued-message-dispatch.js";
 import {
   appendSystemErrorEvent,
   appendThreadProvisioningEvent,
   appendThreadProvisioningEventInTransaction,
 } from "./thread-events.js";
-import { dispatchThreadRenameCommand } from "./thread-commands.js";
-import { inferThreadMetadata } from "./thread-metadata-inference.js";
+import { startThreadTitleGeneration } from "./thread-metadata-inference.js";
 import { resolveEnvironmentProvider } from "./thread-environment-placement.js";
 import {
   clearThreadProvisionSchedule,
@@ -37,7 +35,8 @@ import {
   saveThreadProvisionContext,
   type ThreadProvisionContext,
 } from "./thread-startup-store.js";
-import { applyLoggedThreadLifecycleEvent } from "./lifecycle-outcome.js";
+import { finishThreadLifecycleInBackground } from "./lifecycle/finish.js";
+import { runThreadLifecycleTransaction } from "./lifecycle/run.js";
 import { isParentNotifiableChildThread } from "./thread-parent.js";
 import { queueChildThreadTurnNotificationBestEffort } from "./child-thread-notifications.js";
 
@@ -144,17 +143,19 @@ export function failThreadProvisioning(
     detail: args.detail,
     scope: threadScope(),
   });
-  const outcome = applyLoggedThreadLifecycleEvent(deps, {
-    event: { type: "run.failed" },
-    threadId: args.thread.id,
+  const outcome = runThreadLifecycleTransaction(deps, args.thread.id, {
+    type: "provisioning.failed",
   });
+  finishThreadLifecycleInBackground(deps, outcome);
   void cancelProviderEnvironmentCreation(deps, args.thread.id).catch((error) =>
     deps.logger.warn(
       { threadId: args.thread.id, error },
       "Failed environment preparation cleanup will retry",
     ),
   );
-  if (outcome.applied) queueChildSetupFailureNotification(deps, args.thread);
+  if (outcome.statusChanged) {
+    queueChildSetupFailureNotification(deps, args.thread);
+  }
 }
 
 export function queueChildSetupFailureNotification(
@@ -213,59 +214,11 @@ export async function ensureThreadProvisionEnvironmentReady(
         context,
       });
     }
-    if (context.request.environmentIntent.type === "provider") {
-      if (!context.request.titleProvided)
-        await inferThreadMetadata(deps, {
-          input: context.request.input,
-          provisioningId: context.state.provisioningId,
-          threadId: thread.id,
-          writeTranscript: true,
-        });
-    } else {
-      if (!context.request.titleProvided) {
-        void inferThreadMetadata(deps, {
-          input: context.request.input,
-          provisioningId: context.state.provisioningId,
-          threadId: thread.id,
-          writeTranscript: false,
-        })
-          .then((metadata) => {
-            if (!metadata.titleApplied || !metadata.title) {
-              return;
-            }
-            const titledThread = getThread(deps.db, thread.id);
-            const environment = titledThread?.environmentId
-              ? getEnvironment(deps.db, titledThread.environmentId)
-              : null;
-            if (
-              !titledThread ||
-              !environment ||
-              (titledThread.status !== "active" &&
-                titledThread.status !== "idle")
-            ) {
-              return;
-            }
-            dispatchThreadRenameCommand(deps, {
-              environment: {
-                id: environment.id,
-                hostId: environment.hostId,
-              },
-              providerId: titledThread.providerId,
-              threadId: titledThread.id,
-              title: metadata.title,
-            });
-          })
-          .catch((error) => {
-            deps.logger.warn(
-              {
-                threadId: thread.id,
-                ...runtimeErrorLogFields(deps.config, error),
-              },
-              "Failed to generate thread title",
-            );
-          });
-      }
-    }
+    if (!context.request.titleProvided)
+      startThreadTitleGeneration(deps, {
+        input: context.request.input,
+        threadId: thread.id,
+      });
   }
   if (
     getThreadProvisionContext(deps.db, thread.id)?.state.provisioningId !==

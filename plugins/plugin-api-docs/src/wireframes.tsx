@@ -12,6 +12,7 @@ import {
 import { Icon, type IconName } from "@/components/ui/icon";
 import { Switch } from "@/components/ui/switch";
 
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import { cn } from "@/lib/utils";
 import {
   annotationChipClass,
@@ -289,7 +290,7 @@ function MeasuredBadge({
       }
       return { x, y };
     };
-    const measure = () => {
+    const readPosition = (): { left: number; top: number } | null => {
       const strategy = container.closest<HTMLElement>(
         "[data-guide-responsive-strategy]",
       );
@@ -316,8 +317,7 @@ function MeasuredBadge({
         const clipOrigin = layoutOrigin(clip);
         const left = targetOrigin.x - clipOrigin.x;
         if (left < 0 || left + target.offsetWidth > clip.clientWidth) {
-          setPosition(null);
-          return;
+          return null;
         }
       }
       const centerY = local.top + local.height / 2 - chipBox / 2;
@@ -367,26 +367,34 @@ function MeasuredBadge({
       next.top = clamp(next.top, container.offsetHeight);
       next.left += recenter;
       next.top += recenter;
-      setPosition((current) =>
-        current &&
-        Math.abs(current.left - next.left) < 0.5 &&
-        Math.abs(current.top - next.top) < 0.5
-          ? current
-          : next,
-      );
+      return next;
     };
+    const applyPosition = (next: { left: number; top: number } | null) =>
+      setPosition((current) =>
+        next === null
+          ? null
+          : current &&
+              Math.abs(current.left - next.left) < 0.5 &&
+              Math.abs(current.top - next.top) < 0.5
+            ? current
+            : next,
+      );
+    const measure = () => applyPosition(readPosition());
 
     measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(container);
-    observer.observe(target);
+    const phases = { read: readPosition, write: applyPosition };
     const scaleWrapper = container.closest<HTMLElement>(
       "[data-guide-responsive-strategy]",
     );
-    if (scaleWrapper) observer.observe(scaleWrapper);
+    const unobserve = observeSharedResize(
+      [container, target, scaleWrapper].filter(
+        (element): element is HTMLElement => element !== null,
+      ),
+      phases,
+    );
     scope.addEventListener("scroll", measure, true);
     return () => {
-      observer.disconnect();
+      unobserve();
       scope.removeEventListener("scroll", measure, true);
     };
   }, [anchor, at, align, flush, clipTo]);
@@ -1172,9 +1180,15 @@ function AppShellWireframeBody({
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex h-12 items-center gap-2 border-b border-border-hairline px-4">
             {mobile ? <MiniIcon icon="PanelLeft" className="size-5" /> : null}
-            <span className="truncate text-foreground">
-              Fix flaky checkout tests
-            </span>
+            <Mark
+              id="thread-header-title"
+              label="Plugin title in place of the thread title"
+              className="flex h-6.5 min-w-0 items-center gap-1 px-1 text-foreground"
+              showChip={false}
+            >
+              <PluginGlyph className="size-3.5" />
+              <span className="truncate">checkout › flaky-tests</span>
+            </Mark>
             <Mark
               id="thread-actions"
               label="Plugin thread actions, in the thread menu"
@@ -1196,6 +1210,22 @@ function AppShellWireframeBody({
             {mobile ? <MiniIcon icon="PanelRight" className="size-5" /> : null}
           </div>
 
+          <RegionMark
+            id="thread-header-row"
+            label="Plugin rows under the thread header"
+            className="flex h-8 shrink-0 items-center gap-1 border-b border-border-hairline px-4"
+            chip="side"
+          >
+            <span className="flex h-6 items-center gap-1.5 rounded-md border border-border-seam px-2 text-foreground">
+              <PluginGlyph className="size-3" />
+              Fix flaky checkout tests
+            </span>
+            <span className="flex h-6 items-center gap-1.5 px-2 text-subtle-foreground">
+              <PluginGlyph className="size-3" />
+              Review retries
+            </span>
+          </RegionMark>
+
           <div
             data-guide-fixture="app-window-timeline"
             className={cn(
@@ -1206,6 +1236,7 @@ function AppShellWireframeBody({
             )}
           >
             {mobile ? null : <ThreadContextCardMark compact={false} />}
+            {mobile ? null : <ThreadRailMark />}
             <div className={cn("flex justify-end", !mobile && "mr-44")}>
               <span className="max-w-[70%] rounded-xl border border-border-seam bg-surface-recessed px-2.5 py-2 leading-snug text-foreground">
                 Fix the flaky checkout tests
@@ -1393,6 +1424,32 @@ function AppShellWireframeBody({
         </span>
       </Mark>
     </WindowFrame>
+  );
+}
+
+function ThreadRailMark() {
+  return (
+    <Mark
+      id="thread-rail"
+      label="The thread outline and plugin rail items beside the conversation"
+      chip="side"
+      className="absolute right-5 top-1/2 flex w-6 -translate-y-1/2 flex-col items-center gap-2 py-2"
+    >
+      {[3, 3, 5, 3, 3, 3].map((width, index) => (
+        <span
+          key={index}
+          className={cn(
+            "h-[3px] shrink-0 rounded-full",
+            width === 5 ? "w-5 bg-foreground/30" : "w-3 bg-foreground/10",
+          )}
+        />
+      ))}
+      <span className="mt-1 flex h-12 w-4 flex-col gap-0.5 rounded-sm border border-border-seam p-0.5">
+        <span className="h-1 rounded-full bg-foreground/15" />
+        <span className="h-2 rounded-full bg-foreground/10" />
+        <span className="h-1 rounded-full bg-foreground/15" />
+      </span>
+    </Mark>
   );
 }
 

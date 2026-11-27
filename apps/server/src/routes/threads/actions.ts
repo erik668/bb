@@ -1,3 +1,7 @@
+import {
+  operationComplete,
+  operationInProgress,
+} from "../../services/lib/operation-response.js";
 import { refreshProviderRetirement } from "../../services/environments/environment-engine.js";
 import {
   deleteQueuedThreadMessage,
@@ -87,6 +91,10 @@ import {
   scheduleThreadProvisioningAdvance,
 } from "../../services/threads/thread-provisioning.js";
 import { archiveThreadAndChildren } from "../../services/threads/thread-archive.js";
+import {
+  resolveRequestSource,
+  type ResolvePluginRpcCaller,
+} from "../../request-context.js";
 import {
   requireThreadCommandEnvironment,
   requireThreadHostCommandEnvironment,
@@ -207,7 +215,11 @@ function assertPinnedThreadOrderResult(
   }
 }
 
-export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
+export function registerThreadActionRoutes(
+  app: Hono,
+  deps: AppDeps,
+  plugins: { resolveRpcCaller: ResolvePluginRpcCaller },
+): void {
   const { post, patch, del } = typedRoutes<PublicApiSchema>(app, {
     onValidationError: (msg) => new ApiError(400, "invalid_request", msg),
   });
@@ -409,7 +421,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       queuedMessageId: context.req.param("queuedMessageId"),
       threadId: thread.id,
     });
-    return context.json({ ok: true });
+    return context.json(operationComplete());
   });
 
   del(routes.deleteQueuedMessage, (context) => {
@@ -429,7 +441,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       throw new ApiError(404, "invalid_request", "Queued message not found");
     }
     emitPluginMessageCancelled(toThreadQueuedMessage(queuedMessage));
-    return context.json({ ok: true });
+    return context.json(operationComplete());
   });
 
   post(routes.stop, async (context) => {
@@ -439,20 +451,36 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
       thread,
     });
     await stopThreadForCurrentState(deps, thread, environment);
-    return context.json({ ok: true });
+    const stopped = getThread(deps.db, thread.id);
+    if (stopped === null) {
+      throw new ApiError(404, "thread_not_found", "Thread not found");
+    }
+    if (stopped.status === "active" || stopped.status === "starting") {
+      throw new ApiError(
+        409,
+        "thread_stop_unfinished",
+        `Thread ${thread.id} is still ${stopped.status}; the stop did not finish`,
+      );
+    }
+    return context.json({
+      ...(stopped.status === "stopping"
+        ? operationInProgress()
+        : operationComplete()),
+      status: stopped.status,
+    });
   });
 
   post(routes.compact, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     await compactThreadContext(deps, thread);
-    return context.json({ ok: true });
+    return context.json(operationInProgress());
   });
 
   post(routes.clearContext, async (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
     const environment = await requireThreadCommandEnvironment(deps, { thread });
     await clearThreadContext(deps, { environment, thread });
-    return context.json({ ok: true });
+    return context.json(operationComplete());
   });
 
   post(routes.cancelPlan, async (context) => {
@@ -492,7 +520,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         "The provider did not confirm that Plan mode exited",
       );
     }
-    return context.json({ ok: true });
+    return context.json(operationComplete());
   });
 
   post(routes.clearGoal, async (context) => {
@@ -539,7 +567,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
           : "The provider did not clear the Goal",
       );
     }
-    return context.json({ ok: true });
+    return context.json(operationComplete());
   });
 
   post(routes.open, (context, payload) => {
@@ -614,6 +642,17 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
     const archivedThreadIds = archiveThreadAndChildren(deps, {
       parentThread: thread,
     });
+    deps.logger.info(
+      {
+        threadId: thread.id,
+        alreadyArchivedAt: thread.archivedAt,
+        archivedThreadIds,
+        source: resolveRequestSource(context, plugins.resolveRpcCaller),
+      },
+      thread.archivedAt === null
+        ? "Thread archived"
+        : "Archive requested for an already-archived thread",
+    );
     return context.json({
       ok: true,
       archivedThreadIds,
@@ -622,17 +661,25 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
 
   post(routes.unarchive, (context) => {
     const thread = requirePublicThread(deps.db, context.req.param("id"));
-    if (thread.archivedAt === null) return context.json({ ok: true });
+    if (thread.archivedAt === null) return context.json(operationComplete());
     const providerThreadId = getLastProviderThreadId(deps, thread.id);
     if (!unarchiveThread(deps.db, deps.hub, thread.id)) {
       if (getThread(deps.db, thread.id)?.archivedAt === null)
-        return context.json({ ok: true });
+        return context.json(operationComplete());
       throw new ApiError(
         409,
         "invalid_request",
         "Lifecycle owner must be unarchived first",
       );
     }
+    deps.logger.info(
+      {
+        threadId: thread.id,
+        archivedAt: thread.archivedAt,
+        source: resolveRequestSource(context, plugins.resolveRpcCaller),
+      },
+      "Thread unarchived",
+    );
     const unarchivedThread = getThread(deps.db, thread.id);
     if (unarchivedThread !== null) {
       if (unarchivedThread.environmentId !== null)
@@ -649,7 +696,7 @@ export function registerThreadActionRoutes(app: Hono, deps: AppDeps): void {
         thread,
       });
     }
-    return context.json({ ok: true });
+    return context.json(operationComplete());
   });
 
   post(routes.restoreEnvironment, (context) => {

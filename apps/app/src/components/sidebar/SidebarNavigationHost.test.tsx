@@ -8,15 +8,7 @@ import {
 } from "@testing-library/react";
 import { createStore, Provider } from "jotai";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExperimentalSidebarNavigationProps,
   PluginAppBuilder,
@@ -36,7 +28,10 @@ import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
-import { getPluginPanelRoutePath, getThreadRoutePath } from "@/lib/route-paths";
+import {
+  getPluginPanelRoutePath,
+  getThreadLocationPath,
+} from "@/lib/route-paths";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import {
   MAX_PANES,
@@ -63,9 +58,9 @@ const mocks = vi.hoisted(() => ({ toastError: vi.fn() }));
 vi.mock("@/components/commands/AppCommandProvider", () => ({
   useAppCommandRunner: () => ({
     dispatch: () => {},
-    isCommandAvailable: () => true,
   }),
   useAppCommandShortcut: () => null,
+  useIsAppCommandAvailable: () => true,
   useIsAppCommandModifierHeld: () => false,
 }));
 
@@ -75,7 +70,7 @@ vi.mock("@/components/ui/app-toast", () => ({
 
 const useNavigation =
   pluginSdkAppImplementation.experimental_useSidebarNavigation;
-const THREAD_PATH = getThreadRoutePath({
+const THREAD_PATH = getThreadLocationPath({
   projectId: "proj_one",
   threadId: "thr_one",
 });
@@ -185,9 +180,7 @@ function region(): HTMLElement {
   return element;
 }
 
-beforeAll(async () => {
-  await SidebarVisibilityCustomize.preload();
-});
+await SidebarVisibilityCustomize.preload();
 
 beforeEach(async () => {
   vi.clearAllMocks();

@@ -173,6 +173,7 @@ function workspaceConfigForCwd(args: {
   cwd: string;
 }): ReturnType<typeof buildCodexConfig> {
   return buildCodexConfig({
+    supportsAgentsEnabled: true,
     threadId: "bb-thread-1",
     additionalWorkspaceWriteRoots: [],
     gitWritableRoots: gitWritableRootsForWorkspace(args.cwd),
@@ -535,6 +536,7 @@ describe("codex permission settings", () => {
 
 function configFor(options: CodexSessionOptions) {
   return buildCodexConfig({
+    supportsAgentsEnabled: true,
     threadId: "bb-thread-1",
     additionalWorkspaceWriteRoots: [],
     gitWritableRoots: [],
@@ -558,33 +560,70 @@ describe("buildCodexConfig", () => {
   });
 
   it("disables Codex native subagents", () => {
-    expect(
-      configFor({ ...FULL_OPTIONS, providerSubagentsEnabled: false }),
-    ).toMatchObject({
-      "features.multi_agent": false,
-      "features.multi_agent_v2.max_concurrent_threads_per_session": 1,
-    });
-  });
-
-  it("injects contributed environment into session params and drops invalid keys", () => {
     const config = configFor({
       ...FULL_OPTIONS,
-      envVars: {
-        "BAD.KEY": "ignored",
-        PLUGIN_API_URL: "http://127.0.0.1:3334/plugins/example/auth",
-        TEST_VAR: "123",
-      },
+      providerSubagentsEnabled: false,
     });
 
     expect(config).toMatchObject({
-      "shell_environment_policy.set.BB_THREAD_ID": "bb-thread-1",
-      "shell_environment_policy.set.PLUGIN_API_URL":
-        "http://127.0.0.1:3334/plugins/example/auth",
-      "shell_environment_policy.set.TEST_VAR": "123",
+      "agents.enabled": false,
+      "features.multi_agent_v2": false,
     });
-    expect(config).not.toMatchObject({
-      "shell_environment_policy.set.BAD.KEY": "ignored",
+    expect(config).not.toHaveProperty("features.multi_agent");
+    expect(config).not.toHaveProperty(
+      "features.multi_agent_v2.max_concurrent_threads_per_session",
+    );
+  });
+
+  it.each([true, undefined])(
+    "preserves native subagent configuration when enabled is %s",
+    (providerSubagentsEnabled) => {
+      const config = configFor({ ...FULL_OPTIONS, providerSubagentsEnabled });
+
+      expect(config).not.toHaveProperty("agents.enabled");
+      expect(config).not.toHaveProperty("features.multi_agent_v2");
+    },
+  );
+
+  it("forces only bb's context variables past Codex's shell_environment_policy", () => {
+    const config = configFor({
+      ...FULL_OPTIONS,
+      envVars: {
+        BB_THREAD_ID: "bb-thread-1",
+        BB_PROJECT_ID: "proj_1",
+        BB_ENVIRONMENT_ID: "env_1",
+        BB_THREAD_STORAGE: "/data/thread-storage/bb-thread-1",
+        BB_CLI: "/data/bin/bb",
+        BB_SERVER_URL: "http://127.0.0.1:3334",
+        BB_HOST_DAEMON_PORT: "3335",
+        QA_PROJECT_VAR: "project-value",
+        CODEX_OPENAI_BASE_URL: "http://127.0.0.1:3334/pool/v1",
+        CODEX_POOL_AUTH_TOKEN: "pool-hub-token",
+        BB_ACCOUNT_POOL_PARENT_TOKEN: "pool-hub-token",
+        GH_TOKEN: "gh-token",
+        PLUGIN_API_URL: "http://127.0.0.1:3334/plugins/example/auth",
+      },
     });
+
+    expect(
+      Object.entries(config ?? {}).filter(([key]) =>
+        key.startsWith("shell_environment_policy."),
+      ),
+    ).toEqual([
+      ["shell_environment_policy.set.BB_PROJECT_ID", "proj_1"],
+      ["shell_environment_policy.set.BB_ENVIRONMENT_ID", "env_1"],
+      [
+        "shell_environment_policy.set.BB_THREAD_STORAGE",
+        "/data/thread-storage/bb-thread-1",
+      ],
+      ["shell_environment_policy.set.BB_CLI", "/data/bin/bb"],
+      ["shell_environment_policy.set.BB_SERVER_URL", "http://127.0.0.1:3334"],
+      ["shell_environment_policy.set.BB_HOST_DAEMON_PORT", "3335"],
+      ["shell_environment_policy.set.BB_THREAD_ID", "bb-thread-1"],
+    ]);
+    expect(JSON.stringify(config)).not.toContain("pool-hub-token");
+    expect(JSON.stringify(config)).not.toContain("gh-token");
+    expect(JSON.stringify(config)).not.toContain("project-value");
   });
 
   it("maps the reasoning level onto model_reasoning_effort", () => {
@@ -610,6 +649,7 @@ describe("buildCodexConfig", () => {
   it("omits the writable-roots key for a full-access session", () => {
     expectWorkspaceWriteWritableRootsConfigAbsent(
       buildCodexConfig({
+        supportsAgentsEnabled: true,
         threadId: "bb-thread-1",
         additionalWorkspaceWriteRoots: ["/repo/.git/objects"],
         gitWritableRoots: [],

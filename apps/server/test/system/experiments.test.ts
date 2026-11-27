@@ -62,21 +62,14 @@ describe("experiments settings", () => {
   it("changes only the experiments a PUT names", async () => {
     await withTestHarness(async (harness) => {
       await putExperiments(harness, { serverMove: true });
-      const put = await putExperiments(harness, { timelinePush: true });
+      const put = await putExperiments(harness, { serverRoutes: true });
       expect(put.status).toBe(200);
       expect(experimentsSchema.parse(await readJson(put))).toEqual({
         compactExpiredCache: false,
-        dismissReadNotifications: false,
-        narrowPluginCss: false,
         serverMove: true,
         performanceDiagnostics: false,
         pluginUpdates: false,
-        resumeThreadsAfterRestart: false,
-        skipFocusedThreadNotifications: false,
-        threadContextCard: false,
-        threadRowMetadata: false,
-        timelinePush: true,
-        updateWhenIdle: false,
+        serverRoutes: true,
       });
       expect(
         harness.db.$client
@@ -85,7 +78,7 @@ describe("experiments settings", () => {
           )
           .all()
           .map((row) => row.key),
-      ).toEqual(["serverMove", "timelinePush"]);
+      ).toEqual(["serverMove", "serverRoutes"]);
     });
   });
 
@@ -103,7 +96,7 @@ describe("experiments settings", () => {
   it("serves the early adopter defaults while the setting is on and keeps experiments the user set", async () => {
     await withTestHarness(async (harness) => {
       await putExperiments(harness, {
-        timelinePush: false,
+        compactExpiredCache: false,
         pluginUpdates: false,
       });
       expect(
@@ -116,7 +109,7 @@ describe("experiments settings", () => {
       ).toBe(200);
       expect(await configExperiments(harness)).toEqual({
         ...earlyAdopterExperiments,
-        timelinePush: false,
+        compactExpiredCache: false,
         pluginUpdates: false,
       });
 

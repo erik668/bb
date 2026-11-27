@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { observeSharedResize } from "@/lib/shared-resize-observer";
 import {
   ancestorsOf,
   buildTree,
@@ -14,6 +15,7 @@ import {
 } from "../lib/file-tree-height.js";
 import { ContextMenu, type ContextMenuState } from "./ContextMenu.js";
 import { cn } from "@/lib/utils";
+import { isNonImeKey } from "@/lib/ime-keyboard";
 
 export interface FileTreePanelProps {
   entries: readonly FlatEntry[];
@@ -75,17 +77,13 @@ export function FileTreePanel({
   useLayoutEffect(() => {
     const parent = panelRef.current?.parentElement;
     if (parent === null || parent === undefined) return;
-    const fit = () => {
-      const next = clampTreeHeight(
-        requestedHeightRef.current,
-        parent.clientHeight,
-      );
+    const readFit = () =>
+      clampTreeHeight(requestedHeightRef.current, parent.clientHeight);
+    const applyFit = (next: number) => {
       if (next !== heightRef.current) setHeight(next);
     };
-    fit();
-    const observer = new ResizeObserver(fit);
-    observer.observe(parent);
-    return () => observer.disconnect();
+    applyFit(readFit());
+    return observeSharedResize(parent, { read: readFit, write: applyFit });
   }, []);
 
   const openMenu = (event: React.MouseEvent, node: TreeNode) => {
@@ -165,7 +163,7 @@ export function FileTreePanel({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key !== "Escape") return;
+            if (!isNonImeKey(event, "Escape")) return;
             event.stopPropagation();
             if (query !== "") setQuery("");
             else onClose();

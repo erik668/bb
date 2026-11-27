@@ -5,7 +5,7 @@ import {
   registerHostRpcResponder,
   EMPTY_WORKSPACE_AGENT_CONTEXT,
 } from "../helpers/host-rpc.js";
-import { declaredNativeRootSet } from "../helpers/provider-registry.js";
+import { declaredNativeRootScan } from "../helpers/provider-registry.js";
 import { readJson } from "../helpers/json.js";
 import {
   seedEnvironment,
@@ -14,6 +14,8 @@ import {
   seedProjectWithSource,
 } from "../helpers/seed.js";
 import { withTestHarness } from "../helpers/test-app.js";
+
+const ANY_RESOLUTION = { contributedEnv: [], timeoutMs: expect.any(Number) };
 
 const remoteCommand: HostProviderCommand = {
   name: "remote-only",
@@ -29,7 +31,7 @@ const primaryCommand: HostProviderCommand = {
 };
 
 describe("public project workspace routing", () => {
-  it("keeps app branch options cache-first and public branch listing blocking", async () => {
+  it("keeps app branch options cache-first and sends the blocking refresh calls together", async () => {
     await withTestHarness(async (harness) => {
       const { host, session } = seedHostSession(harness.deps, {
         id: "host-project-branches",
@@ -85,6 +87,7 @@ describe("public project workspace routing", () => {
               hasUncommittedChanges: false,
               operation: { kind: "none" },
               originDefaultBranch: "origin/main",
+              defaultWorktreeBaseBranch: "origin/main",
             },
           };
         },
@@ -106,7 +109,7 @@ describe("public project workspace routing", () => {
             type: "host.list_branch_options",
             path: "/project/branches",
             limit: 50,
-            remoteRefresh: "none",
+            remoteRefresh: "background",
           },
         ]);
       } finally {
@@ -125,7 +128,7 @@ describe("public project workspace routing", () => {
           type: "host.list_branch_options",
           path: "/project/branches",
           limit: 50,
-          remoteRefresh: "none",
+          remoteRefresh: "background",
         },
       ]);
       await expect(readJson(response)).resolves.toMatchObject({
@@ -142,19 +145,7 @@ describe("public project workspace routing", () => {
       const refreshedResponsePromise = harness.app.request(
         `/api/v1/projects/${project.id}/branches?hostId=${host.id}&limit=50`,
       );
-      try {
-        await vi.waitFor(() => expect(responder.requests).toHaveLength(1));
-        expect(responder.requests[0]?.command).toEqual({
-          type: "host.inspect_git_source",
-          path: "/project/branches",
-          remoteRefresh: "blocking",
-        });
-      } finally {
-        releaseBlockingInspection?.();
-      }
-      const refreshedResponse = await refreshedResponsePromise;
-      expect(refreshedResponse.status).toBe(200);
-      expect(responder.requests.map((request) => request.command)).toEqual([
+      const blockingCommands = [
         {
           type: "host.inspect_git_source",
           path: "/project/branches",
@@ -164,9 +155,22 @@ describe("public project workspace routing", () => {
           type: "host.list_branch_options",
           path: "/project/branches",
           limit: 50,
-          remoteRefresh: "none",
+          remoteRefresh: "blocking",
         },
-      ]);
+      ];
+      try {
+        await vi.waitFor(() => expect(responder.requests).toHaveLength(2));
+        expect(responder.requests.map((request) => request.command)).toEqual(
+          blockingCommands,
+        );
+      } finally {
+        releaseBlockingInspection?.();
+      }
+      const refreshedResponse = await refreshedResponsePromise;
+      expect(refreshedResponse.status).toBe(200);
+      expect(responder.requests.map((request) => request.command)).toEqual(
+        blockingCommands,
+      );
     });
   });
 
@@ -219,12 +223,6 @@ describe("public project workspace routing", () => {
           if (request.command.type === "host.read_workspace_agent_context") {
             return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
           }
-          if (request.command.type === "plugin.host.call") {
-            return {
-              ok: true,
-              result: { output: { skills: [], commands: [] } },
-            };
-          }
           if (request.command.type === "host.read_file") {
             return {
               ok: true,
@@ -259,6 +257,7 @@ describe("public project workspace routing", () => {
                     path: "remote.txt",
                     positions: [],
                     score: 1,
+                    rootPath: request.command.rootPaths[0] ?? "",
                   },
                 ],
                 truncated: false,
@@ -270,12 +269,6 @@ describe("public project workspace routing", () => {
           }
           if (request.command.type === "host.read_workspace_agent_context") {
             return { ok: true, result: EMPTY_WORKSPACE_AGENT_CONTEXT };
-          }
-          if (request.command.type === "plugin.host.call") {
-            return {
-              ok: true,
-              result: { output: { skills: [], commands: [] } },
-            };
           }
           if (request.command.type === "host.read_file") {
             return {
@@ -314,7 +307,8 @@ describe("public project workspace routing", () => {
       expect(remotePaths.status).toBe(200);
       expect(remoteRpc.requests.at(-1)?.command).toMatchObject({
         type: "host.list_paths",
-        path: "/remote/project",
+        rootPaths: ["/remote/project"],
+        followRootSymlink: true,
       });
 
       const environmentPaths = await harness.app.request(
@@ -323,7 +317,8 @@ describe("public project workspace routing", () => {
       expect(environmentPaths.status).toBe(200);
       expect(remoteRpc.requests.at(-1)?.command).toMatchObject({
         type: "host.list_paths",
-        path: "/remote/worktree",
+        rootPaths: ["/remote/worktree"],
+        followRootSymlink: true,
       });
 
       const commands = await harness.app.request(
@@ -338,12 +333,9 @@ describe("public project workspace routing", () => {
         )?.command,
       ).toEqual({
         type: "host.list_commands",
-        providerId: "codex",
         cwd: "/remote/project",
-        nativeRoots: declaredNativeRootSet(
-          harness.deps.providerRegistry,
-          "codex",
-        ),
+        provider: declaredNativeRootScan(harness.deps, "codex"),
+        resolution: ANY_RESOLUTION,
       });
     });
   });

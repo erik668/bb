@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   GIT_PLUGIN_ID,
   aiServiceSelectionSchema,
@@ -8,13 +9,15 @@ import {
   defaultAppSettings,
   disabledProviderIdsSchema,
   pluginPackageJsonSchema,
+  serverAccessOriginsSchema,
   type AiServiceSelection,
   type AiServiceSelections,
   type AiTask,
   type AppKeybindingOverrides,
   type AppSettings,
+  type ServerAccessOrigin,
 } from "@bb/domain";
-import { eq, inArray, sql } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import {
   prepareCachedQuery,
   type DbConnection,
@@ -35,10 +38,12 @@ const AI_SERVICE_SELECTIONS_KEY = "aiServiceSelections";
 const PLUGIN_SAFE_MODE_KEY = "pluginSafeMode";
 const DISABLED_PROVIDER_IDS_KEY = "disabledProviderIds";
 const LEGACY_DIAGNOSTIC_EVENTS_KEY = "showUnhandledProviderEvents";
-const INSTALL_TURN_NUMBER_KEY = "installTurnNumber";
 const APP_UPDATE_SEND_HOLD_KEY = "appUpdateSendHold";
 const SKIPPED_APP_UPDATE_KEY = "skippedAppUpdate";
 const AUTO_APP_UPDATE_KEY = "autoAppUpdate";
+const SERVER_ID_KEY = "serverId";
+const SERVER_ACCESS_ORIGINS_KEY = "serverAccessOrigins";
+const SERVER_ID_PREFIX = "srv_";
 
 function parseStoredValue(text: string): unknown {
   try {
@@ -220,15 +225,6 @@ export function setAiServiceSelection(
   return selections;
 }
 
-export function getEarlyAdopter(db: DbConnection): boolean {
-  const row = db
-    .select({ value: appSettingsValues.value })
-    .from(appSettingsValues)
-    .where(eq(appSettingsValues.key, appSettingsKeySchema.enum.earlyAdopter))
-    .get();
-  return row !== undefined && parseStoredValue(row.value) === true;
-}
-
 export function getPluginSafeMode(db: DbConnection): boolean {
   const row = db
     .select({ value: appSettingsValues.value })
@@ -240,6 +236,28 @@ export function getPluginSafeMode(db: DbConnection): boolean {
 
 export function setPluginSafeMode(db: DbConnection, enabled: boolean): void {
   writeValue(db, PLUGIN_SAFE_MODE_KEY, enabled, Date.now());
+}
+
+export function getOrCreateServerId(db: DbConnection): string {
+  const candidate = `${SERVER_ID_PREFIX}${randomUUID().replaceAll("-", "")}`;
+  db.insert(appSettingsValues)
+    .values({
+      key: SERVER_ID_KEY,
+      value: JSON.stringify(candidate),
+      updatedAt: Date.now(),
+    })
+    .onConflictDoNothing({ target: appSettingsValues.key })
+    .run();
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, SERVER_ID_KEY))
+    .get();
+  const stored = row === undefined ? undefined : parseStoredValue(row.value);
+  if (typeof stored !== "string" || !stored.startsWith(SERVER_ID_PREFIX)) {
+    throw new Error("Stored server id is invalid");
+  }
+  return stored;
 }
 
 export function getDisabledProviderIds(db: DbConnection): string[] {
@@ -348,22 +366,6 @@ export function deletePluginRecommendationId(
     .run();
 }
 
-export function claimInstallTurnNumber(db: DbQueryConnection, now: number): number {
-  const row = db
-    .insert(appSettingsValues)
-    .values({ key: INSTALL_TURN_NUMBER_KEY, value: "1", updatedAt: now })
-    .onConflictDoUpdate({
-      target: appSettingsValues.key,
-      set: {
-        value: sql`CAST(CAST(${appSettingsValues.value} AS INTEGER) + 1 AS TEXT)`,
-        updatedAt: now,
-      },
-    })
-    .returning({ value: appSettingsValues.value })
-    .get();
-  return Number(row!.value);
-}
-
 export function isAppUpdateSendHoldSet(db: DbQueryConnection): boolean {
   return (
     db
@@ -415,4 +417,23 @@ export function getAutoAppUpdate(db: DbQueryConnection): boolean {
 
 export function setAutoAppUpdate(db: DbQueryConnection, enabled: boolean): void {
   writeValue(db, AUTO_APP_UPDATE_KEY, enabled, Date.now());
+}
+
+export function getServerAccessOrigins(db: DbConnection): ServerAccessOrigin[] {
+  const row = db
+    .select({ value: appSettingsValues.value })
+    .from(appSettingsValues)
+    .where(eq(appSettingsValues.key, SERVER_ACCESS_ORIGINS_KEY))
+    .get();
+  const parsed = serverAccessOriginsSchema.safeParse(
+    row === undefined ? [] : parseStoredValue(row.value),
+  );
+  return parsed.success ? parsed.data : [];
+}
+
+export function setServerAccessOrigins(
+  db: DbConnection,
+  origins: readonly ServerAccessOrigin[],
+): void {
+  writeValue(db, SERVER_ACCESS_ORIGINS_KEY, origins, Date.now());
 }

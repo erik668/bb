@@ -5,16 +5,23 @@ import { createElement, useState, type ComponentProps } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { conversationRow } from "@/test/fixtures/thread-timeline-rows";
 import { ThreadTimelineRows } from "./ThreadTimelineRows";
-import { formatShortMessageTime } from "./message-time";
+import { formatShortMessageTime } from "@bb/shared-ui/message-time";
 import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
 import { makePluginRegistrationSet } from "@/test/fixtures/plugins";
+import { settleLazyModules } from "@/test/lazy-modules";
+import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
+import { UNAVAILABLE_APP_PANEL_CONTROLLER } from "@/lib/app-fixed-tab-navigation";
 
+const renderRecorder = await vi.hoisted(async () => {
+  const { installRenderRecorder } = await import("@/test/render-recorder");
+  return installRenderRecorder();
+});
 const renderedMessageTexts = vi.hoisted(() => [] as string[]);
 
 vi.mock("./ConversationMessageContent.js", async (importOriginal) => {
@@ -30,13 +37,16 @@ vi.mock("./ConversationMessageContent.js", async (importOriginal) => {
   };
 });
 
-function assistantRow(index: number) {
+function assistantRow(
+  index: number,
+  streamed?: { text: string; sourceSeqEnd: number },
+) {
   return conversationRow({
     id: `assistant_message_${index}`,
     role: "assistant",
-    text: `Assistant answer number ${index}.`,
+    text: streamed?.text ?? `Assistant answer number ${index}.`,
     sourceSeqStart: 10 + index,
-    sourceSeqEnd: 10 + index,
+    sourceSeqEnd: streamed?.sourceSeqEnd ?? 10 + index,
     threadId: "thr_main",
   });
 }
@@ -44,8 +54,20 @@ function assistantRow(index: number) {
 afterEach(() => {
   cleanup();
   renderedMessageTexts.length = 0;
+  renderRecorder.reset();
   resetPluginSlotStoreForTest();
 });
+
+afterAll(() => {
+  renderRecorder.uninstall();
+});
+
+function renderedRowIds(componentName: string): string[] {
+  return renderRecorder
+    .propsOf(componentName)
+    .map((props) => (props as { row: { id: string } }).row.id)
+    .sort();
+}
 
 describe("ThreadTimelineRows row isolation", () => {
   it.each(["user", "assistant"] as const)(
@@ -211,6 +233,98 @@ describe("ThreadTimelineRows row isolation", () => {
     expect([...renderedMessageTexts].sort()).toEqual([
       "Assistant answer number 11.",
       "Assistant answer number 12.",
+    ]);
+  });
+
+  it("re-renders only the streaming row when its text grows", async () => {
+    const queryClient = new QueryClient();
+    const rows = Array.from({ length: 12 }, (_, index) => assistantRow(index));
+    const renderTimeline = (timelineRows: typeof rows) => (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ThreadTimelineRows
+            threadId="thr_main"
+            timelineRows={timelineRows}
+            threadRuntimeDisplayStatus="active"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const view = render(renderTimeline(rows));
+    await settleLazyModules();
+    renderRecorder.reset();
+
+    view.rerender(
+      renderTimeline([
+        ...rows.slice(0, 11),
+        assistantRow(11, {
+          text: "Assistant answer number 11, continued.",
+          sourceSeqEnd: 30,
+        }),
+      ]),
+    );
+    expect(
+      screen.getByText("Assistant answer number 11, continued."),
+    ).toBeDefined();
+    expect(renderedRowIds("TimelineRowItem")).toEqual(["assistant_message_11"]);
+    expect(renderedRowIds("ConversationRow")).toEqual(["assistant_message_11"]);
+  });
+
+  it("does not re-render rows when the thread view's navigation host changes", async () => {
+    const queryClient = new QueryClient();
+    const rows = Array.from({ length: 12 }, (_, index) => assistantRow(index));
+    const renderTimeline = (openTerminal: () => boolean) => (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <AppNavigationHostProvider
+            capabilities={{
+              panel: UNAVAILABLE_APP_PANEL_CONTROLLER,
+              openTerminal,
+            }}
+          >
+            <ThreadTimelineRows
+              threadId="thr_main"
+              timelineRows={rows}
+              threadRuntimeDisplayStatus="idle"
+            />
+          </AppNavigationHostProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const view = render(renderTimeline(() => false));
+    await settleLazyModules();
+    renderRecorder.reset();
+
+    view.rerender(renderTimeline(() => true));
+    expect(renderedRowIds("ConversationRowContent")).toEqual([]);
+  });
+
+  it("re-renders only the appended row and the rows whose state it moves", async () => {
+    const queryClient = new QueryClient();
+    const rows = Array.from({ length: 12 }, (_, index) => assistantRow(index));
+    const renderTimeline = (timelineRows: typeof rows) => (
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <ThreadTimelineRows
+            threadId="thr_main"
+            timelineRows={timelineRows}
+            threadRuntimeDisplayStatus="active"
+          />
+        </QueryClientProvider>
+      </MemoryRouter>
+    );
+    const view = render(renderTimeline(rows));
+    await settleLazyModules();
+    renderRecorder.reset();
+
+    view.rerender(renderTimeline([...rows, assistantRow(12)]));
+    expect(renderedRowIds("TimelineRowItem")).toEqual([
+      "assistant_message_11",
+      "assistant_message_12",
+    ]);
+    expect(renderedRowIds("ConversationRow")).toEqual([
+      "assistant_message_11",
+      "assistant_message_12",
     ]);
   });
 });

@@ -11,15 +11,7 @@ import { useSyncExternalStore } from "react";
 import type { ExperimentalBadge } from "@get-bb/plugin-sdk";
 import { createStore, Provider } from "jotai";
 import { MemoryRouter, useLocation } from "react-router-dom";
-import {
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CompactViewportOverrideProvider } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { TooltipProvider } from "@bb/shared-ui/tooltip";
 import { SidebarProvider } from "@/components/ui/sidebar";
@@ -35,7 +27,10 @@ import {
   resetPluginSlotStoreForTest,
   setPluginSlotRegistrations,
 } from "@/lib/plugin-slots";
-import { getPluginPanelRoutePath, getThreadRoutePath } from "@/lib/route-paths";
+import {
+  getPluginPanelRoutePath,
+  getThreadLocationPath,
+} from "@/lib/route-paths";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import {
   bundledNavigationSlot,
@@ -59,13 +54,13 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/components/commands/AppCommandProvider", () => ({
   useAppCommandRunner: () => ({
     dispatch: mocks.dispatch,
-    isCommandAvailable: () => true,
   }),
   useAppCommandShortcut: () => null,
+  useIsAppCommandAvailable: () => true,
   useIsAppCommandModifierHeld: () => false,
 }));
 
-const THREAD_PATH = getThreadRoutePath({
+const THREAD_PATH = getThreadLocationPath({
   projectId: "proj_one",
   threadId: "thr_one",
 });
@@ -178,9 +173,7 @@ function registerDocsBadge(badge: ExperimentalBadge) {
   registerDocs(() => useSyncExternalStore(subscribe, () => badge));
 }
 
-beforeAll(async () => {
-  await SidebarVisibilityCustomize.preload();
-});
+await SidebarVisibilityCustomize.preload();
 
 beforeEach(async () => {
   vi.clearAllMocks();

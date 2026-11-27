@@ -1,6 +1,5 @@
 import {
   claimQueuedThreadMessageGroup,
-  listEvents,
   listQueuedThreadMessages,
   setThreadExecutionOverride,
   updateQueuedThreadMessage,
@@ -52,6 +51,7 @@ import {
   seedTurnStarted,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const WORKSPACE_PATH = "/tmp/system-notice-project";
 
@@ -68,12 +68,14 @@ function installDispatchHook(
     | Promise<{ action: "proceed" }>,
 ): void {
   const registry: HookRegistry = {
+    "thread.delete_finalize": [],
     "message.dispatch": [{ pluginId: "notice-test", handler }],
   };
   setPluginHookProvider({
     listHooks: (hook) => registry[hook],
     invokeHook: (_pluginId, _label, run) => invokePluginInline(run),
     decisionTimeoutMs: 10_000,
+    isLoadingPlugins: () => false,
   });
 }
 
@@ -183,7 +185,7 @@ describe("system notices", () => {
         environment: {
           type: "host",
           hostId: host.id,
-          workspace: { type: "unmanaged", path: WORKSPACE_PATH },
+          workspace: { type: "unmanaged", path: `${WORKSPACE_PATH}-parent` },
         },
         input: textInput("Created first"),
         origin: "app",
@@ -719,7 +721,11 @@ describe("notices to a parent mid-turn", () => {
 
   it("wait for an offline host, then steer into the same turn", async () => {
     await withTestHarness(async (harness) => {
-      const { host, session, thread: parent } = seedRunnableThread(harness, {
+      const {
+        host,
+        session,
+        thread: parent,
+      } = seedRunnableThread(harness, {
         hostId: "host-steer-offline",
         status: "active",
       });

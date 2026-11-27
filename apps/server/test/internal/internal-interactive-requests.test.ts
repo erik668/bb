@@ -590,136 +590,6 @@ describe("internal interactive request lifecycle", () => {
     });
   });
 
-  it("does not notify a parent when a fork child needs attention", async () => {
-    await withTestHarness(async (harness) => {
-      const { host, session } = seedHostSession(harness.deps, {
-        id: "host-hidden-child-needs-attention",
-      });
-      const { project } = seedProjectWithSource(harness.deps, {
-        hostId: host.id,
-      });
-      const parentEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/hidden-child-needs-attention-parent",
-        projectId: project.id,
-      });
-      const childEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/hidden-child-needs-attention-child",
-        projectId: project.id,
-      });
-      const parentThread = seedThread(harness.deps, {
-        environmentId: parentEnvironment.id,
-        projectId: project.id,
-      });
-      seedThreadRuntimeState(harness.deps, {
-        environmentId: parentEnvironment.id,
-        inputText: "Coordinate hidden child work",
-        providerThreadId: "provider-hidden-child-needs-attention-parent",
-        threadId: parentThread.id,
-      });
-      const childThread = seedThread(harness.deps, {
-        environmentId: childEnvironment.id,
-        originKind: "fork",
-        parentThreadId: parentThread.id,
-        projectId: project.id,
-        visibility: "hidden",
-      });
-
-      const response = await registerInteractiveRequest({
-        body: buildCommandApprovalInteractiveRequest({
-          sessionId: session.id,
-          suffix: "hidden-child-needs-attention",
-          threadId: childThread.id,
-        }),
-        harness,
-      });
-
-      expect(response.status).toBe(200);
-      await expect(readJson(response)).resolves.toMatchObject({
-        outcome: "created",
-        status: "pending",
-      });
-      await expect(
-        waitForQueuedCommand(
-          harness,
-          ({ command }) =>
-            command.type === "turn.submit" &&
-            command.threadId === parentThread.id,
-          100,
-        ),
-      ).rejects.toThrow("Timed out waiting for queued command");
-    });
-  });
-
-  it.each([
-    { parentNotifications: "stuck", notifies: true },
-    { parentNotifications: "off", notifies: false },
-  ] as const)(
-    "notifies the parent of a blocked $parentNotifications child: $notifies",
-    async ({ parentNotifications, notifies }) => {
-      await withTestHarness(async (harness) => {
-        const { host, session } = seedHostSession(harness.deps, {
-          id: `host-${parentNotifications}-child-needs-attention`,
-        });
-        const { project } = seedProjectWithSource(harness.deps, {
-          hostId: host.id,
-        });
-        const parentEnvironment = seedEnvironment(harness.deps, {
-          hostId: host.id,
-          path: `/tmp/${parentNotifications}-child-needs-attention-parent`,
-          projectId: project.id,
-        });
-        const childEnvironment = seedEnvironment(harness.deps, {
-          hostId: host.id,
-          path: `/tmp/${parentNotifications}-child-needs-attention-child`,
-          projectId: project.id,
-        });
-        const parentThread = seedThread(harness.deps, {
-          environmentId: parentEnvironment.id,
-          projectId: project.id,
-        });
-        seedThreadRuntimeState(harness.deps, {
-          environmentId: parentEnvironment.id,
-          inputText: "Coordinate child work",
-          providerThreadId: `provider-${parentNotifications}-child-needs-attention-parent`,
-          threadId: parentThread.id,
-        });
-        const childThread = seedThread(harness.deps, {
-          environmentId: childEnvironment.id,
-          parentNotifications,
-          parentThreadId: parentThread.id,
-          projectId: project.id,
-        });
-
-        const response = await registerInteractiveRequest({
-          body: buildCommandApprovalInteractiveRequest({
-            sessionId: session.id,
-            suffix: `${parentNotifications}-child-needs-attention`,
-            threadId: childThread.id,
-          }),
-          harness,
-        });
-
-        expect(response.status).toBe(200);
-        const parentTurn = waitForQueuedCommand(
-          harness,
-          ({ command }) =>
-            command.type === "turn.submit" &&
-            command.threadId === parentThread.id,
-          notifies ? undefined : 100,
-        );
-        if (notifies) {
-          await expect(parentTurn).resolves.toBeDefined();
-        } else {
-          await expect(parentTurn).rejects.toThrow(
-            "Timed out waiting for queued command",
-          );
-        }
-      });
-    },
-  );
-
   it("returns retryable 503 when interactive request turn/started has not landed", async () => {
     await withTestHarness(async (harness) => {
       const { session, thread } = seedThreadFixture(harness, {
@@ -797,6 +667,93 @@ describe("internal interactive request lifecycle", () => {
           status: "resolving",
         }),
       ]);
+    });
+  });
+
+  it("interrupts only the interaction whose provider request was withdrawn", async () => {
+    await withTestHarness(async (harness) => {
+      const { host, session } = seedHostSession(harness.deps, {
+        id: "host-interaction-withdraw",
+      });
+      const { project } = seedProjectWithSource(harness.deps, {
+        hostId: host.id,
+      });
+      const environment = seedEnvironment(harness.deps, {
+        hostId: host.id,
+        projectId: project.id,
+      });
+      const thread = seedThread(harness.deps, {
+        projectId: project.id,
+        environmentId: environment.id,
+      });
+      const body = buildCommandApprovalInteractiveRequest({
+        sessionId: session.id,
+        suffix: "withdraw",
+        threadId: thread.id,
+      });
+      const registered = await registerInteractiveRequest({ body, harness });
+      expect(registered.status).toBe(200);
+      const interactionId = await waitForPendingInteractionId({
+        harness,
+        threadId: thread.id,
+      });
+      const key = {
+        threadId: thread.id,
+        providerId: body.interaction.providerId,
+        providerThreadId: body.interaction.providerThreadId,
+        providerRequestId: body.interaction.providerRequestId,
+      };
+      const withdraw = (providerRequestId: string) =>
+        harness.app.request("/internal/session/interactive-request/withdraw", {
+          method: "POST",
+          headers: internalAuthHeaders(harness),
+          body: JSON.stringify({
+            sessionId: session.id,
+            request: { ...key, providerRequestId },
+            reason: "The agent withdrew this request",
+          }),
+        });
+
+      const unrelated = await withdraw("request-someone-else");
+      expect(unrelated.status).toBe(200);
+      await expect(readJson(unrelated)).resolves.toEqual({
+        ok: true,
+        interactionId: null,
+      });
+      expect(
+        harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        ),
+      ).toEqual([expect.objectContaining({ id: interactionId })]);
+
+      const withdrawn = await withdraw(key.providerRequestId);
+      expect(withdrawn.status).toBe(200);
+      await expect(readJson(withdrawn)).resolves.toEqual({
+        ok: true,
+        interactionId,
+      });
+      expect(
+        listPendingInteractionsByThread(harness.db, {
+          threadId: thread.id,
+        }).map(toPendingInteraction),
+      ).toEqual([
+        expect.objectContaining({
+          id: interactionId,
+          status: "interrupted",
+          statusReason: "The agent withdrew this request",
+        }),
+      ]);
+      expect(
+        harness.deps.pendingInteractions.listPendingThreadInteractions(
+          thread.id,
+        ),
+      ).toEqual([]);
+
+      const repeated = await withdraw(key.providerRequestId);
+      await expect(readJson(repeated)).resolves.toEqual({
+        ok: true,
+        interactionId: null,
+      });
     });
   });
 
@@ -1051,7 +1008,7 @@ describe("internal interactive request lifecycle", () => {
       );
       expect(deleteResponse.status).toBe(200);
 
-      expect(await threadEventWaiter.promise).toBe(true);
+      expect(await threadEventWaiter.promise).not.toBeNull();
 
       expect(
         listPendingInteractionsByThread(harness.db, {

@@ -11,12 +11,18 @@ import {
 import { Button } from "@bb/shared-ui/button";
 import { useAtomValue } from "jotai";
 import type {
+  PluginBoundThreadAction,
   PluginThreadActionEntry,
-  PluginThreadActionTarget,
 } from "@get-bb/plugin-sdk";
 import { COARSE_POINTER_TOOLBAR_ACTION_BUTTON_CLASS } from "@bb/shared-ui/coarse-pointer-sizing";
 import { Icon } from "@bb/shared-ui/icon";
-import { SplitButton } from "@/components/ui/split-button.js";
+import { observeSharedResize } from "@bb/shared-ui/lib/shared-resize-observer";
+import {
+  SPLIT_BUTTON_DESTRUCTIVE_CLASS,
+  SplitButton,
+} from "@/components/ui/split-button.js";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
+import { ThreadActionLabel } from "@/components/thread/ThreadActionMenuItems";
 import {
   AppPageHeader,
   HEADER_ICON_BUTTON_CLASS,
@@ -37,6 +43,10 @@ import {
 import { useSidebarRename } from "@/components/sidebar/SidebarInlineRename";
 import { useThreadActions } from "@/components/thread/ThreadActionsProvider";
 import { ThreadTitle } from "@/components/thread/ThreadTitleMentions";
+import {
+  PluginThreadHeaderTitle,
+  usePluginThreadHeaderTitle,
+} from "@/components/plugin/PluginThreadHeaderTitle";
 import { useThreadHeaderActionEntries } from "@/lib/thread-actions/thread-action-registry";
 import { SecondaryPanelHostLayoutContext } from "@/components/secondary-panel/SecondaryPanelHostLayoutContext";
 import {
@@ -60,6 +70,45 @@ const THREAD_HEADER_ACTION_BUTTON_CLASS = cn(
   "border-border/70 bg-transparent font-normal hover:bg-state-hover",
 );
 const NARROW_SPLIT_HEADER_MAX_WIDTH = 560;
+const INTERACTIVE_TITLE_TARGET_SELECTOR =
+  "a, button, input, select, textarea, label, [role='button'], [role='link'], [contenteditable='true']";
+
+function HeaderActionButtonContent({
+  action,
+}: {
+  action: PluginBoundThreadAction;
+}) {
+  return (
+    <>
+      <Icon name={action.icon} aria-hidden="true" />
+      {action.label}
+    </>
+  );
+}
+
+function HeaderActionTooltip({
+  detail,
+  children,
+}: {
+  detail: string | undefined;
+  children: ReactNode;
+}) {
+  if (detail === undefined) return children;
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span className="inline-flex">{children}</span>
+      </TooltipTrigger>
+      <TooltipContent>{detail}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+function isInteractiveTitleTarget(event: ReactPointerEvent): boolean {
+  if (!(event.target instanceof Element)) return false;
+  const interactive = event.target.closest(INTERACTIVE_TITLE_TARGET_SELECTOR);
+  return interactive !== null && event.currentTarget.contains(interactive);
+}
 
 export interface ThreadDetailHeaderActionsMenuArgs {
   includeResponsiveActions: boolean;
@@ -71,17 +120,19 @@ export interface ThreadDetailHeaderActionsMenuArgs {
 interface ThreadDetailHeaderProps {
   actionsMenu: ((args: ThreadDetailHeaderActionsMenuArgs) => ReactNode) | null;
   contextCardButton?: ReactNode;
+  environmentId: string | null;
   isSecondaryPanelOpen: boolean;
   onClosePane?: () => void;
   onToggleSecondaryPanel: () => void;
   pluginActions?: ReactNode;
-  thread: PluginThreadActionTarget;
+  thread: { id: string; projectId: string };
   threadTitle: string;
   workspaceOpenButton?: ReactNode;
 }
 
 export function ThreadDetailHeader({
   actionsMenu,
+  environmentId,
   isSecondaryPanelOpen,
   onClosePane,
   onToggleSecondaryPanel,
@@ -94,6 +145,9 @@ export function ThreadDetailHeader({
   const isCompactViewport = useIsCompactViewport();
   const threadId = thread.id;
   const headerActions = useThreadHeaderActionEntries(thread);
+  const pluginTitle = usePluginThreadHeaderTitle();
+  const pluginTitleSlot =
+    pluginTitle.kind === "plugin" ? pluginTitle.registration : null;
   const [primaryAction, ...secondaryActions] = headerActions;
   const { renameThreadAsync } = useThreadActions();
   const handleRename = useCallback(
@@ -136,12 +190,9 @@ export function ThreadDetailHeader({
   const isWindowPanelOpen =
     useContext(SecondaryPanelHostLayoutContext)?.isOpen === true;
   const isSplitPaneHeader = beginPaneDrag !== undefined;
-  const [measuredPaneWidth, setMeasuredPaneWidth] = useState(0);
+  const [isNarrowSplitPane, setIsNarrowSplitPane] = useState(false);
   const usesResponsiveActionOverflow =
-    isCompactViewport ||
-    (isSplitPaneHeader &&
-      measuredPaneWidth > 0 &&
-      measuredPaneWidth < NARROW_SPLIT_HEADER_MAX_WIDTH);
+    isCompactViewport || (isSplitPaneHeader && isNarrowSplitPane);
   useLayoutEffect(() => {
     if (!isSplitPaneHeader) {
       return;
@@ -150,28 +201,31 @@ export function ThreadDetailHeader({
     const header = headerRef.current;
     const pane = header.closest<HTMLElement>("[data-split-pane-id]");
     const measuredElement = pane ?? header;
-    const measure = () => {
-      const width = measuredElement.getBoundingClientRect().width;
+    const read = () => measuredElement.getBoundingClientRect().width;
+    const write = (width: number) => {
       if (width > 0) {
-        setMeasuredPaneWidth(width);
+        setIsNarrowSplitPane(width < NARROW_SPLIT_HEADER_MAX_WIDTH);
       }
     };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(measuredElement);
-    return () => {
-      observer.disconnect();
-    };
+    write(read());
+    return observeSharedResize(measuredElement, { read, write });
   }, [isSplitPaneHeader]);
   const handleTitlePointerDown = (event: ReactPointerEvent) => {
-    if (isEditing || !beginPaneDrag || event.button !== 0) {
+    if (
+      isEditing ||
+      !beginPaneDrag ||
+      event.button !== 0 ||
+      isInteractiveTitleTarget(event)
+    ) {
       return;
     }
     beginPaneDrag(event, threadTitle);
   };
   const handleTitleDoubleClick = () => {
-    if (!isEditing) startEditingFromDoubleClick();
+    if (!isEditing && pluginTitleSlot === null) startEditingFromDoubleClick();
   };
+  const coreTitle = <ThreadTitle title={threadTitle} />;
+  const TitleElement = pluginTitleSlot === null || isEditing ? "p" : "div";
   const rightPanelIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
   const mountRightPanelToggle = secondaryPanelHost === null;
   const showRightPanelToggle =
@@ -193,7 +247,7 @@ export function ThreadDetailHeader({
           isSplitPaneHeader && isFocused && CONTEXT_SELECTION_SURFACE_CLASS,
         )}
       >
-        <p
+        <TitleElement
           className={cn(
             "relative min-w-0 text-sm font-normal transition-colors",
             isEditing && "overflow-visible",
@@ -207,8 +261,24 @@ export function ThreadDetailHeader({
           onDoubleClick={handleTitleDoubleClick}
           onPointerDown={beginPaneDrag ? handleTitlePointerDown : undefined}
         >
-          {isEditing ? editor : <ThreadTitle title={threadTitle} />}
-        </p>
+          {isEditing ? (
+            editor
+          ) : pluginTitle.kind === "loading" ? (
+            <span aria-hidden className="invisible">
+              {coreTitle}
+            </span>
+          ) : pluginTitleSlot === null ? (
+            coreTitle
+          ) : (
+            <PluginThreadHeaderTitle
+              slot={pluginTitleSlot}
+              threadId={threadId}
+              projectId={thread.projectId}
+              environmentId={environmentId}
+              fallback={coreTitle}
+            />
+          )}
+        </TitleElement>
       </div>
       {actionsMenu == null ? null : (
         <span
@@ -248,26 +318,44 @@ export function ThreadDetailHeader({
                 primaryAction={{
                   disabled: primaryAction.action.disabled,
                   label: primaryAction.action.label,
+                  variant: primaryAction.action.variant,
                   onSelect: () => void primaryAction.action.run(),
+                  content: (
+                    <HeaderActionButtonContent action={primaryAction.action} />
+                  ),
                 }}
+                primaryTooltip={primaryAction.action.detail}
                 secondaryActions={secondaryActions.map(({ key, action }) => ({
                   id: key,
                   disabled: action.disabled,
                   label: action.label,
+                  variant: action.variant,
                   onSelect: () => void action.run(),
+                  content: (
+                    <>
+                      <Icon name={action.icon} aria-hidden="true" />
+                      <ThreadActionLabel action={action} />
+                    </>
+                  ),
                 }))}
               />
             ) : (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className={THREAD_HEADER_ACTION_BUTTON_CLASS}
-                disabled={primaryAction.action.disabled}
-                onClick={() => void primaryAction.action.run()}
-              >
-                {primaryAction.action.label}
-              </Button>
+              <HeaderActionTooltip detail={primaryAction.action.detail}>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className={cn(
+                    THREAD_HEADER_ACTION_BUTTON_CLASS,
+                    primaryAction.action.variant === "destructive" &&
+                      SPLIT_BUTTON_DESTRUCTIVE_CLASS,
+                  )}
+                  disabled={primaryAction.action.disabled}
+                  onClick={() => void primaryAction.action.run()}
+                >
+                  <HeaderActionButtonContent action={primaryAction.action} />
+                </Button>
+              </HeaderActionTooltip>
             )}
           </span>
         ) : null}

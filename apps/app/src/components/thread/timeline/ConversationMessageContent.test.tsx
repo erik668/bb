@@ -3,7 +3,7 @@
 import { LazyMarkdownHtml } from "@/components/ui/lazy-markdown-html";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ThreadListEntry } from "@bb/domain";
-import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { ThreadTitleMentionResourcesProvider } from "@/components/thread/ThreadTitleMentions";
 import { RouteNavigationProvider } from "@/components/ui/app-route-anchor";
@@ -16,8 +16,9 @@ import { ThreadTimelineNavigationProvider } from "./ThreadTimelineNavigationCont
 import { USER_MESSAGE_CHAR_CAP } from "@bb/client-core";
 import { createQueryClientTestHarness } from "@/test/queryClientTestHarness";
 import { makeThreadListEntry as makeThreadListEntryFixture } from "@bb/test-helpers/domain-fixtures";
+import { stubResizeObserverDeliveries } from "@/test/resize-observer-deliveries";
 
-beforeAll(() => LazyMarkdownHtml.preload());
+await LazyMarkdownHtml.preload();
 
 afterEach(() => {
   cleanup();
@@ -212,12 +213,15 @@ describe("ConversationMessageContent assistant thread mentions", () => {
       projectId: "proj_personal",
       title: "Plugin composer support on root new-thread page",
     });
-    const messageDirectiveRegistry: MessageDirectiveRegistry = new Map([
-      [
-        "inline-vis",
-        { status: "collision", pluginIds: ["plugin-a", "plugin-b"] },
-      ],
-    ]);
+    const messageDirectiveRegistry: MessageDirectiveRegistry = {
+      directives: new Map([
+        [
+          "inline-vis",
+          { status: "collision", pluginIds: ["plugin-a", "plugin-b"] },
+        ],
+      ]),
+      unclaimed: "literal",
+    };
 
     render(
       <MemoryRouter>
@@ -585,7 +589,7 @@ describe("user message overflow", () => {
   ])(
     "uses vertical clipping to decide expansion ($label overflow)",
     ({ width, height, expandable }) => {
-      vi.stubGlobal("ResizeObserver", undefined);
+      const deliverResizes = stubResizeObserverDeliveries();
       vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(
         100,
       );
@@ -622,6 +626,7 @@ describe("user message overflow", () => {
           </RouteNavigationProvider>
         </MemoryRouter>,
       );
+      deliverResizes();
       expect(screen.queryByRole("button", { name: "Show more" }) !== null).toBe(
         expandable,
       );

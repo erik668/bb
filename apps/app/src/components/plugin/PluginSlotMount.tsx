@@ -1,7 +1,8 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, Suspense, type ErrorInfo, type ReactNode } from "react";
 import { Pill } from "@bb/shared-ui/pill";
 import { useRouteAnchorDelegate } from "@/components/ui/app-route-anchor";
 import { usePluginCss } from "@/lib/plugin-css";
+import { pluginRootProps } from "@/lib/portal-scope";
 import {
   PluginContext,
   PluginSlotOwnershipContext,
@@ -184,7 +185,7 @@ class PluginSlotBoundary extends Component<
     }
     return (
       <PluginSlotOwnershipContext.Provider value={this.ownershipRegistry}>
-        {this.props.children}
+        <Suspense fallback={null}>{this.props.children}</Suspense>
       </PluginSlotOwnershipContext.Provider>
     );
   }
@@ -231,8 +232,7 @@ export function PluginSlotMount({
       >
         {wrapRoot ? (
           <div
-            data-bb-plugin-root=""
-            data-bb-plugin={pluginId}
+            {...pluginRootProps(pluginId)}
             className="contents"
             onClick={onRouteAnchorClick}
           >

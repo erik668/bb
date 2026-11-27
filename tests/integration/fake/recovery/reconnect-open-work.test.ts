@@ -1,5 +1,5 @@
-import { listEvents } from "@bb/db";
 import { isUserQuestionPendingInteraction } from "@bb/domain";
+import { trackChildProcesses } from "@bb/test-helpers";
 import { describe, expect, it, vi } from "vitest";
 import {
   getThread,
@@ -19,6 +19,7 @@ import {
   requireSessionId,
   TURN_TIMEOUT_MS,
 } from "./shared.js";
+import { listEvents } from "@bb/db/testing";
 
 function dropDaemonSocket(harness: IntegrationHarness): string {
   const sessionId = requireSessionId(harness);
@@ -110,6 +111,7 @@ describe.sequential("fake provider reconnect open-work integration", () => {
     "settles a background task when its provider process dies and keeps one settlement after the same daemon reconnects",
     async () => {
       const processes = await recordScriptedEchoProcesses();
+      const children = trackChildProcesses();
       try {
         await withHarness(async (harness) => {
           const { thread } = await createRecoveryThread(
@@ -136,7 +138,15 @@ describe.sequential("fake provider reconnect open-work integration", () => {
             },
           ];
 
-          process.kill(ownerPid, "SIGKILL");
+          const owner = children
+            .running()
+            .find((child) => child.pid === ownerPid);
+          if (owner === undefined) {
+            throw new Error(
+              "Expected the scripted bridge to be a tracked child",
+            );
+          }
+          owner.kill("SIGKILL");
           await vi.waitFor(
             () =>
               expect(backgroundTaskStates(harness, thread.id)).toEqual(
@@ -162,6 +172,7 @@ describe.sequential("fake provider reconnect open-work integration", () => {
           );
         });
       } finally {
+        children.dispose();
         await processes.dispose();
       }
     },

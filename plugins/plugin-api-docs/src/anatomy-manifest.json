@@ -159,6 +159,49 @@
         }
       ]
     },
+    "thread-rail": {
+      "groupId": "app-shell",
+      "fidelity": "anchor",
+      "responsiveStrategy": "scale-together",
+      "requiredStates": ["anchor"],
+      "labels": { "anchor": [] },
+      "fixtureClassAnchors": ["h-[3px] shrink-0 rounded-full", "w-5 bg-foreground/30"],
+      "sources": [
+        {
+          "path": "apps/app/src/components/plugin/PluginThreadRail.tsx",
+          "anchors": [
+            "data-thread-rail=\"\"",
+            "slotKind=\"threadRailOutline\"",
+            "slotKind=\"threadRail\"",
+            "<BuiltInThreadRailOutline {...props} />",
+            "THREAD_RAIL_MIN_VISIBLE_WIDTH_PX = 56 * 16"
+          ]
+        },
+        {
+          "path": "apps/app/src/core-contributions/thread-outline.tsx",
+          "anchors": ["app.slots.experimental_threadRailOutline"]
+        },
+        {
+          "path": "apps/app/src/core-contributions/components/ThreadOutline.tsx",
+          "anchors": [
+            "aria-label=\"Thread table of contents\"",
+            "h-[3px] shrink-0 rounded-full",
+            "w-5 bg-foreground/30"
+          ]
+        },
+        {
+          "path": "apps/app/src/views/thread-detail/ThreadScreen.tsx",
+          "anchors": ["<PluginThreadRail", "<TimelineViewportProvider"]
+        },
+        {
+          "path": "apps/app/src/components/plugin/PluginThreadRail.test.tsx",
+          "anchors": [
+            "replaces bb's outline with an installed plugin's under Automatic, with rail items below it",
+            "falls back to bb's outline when the picked one crashes"
+          ]
+        }
+      ]
+    },
     "thread-context-card": {
       "groupId": "app-shell",
       "fidelity": "anchor",
@@ -192,6 +235,67 @@
           "anchors": [
             "orders rows by group, then order, core first on a tie, and puts titled sections below them",
             "mounts one scoped instance per pane and drops only a crashing section"
+          ]
+        }
+      ]
+    },
+    "thread-header-title": {
+      "groupId": "app-shell",
+      "fidelity": "anchor",
+      "responsiveStrategy": "scale-together",
+      "requiredStates": ["anchor"],
+      "labels": {
+        "anchor": ["checkout › flaky-tests"]
+      },
+      "fixtureClassAnchors": ["flex h-6.5 min-w-0 items-center gap-1 px-1 text-foreground"],
+      "sources": [
+        {
+          "path": "apps/app/src/components/plugin/PluginThreadHeaderTitle.tsx",
+          "anchors": [
+            "slotKind=\"threadHeaderTitle\"",
+            "crashFallback={fallback}"
+          ]
+        },
+        {
+          "path": "apps/app/src/views/thread-detail/ThreadDetailHeader.tsx",
+          "anchors": ["<PluginThreadHeaderTitle", "isInteractiveTitleTarget(event)"]
+        },
+        {
+          "path": "apps/app/src/views/thread-detail/ThreadDetailHeader.test.tsx",
+          "anchors": [
+            "falls back to the core title when the plugin title crashes",
+            "shows the rename editor while renaming and the plugin title after"
+          ]
+        }
+      ]
+    },
+    "thread-header-row": {
+      "groupId": "app-shell",
+      "fidelity": "anchor",
+      "responsiveStrategy": "scale-together",
+      "requiredStates": ["anchor"],
+      "labels": {
+        "anchor": ["Review retries"]
+      },
+      "fixtureClassAnchors": ["border-b border-border-hairline"],
+      "sources": [
+        {
+          "path": "apps/app/src/components/plugin/PluginThreadHeaderRows.tsx",
+          "anchors": [
+            "slotKind=\"threadHeaderRow\"",
+            "crashFallback={null}",
+            "className=\"flex w-full min-w-0 shrink-0 flex-col\""
+          ]
+        },
+        {
+          "path": "apps/app/src/views/thread-detail/ThreadDetailView.tsx",
+          "anchors": ["<PluginThreadHeaderRows"]
+        },
+        {
+          "path": "apps/app/src/views/thread-detail/ThreadDetailView.contract.test.tsx",
+          "anchors": [
+            "stacks rows by order between the thread header and the timeline",
+            "drops only a crashing row and keeps the thread view"
           ]
         }
       ]
@@ -377,13 +481,18 @@
       ],
       "sources": [
         {
-          "path": "apps/app/src/components/secondary-panel/ThreadMetadataContent.tsx",
+          "path": "apps/app/src/components/secondary-panel/info/ThreadInfo.tsx",
           "anchors": [
-            "CORE_THREAD_INFO_ROWS",
-            "CORE_THREAD_INFO_SECTIONS",
             "<ThreadInfoRows",
             "<ThreadInfoSections",
             "[&_[data-info-section]]:mt-3"
+          ]
+        },
+        {
+          "path": "apps/app/src/core-contributions/thread-info.tsx",
+          "anchors": [
+            "experimental_threadInfoRow",
+            "experimental_threadInfoSection"
           ]
         },
         {
@@ -404,7 +513,7 @@
         {
           "path": "apps/app/src/components/secondary-panel/info/ThreadInfoSlots.test.tsx",
           "anchors": [
-            "places plugin rows and sections by group, then order, after core on a tie",
+            "places rows and sections by group, then order, earlier registration first on a tie",
             "drops only a crashing plugin row or section",
             "collapses each section on its own, keyed by registration"
           ]

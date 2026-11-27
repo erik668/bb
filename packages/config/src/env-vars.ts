@@ -92,21 +92,6 @@ function parseAppSourceOriginEnvValue(args: EnvVarParseArgs): AppSourceOrigin {
   );
 }
 
-const setupGuideVariantSchema = z.enum(["control", "new"]);
-export type SetupGuideVariant = z.infer<typeof setupGuideVariantSchema>;
-
-function parseSetupGuideVariantEnvValue(
-  args: EnvVarParseArgs,
-): SetupGuideVariant {
-  const parsed = setupGuideVariantSchema.safeParse(args.value.trim());
-  if (parsed.success) {
-    return parsed.data;
-  }
-  throw new Error(
-    `${args.name} must be one of ${setupGuideVariantSchema.options.join(", ")}`,
-  );
-}
-
 function parseOptionalPortEnvValue(args: EnvVarParseArgs): number | undefined {
   if (args.value === "0") {
     return undefined;
@@ -290,13 +275,6 @@ export const BB_MARKETPLACE_URL_ENV = defineEnvVar<string>({
   parse: parseOptionalUrlEnvValue,
 });
 
-export const BB_CONNECT_GATE_KEYS_URL_ENV = defineEnvVar<string>({
-  description:
-    "URL of the bb connect next gate public key set the server's tunnel ingress verifies gate assertions with. Point it at a local file server to test the ingress.",
-  name: "BB_CONNECT_GATE_KEYS_URL",
-  parse: parseRequiredUrlEnvValue,
-});
-
 export const BB_POSTHOG_API_KEY_ENV = defineEnvVar<string>({
   description:
     "PostHog project API key for anonymous usage telemetry. Telemetry is disabled when empty.",
@@ -311,18 +289,18 @@ export const BB_PERF_DIAGNOSTICS_ENV = defineEnvVar<boolean>({
   parse: parseBooleanEnvValue,
 });
 
+export const BB_QUERY_PLAN_AUDIT_ENV = defineEnvVar<boolean>({
+  description:
+    "Log a warning when the server runs a SQLite query whose plan walks a large table or uses a weaker index than one that exists. pnpm dev and pnpm start:worktree set it; the performanceDiagnostics experiment also turns it on. Requires restart.",
+  name: "BB_QUERY_PLAN_AUDIT",
+  parse: parseBooleanEnvValue,
+});
+
 export const BB_SKIP_ONBOARDING_ENV = defineEnvVar<boolean>({
   description:
     "Mark first-run setup as completed at server startup so the setup screen is skipped. Settings can still replay it.",
   name: "BB_SKIP_ONBOARDING",
   parse: parseBooleanEnvValue,
-});
-
-export const BB_SETUP_GUIDE_VARIANT_ENV = defineEnvVar<SetupGuideVariant>({
-  description:
-    "Forces the first-run setup guide variant (control or new) for QA, ignoring telemetry and the setup-guide-redesign experiment.",
-  name: "BB_SETUP_GUIDE_VARIANT",
-  parse: parseSetupGuideVariantEnvValue,
 });
 
 export const BB_TELEMETRY_ENV = defineEnvVar<boolean>({
@@ -449,8 +427,6 @@ export const DEFAULT_BB_TELEMETRY = true;
 export const DEFAULT_BB_DEV_APP_HOST = "";
 export const DEFAULT_BB_MARKETPLACE_URL =
   "https://getbb.app/marketplace/v2/marketplace.json";
-export const DEFAULT_BB_CONNECT_GATE_KEYS_URL =
-  "https://getbb.app/.well-known/bb-connect-gate-keys.json";
 export const DEFAULT_BB_FF_PLACEHOLDER = defaultFeatureFlags.placeholder;
 export const DEFAULT_BB_FF_INITIATOR_TELEMETRY =
   defaultFeatureFlags.initiatorTelemetry;

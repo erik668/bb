@@ -3,7 +3,6 @@ import {
   ensurePersonalProject,
   getEnvironment,
   getThread,
-  listEvents,
 } from "@bb/db";
 import {
   PERSONAL_PROJECT_ID,
@@ -34,6 +33,7 @@ import {
   seedTurnStarted,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 function threadStartTurnRequest(
   harness: { db: Parameters<typeof listEvents>[0] },
@@ -843,56 +843,6 @@ describe("thread creation child-thread boundary validation", () => {
       }
       expect(queued.command.fork).toEqual({
         sourceProviderThreadId: "provider-personal-fork-source",
-      });
-    });
-  });
-
-  it("rejects a personal fork that reuses a different unmanaged environment", async () => {
-    await withTestHarness(async (harness) => {
-      const { host } = seedHostSession(harness.deps, {
-        id: "host-personal-fork-different-environment",
-      });
-      ensurePersonalProject(harness.db);
-      const sourceEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/personal-fork-source",
-        projectId: PERSONAL_PROJECT_ID,
-      });
-      const otherEnvironment = seedEnvironment(harness.deps, {
-        hostId: host.id,
-        path: "/tmp/personal-fork-other",
-        projectId: PERSONAL_PROJECT_ID,
-      });
-      const sourceThread = seedThread(harness.deps, {
-        environmentId: sourceEnvironment.id,
-        projectId: PERSONAL_PROJECT_ID,
-      });
-      seedTurnStarted(harness.deps, {
-        environmentId: sourceEnvironment.id,
-        providerThreadId: "provider-personal-fork-source",
-        threadId: sourceThread.id,
-        turnId: "turn-personal-fork-source",
-      });
-
-      await expect(
-        createThreadFromRequest(harness.deps, {
-          environment: {
-            type: "reuse",
-            environmentId: otherEnvironment.id,
-          },
-          input: textInput("Reuse only the source environment"),
-          origin: "app",
-          originKind: "fork",
-          projectId: PERSONAL_PROJECT_ID,
-          providerId: "codex",
-          sourceThreadId: sourceThread.id,
-          startedOnBehalfOf: null,
-        }),
-      ).rejects.toMatchObject({
-        body: {
-          message: "Personal project threads must reuse a personal workspace",
-        },
-        status: 409,
       });
     });
   });

@@ -42,8 +42,6 @@ export interface Env {
   ASSETLINKS_SHA256_FINGERPRINTS?: string;
   WORKER_HELD_RESPONSES?: string;
   PRESENCE_WRITES?: string;
-  GATE_SECRET?: string;
-  NEXT_BASE_DOMAIN?: string;
 }
 
 const TUNNEL_TAG = "tunnel";
@@ -134,7 +132,7 @@ export class TunnelDO {
     this.state.setWebSocketAutoResponse(
       new WebSocketRequestResponsePair(HEARTBEAT_REQUEST, HEARTBEAT_RESPONSE),
     );
-    this.state.blockConcurrencyWhile(async () => {
+    void this.state.blockConcurrencyWhile(async () => {
       const stored = await this.state.storage.get<number>("protocolVersion");
       if (
         typeof stored === "number" &&

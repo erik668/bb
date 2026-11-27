@@ -2,7 +2,6 @@ import { AppPanelTabsPublisher } from "@/lib/app-panel-tabs";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -22,7 +21,10 @@ import { cn } from "@bb/shared-ui/lib/utils";
 import { useIsCompactViewport } from "@bb/shared-ui/hooks/use-compact-viewport";
 import { Icon } from "@bb/shared-ui/icon";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@bb/shared-ui/tooltip";
-import { useAppCommandHandler } from "@/components/commands/AppCommandProvider";
+import {
+  useAppCommandFocusedPluginPage,
+  useAppCommandHandler,
+} from "@/components/commands/AppCommandProvider";
 import { PluginItemIcon } from "@/components/plugin/PluginIcon";
 import {
   RIGHT_PANEL_TOGGLE_BUTTON_CLASS,
@@ -57,7 +59,10 @@ import {
   type SecondaryFileFixedPanelTab,
   type TerminalFixedPanelTab,
 } from "@/lib/fixed-panel-tabs-state";
-import { createFileOpenerOriginalTab } from "./file-opener-tabs";
+import {
+  createFileOpenerOriginalTab,
+  type FileOpenerOriginalTab,
+} from "./file-opener-tabs";
 import { activateSecondaryPanelTabInState } from "@bb/client-core";
 import {
   terminalQueryScopeForTarget,
@@ -75,8 +80,14 @@ import {
 } from "@/lib/bb-desktop";
 import { useIsSidebarFramed } from "@/components/ui/sidebar.js";
 import { UrlOpenRoutingProvider } from "@/lib/url-open-routing";
-import { usePluginSlots } from "@/lib/plugin-slots";
-import { AppNavigationHostProvider } from "@/lib/app-navigation-host";
+import type { MarkdownPreviewLinkHandler } from "@/components/ui/markdown-link";
+import { usePluginSlotKind } from "@/lib/plugin-slots";
+import {
+  AppNavigationHostCapture,
+  AppNavigationSurfaceProvider,
+  useAppNavigationHostRef,
+} from "@/lib/app-navigation-host";
+import { useBindPluginActionContext } from "@/lib/plugin-action-context-provider";
 import {
   FixedTabTargetScope,
   getPluginFixedTabOwnerId,
@@ -136,6 +147,42 @@ function PluginFixedTabContent({
   );
 }
 
+function renderFileOpenerOriginalTabContent(
+  tab: FileOpenerOriginalTab,
+  isOpen: boolean,
+): ReactNode {
+  switch (tab.kind) {
+    case "workspace-file-preview":
+      return tab.environmentId === null ? null : (
+        <LazyWorkspaceFilePreviewTabContent
+          activePath={tab.path}
+          environmentId={tab.environmentId}
+          isPanelOpen={isOpen}
+          lineRange={tab.lineRange}
+          source={tab.source}
+        />
+      );
+    case "host-file-preview":
+      return tab.hostId === null ? null : (
+        <LazyHostScopedFilePreviewTabContent
+          activePath={tab.path}
+          hostId={tab.hostId}
+          isPanelOpen={isOpen}
+          lineRange={tab.lineRange}
+        />
+      );
+    case "thread-storage-file-preview":
+      return tab.threadId === null ? null : (
+        <LazyThreadStorageFilePreviewTabContent
+          activePath={tab.path}
+          isPanelOpen={isOpen}
+          lineRange={tab.lineRange}
+          threadId={tab.threadId}
+        />
+      );
+  }
+}
+
 function findPluginRightPanelTogglePortal(
   panelStateId: string,
 ): HTMLElement | null {
@@ -167,16 +214,18 @@ export function PluginPanelRightPanelHost({
   flushPageInsets?: boolean;
   paneId?: string;
 }) {
-  const { navPanels } = usePluginSlots();
+  const navPanels = usePluginSlotKind("navPanels");
   const panel =
     navPanels.find(
       (candidate) =>
         candidate.pluginId === pluginId && candidate.path === panelPath,
     ) ?? null;
+  const awaitedPluginIds = useMemo(() => [pluginId], [pluginId]);
   const registeredTabs = usePluginTabs(
     panel === null
       ? null
       : { kind: "nav-panel", panelId: panel.id, pluginId, subPath },
+    awaitedPluginIds,
   );
   const pageTabs = useMemo(
     () =>
@@ -433,8 +482,9 @@ export function PluginPanelRightPanelHost({
     activeTabId: isOpen ? (activeTab?.id ?? null) : null,
     close: hidePanel,
     destinations: panelDestinations,
-    isFocused: isFocused && panel !== null,
   });
+  const surfaceHost = useAppNavigationHostRef();
+  const bindPluginActionContext = useBindPluginActionContext();
   const pluginActions = useMemo(
     () =>
       pageActions.map((action) => ({
@@ -453,11 +503,21 @@ export function PluginPanelRightPanelHost({
               panelId: panel.id,
               subPath,
             },
-            panel: panelController,
+            actionContext: bindPluginActionContext(
+              action.pluginId,
+              () => surfaceHost.current,
+            ),
           });
         },
       })),
-    [pageActions, panel, pluginId, subPath, panelController],
+    [
+      bindPluginActionContext,
+      pageActions,
+      panel,
+      pluginId,
+      subPath,
+      surfaceHost,
+    ],
   );
   const panelFiles = usePanelFiles({
     available: panel !== null,
@@ -501,6 +561,7 @@ export function PluginPanelRightPanelHost({
     revealPanel();
   }, [activeTab, isOpen, openTab, panelController, revealPanel]);
 
+  useAppCommandFocusedPluginPage(pluginId, isFocused && panel !== null);
   useAppCommandHandler("panel.toggle", () => {
     if (!isFocused || panel === null) return false;
     togglePanel();
@@ -520,9 +581,13 @@ export function PluginPanelRightPanelHost({
   const isSidebarFramed = useIsSidebarFramed();
   const [togglePortalTarget, setTogglePortalTarget] =
     useState<HTMLElement | null>(null);
-  useLayoutEffect(() => {
-    setTogglePortalTarget(findPluginRightPanelTogglePortal(panelStateId));
-  }, [panel, panelStateId]);
+  const findTogglePortalTarget = (node: HTMLDivElement | null) => {
+    setTogglePortalTarget(
+      node === null || panel === null
+        ? null
+        : findPluginRightPanelTogglePortal(panelStateId),
+    );
+  };
 
   const panelBrowser = usePanelBrowser({
     available: isDesktopBrowserAvailable(),
@@ -532,6 +597,11 @@ export function PluginPanelRightPanelHost({
     reveal: revealPanel,
   });
   const openBrowser = panelBrowser.open;
+  const openBrowserUrl = panelBrowser.openUrl;
+  const handleOpenPanelLink = useCallback<MarkdownPreviewLinkHandler>(
+    ({ href }) => openBrowserUrl(href),
+    [openBrowserUrl],
+  );
 
   const fixedTabs = useMemo<readonly SecondaryPanelFixedTab[]>(
     () =>
@@ -592,7 +662,7 @@ export function PluginPanelRightPanelHost({
   );
 
   const renderPanelTabContent = useCallback(
-    function renderTabContent(tab: SecondaryFileFixedPanelTab): ReactNode {
+    (tab: SecondaryFileFixedPanelTab): ReactNode => {
       switch (tab.kind) {
         case "plugin-detail":
           return <PluginDetailTabContent detailKey={tab.detailKey} />;
@@ -607,7 +677,9 @@ export function PluginPanelRightPanelHost({
               isPanelPersistedOpen={panelState.secondary.isOpen}
               onAutoFocusHandled={terminals.handleAutoFocusHandled}
               onCloseStart={() => terminals.close(tab.terminalId)}
+              onOpenLink={handleOpenPanelLink}
               onRetryStart={() => terminals.retryStart(tab.terminalId)}
+              onSelectionAddToChat={null}
               target={tab.target}
               terminalId={tab.terminalId}
             />
@@ -647,24 +719,9 @@ export function PluginPanelRightPanelHost({
             />
           );
         case "workspace-file-preview":
-          return tab.environmentId === null ? null : (
-            <LazyWorkspaceFilePreviewTabContent
-              activePath={tab.path}
-              environmentId={tab.environmentId}
-              isPanelOpen={isOpen}
-              lineRange={tab.lineRange}
-              source={tab.source}
-            />
-          );
         case "host-file-preview":
-          return tab.hostId === null ? null : (
-            <LazyHostScopedFilePreviewTabContent
-              activePath={tab.path}
-              hostId={tab.hostId}
-              isPanelOpen={isOpen}
-              lineRange={tab.lineRange}
-            />
-          );
+        case "thread-storage-file-preview":
+          return renderFileOpenerOriginalTabContent(tab, isOpen);
         case "attachment-file-preview":
           return (
             <LazyAttachmentFilePreviewTabContent
@@ -672,15 +729,6 @@ export function PluginPanelRightPanelHost({
               name={tab.name}
               path={tab.path}
               projectId={tab.projectId}
-            />
-          );
-        case "thread-storage-file-preview":
-          return tab.threadId === null ? null : (
-            <LazyThreadStorageFilePreviewTabContent
-              activePath={tab.path}
-              isPanelOpen={isOpen}
-              lineRange={tab.lineRange}
-              threadId={tab.threadId}
             />
           );
         case "plugin-panel": {
@@ -695,7 +743,9 @@ export function PluginPanelRightPanelHost({
                 subPath,
               }}
               fileOpenerOriginal={
-                originalTab === null ? undefined : renderTabContent(originalTab)
+                originalTab === null
+                  ? undefined
+                  : renderFileOpenerOriginalTabContent(originalTab, isOpen)
               }
             />
           );
@@ -704,6 +754,7 @@ export function PluginPanelRightPanelHost({
     },
     [
       activateTab,
+      handleOpenPanelLink,
       pluginActions,
       panel,
       panelPath,
@@ -806,7 +857,7 @@ export function PluginPanelRightPanelHost({
         <LazyThreadSecondaryPanel
           drawerFallback={drawerFallback}
           activeTab={activeTab}
-          metadataContent={null}
+          threadInfo={null}
           tabs={panelTabs}
           splitPanelStateId={panelStateId}
           onTabReorder={reorderTab}
@@ -857,6 +908,7 @@ export function PluginPanelRightPanelHost({
   const toggleIconName = RIGHT_PANEL_TOGGLE_ICON_NAME;
   const page = (
     <div
+      ref={findTogglePortalTarget}
       className={`flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden ${
         flushPageInsets
           ? "-m-4 h-[calc(100%+2rem)] md:-m-5 md:h-[calc(100%+2.5rem)]"
@@ -927,7 +979,11 @@ export function PluginPanelRightPanelHost({
 
   return (
     <UrlOpenRoutingProvider openInAppBrowser={openBrowser}>
-      <AppNavigationHostProvider capabilities={navigationCapabilities}>
+      <AppNavigationSurfaceProvider
+        capabilities={navigationCapabilities}
+        isFocused={isFocused && panel !== null}
+      >
+        <AppNavigationHostCapture hostRef={surfaceHost} />
         <AppPanelTabsPublisher
           publish={panelController.publishTabs}
           activeTabId={activeTab?.id ?? null}
@@ -942,7 +998,7 @@ export function PluginPanelRightPanelHost({
           {registeredTabs.observers}
           {routedPage}
         </PluginDetailRouteNavigationProvider>
-      </AppNavigationHostProvider>
+      </AppNavigationSurfaceProvider>
     </UrlOpenRoutingProvider>
   );
 }

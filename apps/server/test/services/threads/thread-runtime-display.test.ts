@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   appendStoredThreadEvent,
   closeSession,
@@ -8,13 +8,16 @@ import {
   createProject,
   createQueuedThreadMessage,
   createThread,
+  environments,
   hostDaemonSessions,
+  hosts,
   listQueuedThreadMessages,
   listThreadsWithPendingInteractionState,
   noopNotifier,
   openSession,
   setQueuedThreadMessageFailureReason,
   upsertHost,
+  updateThread,
   type DbConnection,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
@@ -30,9 +33,12 @@ import type {
   Thread,
   ThreadRuntimeState,
 } from "@bb/domain";
+import { moveThreadStatus } from "../../helpers/thread-status.js";
 import { HOST_RECONNECT_GRACE_MS } from "../../../src/constants.js";
 import {
   resolveThreadRuntimeState,
+  buildThreadStatusChangeMetadata,
+  buildThreadStatusChangeMetadataByThreadId,
   toThreadListEntryResponses,
 } from "../../../src/services/threads/thread-runtime-display.js";
 import { NotificationHub } from "../../../src/ws/hub.js";
@@ -229,9 +235,12 @@ function createThreadListEntry(
     modelOverride: null,
     reasoningLevelOverride: null,
     storageDeletedAt: null,
+    failureKind: null,
     statusChangedAt: args.thread.updatedAt,
     environmentBranchName: null,
     environmentPath: null,
+    environmentStatus: null,
+    environmentHostLifecycle: null,
     environmentProviderId: null,
     environmentIsWorktree: null,
     environmentHostId: args.environmentHostId,
@@ -242,6 +251,62 @@ function createThreadListEntry(
 }
 
 describe("thread runtime display", () => {
+  it("preserves child completion activity in list and realtime payloads after reading and renaming", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(1_000);
+      const { db, hostId, hub } = setup();
+      const { thread: parent } = createThreadWithEnvironment({
+        db,
+        hostId,
+        status: "idle",
+      });
+      const child = createThread(db, noopNotifier, {
+        projectId: parent.projectId,
+        environmentId: parent.environmentId,
+        parentThreadId: parent.id,
+        providerId: parent.providerId,
+        status: "active",
+      });
+      const deps = { db, hub, providerRegistry };
+      vi.setSystemTime(2_000);
+      expect(
+        moveThreadStatus(deps, { threadId: child.id, move: "run.succeeded" })
+          .applied,
+      ).toBe(true);
+      vi.setSystemTime(3_000);
+      const renamed = updateThread(db, noopNotifier, child.id, {
+        title: "Renamed",
+        lastReadAt: 3_000,
+      });
+      if (renamed === null) throw new Error("thread missing after rename");
+      const expected = {
+        statusChangedAt: 2_000,
+        latestAttentionAt: 1_000,
+        updatedAt: 3_000,
+      };
+      const entries = toThreadListEntryResponses(deps, {
+        threads: listThreadsWithPendingInteractionState(db, {
+          projectId: parent.projectId,
+        }),
+      });
+      expect(entries.find((entry) => entry.id === child.id)).toMatchObject(
+        expected,
+      );
+      expect(
+        buildThreadStatusChangeMetadata(deps, renamed).statusChange,
+      ).toMatchObject(expected);
+      expect(
+        buildThreadStatusChangeMetadataByThreadId(deps, {
+          environmentHostId: hostId,
+          threads: [renamed],
+        }).get(child.id)?.statusChange,
+      ).toMatchObject(expected);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps active threads active while the host daemon websocket is registered", () => {
     const { db, hostId, hub } = setup();
     const now = 1_000;
@@ -255,10 +320,11 @@ describe("thread runtime display", () => {
     expect(
       resolveThreadRuntimeState(
         { db, hub },
-        { environmentHostId: hostId, now, status: "active" },
+        { environmentHostId: hostId, failure: null, now, status: "active" },
       ),
     ).toEqual({
       displayStatus: "active",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -274,10 +340,11 @@ describe("thread runtime display", () => {
     expect(
       resolveThreadRuntimeState(
         { db, hub },
-        { environmentHostId: hostId, now, status: "active" },
+        { environmentHostId: hostId, failure: null, now, status: "active" },
       ),
     ).toEqual({
       displayStatus: "waiting-for-host",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -294,10 +361,11 @@ describe("thread runtime display", () => {
     expect(
       resolveThreadRuntimeState(
         { db, hub },
-        { environmentHostId: hostId, now, status: "active" },
+        { environmentHostId: hostId, failure: null, now, status: "active" },
       ),
     ).toEqual({
       displayStatus: "active",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -315,10 +383,11 @@ describe("thread runtime display", () => {
     expect(
       resolveThreadRuntimeState(
         { db, hub },
-        { environmentHostId: hostId, now, status: "active" },
+        { environmentHostId: hostId, failure: null, now, status: "active" },
       ),
     ).toEqual({
       displayStatus: "active",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -336,10 +405,11 @@ describe("thread runtime display", () => {
     expect(
       resolveThreadRuntimeState(
         { db, hub },
-        { environmentHostId: hostId, now, status: "active" },
+        { environmentHostId: hostId, failure: null, now, status: "active" },
       ),
     ).toEqual({
       displayStatus: "waiting-for-host",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -356,10 +426,11 @@ describe("thread runtime display", () => {
     expect(
       resolveThreadRuntimeState(
         { db, hub },
-        { environmentHostId: hostId, now, status: "active" },
+        { environmentHostId: hostId, failure: null, now, status: "active" },
       ),
     ).toEqual({
       displayStatus: "waiting-for-host",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -371,12 +442,14 @@ describe("thread runtime display", () => {
         { db, hub },
         {
           environmentHostId: hostId,
+          failure: null,
           now: 1_000,
           status: "idle",
         },
       ),
     ).toEqual({
       displayStatus: "idle",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -388,12 +461,14 @@ describe("thread runtime display", () => {
         { db, hub },
         {
           environmentHostId: null,
+          failure: null,
           now: 1_000,
           status: "active",
         },
       ),
     ).toEqual({
       displayStatus: "active",
+      failure: null,
     } satisfies ThreadRuntimeState);
   });
 
@@ -422,6 +497,42 @@ describe("thread runtime display", () => {
 
     expect(providerIdByThreadId.get(provided.thread.id)).toBe("git-worktree");
     expect(providerIdByThreadId.get(checkout.thread.id)).toBeNull();
+  });
+
+  it("carries the environment's setup status and its machine's lifecycle into the list entry", () => {
+    const { db, hostId, hub } = setup();
+    const { environment, project } = createThreadWithEnvironment({
+      db,
+      hostId,
+    });
+    const listEntry = () =>
+      toThreadListEntryResponses(
+        { db, hub, providerRegistry },
+        {
+          threads: listThreadsWithPendingInteractionState(db, {
+            projectId: project.id,
+          }),
+        },
+      )[0];
+
+    expect(listEntry()).toMatchObject({
+      environmentStatus: "ready",
+      environmentHostLifecycle: "active",
+    });
+
+    db.update(environments)
+      .set({ status: "error" })
+      .where(eq(environments.id, environment.id))
+      .run();
+    db.update(hosts)
+      .set({ phase: "removing" })
+      .where(eq(hosts.id, hostId))
+      .run();
+
+    expect(listEntry()).toMatchObject({
+      environmentStatus: "error",
+      environmentHostLifecycle: "removing",
+    });
   });
 
   it("reports the selected machine before a new thread has an environment", () => {
@@ -501,12 +612,15 @@ describe("thread runtime display", () => {
     expect(entries.map((entry) => entry.runtime)).toEqual([
       {
         displayStatus: "active",
+        failure: null,
       },
       {
         displayStatus: "active",
+        failure: null,
       },
       {
         displayStatus: "active",
+        failure: null,
       },
     ] satisfies ThreadRuntimeState[]);
   });

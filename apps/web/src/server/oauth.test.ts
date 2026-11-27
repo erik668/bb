@@ -11,6 +11,7 @@ import {
   OAUTH_REFRESH_REUSE_GRACE_MS,
   OAUTH_REVOKED_GRANT_RETENTION_MS,
   OAUTH_REFRESH_TOKEN_TTL_MS,
+  OAUTH_ROTATED_REFRESH_RETENTION_MS,
   auditLog,
   oauthCode,
   oauthGrant,
@@ -41,12 +42,10 @@ const ENV: OAuthEnv = {
   APP_URL: "https://getbb.app/",
   BASE_DOMAIN: "getbb.app",
   BETTER_AUTH_SECRET: "test-secret",
-  NEXT_BASE_DOMAIN: "next.getbb.app",
 };
 const CLIENT_ID = "https://claude.example/oauth/client.json";
 const REDIRECT_URI = "https://claude.example/callback?tenant=1";
 const RESOURCE = "https://alice.getbb.app/mcp";
-const NEXT_RESOURCE = "https://alice.next.getbb.app/mcp";
 const VERIFIER = "v".repeat(64);
 const JSON_HEADERS = { "content-type": "application/json" };
 
@@ -564,9 +563,7 @@ describe("authorization requests", () => {
     ["invalid_target", { resource: "https://nobody.getbb.app/mcp" }],
     ["invalid_target", { resource: "https://alice.getbb.app/other" }],
     ["invalid_target", { resource: "http://alice.getbb.app/mcp" }],
-    ["invalid_target", { resource: "https://bob.next.getbb.app/mcp" }],
-    ["invalid_target", { resource: "https://alice.next.getbb.app/other" }],
-    ["invalid_target", { resource: "https://alice--8000.next.getbb.app/mcp" }],
+    ["invalid_target", { resource: "https://alice.next.getbb.app/mcp" }],
     ["invalid_target", { resource: "https://alice.other.getbb.app/mcp" }],
     ["invalid_scope", { scope: "admin offline_access" }],
   ])("shows an error page naming %s for %o", async (error, over) => {
@@ -779,64 +776,6 @@ describe("token endpoint: authorization_code", () => {
       T0 + OAUTH_REFRESH_TOKEN_TTL_MS,
     );
     expect(await auditActions()).toEqual(["mcp.oauth.grant"]);
-  });
-
-  it("binds a grant and its tokens to the next address it was issued for", async () => {
-    const code = await authorize({ resource: NEXT_RESOURCE });
-    await expectTokenError(
-      await tokenRequest(codeBody(code, { resource: RESOURCE })),
-      "invalid_grant",
-    );
-    const body = await tokens(
-      await tokenRequest(
-        codeBody(await authorize({ resource: NEXT_RESOURCE }), {
-          resource: NEXT_RESOURCE,
-        }),
-      ),
-    );
-    expect(await grantRows()).toHaveLength(1);
-    expect((await grantRows())[0]?.resource).toBe(NEXT_RESOURCE);
-    expect(
-      (
-        await verifyMcpAccessToken(
-          body.access_token,
-          ENV.BETTER_AUTH_SECRET,
-          T0,
-        )
-      )?.resource,
-    ).toBe(NEXT_RESOURCE);
-    await expectTokenError(
-      await refresh(body.refresh_token, CLIENT_ID, { resource: RESOURCE }),
-      "invalid_grant",
-    );
-    const refreshed = await tokens(
-      await refresh(body.refresh_token, CLIENT_ID, { resource: NEXT_RESOURCE }),
-    );
-    expect(
-      (
-        await verifyMcpAccessToken(
-          refreshed.access_token,
-          ENV.BETTER_AUTH_SECRET,
-          T0,
-        )
-      )?.resource,
-    ).toBe(NEXT_RESOURCE);
-  });
-
-  it("refuses the next address when NEXT_BASE_DOMAIN is unset", async () => {
-    const { NEXT_BASE_DOMAIN: _unset, ...withoutNext } = ENV;
-    expect(
-      await prepareOAuthAuthorization(
-        withoutNext,
-        db,
-        "alice",
-        authorizeParams({ resource: NEXT_RESOURCE }),
-        deps(),
-      ),
-    ).toEqual({
-      kind: "error-page",
-      message: expect.stringContaining("invalid_target"),
-    });
   });
 
   it("rejects a replayed code", async () => {
@@ -1135,20 +1074,23 @@ describe("token endpoint: refresh_token", () => {
   });
 
   it("keeps a bounded number of refresh rows for a long-lived grant", async () => {
+    const intervalMs = OAUTH_ROTATED_REFRESH_RETENTION_MS / 6;
     let current = await exchange();
-    for (let hour = 0; hour < 72; hour += 1) {
-      now += 60 * 60 * 1000;
+    for (let refreshes = 0; refreshes < 18; refreshes += 1) {
+      now += intervalMs;
       current = await tokens(await refresh(current.refresh_token));
     }
-    expect(await db.$count(oauthRefreshToken)).toBeLessThanOrEqual(26);
+    expect(await db.$count(oauthRefreshToken)).toBeLessThanOrEqual(
+      OAUTH_ROTATED_REFRESH_RETENTION_MS / intervalMs + 2,
+    );
     expect((await grantRows())[0]?.revokedAt).toBeNull();
   });
 
   it("still detects reuse of a token rotated within the retention window", async () => {
     const first = await exchange();
     let current = await tokens(await refresh(first.refresh_token));
-    for (let hour = 0; hour < 20; hour += 1) {
-      now += 60 * 60 * 1000;
+    for (let step = 0; step < 4; step += 1) {
+      now += 5 * 60 * 60 * 1000;
       current = await tokens(await refresh(current.refresh_token));
     }
     await expectTokenError(await refresh(first.refresh_token), "invalid_grant");

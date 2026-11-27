@@ -14,7 +14,7 @@ import {
   getGateAuthKind,
   getGateMachineId,
   getTrustedRemoteAddress,
-  type GateAuthHeaderReader,
+  type RequestHeaderReader,
 } from "../request-context.js";
 import { issueHostEnrollKey } from "../services/hosts/host-enrollment.js";
 import { requireBearerToken } from "./auth.js";
@@ -31,7 +31,7 @@ function assertLoopbackRequest(remoteAddress: string | undefined): void {
 }
 
 export function resolveReportedConnectMachineId(
-  context: GateAuthHeaderReader,
+  context: RequestHeaderReader,
 ): string | undefined {
   if (getGateAuthKind(context) !== "machine") return undefined;
   const gateMachineId = getGateMachineId(context);

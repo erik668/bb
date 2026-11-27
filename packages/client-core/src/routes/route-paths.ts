@@ -50,11 +50,12 @@ export const AUTOMATION_EDIT_ROUTE_PATH =
 const ROOT_COMPOSE_ROUTE_PATH = APP_ROOT_ROUTE_PATH;
 export const LEGACY_PROJECT_COMPOSE_ROUTE_PATH = "/projects/:projectId";
 export const PROJECTLESS_ARCHIVED_ROUTE_PATH = "/archived";
-const PROJECTLESS_THREAD_DETAIL_ROUTE_PATH = "/threads/:threadId";
+export const PROJECTLESS_THREAD_DETAIL_ROUTE_PATH = "/threads/:threadId";
 export const LEGACY_PROJECT_SETTINGS_ROUTE_PATH =
   "/projects/:projectId/settings";
 export const PROJECT_ARCHIVED_ROUTE_PATH = "/projects/:projectId/archived";
-const THREAD_DETAIL_ROUTE_PATH = "/projects/:projectId/threads/:threadId";
+export const THREAD_DETAIL_ROUTE_PATH =
+  "/projects/:projectId/threads/:threadId";
 export const PLUGIN_PANEL_ROUTE_PATH = "/plugins/:pluginId/:panelPath/*";
 
 export interface ThreadRoutePathArgs {
@@ -80,20 +81,6 @@ export function getProjectComposeRoutePath(projectId: string): string {
   return isProjectlessProjectId(projectId)
     ? getRootComposeRoutePath()
     : getLegacyProjectComposeRoutePath(projectId);
-}
-
-export function getSettingsRoutePath(section?: string): string {
-  return section === undefined
-    ? SETTINGS_ROUTE_PATH
-    : `/settings/${encodeURIComponent(section)}`;
-}
-
-export function getSettingsMachineRoutePath(hostId: string): string {
-  return `/settings/machines/${encodeURIComponent(hostId)}`;
-}
-
-export function getSettingsProjectRoutePath(projectId: string): string {
-  return `/settings/projects/${encodeURIComponent(projectId)}`;
 }
 
 export function getSkillsRoutePath(): string {
@@ -143,12 +130,6 @@ export function getPluginDetailRoutePath({
     : path;
 }
 
-export function getPluginConfigurationRoutePath(
-  args: PluginDetailRoutePathArgs,
-): string {
-  return `/settings/plugins/${encodeURIComponent(args.pluginId)}`;
-}
-
 export function getAutomationsRoutePath(): string {
   return AUTOMATIONS_ROUTE_PATH;
 }
@@ -196,16 +177,12 @@ export function getPluginPanelRoutePath({
   return encoded.length > 0 ? `${root}/${encoded}` : root;
 }
 
-export function getThreadRoutePath(args: ThreadRoutePathArgs): string {
-  return isProjectlessProjectId(args.projectId)
-    ? `/threads/${args.threadId}`
-    : `/projects/${args.projectId}/threads/${args.threadId}`;
-}
-
 const MESSAGE_LINK_PARAM = "msg";
 
-export interface MessageLinkPathArgs extends ThreadRoutePathArgs {
-  seq: number;
+export interface ThreadLocationPathArgs {
+  threadId: string;
+  projectId?: string;
+  messageSeq?: number;
 }
 
 export interface MessageLinkTarget {
@@ -217,8 +194,18 @@ const THREAD_ROUTE_PATHNAME_PATTERN =
   /^\/(?:projects\/[^/]+\/)?threads\/([^/]+)\/?$/;
 const MESSAGE_LINK_SEQ_PATTERN = /^(0|[1-9]\d*)$/;
 
-export function getMessageLinkPath(args: MessageLinkPathArgs): string {
-  return `${getThreadRoutePath(args)}#${MESSAGE_LINK_PARAM}=${args.seq}`;
+export function getThreadLocationPath({
+  threadId,
+  projectId,
+  messageSeq,
+}: ThreadLocationPathArgs): string {
+  const path =
+    projectId === undefined || isProjectlessProjectId(projectId)
+      ? `/threads/${threadId}`
+      : `/projects/${projectId}/threads/${threadId}`;
+  return messageSeq === undefined
+    ? path
+    : `${path}#${MESSAGE_LINK_PARAM}=${messageSeq}`;
 }
 
 export function parseMessageLink(href: string): MessageLinkTarget | null {

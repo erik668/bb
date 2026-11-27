@@ -6,6 +6,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { createStore, Provider as JotaiProvider } from "jotai";
 import { useContext } from "react";
@@ -26,7 +27,7 @@ import {
   makeProjectWithThreadsResponse,
   makeSidebarBootstrapResponse,
 } from "@/test/fixtures/projects";
-import { getThreadRoutePath } from "@/lib/route-paths";
+import { getThreadLocationPath } from "@/lib/route-paths";
 import { splitLayoutAtom } from "@/lib/split-layout/atoms";
 import type { SplitLayout } from "@/lib/split-layout";
 import { resetThreadActionRegistryForTest } from "@/lib/thread-actions/thread-action-registry";
@@ -176,7 +177,7 @@ it("keeps an unrelated split pane open and focused when an environment is archiv
       <QueryClientProvider client={queryClient}>
         <MemoryRouter
           initialEntries={[
-            getThreadRoutePath({
+            getThreadLocationPath({
               projectId: PERSONAL_PROJECT_ID,
               threadId: "thr-env",
             }),
@@ -195,27 +196,16 @@ it("keeps an unrelated split pane open and focused when an environment is archiv
   );
 
   fireEvent.click(screen.getByRole("button", { name: "Archive environment" }));
-  for (let tick = 0; tick < 5; tick += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-  }
-  expect(archiveThreads.resolve).not.toBeNull();
-  await act(async () => {
-    archiveThreads.resolve?.();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+  await waitFor(() => expect(archiveThreads.resolve).not.toBeNull());
+  act(() => archiveThreads.resolve?.());
+  await waitFor(() => {
+    expect(screen.queryByTestId("pane-thr-env")).toBeNull();
+    expect(screen.getByTestId("pane-thr-other")).not.toBeNull();
   });
-  for (let tick = 0; tick < 5; tick += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 0));
-    });
-  }
   unsubscribe();
 
-  expect(screen.queryByTestId("pane-thr-env")).toBeNull();
-  expect(screen.getByTestId("pane-thr-other")).not.toBeNull();
   expect(screen.getByTestId("location").textContent).toBe(
-    getThreadRoutePath({
+    getThreadLocationPath({
       projectId: PERSONAL_PROJECT_ID,
       threadId: "thr-other",
     }),

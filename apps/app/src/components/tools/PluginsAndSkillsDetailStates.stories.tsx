@@ -518,6 +518,7 @@ Sign in once with \`gh auth login\`. The plugin reuses your GitHub CLI session a
   publisherKey: "bb-official",
   publisherLabel: "BB Official",
   official: true,
+  listings: [],
   author: null,
   installed: false,
   conflictingInstallSource: null,
@@ -543,7 +544,7 @@ function FailedReleaseLifecycle() {
 
   useEffect(() => {
     const originalFetch = globalThis.fetch;
-    let cancelled = false;
+    const lifecycle = new AbortController();
     globalThis.fetch = async (input, init) => {
       const url =
         typeof input === "string"
@@ -556,7 +557,7 @@ function FailedReleaseLifecycle() {
       }
 
       await new Promise((resolve) => window.setTimeout(resolve, 8_000));
-      if (!cancelled) {
+      if (!lifecycle.signal.aborted) {
         setPlugin((current) => ({
           ...current,
           version: "1.5.0",
@@ -578,7 +579,7 @@ function FailedReleaseLifecycle() {
       );
     };
     return () => {
-      cancelled = true;
+      lifecycle.abort();
       globalThis.fetch = originalFetch;
     };
   }, []);
@@ -599,6 +600,7 @@ function Plugin({
         <div className="-mx-4 md:-mx-5">
           <PluginDetailBanners
             plugin={plugin}
+            catalogEntry={null}
             catalogEntries={[]}
             onOpenPlugin={noop}
           />

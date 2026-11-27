@@ -12,22 +12,34 @@ import {
   type PublicApiSchema,
 } from "@bb/server-contract";
 import type { Hono } from "hono";
-import { HOST_DAEMON_PROTOCOL_VERSION } from "@bb/host-daemon-contract";
+import {
+  HOST_DAEMON_PROTOCOL_VERSION,
+  type ProviderCliInstallActionKind,
+} from "@bb/host-daemon-contract";
+import type { HostProviderCliInstallJob } from "@bb/server-contract";
 import type { AppDeps } from "../types.js";
 import {
   getProviderInstallations,
-  serializeProviderInstallation,
+  invalidateProviderInstallationStatus,
+  settleUnneededProviderInstallation,
 } from "../services/system/provider-installations.js";
+import { createJobRegistry } from "../services/lib/job-registry.js";
 import { resolveBridgeLaunchForProviderId } from "../services/system/provider-bridge-launch.js";
 import type { PluginService } from "../services/plugins/plugin-service.js";
 import { COMMAND_TIMEOUT_MS } from "../constants.js";
 import { ApiError } from "../errors.js";
+import { errorMessage } from "../services/lib/error-log-fields.js";
+import {
+  operationComplete,
+  operationInProgress,
+} from "../services/lib/operation-response.js";
 import {
   getGateAuthKind,
-  type GateAuthHeaderReader,
+  type RequestHeaderReader,
 } from "../request-context.js";
 import {
   listPublicHostsWithStatus,
+  getRemovedHost,
   requireNonDestroyedHostWithStatus,
   requirePublicStandardProject,
 } from "../services/lib/entity-lookup.js";
@@ -53,16 +65,19 @@ import {
   startMachineReconciliation,
   forceMachineRemoval,
   retryMachineCleanup,
+  readMachineRemovalOutcome,
   sweepProviderMachine,
 } from "../services/machines/provider-orchestration.js";
 import { getMachineEnrollmentService } from "../services/machines/machine-services.js";
 import { manualHostCommand } from "../services/machines/manual-provider.js";
 import { prepareReconnect } from "../services/machines/reconnect.js";
 import { emitPluginHostDeleted } from "../services/plugins/plugin-thread-events.js";
+import { resolveHostProviderEnv } from "../services/plugins/plugin-agent-contributions.js";
 
 const DISCOVERED_REPOS_MAX_DEPTH = 5;
 const DISCOVERED_REPOS_SINCE_DAYS = 30;
 const DISCOVERED_REPOS_LIMIT = 10;
+const DISCOVERED_REPOS_TIMEOUT_MS = 24 * 60 * 60 * 1000;
 
 const PROVIDER_CLI_INSTALL_TIMEOUT_MS = 15 * 60 * 1000;
 const FOLDER_PICKER_TIMEOUT_MS = 10 * 60 * 1000;
@@ -79,7 +94,7 @@ function requireMutableHost(deps: AppDeps, hostId: string) {
   return host;
 }
 
-function assertHostManagementAllowed(context: GateAuthHeaderReader): void {
+function assertHostManagementAllowed(context: RequestHeaderReader): void {
   if (getGateAuthKind(context) === "machine") {
     throw new ApiError(
       403,
@@ -103,7 +118,7 @@ async function revokeConnectMachineCredential(
   deps: AppDeps,
   plugins: PluginService,
   machineId: string,
-): Promise<void> {
+): Promise<string | null> {
   try {
     const connectPlugin = plugins
       .list()
@@ -122,11 +137,13 @@ async function revokeConnectMachineCredential(
       null,
     );
     if (!result.ok) throw new Error(result.error.message);
+    return null;
   } catch (error) {
     deps.logger.error(
       { err: error, machineId },
       "Host was removed locally, but its bb connect machine credential could not be revoked. Revoke this machine manually from the getbb.app dashboard.",
     );
+    return `The machine was removed from this server, but its bb connect credential could not be revoked: ${errorMessage(error)}. Revoke it from the getbb.app dashboard.`;
   }
 }
 
@@ -170,8 +187,17 @@ export function registerHostRoutes(
     ),
   );
 
-  get(routes.get, (context) => {
+  get(routes.get, (context, query) => {
     const hostId = context.req.param("id");
+    const removedHost =
+      query.includeRemoved === "true" ? getRemovedHost(deps, hostId) : null;
+    if (removedHost !== null) {
+      return context.json({
+        ...removedHost,
+        connectMachineId: null,
+        threadStorageRootPath: null,
+      });
+    }
     const host = requireNonDestroyedHostWithStatus(deps, hostId);
     const session = getLatestSessionForHost(deps.db, { hostId });
     return context.json({
@@ -261,7 +287,7 @@ export function registerHostRoutes(
       );
     }
     deps.hub.requestHostProtocolUpdateRetry(hostId);
-    return context.json({ ok: true as const });
+    return context.json(operationInProgress());
   });
 
   post(routes.reconcile, (context) => {
@@ -289,16 +315,16 @@ export function registerHostRoutes(
 
   post(routes.retryCleanup, async (context) => {
     assertHostManagementAllowed(context);
-    await retryMachineCleanup(deps, context.req.param("id"));
-    return context.json({ ok: true as const });
+    return context.json(
+      await retryMachineCleanup(deps, context.req.param("id")),
+    );
   });
 
   del(routes.delete, async (context, query) => {
     assertHostManagementAllowed(context);
     const hostId = context.req.param("id");
     if (query.force === "true") {
-      await forceMachineRemoval(deps, hostId);
-      return context.json({ ok: true as const });
+      return context.json(await forceMachineRemoval(deps, hostId));
     }
     const host = requireMutableHost(deps, hostId);
     if (resolvePrimaryHostId(deps) === hostId) {
@@ -313,7 +339,7 @@ export function registerHostRoutes(
       requestMachineRemoval(deps, hostId);
       settleRemovedHostWork(deps, { hostId });
       await sweepProviderMachine(deps, hostId);
-      return context.json({ ok: true });
+      return context.json(readMachineRemovalOutcome(deps, hostId));
     }
 
     await serverAccess.release(deps, { key: hostId, hostId });
@@ -330,14 +356,18 @@ export function registerHostRoutes(
     });
     deps.lifecycleDedupers.providerModelCatalogs.forgetHost(deps, hostId);
     if (destroyed !== null) emitPluginHostDeleted(destroyed);
-    if (host.connectMachineId !== null) {
-      await revokeConnectMachineCredential(
-        deps,
-        plugins,
-        host.connectMachineId,
-      );
-    }
-    return context.json({ ok: true });
+    const revokeWarning =
+      host.connectMachineId === null
+        ? null
+        : await revokeConnectMachineCredential(
+            deps,
+            plugins,
+            host.connectMachineId,
+          );
+    return context.json({
+      ...operationComplete(),
+      warnings: revokeWarning === null ? [] : [revokeWarning],
+    });
   });
 
   get(routes.discoveredRepos, async (context) => {
@@ -345,7 +375,8 @@ export function registerHostRoutes(
     assertUsableHostId(deps, { hostId });
     const result = await callHostRetryableOnlineRpc(deps, {
       hostId,
-      timeoutMs: COMMAND_TIMEOUT_MS,
+      signal: context.req.raw.signal,
+      timeoutMs: DISCOVERED_REPOS_TIMEOUT_MS,
       command: {
         type: "host.discover_repos",
         maxDepth: DISCOVERED_REPOS_MAX_DEPTH,
@@ -441,8 +472,26 @@ export function registerHostRoutes(
     return context.json(result);
   });
 
-  post(routes.providerCliInstall, async (context, payload) => {
-    const hostId = context.req.param("id");
+  const installJobs = createJobRegistry<HostProviderCliInstallJob>({
+    isActive: (job) => job.state === "running",
+    fail: ({ id, hostId, provider, actionKind, startedAt }, error) => ({
+      id,
+      hostId,
+      provider,
+      actionKind,
+      startedAt,
+      state: "failed",
+      finishedAt: Date.now(),
+      error: error instanceof Error ? error.message : String(error),
+    }),
+    notifyChanged: (job) =>
+      deps.hub.notifyHost(job.hostId, ["provider-cli-install-jobs-changed"]),
+  });
+
+  const startInstallJob = async (
+    hostId: string,
+    payload: { provider: string; actionKind: ProviderCliInstallActionKind },
+  ) => {
     assertUsableHostId(deps, { hostId });
     await deps.providerRegistry.whenProviderRegistered(payload.provider);
     const registration = deps.providerRegistry.get(payload.provider);
@@ -464,35 +513,97 @@ export function registerHostRoutes(
         `Provider bridge is unavailable for ${payload.provider}`,
       );
     }
-    const result = await serializeProviderInstallation(deps, hostId, () =>
-      callHostOnlineRpcForWork(deps, {
+    return installJobs.start({
+      key: `${hostId} ${payload.provider}`,
+      lane: hostId,
+      create: (id) => ({
+        id,
         hostId,
-        timeoutMs: PROVIDER_CLI_INSTALL_TIMEOUT_MS,
-        command: {
-          type: "provider.installation.run",
+        provider: payload.provider,
+        actionKind: payload.actionKind,
+        startedAt: Date.now(),
+        state: "running",
+      }),
+      run: async ({ job }) => {
+        invalidateProviderInstallationStatus(deps, hostId);
+        const result = await callHostOnlineRpcForWork(deps, {
+          hostId,
+          timeoutMs: PROVIDER_CLI_INSTALL_TIMEOUT_MS,
+          command: {
+            type: "provider.installation.run",
+            providerId: payload.provider,
+            action: payload.actionKind,
+            bridgeLaunch,
+            contributedEnv: await resolveHostProviderEnv(
+              hostId,
+              payload.provider,
+            ),
+          },
+        });
+        const events = await settleUnneededProviderInstallation(deps, {
+          hostId,
           providerId: payload.provider,
           action: payload.actionKind,
           bridgeLaunch,
-        },
-      }),
-    );
-    if (
-      result.events.some((event) => event.type === "completed" && event.success)
-    ) {
-      deps.providerRegistry.forgetInstalledKey({
-        hostId,
-        providerId: payload.provider,
-      });
-      deps.lifecycleDedupers.providerModelCatalogs.clearFailure(
-        hostId,
-        payload.provider,
-      );
-    }
-    return new Response(providerCliInstallEventsToNdjson(result.events), {
+          events: result.events,
+        });
+        if (
+          events.some((event) => event.type === "completed" && event.success)
+        ) {
+          deps.providerRegistry.forgetInstalledKey({
+            hostId,
+            providerId: payload.provider,
+          });
+          deps.lifecycleDedupers.providerModelCatalogs.clearFailure(
+            hostId,
+            payload.provider,
+          );
+        }
+        invalidateProviderInstallationStatus(deps, hostId);
+        return {
+          ...job,
+          state: "completed",
+          finishedAt: Date.now(),
+          events,
+        };
+      },
+    });
+  };
+
+  post(routes.providerCliInstall, async (context, payload) => {
+    const job = await startInstallJob(context.req.param("id"), payload);
+    const outcome = await installJobs.settled(job.id);
+    if (outcome?.job.state !== "completed") throw outcome?.error;
+    return new Response(providerCliInstallEventsToNdjson(outcome.job.events), {
       headers: {
         "content-type": "application/x-ndjson; charset=utf-8",
         "cache-control": "no-store",
       },
     });
+  });
+
+  post(routes.providerCliInstallJobStart, async (context, payload) => {
+    const job = await startInstallJob(context.req.param("id"), payload);
+    return context.json({ job }, 202);
+  });
+
+  get(routes.providerCliInstallJobList, (context) => {
+    const hostId = context.req.param("id");
+    assertUsableHostId(deps, { hostId });
+    return context.json({
+      jobs: installJobs.list().filter((job) => job.hostId === hostId),
+    });
+  });
+
+  get(routes.providerCliInstallJobGet, (context) => {
+    const job = installJobs.get(context.req.param("jobId"));
+    if (job?.hostId !== context.req.param("id")) {
+      throw new ApiError(
+        404,
+        "provider_cli_install_job_not_found",
+        "Unknown provider install job; the server may have restarted",
+      );
+    }
+    return context.json({ job });
   });
 }

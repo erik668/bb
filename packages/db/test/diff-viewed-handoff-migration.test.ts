@@ -1,6 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { createConnection, migrate } from "../src/index.js";
-import { restoreDiffViewedFilesTable } from "./helpers/rewind.js";
+import {
+  dropPluginFailureLabelColumns,
+  dropPluginMarketplaceEnabledColumn,
+  rewindMachineTeardownRecoveryColumns,
+  dropEnvironmentHoldColumns,
+  dropForkHistoryCopyIndex,
+  dropQueuedMessageRecheckAtColumn,
+  dropProjectFolderSchema,
+  dropThreadSearchOrderIndex,
+  rewindThreadFailureKindColumn,
+  rewindThreadPurgeStartedColumn,
+  dropQueuedMessageSourcesAndCompactFirstColumns,
+  dropThreadRunStateTables,
+  dropServerAccessRouteTables,
+  restoreDiffViewedFilesTable,
+} from "./helpers/rewind.js";
 
 const handoffMigrationWhen = 1793738260717;
 
@@ -10,6 +25,19 @@ function databaseBeforeHandoff(
   const db = createConnection(":memory:");
   migrate(db);
   restoreDiffViewedFilesTable(db);
+  dropThreadRunStateTables(db);
+  dropServerAccessRouteTables(db);
+  dropPluginFailureLabelColumns(db);
+  rewindMachineTeardownRecoveryColumns(db);
+  dropPluginMarketplaceEnabledColumn(db);
+  dropQueuedMessageRecheckAtColumn(db);
+  dropProjectFolderSchema(db);
+  dropForkHistoryCopyIndex(db);
+  dropEnvironmentHoldColumns(db);
+  dropThreadSearchOrderIndex(db);
+  rewindThreadFailureKindColumn(db);
+  rewindThreadPurgeStartedColumn(db);
+  dropQueuedMessageSourcesAndCompactFirstColumns(db);
   db.$client.pragma("foreign_keys = OFF");
   const insert = db.$client.prepare(
     "INSERT INTO diff_viewed_files (environment_id, target_key, path, revision, updated_at) VALUES (?, ?, ?, ?, ?)",
@@ -41,7 +69,11 @@ describe("Viewed marks handoff migration", () => {
       migrate(db);
       const rows = gitPluginRows(db);
       expect(rows).toEqual([
-        { key: "viewedMarksFromCore", value: expect.any(String), updatedAt: 30 },
+        {
+          key: "viewedMarksFromCore",
+          value: expect.any(String),
+          updatedAt: 30,
+        },
       ]);
       expect(JSON.parse(rows[0]!.value)).toEqual(
         expect.arrayContaining([

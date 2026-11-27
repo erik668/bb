@@ -48,6 +48,7 @@ const UNPREFIXED_BUNDLED_PLUGIN_IDS = [
   "tasks",
   "theme-preview",
   "thread-list",
+  "workflows",
 ];
 
 describe("bundled plugin ids", () => {

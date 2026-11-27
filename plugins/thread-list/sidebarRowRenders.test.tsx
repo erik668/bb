@@ -76,13 +76,15 @@ const THREADS = [
 
 const onNavigate = (): void => undefined;
 
+const scrollElement = document.createElement("div");
+
 function props(activeThreadId: string): PluginThreadListProps {
   return {
     activeThreadId,
     activeProjectId: PERSONAL_PROJECT_ID,
     isCompactViewport: false,
+    experimental_scrollElement: scrollElement,
     onNavigate,
-    searchQuery: "",
   };
 }
 
@@ -128,7 +130,9 @@ describe.each<OrganizationMode>(["chronological", "project"])(
         ["thr_pinned_b", "thr_pinned_a"],
       ]) {
         rowCommits.clear();
-        act(() => slot.lifecycle.rerender(<Component {...props(to)} />));
+        act(() => {
+          slot.lifecycle.rerender(<Component {...props(to)} />);
+        });
         expect([...rowCommits.keys()].sort()).toEqual([from, to].sort());
       }
     });

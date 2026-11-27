@@ -1,9 +1,11 @@
-import { getThread, listEvents, threadPruningCursors } from "@bb/db";
+import { getThread, threadPruningCursors } from "@bb/db";
 import { eq } from "drizzle-orm";
 import { turnScope } from "@bb/domain";
 import { groupHostDaemonEvents } from "@bb/host-daemon-contract";
-import { describe, expect, it, vi } from "vitest";
-import { applyTurnCompletedEvent } from "../../src/internal/turn-completed-events.js";
+import { performance } from "node:perf_hooks";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { hasRootStoredTurnStarted } from "@bb/db";
+import { runThreadLifecycleTransaction } from "../../src/services/threads/lifecycle/run.js";
 import { pruneThreadEventHistoryBestEffort } from "../../src/services/system/event-pruning.js";
 import { buildThreadTimelineWithProfile } from "../../src/services/threads/timeline.js";
 import {
@@ -19,6 +21,7 @@ import {
   seedThread,
 } from "../helpers/seed.js";
 import { createTestAppHarness, withTestHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 interface SeedNoiseRowsArgs {
   endingSequence: number;
@@ -174,6 +177,10 @@ function seedResolvedAssistantMessage(
 }
 
 describe("thread event pruning", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it("preserves context window usage when idle pruning removes old context-usage rows", async () => {
     await withTestHarness(async (harness) => {
       const host = seedHost(harness.deps);
@@ -289,11 +296,9 @@ describe("thread event pruning", () => {
         },
       });
 
-      applyTurnCompletedEvent(harness.deps, {
-        type: "turn/completed",
-        threadId: thread.id,
-        providerThreadId: "provider-thread-1",
-        scope: turnScope("turn-1"),
+      runThreadLifecycleTransaction(harness.deps, thread.id, {
+        type: "turn.completed",
+        turnId: "turn-1",
         status: "completed",
       });
 
@@ -352,16 +357,27 @@ describe("thread event pruning", () => {
         },
       });
 
-      const result = applyTurnCompletedEvent(harness.deps, {
-        type: "turn/completed",
+      const payload = {
+        type: "turn/completed" as const,
         threadId: thread.id,
         providerThreadId: "provider-thread-1",
         scope: turnScope("turn-1"),
-        status: "completed",
-      });
+        status: "completed" as const,
+      };
 
-      expect(result.isRootTurnCompletion).toBe(true);
-      expect(result.nextStatus).toBeNull();
+      expect(
+        hasRootStoredTurnStarted(harness.db, {
+          threadId: payload.threadId,
+          turnId: "turn-1",
+        }),
+      ).toBe(true);
+      expect(
+        runThreadLifecycleTransaction(harness.deps, payload.threadId, {
+          type: "turn.completed",
+          turnId: "turn-1",
+          status: payload.status,
+        }).statusChanged,
+      ).toBe(false);
       expect(getThread(harness.db, thread.id)?.status).toBe("idle");
     });
   });
@@ -425,7 +441,7 @@ describe("thread event pruning", () => {
     });
   });
 
-  it("notifies only after a committed live advance and reports its bounded work", async () => {
+  it("reports a live advance's bounded work without notifying viewers", async () => {
     await withTestHarness(async (harness) => {
       const host = seedHost(harness.deps);
       const { project } = seedProjectWithSource(harness.deps, {
@@ -450,6 +466,7 @@ describe("thread event pruning", () => {
           itemKind: null,
           data: {},
         });
+      vi.spyOn(performance, "now").mockReturnValue(0);
       const notify = vi
         .spyOn(harness.deps.hub, "notifyThread")
         .mockImplementation(() => {});
@@ -462,15 +479,12 @@ describe("thread event pruning", () => {
         scanned: 32,
         totalRemoved: 32,
       });
-      expect(notify).toHaveBeenCalledExactlyOnceWith(thread.id, [
-        "history-compacted",
-      ]);
+      expect(notify).not.toHaveBeenCalled();
       const second = pruneThreadEventHistoryBestEffort(harness.deps, {
         threadId: thread.id,
         mode: "active",
       });
       expect(second).toMatchObject({ policy: "usage", totalRemoved: 0 });
-      expect(notify).toHaveBeenCalledTimes(1);
       notify.mockRestore();
     });
   });

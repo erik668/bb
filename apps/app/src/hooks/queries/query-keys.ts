@@ -3,6 +3,7 @@ import type {
   ThreadSearchFilters,
   EnvironmentFilePreviewSource,
 } from "@bb/client-core";
+import type { WorkspacePathSearchFolders } from "@bb/server-contract";
 import {
   DEFAULT_THREAD_STORAGE_FILE_LIST_OPTIONS,
   type ThreadStorageFileListOptions,
@@ -25,6 +26,7 @@ export const PROJECT_SOURCE_BRANCHES_QUERY_KEY = "projectSourceBranches";
 const PROJECT_DEFAULT_EXECUTION_OPTIONS_QUERY_KEY =
   "projectDefaultExecutionOptions";
 const PROJECT_PROMPT_HISTORY_QUERY_KEY = "projectPromptHistory";
+const PROJECT_SOURCE_FOLDERS_QUERY_KEY = "projectSourceFolders";
 export const SIDEBAR_NAVIGATION_QUERY_KEY = "sidebarNavigation";
 export const THREADS_QUERY_KEY = "threads";
 const THREAD_SEARCH_QUERY_KEY = "threadSearch";
@@ -62,12 +64,13 @@ const SYSTEM_THEME_QUERY_KEY = "systemTheme";
 export const SYSTEM_EXECUTION_OPTIONS_QUERY_KEY = "systemExecutionOptions";
 const SYSTEM_CLI_SKILLS_QUERY_KEY = "systemCliSkills";
 const SYSTEM_CLI_COMMAND_QUERY_KEY = "systemCliCommand";
-const SYSTEM_SETUP_GUIDE_QUERY_KEY = "systemSetupGuide";
 const SYSTEM_VERSION_QUERY_KEY = "systemVersion";
 const SYSTEM_APP_UPDATE_QUERY_KEY = "systemAppUpdate";
 const SERVER_MOVE_STATUS_QUERY_KEY = "serverMoveStatus";
 const HOST_PROVIDER_CLI_STATUS_QUERY_KEY = "hostProviderCliStatus";
+const HOST_PROVIDER_CLI_INSTALL_JOBS_QUERY_KEY = "hostProviderCliInstallJobs";
 const SYSTEM_PROVIDER_STATES_QUERY_KEY = "systemProviderStates";
+const HOST_PROVIDER_STATE_QUERY_KEY = "hostProviderState";
 const HOST_PATH_EXISTENCE_QUERY_KEY = "hostPathExistence";
 const PROJECT_SKILLS_QUERY_KEY = "projectSkills";
 export const SKILL_CONTENT_QUERY_KEY = "skillContent";
@@ -132,6 +135,18 @@ type ProjectSourceBranchesQueryKeyPrefix = readonly [
   typeof PROJECT_SOURCE_BRANCHES_QUERY_KEY,
   string,
 ];
+type ProjectSourceFoldersQueryKey = readonly [
+  typeof PROJECT_SOURCE_FOLDERS_QUERY_KEY,
+  string,
+  string,
+];
+type ProjectSourceFoldersQueryKeyPrefix = readonly [
+  typeof PROJECT_SOURCE_FOLDERS_QUERY_KEY,
+  string,
+];
+type AllProjectSourceFoldersQueryKeyPrefix = readonly [
+  typeof PROJECT_SOURCE_FOLDERS_QUERY_KEY,
+];
 type ProjectDefaultExecutionOptionsQueryKey = readonly [
   typeof PROJECT_DEFAULT_EXECUTION_OPTIONS_QUERY_KEY,
   string,
@@ -152,6 +167,7 @@ type ProjectPathsQueryKey = readonly [
   number,
   boolean,
   boolean,
+  WorkspacePathSearchFolders,
 ];
 type ProjectPathsQueryKeyPrefix = readonly [
   typeof PROJECT_PATHS_QUERY_KEY,
@@ -383,6 +399,7 @@ type EnvironmentPathsQueryKey = readonly [
   number,
   boolean,
   boolean,
+  WorkspacePathSearchFolders,
 ];
 type EnvironmentPathsQueryKeyPrefix = readonly [
   typeof ENVIRONMENT_PATHS_QUERY_KEY,
@@ -417,7 +434,6 @@ type SystemThemeQueryKey = readonly [typeof SYSTEM_THEME_QUERY_KEY, string];
 type AllSystemThemesQueryKeyPrefix = readonly [typeof SYSTEM_THEME_QUERY_KEY];
 type SystemCliSkillsQueryKey = readonly [typeof SYSTEM_CLI_SKILLS_QUERY_KEY];
 type SystemCliCommandQueryKey = readonly [typeof SYSTEM_CLI_COMMAND_QUERY_KEY];
-type SystemSetupGuideQueryKey = readonly [typeof SYSTEM_SETUP_GUIDE_QUERY_KEY];
 type SystemVersionQueryKey = readonly [typeof SYSTEM_VERSION_QUERY_KEY];
 type SystemAppUpdateQueryKey = readonly [typeof SYSTEM_APP_UPDATE_QUERY_KEY];
 type ServerMoveStatusQueryKey = readonly [typeof SERVER_MOVE_STATUS_QUERY_KEY];
@@ -427,6 +443,18 @@ type HostProviderCliStatusQueryKey = readonly [
 ];
 type AllHostProviderCliStatusQueryKeyPrefix = readonly [
   typeof HOST_PROVIDER_CLI_STATUS_QUERY_KEY,
+];
+type HostProviderCliInstallJobsQueryKey = readonly [
+  typeof HOST_PROVIDER_CLI_INSTALL_JOBS_QUERY_KEY,
+  string,
+];
+type AllHostProviderCliInstallJobsQueryKeyPrefix = readonly [
+  typeof HOST_PROVIDER_CLI_INSTALL_JOBS_QUERY_KEY,
+];
+type HostProviderStateQueryKey = readonly [
+  typeof HOST_PROVIDER_STATE_QUERY_KEY,
+  string,
+  string,
 ];
 type SystemProviderStatesQueryKey = readonly [
   typeof SYSTEM_PROVIDER_STATES_QUERY_KEY,
@@ -471,6 +499,14 @@ export function hostsQueryKey(includeCreating = false): HostsQueryKey {
 
 export function hostQueryKey(hostId: HostQueryId): HostQueryKey {
   return [HOST_QUERY_KEY, hostId];
+}
+
+const REMOVED_HOST_QUERY_KEY = "removedHost";
+
+export function removedHostQueryKey(
+  hostId: string,
+): readonly [typeof REMOVED_HOST_QUERY_KEY, string] {
+  return [REMOVED_HOST_QUERY_KEY, hostId];
 }
 
 export function allHostQueryKeyPrefix(): AllHostQueryKeyPrefix {
@@ -527,6 +563,7 @@ export function projectPathsQueryKey(
   limit: number,
   includeFiles: boolean,
   includeDirectories: boolean,
+  folders: WorkspacePathSearchFolders,
 ): ProjectPathsQueryKey {
   return [
     PROJECT_PATHS_QUERY_KEY,
@@ -537,6 +574,7 @@ export function projectPathsQueryKey(
     limit,
     includeFiles,
     includeDirectories,
+    folders,
   ];
 }
 
@@ -572,6 +610,7 @@ export function environmentPathsQueryKey(
   limit: number,
   includeFiles: boolean,
   includeDirectories: boolean,
+  folders: WorkspacePathSearchFolders,
 ): EnvironmentPathsQueryKey {
   return [
     ENVIRONMENT_PATHS_QUERY_KEY,
@@ -580,6 +619,7 @@ export function environmentPathsQueryKey(
     limit,
     includeFiles,
     includeDirectories,
+    folders,
   ];
 }
 
@@ -599,6 +639,23 @@ export function projectDefaultExecutionOptionsQueryKey({
   projectId,
 }: ProjectDefaultExecutionOptionsQueryKeyArgs): ProjectDefaultExecutionOptionsQueryKey {
   return [PROJECT_DEFAULT_EXECUTION_OPTIONS_QUERY_KEY, projectId];
+}
+
+export function projectSourceFoldersQueryKey(
+  projectId: string,
+  sourceId: string,
+): ProjectSourceFoldersQueryKey {
+  return [PROJECT_SOURCE_FOLDERS_QUERY_KEY, projectId, sourceId];
+}
+
+export function projectSourceFoldersQueryKeyPrefix(
+  projectId: string,
+): ProjectSourceFoldersQueryKeyPrefix {
+  return [PROJECT_SOURCE_FOLDERS_QUERY_KEY, projectId];
+}
+
+export function allProjectSourceFoldersQueryKeyPrefix(): AllProjectSourceFoldersQueryKeyPrefix {
+  return [PROJECT_SOURCE_FOLDERS_QUERY_KEY];
 }
 
 export function projectPromptHistoryQueryKeyPrefix(): ProjectPromptHistoryQueryKeyPrefix {
@@ -984,10 +1041,6 @@ export function systemCliCommandQueryKey(): SystemCliCommandQueryKey {
   return [SYSTEM_CLI_COMMAND_QUERY_KEY];
 }
 
-export function systemSetupGuideQueryKey(): SystemSetupGuideQueryKey {
-  return [SYSTEM_SETUP_GUIDE_QUERY_KEY];
-}
-
 export function systemConfigQueryKey(): SystemConfigQueryKey {
   return [SYSTEM_CONFIG_QUERY_KEY];
 }
@@ -1028,6 +1081,23 @@ export function hostProviderCliStatusQueryKey(
 
 export function allHostProviderCliStatusQueryKeyPrefix(): AllHostProviderCliStatusQueryKeyPrefix {
   return [HOST_PROVIDER_CLI_STATUS_QUERY_KEY];
+}
+
+export function hostProviderCliInstallJobsQueryKey(
+  hostId: string,
+): HostProviderCliInstallJobsQueryKey {
+  return [HOST_PROVIDER_CLI_INSTALL_JOBS_QUERY_KEY, hostId];
+}
+
+export function allHostProviderCliInstallJobsQueryKeyPrefix(): AllHostProviderCliInstallJobsQueryKeyPrefix {
+  return [HOST_PROVIDER_CLI_INSTALL_JOBS_QUERY_KEY];
+}
+
+export function hostProviderStateQueryKey(args: {
+  hostId: string;
+  providerId: string;
+}): HostProviderStateQueryKey {
+  return [HOST_PROVIDER_STATE_QUERY_KEY, args.hostId, args.providerId];
 }
 
 export function systemProviderStatesQueryKey(

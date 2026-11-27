@@ -1,3 +1,4 @@
+import { selectExternalWorktrees } from "./worktree-selection.js";
 import type { Storage } from "./storage.js";
 import {
   cliCommand,
@@ -5,7 +6,9 @@ import {
   type BbPluginApi,
   type PluginCliResult,
 } from "@get-bb/plugin-sdk";
-import { policySchema } from "./contract.js";
+import type { ColdStorage } from "./cold-storage.js";
+import { policySchema, COLD_THREAD_LIST_MAX } from "./contract.js";
+import { readThreads } from "./sdk-data.js";
 import type { Service } from "./service.js";
 
 const MACHINE = { type: "string", description: "Machine ID" } as const;
@@ -51,6 +54,7 @@ export function registerCli(
   bb: BbPluginApi,
   service: Service,
   storage: Storage,
+  coldStorage: ColdStorage,
 ) {
   bb.cli.register(
     defineCli({
@@ -70,6 +74,16 @@ export function registerCli(
               description:
                 "orphans, development, worktrees, or externalWorktrees",
             },
+            "include-uncommitted": {
+              type: "boolean",
+              description:
+                "worktrees and externalWorktrees: also remove checkouts with uncommitted changes (externalWorktrees also removes locked ones and ones with commits on no branch)",
+            },
+            "unused-for": {
+              type: "string",
+              description:
+                "externalWorktrees: only remove worktrees not used for this many days",
+            },
             yes: YES,
           },
           run: ({ options }) =>
@@ -86,10 +100,52 @@ export function registerCli(
                 throw new Error(
                   "Use --kind orphans, development, worktrees, or externalWorktrees.",
                 );
-              await storage.startCleanup({
-                hostId: required(options.machine, "machine"),
-                kind,
-              });
+              const hostId = required(options.machine, "machine");
+              const includeUncommitted =
+                options["include-uncommitted"] === true;
+              const unusedFor = options["unused-for"];
+              if (unusedFor !== undefined && kind !== "externalWorktrees")
+                throw new Error(
+                  "--unused-for applies to --kind externalWorktrees.",
+                );
+              if (
+                includeUncommitted &&
+                kind !== "worktrees" &&
+                kind !== "externalWorktrees"
+              )
+                throw new Error(
+                  "--include-uncommitted applies to --kind worktrees or externalWorktrees.",
+                );
+              if (kind === "worktrees")
+                await storage.startCleanup({
+                  hostId,
+                  kind,
+                  includeUncommitted,
+                });
+              else if (kind === "externalWorktrees") {
+                const days = unusedFor === undefined ? null : Number(unusedFor);
+                if (days !== null && (!Number.isInteger(days) || days < 0))
+                  throw new Error(
+                    "--unused-for must be a whole number of days.",
+                  );
+                const paths =
+                  days === null && !includeUncommitted
+                    ? null
+                    : selectExternalWorktrees(
+                        (await storage.host({ hostId })).report
+                          ?.externalWorktrees ?? [],
+                        days,
+                        Date.now(),
+                      ).map((worktree) => worktree.path);
+                if (paths !== null && paths.length === 0)
+                  return { started: false, matched: 0 };
+                await storage.startCleanup({
+                  hostId,
+                  kind,
+                  paths,
+                  force: includeUncommitted,
+                });
+              } else await storage.startCleanup({ hostId, kind });
               return { started: true };
             }),
         }),
@@ -100,6 +156,11 @@ export function registerCli(
             "archive-after": {
               type: "string",
               description: "Idle days before archiving, or never",
+            },
+            "cold-store-after": {
+              type: "string",
+              description:
+                "Archived days before moving to cold storage, or never",
             },
             "delete-after": {
               type: "string",
@@ -141,6 +202,10 @@ export function registerCli(
                   input.options["archive-after"],
                   state.policy.archiveAfterDays,
                 ),
+                coldStoreAfterDays: days(
+                  input.options["cold-store-after"],
+                  state.policy.coldStoreAfterDays,
+                ),
                 deleteAfterDays: days(
                   input.options["delete-after"],
                   state.policy.deleteAfterDays,
@@ -155,12 +220,107 @@ export function registerCli(
               }
               if (
                 input.options["archive-after"] !== undefined ||
+                input.options["cold-store-after"] !== undefined ||
                 input.options["delete-after"] !== undefined ||
                 cleanup !== undefined ||
                 devCleanup !== undefined
               )
                 return { policy, preview: await service.preview(policy) };
               return state;
+            }),
+        }),
+        "cold-store": cliCommand({
+          summary:
+            "Move an archived thread to cold storage: write it to a file and remove it from bb's database",
+          options: {
+            thread: { type: "string", description: "Thread ID" },
+            yes: YES,
+          },
+          run: (input) =>
+            output(async () => {
+              if (!input.options.yes)
+                throw new Error(
+                  "Pass --yes to remove the thread from bb's database once its file is written.",
+                );
+              const threadId = required(input.options.thread, "thread");
+              const threads = await readThreads(bb);
+              const thread = threads.find((entry) => entry.id === threadId);
+              if (thread === undefined || thread.deletedAt !== null)
+                throw new Error(`Thread ${threadId} not found.`);
+              if (thread.archivedAt === null || thread.pinnedAt !== null)
+                throw new Error(
+                  "Only archived, unpinned threads can be moved to cold storage.",
+                );
+              await coldStorage.store(thread, threads);
+              return { threadId, state: "moving" };
+            }),
+        }),
+        "cold-list": cliCommand({
+          summary: "List threads in cold storage, newest first",
+          options: {
+            project: { type: "string", description: "Only this project ID" },
+            search: {
+              type: "string",
+              description: "Only threads whose title contains this text",
+            },
+            limit: {
+              type: "string",
+              description: `How many to list (default 50, at most ${COLD_THREAD_LIST_MAX})`,
+            },
+            after: {
+              type: "string",
+              description:
+                "List the threads after this thread ID, the last one of the previous page",
+            },
+          },
+          run: (input) =>
+            output(async () => {
+              const limit =
+                input.options.limit === undefined
+                  ? 50
+                  : Number(input.options.limit);
+              if (
+                !Number.isInteger(limit) ||
+                limit < 1 ||
+                limit > COLD_THREAD_LIST_MAX
+              )
+                throw new Error(
+                  `Use --limit between 1 and ${COLD_THREAD_LIST_MAX}.`,
+                );
+              return coldStorage.list({
+                projectId: input.options.project ?? null,
+                search: input.options.search ?? null,
+                limit,
+                after:
+                  input.options.after === undefined
+                    ? null
+                    : coldStorage.cursorOf(input.options.after),
+              });
+            }),
+        }),
+        restore: cliCommand({
+          summary: "Bring a thread in cold storage back into bb",
+          options: { thread: { type: "string", description: "Thread ID" } },
+          run: (input) =>
+            output(() =>
+              coldStorage.restore(required(input.options.thread, "thread")),
+            ),
+        }),
+        "cold-delete": cliCommand({
+          summary: "Permanently delete a thread in cold storage",
+          options: {
+            thread: { type: "string", description: "Thread ID" },
+            yes: YES,
+          },
+          run: (input) =>
+            output(async () => {
+              if (!input.options.yes)
+                throw new Error(
+                  "Pass --yes to permanently delete the thread from cold storage.",
+                );
+              return coldStorage.remove(
+                required(input.options.thread, "thread"),
+              );
             }),
         }),
         usage: cliCommand({
@@ -217,12 +377,23 @@ export function registerCli(
             }),
         }),
         "retry-worktree-cleanup": cliCommand({
-          summary: "Retry cleanup of leftover worktrees",
-          options: { machine: MACHINE },
+          summary:
+            "Retry cleanup of leftover worktrees, including interrupted ones without uncommitted changes",
+          options: {
+            machine: MACHINE,
+            "include-uncommitted": {
+              type: "boolean",
+              description:
+                "Also remove interrupted checkouts that have uncommitted changes",
+            },
+          },
           run: (input) =>
             output(async () => {
               return storage.retryWorktreeCleanup({
                 hostId: required(input.options.machine, "machine"),
+                includeUncommitted:
+                  input.options["include-uncommitted"] === true,
+                interruptedOnly: false,
               });
             }),
         }),

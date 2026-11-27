@@ -25,7 +25,7 @@ import {
 } from "@bb/test-helpers/domain-fixtures";
 import { makeProjectResponse } from "../src/test/fixtures/projects";
 import { getProviderIconInfo } from "../src/lib/provider-icon";
-import type { PickerOption } from "../src/components/pickers/OptionPicker";
+import type { PickerOption } from "@bb/shared-ui/option-picker";
 import type { ModelPickerOption } from "../src/components/pickers/model-picker-option";
 import type { ProjectSelectorOption } from "../src/components/pickers/ProjectSelector";
 import type { ReuseThreadOption } from "../src/components/pickers/ReuseEnvironmentPicker";
@@ -92,7 +92,6 @@ export function makeAttachmentsConfig(
   overrides: Partial<AttachmentsConfig> = {},
 ): AttachmentsConfig {
   const base: AttachmentsConfig = {
-    items: [],
     projectId: PROJECT_IDS.bb,
     onAttachFiles: async () => [],
     onUpdate: noop,
@@ -417,6 +416,7 @@ export function makeExecutionControlsProps(
     reasoning: {
       value: "medium",
       options: STORY_CODEX_REASONING,
+      isLoading: false,
       onChange: noop,
     },
   };
@@ -500,6 +500,7 @@ export function useInteractiveExecutionControls(
     reasoning: {
       value: reasoning,
       options: catalog.reasoning,
+      isLoading: false,
       onChange: setReasoning,
     },
     ...(base.serviceTier

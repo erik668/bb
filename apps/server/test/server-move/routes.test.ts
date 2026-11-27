@@ -13,17 +13,19 @@ import {
   writeLastServerMoveFile,
 } from "@bb/server-archive";
 import {
+  oldServerCopyDeleteJobResponseSchema,
   serverMoveStatusResponseSchema,
   serverMoveStatusSchema,
 } from "@bb/server-contract";
 import { setExperiments } from "@bb/db";
 import { defaultExperiments } from "@bb/domain";
 import { createDeferredPromise, makeTempDir } from "@bb/test-helpers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { readJson } from "../helpers/json.js";
 import {
   inspectResult,
   registerFakeDaemon,
+  SERVER_MOVE_STEP_POLL,
   type FakeDaemonReply,
 } from "../helpers/server-move.js";
 import { seedHost, seedPrimaryHost } from "../helpers/seed.js";
@@ -183,7 +185,9 @@ describe("server move routes", () => {
       });
       expect(start.status).toBe(200);
       const started = serverMoveStatusSchema.parse(await readJson(start));
-      await expect.poll(() => received.prepare !== null).toBe(true);
+      await expect
+        .poll(() => received.prepare !== null, SERVER_MOVE_STEP_POLL)
+        .toBe(true);
       const prepareCommand = received.prepare;
       if (prepareCommand === null) {
         throw new Error("The target never received prepare");
@@ -287,7 +291,7 @@ describe("server move routes", () => {
           const response = await harness.app.request(`${API}/server/move`);
           return serverMoveStatusResponseSchema.parse(await readJson(response))
             .move?.state;
-        })
+        }, SERVER_MOVE_STEP_POLL)
         .toBe("completed");
 
       expect(
@@ -393,6 +397,10 @@ describe("server move routes", () => {
           method: "DELETE",
           headers: machine,
         }),
+        harness.app.request(`${API}/hosts/${OLD}/old-server-copy/delete-jobs`, {
+          method: "POST",
+          headers: machine,
+        }),
       ]);
       for (const response of responses) {
         expect(response.status).toBe(403);
@@ -459,6 +467,24 @@ describe("server move routes", () => {
         (await readLastServerMoveFile(harness.config.dataDir))
           ?.oldCopyDeletedAt,
       ).toEqual(expect.any(Number));
+
+      const jobs = `${API}/hosts/${OLD}/old-server-copy/delete-jobs`;
+      const started = await harness.app.request(jobs, { method: "POST" });
+      expect(started.status).toBe(202);
+      const { job } = oldServerCopyDeleteJobResponseSchema.parse(
+        await readJson(started),
+      );
+      await vi.waitFor(async () => {
+        expect(
+          await readJson(await harness.app.request(`${jobs}/${job.id}`)),
+        ).toEqual({
+          job: { id: job.id, hostId: OLD, state: "completed", deleted: false },
+        });
+      });
+      const missing = await harness.app.request(`${jobs}/no-such-job`);
+      expect(await readJson(missing)).toMatchObject({
+        code: "old_server_copy_delete_job_not_found",
+      });
     }));
 
   it("streams a gzip export with a dated file name and its SHA-256 digest", () =>
@@ -493,6 +519,7 @@ describe("server move routes", () => {
                 join(harness.config.dataDir, "server-export"),
               ).catch(() => [])
             ).length,
+          SERVER_MOVE_STEP_POLL,
         )
         .toBe(0);
     }));

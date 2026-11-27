@@ -195,9 +195,10 @@ it("rolls back a failed pin under concurrent status and membership writes", asyn
   act(() => {
     const statusChange = {
       status: "active" as const,
-      runtime: { displayStatus: "active" as const },
+      runtime: { displayStatus: "active" as const, failure: null },
       activity: entry("t1", null).activity,
       latestAttentionAt: 5,
+      statusChangedAt: 5,
       updatedAt: 5,
     };
     server.setRows([{ ...entry("t1", null), ...statusChange }]);
@@ -283,7 +284,8 @@ it("predicts on a thread list mounted while the pin is pending", async () => {
   act(() => server.view.result.current.pin.mutate({ id: "t1" }));
 
   const late = renderHook(
-    () => useThreads({ projectId: PROJECT_ID, archived: false, limit: 5 }),
+    () =>
+      useThreads({ projectId: PROJECT_ID, archived: false, hasParent: false }),
     { wrapper: server.wrapper },
   );
   await waitFor(() =>
@@ -315,7 +317,7 @@ it("pins an archived thread optimistically in the archived list", async () => {
   await waitFor(() => expect(server.archivedPinnedAt("t3")).toBeNull());
 });
 
-it("reverts an acknowledged unpin when the rest of its move fails", async () => {
+it("keeps an acknowledged unpin when the rest of its move fails", async () => {
   const server = serve([{ ...entry("t1", 50), sectionId: "old" }]);
   await waitFor(() => expect(server.pinnedAt("t1")).toEqual([50, 50, 50]));
   const update = createDeferredPromise<never>();
@@ -345,9 +347,71 @@ it("reverts an acknowledged unpin when the rest of its move fails", async () => 
   });
 
   await waitFor(() =>
+    expect(sidebarRow()).toMatchObject({ pinnedAt: null, sectionId: "old" }),
+  );
+  expect(server.pinnedAt("t1")).toEqual([null, null, null]);
+});
+
+it("reverts a failed unpin and never sends the move chained after it", async () => {
+  const server = serve([{ ...entry("t1", 50), sectionId: "old" }]);
+  await waitFor(() => expect(server.pinnedAt("t1")).toEqual([50, 50, 50]));
+  vi.mocked(sdk.threads.unpin).mockRejectedValueOnce(
+    new Error("unpin refused"),
+  );
+  const threads = createThreadMutationBatcher(sdk.threads, server.queryClient);
+  const sidebarRow = () =>
+    listSidebarNavigationThreads(server.view.result.current.sidebar.data!)[0];
+  const never = new Promise<never>(() => {});
+  vi.mocked(request).mockReturnValue(never);
+  vi.mocked(sdk.threads.list).mockReturnValue(never);
+  vi.mocked(sdk.threads.get).mockReturnValue(never);
+
+  await act(async () => {
+    await Promise.all([
+      threads.unpin({ threadId: "t1" }),
+      threads.update({ threadId: "t1", sectionId: "new" }),
+    ]).catch(() => {});
+  });
+
+  await waitFor(() =>
     expect(sidebarRow()).toMatchObject({ pinnedAt: 50, sectionId: "old" }),
   );
-  expect(server.pinnedAt("t1")).toEqual([50, 50, 50]);
+  expect(sdk.threads.update).not.toHaveBeenCalled();
+});
+
+it("keeps another thread's acknowledged unpin when an update in its batch fails", async () => {
+  const server = serve([
+    { ...entry("t1", 50), sectionId: "old" },
+    { ...entry("t2", null), sectionId: "old" },
+  ]);
+  await waitFor(() => expect(server.pinnedAt("t1")).toEqual([50, 50, 50]));
+  vi.mocked(sdk.threads.unpin).mockResolvedValue(
+    makeThreadResponse({ ...entry("t1", null), sectionId: "old" }),
+  );
+  vi.mocked(sdk.threads.update).mockRejectedValueOnce(
+    new Error("move refused"),
+  );
+  const threads = createThreadMutationBatcher(sdk.threads, server.queryClient);
+  const sidebarRow = (id: string) =>
+    listSidebarNavigationThreads(server.view.result.current.sidebar.data!).find(
+      (row) => row.id === id,
+    );
+  const never = new Promise<never>(() => {});
+  vi.mocked(request).mockReturnValue(never);
+  vi.mocked(sdk.threads.list).mockReturnValue(never);
+  vi.mocked(sdk.threads.get).mockReturnValue(never);
+
+  await act(async () => {
+    await Promise.allSettled([
+      threads.unpin({ threadId: "t1" }),
+      threads.update({ threadId: "t2", sectionId: "new" }),
+    ]);
+  });
+
+  await waitFor(() =>
+    expect(sidebarRow("t1")).toMatchObject({ pinnedAt: null }),
+  );
+  expect(sidebarRow("t2")).toMatchObject({ pinnedAt: null, sectionId: "old" });
 });
 
 async function acknowledgedPin(server: ReturnType<typeof serve>) {
@@ -384,9 +448,10 @@ it("reads the thread back when a pin response is older than concurrent thread st
   act(() => {
     const statusChange = {
       status: "active" as const,
-      runtime: { displayStatus: "active" as const },
+      runtime: { displayStatus: "active" as const, failure: null },
       activity: entry("t1", null).activity,
       latestAttentionAt: 5,
+      statusChangedAt: 30,
       updatedAt: 30,
     };
     updateCachedThreadListStatusState(server.queryClient, "t1", statusChange);

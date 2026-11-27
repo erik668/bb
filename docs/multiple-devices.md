@@ -24,27 +24,65 @@ account from Settings → bb connect (or `bb account login`, or
 `bb connect --code ...` with a dashboard code), then open its getbb.app URL.
 The server owns the tunnel and reconnects after restart.
 
-For a private tailnet route, keep bb on its loopback default and publish it
-through Tailscale Serve:
+For a private tailnet route, keep bb on its loopback default and install the
+official Tailscale plugin on the server's machine (Plugins → Browse →
+Tailscale), then choose Settings → Tailscale → **Set up**. From the CLI:
 
 ```bash
-tailscale serve --bg --https=443 http://127.0.0.1:38886
-npx bb-app config set BB_APP_URL https://<machine>.<tailnet>.ts.net
+bb plugin install tailscale
+bb tailscale setup
 ```
 
-Start bb with `npx bb-app` and open the HTTPS URL. Tailscale ACLs are the access
-boundary for this route; do not expose the server through Funnel or the public
-internet. bb connect URLs require the paired account owner's session.
+Setup publishes bb through Tailscale Serve at
+`https://<machine>.<tailnet>.ts.net` (on bb's own port, such as `:38886`, when
+another service already uses 443), and bb accepts that address without
+`BB_APP_URL`. A Serve mapping to bb that you made by hand is adopted unchanged. Tailscale must be installed
+and signed in on the server's machine, with MagicDNS and HTTPS certificates on
+in the tailnet; `bb tailscale status` says what is missing. **Remove** (or
+`bb tailscale teardown`) turns off only the mapping bb created. Tailscale ACLs
+are the access boundary for this route; do not expose the server through
+Funnel or the public internet. bb connect URLs require the paired account
+owner's session.
 
 Existing remote host daemons that target a direct tailnet IP or
 `http://<machine>.<tailnet>.ts.net:38886` must migrate before restarting an
 upgraded server. Prefer pairing bb connect and re-adding the machine from
 Settings → Machines so its installer records the account-gated route. The
-private alternative is to open bb through the Tailscale Serve URL and re-run
-the Add machine installer from there.
+private alternative is to set up the Tailscale plugin, drag it to the top of
+Settings → Machines → How devices reach this server (or run
+`bb server access order tailscale`), and re-run the Add machine installer.
 
-For compatibility only, `npx bb-app --server-bind-host 0.0.0.0` restores direct
-IPv4 network access. The public API is unauthenticated and permits command
+### Local network
+
+With the **Reach machines over several routes** experiment (`serverRoutes`,
+on for early adopters), add **Local network** from **Add a route** in
+Settings → Machines → How devices reach this server (or run
+`bb server access add local-network`) and bb also listens on this
+computer's private LAN addresses, without a restart. Devices and machines on
+that network then reach bb at `http://<LAN address>:38886`; the address is
+shown in Settings and `bb server access list`. Connected machines learn the
+route the next time their session opens and Settings → Machines shows "via
+Local network" for those using it.
+
+Anyone on that network can use bb: the public API is unauthenticated and
+permits command execution and file reads. Add it only for a network you
+trust, and never on public Wi-Fi.
+
+Every route is optional and each keeps its own trust boundary: the local
+network trusts the network, the Tailscale route trusts the tailnet's ACLs, a
+Manual address trusts whatever fronts it, and bb connect trusts the account
+gate.
+`bb server access order` sets which one devices try first. Each time a machine
+connects it checks every route at once and uses the first that answers,
+favoring routes higher in the order. It stays on that route until the
+connection drops, then picks again, so a machine whose route stops answering
+moves to the next one within seconds, keeping its session if it reconnects
+within 30 seconds. Attachments and daemon updates stay on an
+encrypted (HTTPS) route while a machine uses the local network, unless the
+local network is the only route.
+
+For compatibility, `npx bb-app --server-bind-host 0.0.0.0` restores direct
+IPv4 network access on every interface. The public API is unauthenticated and permits command
 execution and file reads, so use wildcard binding only behind a trusted network
 boundary and never through Funnel or the public internet.
 
@@ -95,8 +133,9 @@ Phones and tablets need no helper; editor-launch actions are simply unavailable.
 
 The bb mobile app is a client for a bb server; it runs nothing itself. Over
 bb connect it pairs the same way the desktop app does: the phone enrolls as a
-connect machine with its own credential, which the getbb.app dashboard lists
-and can revoke.
+connect machine with its own credential, which works for every bb on the
+account. The getbb.app dashboard lists the phone under Devices, where you
+can remove it.
 
 1. Sign the bb server in to your bb account first (Settings → bb account, `bb account login`, or `bb connect --code …`).
 2. Mint a pairing code for the phone: Settings → Mobile → **Add mobile device** (QR code plus the code as text, with a countdown), or run
@@ -107,14 +146,18 @@ and can revoke.
 
 The phone keeps its credential in the device keychain and mints sessions from
 it; it never holds the server's pairing secret. A session lasts seven days and
-renews while the phone is in use. To cut a phone off, revoke it in the
-getbb.app dashboard machine list; its session stops working within about 20
-seconds. Every phone takes one of
-the account's machine slots, so a machine-limit error means an unused device
-should be revoked first. On a trusted network the app can also use a direct
-server URL (Tailscale Serve or `--server-bind-host 0.0.0.0`) with the same
-caveats as a browser. What the phone cannot do is listed in
+renews while the phone is in use. To cut a phone off, remove it from the
+getbb.app dashboard; its session stops working within about 20 seconds.
+Every phone
+takes one of the account's machine slots, so a machine-limit error means an
+unused device should be removed first. On a trusted network the app can also
+use a direct server URL (Tailscale Serve or `--server-bind-host 0.0.0.0`) with
+the same caveats as a browser. What the phone cannot do is listed in
 [platform-support.md](platform-support.md#mobile-app).
+
+The dashboard folds devices that have not been used for 14 days under "Show N
+unused"; expanding the fold offers **Remove N unused**. A device paired by a current
+bb app that is never used within 14 days of pairing is removed automatically.
 
 ### Push notifications on a self-hosted server
 
@@ -136,8 +179,9 @@ To reach bb connect without a local server, the app enrolls itself once as a
 connect machine. That step needs the local server, so the first switch to a
 remote server still starts it. The app keeps its own credential, encrypted with
 the OS keychain, and never holds the server's pairing secret. The app appears in
-the getbb.app dashboard machine list, where you can revoke it. After a revoke,
-the app drops the credential and asks the local server again.
+the getbb.app dashboard under Devices, named after the computer, where
+you can remove it. After a removal, the app drops the
+credential and asks the local server again.
 
 A remote server has no realtime link for keybindings and theme. The app re-reads
 them when it starts, when it becomes active, and every five minutes.
@@ -150,9 +194,10 @@ execute work. Choose Windows in the dialog for a PowerShell command; a Windows
 machine needs Node.js 22.19 or newer and Git for Windows, and its daemon starts
 when you sign in to Windows. It installs and enrolls a host daemon; when bb connect is paired,
 the installer also configures the machine credential used to reach the server
-through the account gate. Without bb connect, open the server through a
-Tailscale Serve URL before generating the installer; the loopback listener is
-not directly reachable from another machine. When bb connect is not paired and
+through the account gate. Without bb connect, set up the Tailscale plugin; the
+installer targets the first working route in the Settings → Machines order, so
+with Tailscale first it targets `https://<machine>.<tailnet>.ts.net`; the loopback listener
+is not directly reachable from another machine. When bb connect is not paired and
 the server URL is a loopback or unspecified address, the dialog does not show an
 installer. It asks you to set up machine access first by choosing the address
 machines should use. Once access is ready, the dialog also names the server
@@ -212,7 +257,7 @@ After it connects:
 
 Machine names are conveniences and may be duplicated; CLI targeting by name
 requires an unambiguous match. IDs are always accepted. Removing a machine from
-Settings stops bb from dispatching new work to it; revoke a lost machine's bb
+Settings stops bb from dispatching new work to it; remove a lost machine's bb
 connect access from the getbb.app dashboard as well.
 
 Browser access and execution remain independent: opening bb on a laptop does

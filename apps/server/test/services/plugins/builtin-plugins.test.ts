@@ -34,7 +34,6 @@ import {
 import {
   accountPoolDefaultEnabled,
   BUILTIN_PLUGINS,
-  BUNDLED_PLUGINS,
   resolveBuiltinPluginRootPath,
 } from "../../../src/services/plugins/builtin-registry.js";
 import { copyPluginRuntime } from "@bb/plugin-build";
@@ -577,12 +576,6 @@ describe("builtin plugin reconciliation", () => {
     ]);
   });
 
-  it("does not bundle Workflows", () => {
-    expect(BUNDLED_PLUGINS.map((plugin) => plugin.name)).not.toContain(
-      "workflows",
-    );
-  });
-
   it("ships each product builtin with its deliberate default", () => {
     expect(
       Object.fromEntries(
@@ -597,6 +590,7 @@ describe("builtin plugin reconciliation", () => {
       "plugin-api-tester": false,
       "monaco-editor": false,
       "plugin-api-docs": false,
+      workflows: false,
       "provider-usage": true,
       "concurrency-limit": true,
       "scheduled-send": true,

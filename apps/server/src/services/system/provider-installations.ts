@@ -1,5 +1,8 @@
 import { createAsyncTtlMemo, type AsyncTtlMemo } from "@bb/async-cache";
 import type {
+  HostDaemonBridgeLaunch,
+  ProviderCliInstallActionKind,
+  ProviderCliInstallEvent,
   ProviderCliStatus,
   ProviderCliStatusResponse,
 } from "@bb/host-daemon-contract";
@@ -13,7 +16,9 @@ import {
   callHostRetryableOnlineRpc,
   isHostUnavailableApiError,
 } from "../hosts/online-rpc.js";
+import { invalidateEnvironmentProviderMachineAvailability } from "../environments/provider-machine-availability.js";
 import { listSystemProviderInfos } from "./execution-options.js";
+import { resolveHostProviderEnv } from "../plugins/plugin-agent-contributions.js";
 import { resolveBridgeLaunchForProviderId } from "./provider-bridge-launch.js";
 import { mapProviderMaintenanceRequests } from "./provider-maintenance-concurrency.js";
 
@@ -90,6 +95,15 @@ function providerStatusCache(deps: WorkSessionDeps) {
   return cache;
 }
 
+export function forgetHostDerivedState(
+  deps: WorkSessionDeps,
+  hostId: string,
+): void {
+  deps.providerRegistry.forgetInstalledForHost(hostId);
+  deps.lifecycleDedupers.providerModelCatalogs.markHostStale(hostId);
+  invalidateEnvironmentProviderMachineAvailability();
+}
+
 export type ProviderInstallationsReadMode = "prewarm" | "read" | "refresh";
 
 export async function getProviderInstallations(
@@ -129,8 +143,12 @@ export async function getProviderInstallations(
       }
       return async (timeoutMs) => {
         try {
+          const contributedEnv = await resolveHostProviderEnv(
+            args.hostId,
+            provider.id,
+          );
           return await providerStatusCache(deps).run(
-            `${args.hostId} ${provider.id} ${deps.providerRegistry.getRegistrationRevision()} ${JSON.stringify(bridgeLaunch)}`,
+            `${args.hostId} ${provider.id} ${deps.providerRegistry.getRegistrationRevision()} ${JSON.stringify(bridgeLaunch)} ${JSON.stringify(contributedEnv.map((entry) => [entry.name, entry.value]))}`,
             () =>
               callHostRetryableOnlineRpc(deps, {
                 hostId: args.hostId,
@@ -139,6 +157,7 @@ export async function getProviderInstallations(
                   type: "provider.installation.status",
                   providerId: provider.id,
                   bridgeLaunch,
+                  contributedEnv,
                 },
               }),
             {
@@ -146,6 +165,7 @@ export async function getProviderInstallations(
               revalidateStale: args.mode !== "prewarm",
               onReplaced: (previous, next) => {
                 if (!isDeepStrictEqual(previous, next)) {
+                  forgetHostDerivedState(deps, args.hostId);
                   deps.hub.notifyHost(args.hostId, [
                     "provider-cli-status-changed",
                   ]);
@@ -183,33 +203,60 @@ export async function getProviderInstallations(
   });
 }
 
-const installationTails = new WeakMap<object, Map<string, Promise<void>>>();
-export async function serializeProviderInstallation<T>(
+export function invalidateProviderInstallationStatus(
   deps: WorkSessionDeps,
   hostId: string,
-  run: () => Promise<T>,
-): Promise<T> {
-  let hosts = installationTails.get(deps.db);
-  if (!hosts) {
-    hosts = new Map();
-    installationTails.set(deps.db, hosts);
-  }
-  const previous = hosts.get(hostId) ?? Promise.resolve();
-  let release: () => void = () => {};
-  const tail = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  hosts.set(hostId, tail);
-  await previous;
-  const cache = providerStatusCache(deps);
-  const invalidate = () =>
-    cache.invalidateWhere((key) => key.startsWith(`${hostId} `));
-  invalidate();
+): void {
+  providerStatusCache(deps).invalidateWhere((key) =>
+    key.startsWith(`${hostId} `),
+  );
+}
+
+export async function settleUnneededProviderInstallation(
+  deps: WorkSessionDeps,
+  args: {
+    hostId: string;
+    providerId: string;
+    action: ProviderCliInstallActionKind;
+    bridgeLaunch: HostDaemonBridgeLaunch;
+    events: ProviderCliInstallEvent[];
+  },
+): Promise<ProviderCliInstallEvent[]> {
+  const refused =
+    args.events.some((event) => event.type === "error") &&
+    !args.events.some((event) => event.type === "completed");
+  if (!refused) return args.events;
+  let status: ProviderInstallationStatus;
   try {
-    return await run();
-  } finally {
-    invalidate();
-    release();
-    if (hosts.get(hostId) === tail) hosts.delete(hostId);
+    status = await callHostRetryableOnlineRpc(deps, {
+      hostId: args.hostId,
+      timeoutMs: COMMAND_TIMEOUT_MS,
+      command: {
+        type: "provider.installation.status",
+        providerId: args.providerId,
+        bridgeLaunch: args.bridgeLaunch,
+        contributedEnv: await resolveHostProviderEnv(
+          args.hostId,
+          args.providerId,
+        ),
+      },
+    });
+  } catch {
+    return args.events;
   }
+  const current =
+    args.action === "install"
+      ? status.installed
+      : status.installed && !status.needsUpdate && !status.versionUnsupported;
+  return current
+    ? [
+        {
+          type: "completed",
+          provider: args.providerId,
+          exitCode: null,
+          signal: null,
+          success: true,
+        },
+      ]
+    : args.events;
 }

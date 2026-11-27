@@ -8,7 +8,7 @@ plugins → BB guide. The plugin and all seven settings default to enabled.
 - `bbCli`: include `bb-cli`.
 - `pluginAuthoring`: include `bb-plugin-authoring`.
 - `skillCreator`: include `skill-creator`.
-- `submitPlugin`: include `submit-a-plugin`.
+- `submitPlugin`: include `publish-a-plugin`.
 - `safeUpgrade`: include `safe-bb-upgrade`, with staged validation, preserved
   customizations, and independent foreground activation and recovery. Its source
   upgrade helper requires Python 3.9+ on macOS or Linux.

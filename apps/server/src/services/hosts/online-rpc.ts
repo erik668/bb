@@ -17,10 +17,11 @@ import {
   type HostDaemonRpcCommand,
   type HostDaemonRpcResultForCommand,
 } from "@bb/host-daemon-contract";
-import { ApiError } from "../../errors.js";
+import { ApiError, HostConnectionLostApiError } from "../../errors.js";
 import type { WorkSessionDeps } from "../../types.js";
 import {
   HostOnlineRpcCancelledError,
+  HostOnlineRpcConnectionLostError,
   HostOnlineRpcTimeoutError,
   HostOnlineRpcUnavailableError,
 } from "../../ws/hub.js";
@@ -263,7 +264,8 @@ async function callHostOnlineRpcWithRetry(
   },
 ): Promise<HostDaemonRpcResultForCommand> {
   const retryArgs = (): CallHostOnlineRpcArgs<HostDaemonRpcCommand> =>
-    options.retryCommand !== undefined && args.command.type === "plugin.host.call"
+    options.retryCommand !== undefined &&
+    args.command.type === "plugin.host.call"
       ? { ...args, command: options.retryCommand(args.command) }
       : args;
   const timeoutRetryDeadline =
@@ -310,6 +312,9 @@ async function callHostOnlineRpcWithRetry(
   });
 
   if (!response.ok) {
+    if (response.errorCode === "provider_process_exited") {
+      reportProviderBridgeExit(deps, args, response.errorMessage);
+    }
     throw new ApiError(502, response.errorCode, response.errorMessage, false);
   }
 
@@ -322,6 +327,29 @@ async function callHostOnlineRpcWithRetry(
   }
 
   return parseHostDaemonRpcResultForCommand(args.command, response.result);
+}
+
+function reportProviderBridgeExit(
+  deps: WorkSessionDeps,
+  args: CallHostOnlineRpcArgs<HostDaemonRpcCommand>,
+  message: string,
+): void {
+  const { command } = args;
+  if (!("bridgeLaunch" in command)) return;
+  const registration =
+    "providerId" in command
+      ? deps.providerRegistry.get(command.providerId)
+      : deps.providerRegistry
+          .list()
+          .find(
+            (candidate) => candidate.pluginId === command.bridgeLaunch.pluginId,
+          );
+  if (registration?.pluginId !== command.bridgeLaunch.pluginId) return;
+  registration.reportBridgeFailure({
+    hostId: args.hostId,
+    operation: command.type,
+    message,
+  });
 }
 
 async function waitForReconnectingDaemon(
@@ -420,6 +448,10 @@ function throwOnlineRpcError(error: unknown): never {
       "Request was cancelled by the client",
       false,
     );
+  }
+
+  if (error instanceof HostOnlineRpcConnectionLostError) {
+    throw new HostConnectionLostApiError();
   }
 
   if (error instanceof HostOnlineRpcUnavailableError) {

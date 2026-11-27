@@ -84,6 +84,9 @@ function pluginWithBundle(hash: string) {
         sdkVersion: "0.4.27",
         compatible: true,
         runtimeSlots: [],
+        staticChunkUrls: [],
+        lazyChunkUrls: [],
+        lazyRuntimeSlots: [],
       },
     },
   };
@@ -104,9 +107,11 @@ describe("plugin list envelope", () => {
     const networkFetch = vi.fn(fetchReturning({ plugins: [plugin] }));
     vi.stubGlobal("fetch", networkFetch);
 
-    await expect(fetchFrontendCandidates(queryClient)).resolves.toEqual([
-      expect.objectContaining({ pluginId: "linear" }),
-    ]);
+    await expect(
+      fetchFrontendCandidates(queryClient, "await-refresh"),
+    ).resolves.toMatchObject({
+      candidates: [expect.objectContaining({ pluginId: "linear" })],
+    });
     expect(networkFetch).not.toHaveBeenCalled();
   });
 
@@ -128,7 +133,10 @@ describe("plugin list envelope", () => {
       );
     vi.stubGlobal("fetch", networkFetch);
 
-    const olderCandidates = fetchFrontendCandidates(queryClient);
+    const olderCandidates = fetchFrontendCandidates(
+      queryClient,
+      "await-refresh",
+    );
     await vi.waitFor(() => {
       expect(networkFetch).toHaveBeenCalledTimes(1);
     });
@@ -137,17 +145,23 @@ describe("plugin list envelope", () => {
       await fetchReturning({ plugins: [pluginWithBundle("old")] })(""),
     );
 
-    await expect(olderCandidates).resolves.toEqual([
-      expect.objectContaining({
-        bundle: expect.objectContaining({ hash: "old" }),
-      }),
-    ]);
+    await expect(olderCandidates).resolves.toMatchObject({
+      candidates: [
+        expect.objectContaining({
+          bundle: expect.objectContaining({ hash: "old" }),
+        }),
+      ],
+    });
     await refresh;
-    await expect(fetchFrontendCandidates(queryClient)).resolves.toEqual([
-      expect.objectContaining({
-        bundle: expect.objectContaining({ hash: "new" }),
-      }),
-    ]);
+    await expect(
+      fetchFrontendCandidates(queryClient, "await-refresh"),
+    ).resolves.toMatchObject({
+      candidates: [
+        expect.objectContaining({
+          bundle: expect.objectContaining({ hash: "new" }),
+        }),
+      ],
+    });
     expect(networkFetch).toHaveBeenCalledTimes(2);
   });
 

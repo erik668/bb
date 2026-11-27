@@ -19,6 +19,8 @@ import { enrollDaemonHost } from "./enroll.js";
 import { loadHostIdentity, persistHostId } from "./identity.js";
 import { acquireDaemonLock } from "./lock.js";
 import { resolveHostDaemonLocalApiConfig } from "./local-api-config.js";
+import { PersistedHostAuthRejectedError } from "./persisted-auth-rejection.js";
+import { ServerResponseError } from "./server-client.js";
 import {
   prepareRuntimeShellEnv,
   resolvePowerShellExecutionPolicyDefault,
@@ -30,6 +32,11 @@ import {
   startMachineAuthProxy,
   type MachineAuthProxy,
 } from "./machine-auth-proxy.js";
+import {
+  ServerRouteResolver,
+  persistServerRoutes,
+  readPersistedServerRoutes,
+} from "./server-routes.js";
 
 interface StartHostDaemonOptions {
   enrollKey?: string;
@@ -131,10 +138,16 @@ export async function startHostDaemon(
       dataDir,
     });
     lockDiagnosticsLogger = logger;
-    if (options.serverHeaders !== undefined) {
+    const routes = new ServerRouteResolver({
+      anchorUrl: serverUrl,
+      anchorHeaders: options.serverHeaders ?? {},
+      persisted: await readPersistedServerRoutes(dataDir, logger),
+      persist: persistServerRoutes(dataDir),
+      logger,
+    });
+    if (options.serverHeaders !== undefined || routes.candidates().length > 1) {
       machineAuthProxy = await startMachineAuthProxy({
-        serverHeaders: options.serverHeaders,
-        serverUrl,
+        target: () => routes.active(),
       });
     }
     setParcelWatcherBackend(
@@ -167,9 +180,8 @@ export async function startHostDaemon(
     const runtimeShellEnvResolvedAtMs = Date.now();
     app = await createHostDaemonApp({
       dataDir,
-      serverUrl,
+      routes,
       hostKey,
-      serverHeaders: options.serverHeaders,
       autoUpdate: options.autoUpdate,
       supervised: options.supervised,
       bridgeBundleDir: options.bridgeBundleDir,
@@ -197,7 +209,14 @@ export async function startHostDaemon(
         .shutdown("daemon-lock-lost", 1)
         .catch(() => process.exit(1));
     };
-    await app.daemon.start();
+    try {
+      await app.daemon.start();
+    } catch (error) {
+      if (persistedAuth !== null && isHostKeyRejection(error)) {
+        throw new PersistedHostAuthRejectedError(error);
+      }
+      throw error;
+    }
     return app.daemon;
   } catch (error) {
     if (!app) {
@@ -206,4 +225,8 @@ export async function startHostDaemon(
     }
     throw error;
   }
+}
+
+function isHostKeyRejection(error: unknown): error is ServerResponseError {
+  return error instanceof ServerResponseError && error.status === 401;
 }

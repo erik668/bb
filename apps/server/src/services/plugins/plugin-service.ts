@@ -38,6 +38,7 @@ import {
 } from "@get-bb/plugin-sdk";
 import {
   enforcePluginCliOutputLimit,
+  pluginCliFailureResult,
   normalizePluginAgentConfiguration,
   normalizeRpcJsonResult,
   readPluginRpcRefusal,
@@ -56,6 +57,7 @@ import {
 } from "../plugin-catalog/marketplace-publishers.js";
 import { deleteSecretFile, readOrCreateSecretFile } from "@bb/secret-storage";
 import {
+  CURATED_PLUGIN_MARKETPLACE_NAME,
   ROOT_PLUGIN_SOURCE_SELECTION,
   type InstalledPlugin,
   type PluginCapabilitySummary,
@@ -79,8 +81,10 @@ import {
   getThread,
   getLatestThreadSequence,
   listDuePluginSchedules,
+  pluginScheduleKey,
   listInstalledPlugins,
   listPendingGitPluginArtifacts,
+  getPluginMarketplace,
   listPluginMarketplaces,
   listPluginSchedules,
   listThreadPluginMetadataRows,
@@ -101,6 +105,7 @@ import {
   isBundledMarketplaceEntry,
   marketplaceEntryCollections,
   marketplaceRowIconBase,
+  catalogRangeForInstalledSource,
   parseStoredMarketplaceManifest,
   type MarketplaceManifest,
 } from "../plugin-catalog/marketplace-manifest.js";
@@ -111,6 +116,7 @@ import {
 import { buildTurnFailedEvent } from "../threads/turn-failed.js";
 import {
   pluginAppAsset,
+  pluginAppChunk,
   type PluginAppAsset,
   type PluginBrandingAssetSet,
   type PluginBrandingAssetSnapshot,
@@ -122,6 +128,7 @@ import {
   parsePluginSource,
   recoverInterruptedGitPluginPromotion,
 } from "./install-sources.js";
+import type { RangeUpgradeBasis } from "./update-resolver.js";
 import {
   prunePluginCache,
   removeUnusedPluginArtifacts,
@@ -138,10 +145,12 @@ import {
   type PluginAgentToolRecord,
   type PluginCliContext,
   type PluginHttpRouteRecord,
+  type PluginMentionProviderRecord,
   type PluginMentionTrigger,
   type PluginRpcHandler,
   type PluginWebSocketRouteRecord,
 } from "./plugin-api.js";
+import { createMentionSearchSlots } from "./plugin-mention-search-slots.js";
 import type { PluginRpcCallerResolution } from "./plugin-rpc-caller.js";
 import {
   syncPluginCommandsSkill,
@@ -150,13 +159,13 @@ import {
 import { logPluginBuildWarnings, readPluginLogTail } from "./plugin-log.js";
 import {
   buildPluginSettingsView,
-  pluginSecretsDir,
   readPluginSettingsValues,
   writePluginSettingsUpdate,
   PluginSettingsValidationError,
   type PluginSettingsView,
 } from "./plugin-settings.js";
 import { createPluginActivation } from "./plugin-activation.js";
+import { pluginDirectory } from "./plugin-directory.js";
 import {
   createManagedPluginArtifacts,
   type InstallContext,
@@ -171,6 +180,7 @@ import { createPluginRegistration } from "./plugin-registration.js";
 import {
   createPluginRuntime,
   forgetMutableRoot,
+  PLUGIN_SAFE_MODE_DETAIL,
   type PluginLoadHold,
 } from "./plugin-runtime.js";
 import {
@@ -182,6 +192,7 @@ import {
   createPluginUpdates,
   parsePersistedUpdateEntry,
   pluginVersionLabelForRow,
+  type PluginApplyUpdateOptions,
 } from "./plugin-updates.js";
 
 import type {
@@ -202,6 +213,8 @@ import type {
 } from "./plugin-service-internal.js";
 import type { PluginMachineProviderBridge } from "./plugin-machine-provider-registry.js";
 import { fillPluginPresentation } from "./plugin-presentation.js";
+import { defineItemSweep, type ItemSweep } from "../system/item-sweep.js";
+import { sliceUtf16Head } from "@bb/text-utils";
 export type {
   PluginAgentToolContribution,
   PluginMentionResolveResult,
@@ -218,6 +231,14 @@ export interface PluginSkillRootContribution {
 export type PluginReloadOutcome =
   | { ok: true; plugins: InstalledPlugin[] }
   | { ok: false; error: string; plugins: InstalledPlugin[] };
+
+export type PluginSettingsUpdateOutcome =
+  | { ok: true; view: PluginSettingsView }
+  | { ok: false; error: string; view: PluginSettingsView };
+
+export type PluginEnabledOutcome =
+  | { ok: true; plugin: InstalledPlugin }
+  | { ok: false; error: string; plugin: InstalledPlugin };
 
 export function dispatchPluginSourceWatchChange(
   handleChange: (relativePath: string) => void,
@@ -269,6 +290,7 @@ export interface PluginService {
   start(options?: PluginStartOptions): Promise<void>;
   stop(): Promise<void>;
   handleUncaughtException(error: unknown): boolean;
+  listCodeOwners(): { location: string; owner: string }[];
   list(): InstalledPlugin[];
   getDisplayName(id: string): string;
   providerCatalog(): Array<{
@@ -311,13 +333,16 @@ export interface PluginService {
   stopPeriodicUpdateChecks(): Promise<void>;
   listUpdateResults(): PluginUpdateCheckEntry[];
   getSource(id: string): Promise<PluginSourceDetail | undefined>;
-  applyUpdate(id: string): Promise<PluginApplyUpdateOutcome>;
+  applyUpdate(
+    id: string,
+    options?: PluginApplyUpdateOptions,
+  ): Promise<PluginApplyUpdateOutcome>;
   remove(id: string): Promise<boolean>;
   pruneCache(args: { dryRun: boolean }): Promise<PluginCachePruneResponse>;
   setEnabled(
     id: string,
     enabled: boolean,
-  ): Promise<InstalledPlugin | undefined>;
+  ): Promise<PluginEnabledOutcome | undefined>;
   reload(id?: string): Promise<PluginReloadOutcome>;
   getSafeMode(): boolean;
   setSafeMode(enabled: boolean): Promise<PluginSafeModeUpdateResponse>;
@@ -353,6 +378,7 @@ export interface PluginService {
     hash: string,
     kind: "js" | "css",
   ): PluginAppAsset | undefined;
+  getAppChunkByHash(hash: string, file: string): PluginAppAsset | undefined;
   getBrandingAsset(
     id: string,
     variant: PluginBrandingAssetVariant,
@@ -369,6 +395,14 @@ export interface PluginService {
     authenticatedHostId: string;
     pluginId: string;
     generation: string;
+    reason: string;
+  }): void;
+  handleHostWorkerOutput(args: {
+    authenticatedHostId: string;
+    pluginId: string;
+    generation: string;
+    stream: "stdout" | "stderr";
+    line: string;
   }): void;
   handleHostSignal(args: {
     authenticatedHostId: string;
@@ -381,7 +415,7 @@ export interface PluginService {
   updateSettings(
     id: string,
     values: Record<string, unknown>,
-  ): Promise<PluginSettingsView | undefined>;
+  ): Promise<PluginSettingsUpdateOutcome | undefined>;
   getHttpRoute(
     id: string,
     method: string,
@@ -473,6 +507,7 @@ export interface PluginService {
     query: string;
     projectId: string | null;
     threadId: string | null;
+    signal: AbortSignal;
   }): Promise<PluginMentionSearchGroup[]>;
   resolveMention(args: {
     pluginId: string;
@@ -484,7 +519,7 @@ export interface PluginService {
     keep(plugin: InstalledPluginRow): boolean;
   }): Promise<string[]>;
   resumeSuspendedPlugins(): Promise<string[]>;
-  sweepDueSchedules(now: number): Promise<void>;
+  dueScheduleSweep(now: number): ItemSweep;
 }
 
 const DEFAULT_MENTION_SEARCH_TIMEOUT_MS = 2_000;
@@ -505,7 +540,9 @@ class PluginRpcBoundaryError extends Error {
       )
       .join("; ");
     const summary =
-      issues && issues.length > 300 ? `${issues.slice(0, 299)}…` : issues;
+      issues && issues.length > 300
+        ? `${sliceUtf16Head(issues, 299)}…`
+        : issues;
     super(summary ? `${rpcError.message} (${summary})` : rpcError.message);
     this.name = "PluginRpcBoundaryError";
   }
@@ -623,8 +660,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       }
     })();
     if (!(await settledWithin(run, installHandlerTimeoutMs))) {
-      logger.warn(
-        `[plugin:${id}] install handlers were still running after ${installHandlerTimeoutMs / 1000}s; the install finished without waiting for them`,
+      pluginLog.warn(
+        id,
+        `install handlers were still running after ${installHandlerTimeoutMs / 1000}s; the install finished without waiting for them`,
       );
     }
   }
@@ -640,6 +678,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
   }
   const mentionSearchTimeoutMs =
     deps.mentionSearchTimeoutMs ?? DEFAULT_MENTION_SEARCH_TIMEOUT_MS;
+  const mentionSearches = createMentionSearchSlots<
+    PluginMentionProviderRecord,
+    Awaited<ReturnType<PluginMentionProviderRecord["search"]>>
+  >(mentionSearchTimeoutMs);
   const mentionResolveTimeoutMs =
     deps.mentionResolveTimeoutMs ?? DEFAULT_MENTION_RESOLVE_TIMEOUT_MS;
   const providerEnvResolveTimeoutMs =
@@ -664,12 +706,13 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
 
   const HTTP_TOKEN_FILE = ".http-token";
   let schedulesPaused = false;
+  const runningSchedules = new Set<string>();
   let loadPassActive = false;
   const suspendedPluginIds = new Set<string>();
 
   const {
     REGISTRATION_MUTATION_KEY,
-    agentToolProblems,
+    registrationProblems,
     appBundles,
     bindSdk: bindRuntimeSdk,
     resolveRpcCaller,
@@ -692,6 +735,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     isBuiltinPluginId,
     isSafeModeExemptRow,
     isSuppressedBySafeMode,
+    listPluginCodeOwners,
     listPluginHooks,
     listPluginEnvironmentCompositions,
     listPluginEnvironmentProviders,
@@ -700,6 +744,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     listPluginServerAccessProviders,
     getPluginMachineProvider,
     isPackagedBuiltinEntry,
+    abortLoad,
     loadAll,
     loaded,
     loadOne,
@@ -716,6 +761,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     withArtifactLock,
     withLifecycleLock,
     withPluginOperationLock,
+    pluginLog,
   } = createPluginRuntime({
     deps,
     includedBuiltinNames: new Set(
@@ -749,6 +795,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     sourceFingerprint,
   } = createPluginRegistration({
     runInstallHandlers,
+    pluginLog,
     safeModeActivationRefusal,
     deps,
     bundledPlugins,
@@ -786,12 +833,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     registrationMatchesForActivation,
     emptyPluginUpdateState,
     sourceFingerprint,
+    installedUpdateVersion,
     syncCliSkill,
     notifyPluginsChanged,
   });
 
   const managedPluginArtifacts = createManagedPluginArtifacts({
     deps,
+    pluginLog,
     withArtifactLock,
     sourceKind,
     checkEngineRange,
@@ -814,6 +863,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     notifyPluginsChanged,
     installedUpdateVersion,
     npmIntentForRow,
+    rangeUpgradeBasisForRow,
     managedArtifacts: managedPluginArtifacts,
     runArtifactGc,
   });
@@ -935,6 +985,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       changes.push("provider-registrations-changed");
     }
     deps.hub.notifySystem(changes);
+    deps.onPluginsChanged?.();
   }
 
   function compactPath(path: string): string {
@@ -977,9 +1028,11 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         ? {
             version: row.lastFailureVersion,
             label:
+              row.lastFailureLabel ??
               [persisted?.candidate, persisted?.blocked].find(
                 (version) => version?.version === row.lastFailureVersion,
-              )?.label ?? pluginVersionLabelForRow(row, row.lastFailureVersion),
+              )?.label ??
+              pluginVersionLabelForRow(row, row.lastFailureVersion),
             at: row.lastFailureAt,
             detail: row.lastFailureDetail,
           }
@@ -1002,6 +1055,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             blockedLabel: persisted.blocked.label,
             blockedReasons: persisted.blocked.reasons,
           }),
+      ...(persisted?.rangeUpgrade === undefined
+        ? {}
+        : { rangeUpgrade: persisted.rangeUpgrade }),
       ...(row.lastUpdateCheckAt === null
         ? {}
         : { lastCheckAt: row.lastUpdateCheckAt }),
@@ -1165,6 +1221,27 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     | "updatedAt"
   >;
 
+  function rangeUpgradeBasisForRow(row: InstalledPluginRow): RangeUpgradeBasis {
+    if (row.provenance !== "catalog" || row.catalogEntryId === null) {
+      return { kind: "release" };
+    }
+    const marketplace = getPluginMarketplace(
+      deps.db,
+      row.catalogMarketplaceName ?? CURATED_PLUGIN_MARKETPLACE_NAME,
+    );
+    if (marketplace === undefined || !marketplace.enabled) {
+      return { kind: "release" };
+    }
+    const manifest = cachedMarketplaceManifest(marketplace);
+    if (manifest === null) return { kind: "none" };
+    const entry = manifest.plugins.find(
+      (plugin) => plugin.id === row.catalogEntryId,
+    );
+    if (entry === undefined) return { kind: "none" };
+    const range = catalogRangeForInstalledSource(entry, row);
+    return range === null ? { kind: "none" } : { kind: "catalog", range };
+  }
+
   function cachedMarketplaceManifest(
     marketplace: PluginMarketplaceRow,
   ): MarketplaceManifest | null {
@@ -1251,7 +1328,6 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               manifest,
               entry,
               base: marketplaceRowIconBase(marketplace),
-              warn: (message) => logger.warn(message),
             }),
             collections: marketplaceEntryCollections(manifest, entry.id),
           });
@@ -1305,10 +1381,12 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     forgetMutableRoot(row.rootDir);
     deletePluginSchedules(deps.db, row.id);
     deleteAllPluginSettings(deps.db, row.id);
-    await rm(pluginSecretsDir(deps.dataDir, row.id), {
-      recursive: true,
-      force: true,
-    });
+    for (const part of ["secrets", "files"] as const) {
+      await rm(pluginDirectory(deps.dataDir, row.id, part), {
+        recursive: true,
+        force: true,
+      });
+    }
   }
 
   async function handOverRetiredBuiltins(): Promise<void> {
@@ -1355,7 +1433,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       await deleteRemovedPluginData(row, pluginProviderIds(row));
       deleteInstalledPlugin(deps.db, row.id);
       logger.info(
-        `plugin ${row.id} removed because bb no longer bundles ${row.source}; its settings, secrets, and schedules were deleted`,
+        `plugin ${row.id} removed because bb no longer bundles ${row.source}; its settings, secrets, stored files, and schedules were deleted`,
       );
     }
   }
@@ -1437,15 +1515,29 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           thread: buildThreadDto(thread),
           lastAssistantText: getLatestTurnFinalOutput(deps.db, thread.id),
         }));
+        emitThreadEvent("experimental_thread.settled", () => ({
+          outcome: "completed",
+          thread: buildThreadDto(thread),
+          lastAssistantText: getLatestTurnFinalOutput(deps.db, thread.id),
+        }));
       },
       emitThreadFailed(thread) {
         emitThreadEvent("thread.failed", () => ({
           thread: buildThreadDto(thread),
           error: getLastThreadErrorMessage(deps.db, thread.id),
         }));
+        emitThreadEvent("experimental_thread.settled", () => ({
+          outcome: "failed",
+          thread: buildThreadDto(thread),
+          error: getLastThreadErrorMessage(deps.db, thread.id),
+        }));
       },
       emitThreadArchived(thread) {
         emitThreadEvent("thread.archived", () => ({
+          thread: buildThreadDto(thread),
+        }));
+        emitThreadEvent("experimental_thread.settled", () => ({
+          outcome: "archived",
           thread: buildThreadDto(thread),
         }));
       },
@@ -1462,6 +1554,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       },
       emitThreadDeleted(thread) {
         emitThreadEvent("thread.deleted", () => ({
+          thread: buildThreadDto(thread),
+        }));
+        emitThreadEvent("experimental_thread.settled", () => ({
+          outcome: "deleted",
           thread: buildThreadDto(thread),
         }));
       },
@@ -1486,7 +1582,15 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       emitMessageQueued: buildQueuedMessageEventEmitter("message.queued"),
       emitMessageDispatched:
         buildQueuedMessageEventEmitter("message.dispatched"),
-      emitMessageCancelled: buildQueuedMessageEventEmitter("message.cancelled"),
+      emitMessageCancelled(entry) {
+        buildQueuedMessageEventEmitter("message.cancelled")(entry);
+        emitThreadEvent("experimental_thread.settled", () => {
+          const thread = getThread(deps.db, entry.threadId);
+          return thread === null || thread.deletedAt !== null
+            ? null
+            : { outcome: "cancelled", thread: buildThreadDto(thread), entry };
+        });
+      },
       emitTurnFailed(threadId) {
         // Built lazily inside the emitter: with no listener the failure path
         // pays one map lookup and never touches the database.
@@ -1500,6 +1604,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       listHooks: listPluginHooks,
       invokeHook: invokeOwned,
       decisionTimeoutMs: DEFAULT_PLUGIN_HOOK_TIMEOUT_MS,
+      isLoadingPlugins: () => loadPassActive,
     },
 
     environmentProviders: {
@@ -1514,7 +1619,11 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       list: listPluginServerAccessProviders,
       invoke: async (record, run) => {
         const outcome = await invokeOwned(record, "server access", run);
-        if (!outcome.ok) throw new Error("Server access provider failed");
+        if (!outcome.ok) {
+          throw new Error(
+            `The "${record.pluginId}" plugin's server access provider "${record.provider.id}" failed: ${outcome.error}`,
+          );
+        }
         return outcome.value;
       },
     },
@@ -1578,8 +1687,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
                   { minify: true, hostProvidedZod: true },
                 );
                 logPluginBuildWarnings({
-                  dataDir: deps.dataDir,
-                  logger,
+                  pluginLog,
                   pluginId: row.id,
                   warnings: app.migrationWarnings,
                 });
@@ -1627,7 +1735,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               notifyPluginsChanged();
               if (problem !== null) throw new Error(problem);
             },
-            log: (message) => logger.info(`plugin ${row.id}: ${message}`),
+            log: (message) => pluginLog.info(row.id, message),
           });
           const watcher = watch(
             bundled.rootDir,
@@ -1640,8 +1748,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             watcher,
             onClose: () => loop.dispose(),
             onError: (error) =>
-              logger.warn(
-                `plugin ${row.id}: source watcher failed; hot reload is off until the server restarts: ${error.message}`,
+              pluginLog.warn(
+                row.id,
+                `source watcher failed; hot reload is off until the server restarts: ${error.message}`,
               ),
           });
           builtinSourceWatchers.push(watcher);
@@ -1658,6 +1767,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     },
 
     handleUncaughtException,
+    listCodeOwners: listPluginCodeOwners,
 
     list,
     getDisplayName(id) {
@@ -1772,7 +1882,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         await withLifecycleLock(id, () => disposeOne(id));
         statuses.delete(id);
         handlerStats.delete(id);
-        agentToolProblems.delete(id);
+        registrationProblems.delete(id);
         appBundles.delete(id);
         brandingAssets.delete(id);
         identities.delete(id);
@@ -1784,7 +1894,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         if (removed && row) {
           await deleteRemovedPluginData(row, providerIds);
           logger.info(
-            `plugin ${id} removed from ${row.source}; its settings, secrets, and schedules were deleted`,
+            `plugin ${id} removed from ${row.source}; its settings, secrets, stored files, and schedules were deleted`,
           );
           const managedDir =
             row.activeArtifactId === null && row.sourceKind === "git"
@@ -1831,7 +1941,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         const applyEnabled = async (
           pluginId: string,
           nextEnabled: boolean,
-        ): Promise<boolean> => {
+        ): Promise<{ problem: string | null } | null> => {
           const plugin = loaded.get(pluginId);
           if (!nextEnabled && plugin !== undefined) {
             setDisabledPluginProviderCatalog(
@@ -1843,12 +1953,13 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             );
           }
           if (!setInstalledPluginEnabled(deps.db, pluginId, nextEnabled)) {
-            return false;
+            return null;
           }
+          let problem: string | null = null;
           if (nextEnabled) {
             const row = getInstalledPlugin(deps.db, pluginId);
             if (row) {
-              await withLifecycleLock(pluginId, () => loadOne(row));
+              problem = await withLifecycleLock(pluginId, () => loadOne(row));
             }
           } else {
             await withLifecycleLock(pluginId, async () => {
@@ -1859,15 +1970,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
             });
             deps.onPluginUnregistered?.(pluginId);
           }
-          return true;
+          return { problem };
         };
 
         if (getInstalledPlugin(deps.db, id) === undefined) return undefined;
-        if (!(await applyEnabled(id, enabled))) return undefined;
+        const applied = await applyEnabled(id, enabled);
+        if (applied === null) return undefined;
         if (!enabled) forgetPluginRecommendation(deps.db, id);
         await syncCliSkill();
         notifyPluginsChanged();
-        return list().find((p) => p.id === id);
+        const plugin = list().find((p) => p.id === id);
+        if (plugin === undefined) return undefined;
+        return applied.problem === null
+          ? { ok: true, plugin }
+          : {
+              ok: false,
+              error: `plugin "${id}" did not start: ${applied.problem}`,
+              plugin,
+            };
       });
     },
 
@@ -1884,6 +2004,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         const rows = listInstalledPlugins(deps.db)
           .filter((row) => row.enabled && !isSafeModeExemptRow(row))
           .sort((a, b) => a.id.localeCompare(b.id));
+        if (enabled) {
+          for (const row of rows) abortLoad(row.id, PLUGIN_SAFE_MODE_DETAIL);
+        }
         const problems: string[] = [];
         for (const row of rows) {
           const problem = await withLifecycleLock(row.id, () => loadOne(row));
@@ -1955,6 +2078,14 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       return undefined;
     },
 
+    getAppChunkByHash(hash, file) {
+      for (const [id, snapshot] of appBundles) {
+        if (!loaded.has(id) || snapshot.assets?.hash !== hash) continue;
+        return pluginAppChunk(snapshot.assets, file);
+      }
+      return undefined;
+    },
+
     getBrandingAsset(id, variant) {
       const set = brandingAssetSetFor(id);
       const asset =
@@ -1993,11 +2124,29 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       ) {
         return;
       }
+      pluginLog.warn(
+        args.pluginId,
+        `host worker on ${args.authenticatedHostId} stopped unexpectedly: ${args.reason}`,
+      );
       for (const handler of [...plugin.handle.hostWorkerExitHandlers]) {
         void invokeWrapped(plugin, "host worker exit", async () =>
           handler({ hostId: args.authenticatedHostId }),
         );
       }
+    },
+
+    handleHostWorkerOutput(args) {
+      const artifact = hostArtifacts.get(args.pluginId);
+      if (
+        !loaded.has(args.pluginId) ||
+        artifact === undefined ||
+        artifact.generation !== args.generation
+      ) {
+        return;
+      }
+      const message = `host ${args.authenticatedHostId} ${args.stream}: ${args.line}`;
+      if (args.stream === "stderr") pluginLog.warn(args.pluginId, message);
+      else pluginLog.info(args.pluginId, message);
     },
 
     handleHostSignal(args) {
@@ -2059,14 +2208,16 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       }
       const prev = await readPluginSettingsValues(storeArgs);
       await writePluginSettingsUpdate({ ...storeArgs, values });
+      let problem: string | null = null;
       const next = await readPluginSettingsValues(storeArgs);
       if (JSON.stringify(next) !== JSON.stringify(prev)) {
         for (const listener of plugin.handle.settings.listeners) {
           try {
             listener(next, prev);
           } catch (error) {
-            logger.warn(
-              `plugin ${id} settings onChange listener failed: ${error instanceof Error ? error.message : String(error)}`,
+            pluginLog.warn(
+              id,
+              `settings onChange listener failed: ${error instanceof Error ? error.message : String(error)}`,
             );
           }
         }
@@ -2075,15 +2226,22 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         if (statuses.get(id)?.status === "needs-configuration") {
           const row = getInstalledPlugin(deps.db, id);
           if (row) {
-            await withLifecycleLock(id, async () => {
+            problem = await withLifecycleLock(id, async () => {
               await disposeOne(id);
-              await loadOne(row);
+              return loadOne(row);
             });
             notifyPluginsChanged();
           }
         }
       }
-      return buildPluginSettingsView(storeArgs);
+      const view = await buildPluginSettingsView(storeArgs);
+      return problem === null
+        ? { ok: true, view }
+        : {
+            ok: false,
+            error: `plugin "${id}" did not start: ${problem}`,
+            view,
+          };
     },
 
     getHttpRoute(id, method, path) {
@@ -2244,7 +2402,7 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
 
     async httpToken(id, options) {
       if (!getInstalledPlugin(deps.db, id)) return undefined;
-      const dir = pluginSecretsDir(deps.dataDir, id);
+      const dir = pluginDirectory(deps.dataDir, id, "secrets");
       if (options?.rotate) {
         await deleteSecretFile(join(dir, HTTP_TOKEN_FILE));
       }
@@ -2261,23 +2419,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
     },
 
     async runCliCommand(id, argv, ctx) {
-      const fail = (stderr: string) =>
-        enforcePluginCliOutputLimit(
-          { exitCode: 1, stdout: "", stderr },
-          argv.includes("--json"),
-        );
+      const fail = (code: string, message: string) =>
+        pluginCliFailureResult({ code, message }, argv.includes("--json"));
       const plugin = loaded.get(id);
       if (!plugin) {
         const row = getInstalledPlugin(deps.db, id);
-        if (!row) return fail(`unknown plugin "${id}"`);
+        if (!row) return fail("plugin_not_found", `unknown plugin "${id}"`);
         const { status, detail } = getStatus(row);
         return fail(
+          "plugin_not_running",
           `plugin "${id}" is not running (status: ${status}${detail ? ` — ${detail}` : ""})`,
         );
       }
       const registration = plugin.handle.cli.registration;
       if (!registration) {
-        return fail(`plugin "${id}" registers no CLI command`);
+        return fail(
+          "plugin_cli_not_registered",
+          `plugin "${id}" registers no CLI command`,
+        );
       }
       const outcome = await invokeWrapped(
         plugin,
@@ -2308,7 +2467,10 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
         ctx.signal,
       );
       if (outcome.ok) return outcome.value;
-      return fail(`bb ${registration.name} failed: ${outcome.error}`);
+      return fail(
+        "command_failed",
+        `bb ${registration.name} failed: ${outcome.error}`,
+      );
     },
 
     listSkillRootContributions() {
@@ -2495,7 +2657,23 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       )) {
         const provider = plugin.handle.instructionProvider;
         if (provider === null) continue;
-        out.push({ pluginId: id, provider });
+        out.push({
+          pluginId: id,
+          provider: (ctx) => {
+            try {
+              return provider(ctx);
+            } catch (error) {
+              const message =
+                error instanceof Error ? error.message : String(error);
+              pluginLog.warn(
+                id,
+                `contributeInstructions provider failed for thread ${ctx.threadId}; contributing nothing: ${message}`,
+                error,
+              );
+              return null;
+            }
+          },
+        });
       }
       return out;
     },
@@ -2584,22 +2762,24 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
               const outcome = await invokeWrapped(
                 plugin,
                 `mention search ${record.id}`,
-                async () => {
-                  const searchPromise = (async () =>
-                    record.search({
-                      trigger: args.trigger,
-                      query: args.query,
-                      projectId: args.projectId,
-                      threadId: args.threadId,
-                    }))();
-                  searchPromise.catch(() => {});
-                  const result = await raceTimeout(
-                    searchPromise,
-                    mentionSearchTimeoutMs,
-                    `timed out after ${mentionSearchTimeoutMs}ms`,
+                async (signal) => {
+                  const result = await mentionSearches.search(
+                    record,
+                    (searchSignal) =>
+                      record.search({
+                        trigger: args.trigger,
+                        query: args.query,
+                        projectId: args.projectId,
+                        threadId: args.threadId,
+                        experimental_signal: searchSignal,
+                      }),
+                    signal,
                   );
-                  return normalizeMentionSearchItems(record.id, result);
+                  return result === null
+                    ? []
+                    : normalizeMentionSearchItems(record.id, result);
                 },
+                args.signal,
               );
               if (!outcome.ok || outcome.value.length === 0) return null;
               return {
@@ -2768,8 +2948,9 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
           if (row === undefined) continue;
           const problem = await withLifecycleLock(id, () => loadOne(row));
           if (problem !== null) {
-            logger.warn(
-              `plugin ${id} did not resume after a server move: ${problem}`,
+            pluginLog.warn(
+              id,
+              `did not resume after a server move: ${problem}`,
             );
           }
           resumed.push(id);
@@ -2782,48 +2963,58 @@ export function createPluginService(deps: PluginServiceDeps): PluginService {
       });
     },
 
-    async sweepDueSchedules(now) {
-      if (schedulesPaused || loaded.size === 0) return;
-      const due = listDuePluginSchedules(deps.db, {
-        now,
-        limit: SCHEDULE_SWEEP_BATCH_SIZE,
-      });
-      for (const row of due) {
-        const owner = loaded.get(row.pluginId);
-        const schedule = owner?.handle.schedules.find(
-          (record) => record.name === row.name,
-        );
-        if (owner === undefined || schedule === undefined) continue;
-        let newNextRunAt: number;
-        try {
-          newNextRunAt = nextCronRunAt(schedule.cron, now);
-        } catch (error) {
-          logger.warn(
-            `[plugin:${row.pluginId}] schedule ${row.name} has an invalid cron: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
+    dueScheduleSweep(now) {
+      return defineItemSweep({
+        name: "plugin-schedule",
+        concurrency: 1,
+        list: ({ excludedKeys }) =>
+          schedulesPaused
+            ? []
+            : listDuePluginSchedules(deps.db, {
+                excludedKeys: new Set([...excludedKeys, ...runningSchedules]),
+                limit: SCHEDULE_SWEEP_BATCH_SIZE,
+                now,
+                pluginIds: [...loaded.keys()],
+              }),
+        key: (row) => pluginScheduleKey(row),
+        process: (row) => {
+          const owner = loaded.get(row.pluginId);
+          const schedule = owner?.handle.schedules.find(
+            (record) => record.name === row.name,
           );
-          continue;
-        }
-        const claimed = claimPluginScheduledRun(deps.db, {
-          pluginId: row.pluginId,
-          name: row.name,
-          expectedNextRunAt: row.nextRunAt,
-          newNextRunAt,
-          now,
-        });
-        if (!claimed) continue;
-        const outcome = await invokeWrapped(owner, `schedule ${row.name}`, () =>
-          schedule.fn(),
-        );
-        recordPluginScheduleResult(deps.db, {
-          pluginId: row.pluginId,
-          name: row.name,
-          status: outcome.ok ? "ok" : "error",
-          error: outcome.ok ? null : outcome.error,
-          now: Date.now(),
-        });
-      }
+          if (owner === undefined || schedule === undefined) return;
+          const key = pluginScheduleKey(row);
+          if (runningSchedules.has(key)) return;
+          const claimed = claimPluginScheduledRun(deps.db, {
+            pluginId: row.pluginId,
+            name: row.name,
+            expectedNextRunAt: row.nextRunAt,
+            newNextRunAt: nextCronRunAt(schedule.cron, now),
+            now,
+          });
+          if (!claimed) return;
+          runningSchedules.add(key);
+          void invokeWrapped(owner, `schedule ${row.name}`, () => schedule.fn())
+            .then((outcome) => {
+              recordPluginScheduleResult(deps.db, {
+                pluginId: row.pluginId,
+                name: row.name,
+                status: outcome.ok ? "ok" : "error",
+                error: outcome.ok ? null : outcome.error,
+                now: Date.now(),
+              });
+            })
+            .catch((error: unknown) => {
+              deps.logger.error(
+                { err: error, pluginId: row.pluginId, schedule: row.name },
+                "Plugin schedule result could not be recorded",
+              );
+            })
+            .finally(() => {
+              runningSchedules.delete(key);
+            });
+        },
+      });
     },
   };
 }

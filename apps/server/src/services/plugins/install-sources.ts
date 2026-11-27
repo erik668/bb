@@ -14,6 +14,7 @@ import {
   stat,
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { CORE_PLUGIN_DIRECTORIES } from "@bb/domain";
 import semver from "semver";
 import {
   hostToolchain,
@@ -27,6 +28,7 @@ import {
   installCancellationSignal,
   PluginInstallCancelledError,
 } from "./install-cancellation.js";
+import { sliceUtf16Tail } from "@bb/text-utils";
 
 type ParsedGitSelector =
   | { kind: "ref"; ref: string }
@@ -333,7 +335,12 @@ export function npmInstallPrefix(
   name: string,
   version: string,
 ): string {
-  return join(dataDir, "plugins", "npm", ...`${name}@${version}`.split("/"));
+  return join(
+    dataDir,
+    "plugins",
+    CORE_PLUGIN_DIRECTORIES.npmPackages,
+    ...`${name}@${version}`.split("/"),
+  );
 }
 
 export function npmPackageRoot(prefix: string, packageName: string): string {
@@ -388,7 +395,7 @@ export function npmArtifactCacheDir(
     throw new Error(`invalid npm package name "${packageName}"`);
   }
   return resolveInside(
-    join(dataDir, "plugins", "cache", "npm"),
+    join(dataDir, "plugins", CORE_PLUGIN_DIRECTORIES.cache, "npm"),
     [...packageName.split("/"), version],
     "npm artifact",
   );
@@ -401,7 +408,7 @@ export function gitArtifactCacheDir(
 ): string {
   if (!isCommitSha(commit)) throw new Error(`invalid git commit "${commit}"`);
   return resolveInside(
-    join(dataDir, "plugins", "cache", "git"),
+    join(dataDir, "plugins", CORE_PLUGIN_DIRECTORIES.cache, "git"),
     [...cachePath.split("/"), commit],
     "git artifact",
   );
@@ -497,11 +504,14 @@ export async function promoteImmutableDir(args: {
   await rm(`${args.targetDir}.promoting`, { recursive: true, force: true });
   const corruptDir = `${args.targetDir}.corrupt`;
   let movedCorruptTarget = false;
+  if (
+    (await hashInstallDir(args.targetDir).catch(() => null)) ===
+    args.contentHash
+  ) {
+    await rm(args.stagingDir, { recursive: true, force: true });
+    return;
+  }
   try {
-    if ((await hashInstallDir(args.targetDir)) === args.contentHash) {
-      await rm(args.stagingDir, { recursive: true, force: true });
-      return;
-    }
     await rm(corruptDir, { recursive: true, force: true });
     await rename(args.targetDir, corruptDir);
     movedCorruptTarget = true;
@@ -545,12 +555,92 @@ export async function promoteImmutableDir(args: {
   }
 }
 
+async function moveEntry(from: string, to: string): Promise<void> {
+  try {
+    await rename(from, to);
+  } catch (error) {
+    if (
+      !(error instanceof Error) ||
+      !("code" in error) ||
+      error.code !== "EXDEV"
+    ) {
+      throw error;
+    }
+    await cp(from, to, {
+      recursive: true,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
+    await rm(from, { recursive: true, force: true });
+  }
+}
+
+async function protectedCheckoutRoots(
+  targetDir: string,
+  installedRoots: string[],
+): Promise<Set<string>> {
+  const realTargetDir = await realpath(targetDir);
+  const roots = new Set(installedRoots);
+  for (const root of installedRoots) {
+    const real = await realpath(join(targetDir, root)).catch(() => null);
+    if (real === null) continue;
+    const fromRoot = relative(realTargetDir, real);
+    if (fromRoot !== ".." && !fromRoot.startsWith(`..${sep}`)) {
+      roots.add(fromRoot);
+    }
+  }
+  return roots;
+}
+
+async function adoptMissingEntries(
+  stagingDir: string,
+  targetDir: string,
+  skip: string,
+  installedRoots: Set<string>,
+  relativeDir = "",
+): Promise<void> {
+  const entries = await readdir(join(stagingDir, relativeDir), {
+    withFileTypes: true,
+  });
+  for (const entry of entries) {
+    const relativePath =
+      relativeDir.length === 0 ? entry.name : join(relativeDir, entry.name);
+    if (
+      relativePath === skip ||
+      relativePath === ".git" ||
+      installedRoots.has(relativePath)
+    ) {
+      continue;
+    }
+    const from = join(stagingDir, relativePath);
+    const to = join(targetDir, relativePath);
+    const existing = await lstat(to).catch(() => null);
+    if (existing === null) {
+      if (!skip.startsWith(`${relativePath}${sep}`)) {
+        await moveEntry(from, to);
+        continue;
+      }
+      await mkdir(to);
+    } else if (!existing.isDirectory() || !entry.isDirectory()) {
+      continue;
+    }
+    await adoptMissingEntries(
+      stagingDir,
+      targetDir,
+      skip,
+      installedRoots,
+      relativePath,
+    );
+  }
+}
+
 export async function promoteGitPluginArtifact(args: {
   stagingDir: string;
   targetDir: string;
   subdirectory: string | null;
   contentHash: string;
   preserveNestedRoots: string[];
+  installedRoots: string[];
 }): Promise<string> {
   const targetExists = await stat(args.targetDir)
     .then(() => true)
@@ -563,9 +653,10 @@ export async function promoteGitPluginArtifact(args: {
     });
     return args.contentHash;
   }
+  const realStagingDir = await realpath(args.stagingDir);
   const stagingRoot = await realPathInside(
-    args.stagingDir,
-    pluginRootDir(args.stagingDir, args.subdirectory),
+    realStagingDir,
+    pluginRootDir(realStagingDir, args.subdirectory),
     "git plugin subdirectory",
     args.subdirectory === null,
   );
@@ -577,6 +668,19 @@ export async function promoteGitPluginArtifact(args: {
     ) {
       await rm(args.stagingDir, { recursive: true, force: true });
       return args.contentHash;
+    }
+    const realSubdirectory = relative(realStagingDir, stagingRoot);
+    const installedRoots = await protectedCheckoutRoots(
+      args.targetDir,
+      args.installedRoots,
+    );
+    if (realSubdirectory.length > 0 && !installedRoots.has("")) {
+      await adoptMissingEntries(
+        realStagingDir,
+        args.targetDir,
+        realSubdirectory,
+        installedRoots,
+      );
     }
     await mkdir(dirname(targetRoot), { recursive: true });
     for (const nested of args.preserveNestedRoots) {
@@ -600,7 +704,7 @@ export async function promoteGitPluginArtifact(args: {
     }
     await promoteImmutableDir({
       stagingDir: stagingRoot,
-      targetDir: targetRoot,
+      targetDir: join(args.targetDir, realSubdirectory),
       contentHash: args.contentHash,
     });
   } finally {
@@ -642,7 +746,7 @@ export async function runInstallCommand(
     stdoutBytes += chunk.byteLength;
     const limit = options?.maxStdoutBytes;
     if (limit === undefined) {
-      if (stdout.length > 8192) stdout = stdout.slice(-8192);
+      if (stdout.length > 8192) stdout = sliceUtf16Tail(stdout, 8192);
     } else if (stdoutBytes > limit && !overflowed) {
       overflowed = true;
       killCommand();
@@ -650,7 +754,7 @@ export async function runInstallCommand(
   });
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString("utf8");
-    if (stderr.length > 8192) stderr = stderr.slice(-8192);
+    if (stderr.length > 8192) stderr = sliceUtf16Tail(stderr, 8192);
   });
   let cancelled = false;
   const cancel = () => {
@@ -696,7 +800,7 @@ export async function runInstallCommand(
         resolve();
         return;
       }
-      const tail = stderr.trim().slice(-1000);
+      const tail = sliceUtf16Tail(stderr.trim(), 1000);
       reject(
         new Error(
           `${command} ${args[0]} failed (exit ${code ?? "signal"})${tail ? `: ${tail}` : ""}`,

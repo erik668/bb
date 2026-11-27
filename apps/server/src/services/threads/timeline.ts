@@ -13,7 +13,8 @@ import {
 } from "./timeline-output-shortening.js";
 import {
   getTimelineGroupingContext,
-  orderTimelineRowsUsingContext,
+  rootTurnJoinedByThreadRow,
+  type TimelineTurnBlock,
 } from "./timeline-context-order.js";
 import {
   bindTimelineCursor,
@@ -21,22 +22,21 @@ import {
   resolveTimelineSnapshot,
   timelineSnapshotKey,
   type TimelineContentCursor,
+  type TimelineSnapshot,
 } from "./timeline-snapshot.js";
 import {
   buildThreadTimelineFromEvents,
+  buildThreadTimelineFromProjection,
+  projectThreadTimelineEvents,
   startThreadTimelineProjectionFold,
   THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
   buildThreadTimelineTurnDetailsFromEvents,
   compactThreadTimelineSummaryEvents,
   MIN_AGENT_MESSAGE_DELTAS_FOR_SUMMARY_COMPACTION,
   type AcceptedClientRequestContext,
+  type EventProjection,
   type ThreadEventWithMeta,
 } from "@bb/thread-view";
-import {
-  THREAD_PROVIDER_COMMANDS_STATE_KIND,
-  THREAD_SESSION_OPTIONS_STATE_KIND,
-  THREAD_SESSION_OPTION_SELECTIONS_STATE_KIND,
-} from "@bb/domain";
 import { sliceUtf16Head } from "@bb/text-utils";
 import type {
   ClientTurnRequestId,
@@ -72,7 +72,6 @@ import {
   getLatestCompletedThreadContextClearSequence,
   getThreadConversationOutlineRecord,
   getThreadEventRewriteGeneration,
-  listContextWindowUsageRows,
   isTimelineCursorSequencePresent,
   listStoredConversationOutlineEventRows,
   listStoredRootConversationOutlineEventRows,
@@ -82,18 +81,19 @@ import {
   listTimelineInterruptionRows,
   listStoredClientTurnRequestRowsByKeys,
   listStoredEventRowsByParentToolCallIds,
+  findStoredItemTurnIdInRange,
+  getStoredItemTreeSequenceRange,
   listItemEventSpansByItems,
   listStoredBufferedTextDeltaRowsByItems,
-  getStoredItemLifecycleSequenceRange,
   listStoredItemLifecycleRowsByItems,
   listLatestBackgroundTaskStateRowsByItemIds,
-  listLatestThreadStateEventRowsByThreadIds,
   listLatestOpenBackgroundTaskStateRowsForThread,
   listStoredTimelineWindowEventRows,
   listStoredTimelineTurnEventRows,
+  listStoredThreadInteractionLifecycleRows,
+  listStoredThreadNoticeAndInteractionRows,
   listStoredTimelineThreadWindowEventRows,
   listTimelineRootWindowTurnIds,
-  listTodoSnapshotEventRowsForThread,
   listStoredDelegatingItemRowsByItemIds,
   listStoredTurnInputAcceptedRowsByClientRequestIds,
   listStoredTurnRejectedRowsByClientRequestIds,
@@ -110,17 +110,36 @@ import type {
 } from "@bb/db";
 import { ApiError } from "../../errors.js";
 import { roundDurationMs } from "@bb/process-utils";
-import { runEventLoopWorkSync } from "../system/event-loop-work.js";
+import {
+  finishMainThreadCost,
+  runEventLoopWorkSync,
+  startMainThreadCost,
+  type MainThreadCost,
+} from "../system/event-loop-work.js";
 import { parseStoredEvent } from "./thread-data.js";
-import { withCompactionOffer } from "./compaction-offer.js";
+import { readThreadHeadState } from "./thread-head-state.js";
 import { decodeStoredEventRowCached } from "./stored-event-decode-cache.js";
+import {
+  keepTimelineProjection,
+  type BuiltTimelineProjection,
+  type TimelineProjection,
+} from "./timeline-projection-cache.js";
+import {
+  byteLengthOfStoredEventRows,
+  decodeTimelineSelectionRows,
+  withRowMeta,
+} from "./timeline-selection-decode.js";
+import { getOrProjectTimelineTurnDetails } from "./timeline-turn-details-cache.js";
 import {
   forgetTimelineProjectionFolds,
   keepTimelineProjectionFold,
 } from "./timeline-projection-fold.js";
 import {
   selectTimelineWindowStart,
+  keepLatestTimelinePageableRows,
   lookupLatestTimelineSelection,
+  reuseKeptLatestTimelinePageableRows,
+  rememberDecodedLatestTimelineSelection,
   rememberLatestTimelineSelection,
   TimelineSelectionTrimFallback,
   type LatestTimelineSelectionMemoArgs,
@@ -176,6 +195,7 @@ export function resolveThreadTimelineSurface(
       cursorKey,
       options.planCommand ?? null,
       options.compactionOfferEnabled,
+      options.extensionStateKinds ?? [],
     ]),
     threadName,
     workspaceRoot,
@@ -194,6 +214,7 @@ interface PartitionAcceptedInputRowsByRequestedTurnResult {
 
 interface FilterExactEventRowsForRequestedTurnArgs {
   acceptedClientRequestIdsForOtherTurns: ReadonlySet<ClientTurnRequestId>;
+  delegatedTurnIds: readonly string[];
   exactEventRows: readonly StoredEventRow[];
   turnId: string;
 }
@@ -224,7 +245,6 @@ interface BuildThreadTimelineOptions extends ThreadTimelineSurfaceOptions {
   responseByteBudget?: number;
   maxSeq: number;
   page: ThreadTimelinePageRequest;
-  summaryOnly?: boolean;
 }
 
 interface BuildTimelineTurnSummaryDetailsOptions extends TimelineTurnSummarySelection {
@@ -256,9 +276,9 @@ type ThreadTimelineBuildProfileStage =
   | "accepted-client-request-context-query"
   | "event-json-decode"
   | "summary-compaction"
-  | "context-window-query"
-  | "context-window-json-decode"
+  | "head-state"
   | "thread-view-projection"
+  | "thread-view-rows"
   | "pagination-segmentation";
 
 interface ThreadTimelineBuildProfileStageTiming {
@@ -269,8 +289,6 @@ interface ThreadTimelineBuildProfileStageTiming {
 export interface ThreadTimelineBuildProfile {
   compactedEventCount: number;
   foldedEventCount: number;
-  contextWindowEventDataBytes: number;
-  contextWindowEventRowCount: number;
   decodedEventCount: number;
   eventDataBytes: number;
   eventRowCount: number;
@@ -287,6 +305,7 @@ export interface ThreadTimelineBuildProfile {
 export type ThreadTimelineWindow = Omit<ThreadTimelineResponse, "tag">;
 
 interface BuildThreadTimelineInternalResult {
+  expiresAt: number | null;
   profile: ThreadTimelineBuildProfile;
   response: ThreadTimelineWindow;
 }
@@ -294,8 +313,6 @@ interface BuildThreadTimelineInternalResult {
 interface ThreadTimelineBuildProfileAccumulator {
   compactedEventCount: number;
   foldedEventCount: number;
-  contextWindowEventDataBytes: number;
-  contextWindowEventRowCount: number;
   decodedEventCount: number;
   eventDataBytes: number;
   eventRowCount: number;
@@ -319,6 +336,23 @@ interface TimelineWindowParentedRowsArgs extends TimelineWindowRowsArgs {
     beforeSequence: number | undefined;
     sequenceStart: number;
   } | null;
+  lookups: TimelineWindowParentedRowLookups;
+}
+
+interface TimelineWindowParentedRowLookups {
+  childToolCallIds: Set<string>;
+  loadedTurnIds: ReadonlySet<string>;
+  parentToolCallIds: Set<string>;
+}
+
+function createTimelineWindowParentedRowLookups(
+  loadedTurnIds: ReadonlySet<string>,
+): TimelineWindowParentedRowLookups {
+  return {
+    childToolCallIds: new Set(),
+    loadedTurnIds,
+    parentToolCallIds: new Set(),
+  };
 }
 
 interface TimelineWindowParentedRowsResult {
@@ -335,35 +369,27 @@ interface SelectedClientRequestContextRows {
   rejectedRows: StoredEventRow[];
 }
 
-function withRowMeta(
-  row: StoredEventRow,
-  event: ThreadEvent,
-): ThreadEventWithMeta {
-  return {
-    event,
-    meta: {
-      id: row.id,
-      seq: row.sequence,
-      createdAt: row.createdAt,
-    },
-  };
-}
-
 export function toThreadEventWithMeta(
   row: StoredEventRow,
 ): ThreadEventWithMeta {
   return withRowMeta(row, parseStoredEvent(row));
 }
 
-export function retainedOutputPreviewsByCallId(
+export interface RetainedOutputPreviews {
+  byCallId: ReadonlyMap<string, TimelineOutputPreview>;
+  expiresAt: number | null;
+}
+
+export function readRetainedOutputPreviews(
   events: readonly ThreadEventWithMeta[],
   availablePreview: Extract<
     TimelineOutputPreview["experimental_fullOutputAvailability"],
     "available" | "detail-limit"
   >,
   now: number,
-): ReadonlyMap<string, TimelineOutputPreview> {
-  const previews = new Map<string, TimelineOutputPreview>();
+): RetainedOutputPreviews {
+  const byCallId = new Map<string, TimelineOutputPreview>();
+  let expiresAt: number | null = null;
   for (const { event } of events) {
     if (event.type !== "item/completed") {
       continue;
@@ -376,17 +402,25 @@ export function retainedOutputPreviewsByCallId(
       item.type === "commandExecution"
         ? item.truncation?.aggregatedOutput
         : item.truncation?.result;
-    if (truncation !== undefined) {
-      previews.set(item.id, {
-        experimental_fullOutputAvailability:
-          truncation.truncatedAt > now ? availablePreview : "retention-expired",
-        totalChars: truncation.originalLength,
-      });
-    } else {
-      previews.delete(item.id);
+    if (truncation === undefined) {
+      byCallId.delete(item.id);
+      continue;
+    }
+    const available = truncation.truncatedAt > now;
+    byCallId.set(item.id, {
+      experimental_fullOutputAvailability: available
+        ? availablePreview
+        : "retention-expired",
+      totalChars: truncation.originalLength,
+    });
+    if (
+      available &&
+      (expiresAt === null || truncation.truncatedAt < expiresAt)
+    ) {
+      expiresAt = truncation.truncatedAt;
     }
   }
-  return previews;
+  return { byCallId, expiresAt };
 }
 
 export function withRetainedOutputPreview(
@@ -497,13 +531,38 @@ function collectSteerClientRequestIdsNeedingContext(
 function mergeStoredEventRowsById(
   rows: readonly StoredEventRow[],
 ): StoredEventRow[] {
-  const rowsById = new Map<string, StoredEventRow>();
-  for (const row of rows) {
-    rowsById.set(row.id, row);
+  let ascending = true;
+  for (let index = 1; index < rows.length; index += 1) {
+    if (rows[index - 1]!.sequence >= rows[index]!.sequence) {
+      ascending = false;
+      break;
+    }
   }
-  return [...rowsById.values()].sort(
+  if (ascending) return [...rows];
+  const ordered = [...rows].sort(
     (left, right) => left.sequence - right.sequence,
   );
+  const merged: StoredEventRow[] = [];
+  for (const row of ordered) {
+    let position = merged.length - 1;
+    while (
+      position >= 0 &&
+      merged[position]!.sequence === row.sequence &&
+      merged[position]!.id !== row.id
+    ) {
+      position -= 1;
+    }
+    if (
+      position >= 0 &&
+      merged[position]!.sequence === row.sequence &&
+      merged[position]!.id === row.id
+    ) {
+      merged[position] = row;
+    } else {
+      merged.push(row);
+    }
+  }
+  return merged;
 }
 
 function getStoredEventParentToolCallId(
@@ -556,6 +615,10 @@ function databaseTimelineRowSource(
       listStoredEventRows(db, { ...args, types: [...args.types] }),
     listParentRows: (args) => listStoredDelegatingItemRowsByItemIds(db, args),
     listRootWindowTurnIds: (args) => listTimelineRootWindowTurnIds(db, args),
+    listThreadNoticeAndInteractionRows: (args) =>
+      listStoredThreadNoticeAndInteractionRows(db, args),
+    listThreadInteractionRows: (args) =>
+      listStoredThreadInteractionLifecycleRows(db, args),
     listThreadWindowRows: (args) =>
       listStoredTimelineThreadWindowEventRows(db, args),
     listTurnRows: (args) => listStoredTimelineTurnEventRows(db, args),
@@ -569,22 +632,23 @@ function ensureTimelineWindowParentedRows(
   let rows = [...args.rows];
   const rowIds = new Set(rows.map((row) => row.id));
   const visibleToolCallIds = new Set(collectStoredDelegatingItemIds(rows));
-  const fetchedChildToolCallIds = new Set<string>();
+  const { lookups } = args;
 
   while (true) {
     const toolCallIdsToFetch = [...visibleToolCallIds].filter(
-      (toolCallId) => !fetchedChildToolCallIds.has(toolCallId),
+      (toolCallId) => !lookups.childToolCallIds.has(toolCallId),
     );
     if (toolCallIdsToFetch.length === 0) {
       break;
     }
     for (const toolCallId of toolCallIdsToFetch) {
-      fetchedChildToolCallIds.add(toolCallId);
+      lookups.childToolCallIds.add(toolCallId);
     }
 
     const childSequenceBounds = args.sequenceBounds;
     const childRows = args.source.listChildRows({
       beforeSequence: childSequenceBounds?.beforeSequence,
+      excludedTurnIds: [...lookups.loadedTurnIds],
       excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
       excludeDiagnosticEvents: args.excludeDiagnosticEvents,
       maxInlineOutputChars: args.maxInlineOutputChars,
@@ -606,8 +670,13 @@ function ensureTimelineWindowParentedRows(
   }
 
   const missingParentToolCallIds = collectStoredParentToolCallIds(rows).filter(
-    (parentToolCallId) => !visibleToolCallIds.has(parentToolCallId),
+    (parentToolCallId) =>
+      !visibleToolCallIds.has(parentToolCallId) &&
+      !lookups.parentToolCallIds.has(parentToolCallId),
   );
+  for (const parentToolCallId of missingParentToolCallIds) {
+    lookups.parentToolCallIds.add(parentToolCallId);
+  }
   const parentRows = args.source.listParentRows({
     itemIds: missingParentToolCallIds,
     maxInlineOutputChars: args.maxInlineOutputChars,
@@ -621,6 +690,38 @@ function ensureTimelineWindowParentedRows(
         ? mergeStoredEventRowsById([...newParentRows, ...rows])
         : rows,
   };
+}
+
+function ensureTimelineAncestorRows(
+  db: DbConnection,
+  args: {
+    maxInlineOutputChars: InlineOutputCharLimit;
+    rows: StoredEventRow[];
+    threadId: string;
+  },
+): StoredEventRow[] {
+  let rows = args.rows;
+  const requestedItemIds = new Set<string>();
+  for (;;) {
+    const presentItemIds = new Set(collectStoredDelegatingItemIds(rows));
+    const missingItemIds = collectStoredParentToolCallIds(rows).filter(
+      (itemId) => !presentItemIds.has(itemId) && !requestedItemIds.has(itemId),
+    );
+    if (missingItemIds.length === 0) {
+      return rows;
+    }
+    for (const itemId of missingItemIds) {
+      requestedItemIds.add(itemId);
+    }
+    rows = mergeStoredEventRowsById([
+      ...listStoredDelegatingItemRowsByItemIds(db, {
+        itemIds: missingItemIds,
+        maxInlineOutputChars: args.maxInlineOutputChars,
+        threadId: args.threadId,
+      }),
+      ...rows,
+    ]);
+  }
 }
 
 function minSequenceOfClientRequests(
@@ -709,8 +810,23 @@ function filterExactEventRowsForRequestedTurn(
 ): StoredEventRow[] {
   const rows: StoredEventRow[] = [];
   const openToolCallIds = new Set<string>();
+  const delegatingItemIds = new Set<string>();
+  const delegatedTurnIds = new Set<string>(args.delegatedTurnIds);
   for (const row of args.exactEventRows) {
-    if (row.scopeKind === "turn" && row.turnId !== args.turnId) {
+    const parentToolCallId = getStoredEventParentToolCallId(row);
+    if (
+      row.type === "turn/started" &&
+      row.turnId !== null &&
+      parentToolCallId !== undefined &&
+      delegatingItemIds.has(parentToolCallId)
+    ) {
+      delegatedTurnIds.add(row.turnId);
+    }
+    if (
+      row.scopeKind === "turn" &&
+      row.turnId !== args.turnId &&
+      (row.turnId === null || !delegatedTurnIds.has(row.turnId))
+    ) {
       const continuesOpenToolCall =
         row.itemId !== null &&
         row.type.startsWith("item/") &&
@@ -737,6 +853,9 @@ function filterExactEventRowsForRequestedTurn(
     ) {
       continue;
     }
+    if (isStoredDelegatingItemRow(row) && row.itemId !== null) {
+      delegatingItemIds.add(row.itemId);
+    }
     rows.push(row);
   }
 
@@ -745,9 +864,10 @@ function filterExactEventRowsForRequestedTurn(
 
 function collectTurnIdsMissingStartedRows(
   rows: readonly StoredEventRow[],
+  requestTargetTurnIds: readonly string[],
 ): string[] {
   const startedTurnIds = new Set<string>();
-  const turnScopedIds = new Set<string>();
+  const turnScopedIds = new Set<string>(requestTargetTurnIds);
 
   for (const row of rows) {
     if (row.scopeKind !== "turn" || row.turnId === null) {
@@ -774,9 +894,12 @@ function maxStoredEventSequence(rows: readonly StoredEventRow[]): number {
 
 function ensureTimelineWindowTurnStartedRows(
   db: DbConnection,
-  args: TimelineWindowRowsArgs,
+  args: TimelineWindowRowsArgs & { requestTargetTurnIds: readonly string[] },
 ): StoredEventRow[] {
-  const missingTurnIds = collectTurnIdsMissingStartedRows(args.rows);
+  const missingTurnIds = collectTurnIdsMissingStartedRows(
+    args.rows,
+    args.requestTargetTurnIds,
+  );
   if (missingTurnIds.length === 0) {
     return [...args.rows];
   }
@@ -954,34 +1077,6 @@ function ensureLatestTimelineOpenBackgroundTaskStateRows(
   return mergeStoredEventRowsById([...args.rows, ...stateRows]);
 }
 
-function listLatestTimelineHeadStateRows(
-  db: DbConnection,
-  threadId: string,
-  extensionStateKinds: readonly string[],
-): StoredEventRow[] {
-  return mergeStoredEventRowsById([
-    ...extensionStateKinds.flatMap((kind) =>
-      listLatestThreadStateEventRowsByThreadIds(db, {
-        threadIds: [threadId],
-        kind,
-      }),
-    ),
-    ...listLatestThreadStateEventRowsByThreadIds(db, {
-      threadIds: [threadId],
-      kind: THREAD_PROVIDER_COMMANDS_STATE_KIND,
-    }),
-    ...listLatestThreadStateEventRowsByThreadIds(db, {
-      threadIds: [threadId],
-      kind: THREAD_SESSION_OPTIONS_STATE_KIND,
-    }),
-    ...listLatestThreadStateEventRowsByThreadIds(db, {
-      threadIds: [threadId],
-      kind: THREAD_SESSION_OPTION_SELECTIONS_STATE_KIND,
-    }),
-    ...listTodoSnapshotEventRowsForThread(db, { threadId }),
-  ]);
-}
-
 function selectStandardTimelineEventRows(
   db: DbConnection,
   thread: Thread,
@@ -995,7 +1090,6 @@ function selectStandardTimelineEventRows(
   knownBudgetFloor: TimelineBudgetFloor | null,
   profile: ThreadTimelineBuildProfileAccumulator,
   source: TimelineSelectionRowSource,
-  extensionStateKinds: readonly string[],
 ): StandardTimelineEventRowSelection {
   const decode: StoredEventDecoder = (row) =>
     decodeStoredEventRowCached(db, row);
@@ -1033,15 +1127,27 @@ function selectStandardTimelineEventRows(
           excludeDiagnosticEvents,
         })
       : knownBudgetFloor.sequence;
+  const groupingContext = measureThreadTimelineStage(
+    profile,
+    "ordering-context-query",
+    () =>
+      getTimelineGroupingContext(db, {
+        threadId: thread.id,
+        sequenceStart: epochSequenceStart,
+        maxSeq,
+      }),
+  );
   const sequenceStart =
     contentCursor !== undefined && page.kind === "older"
       ? page.beforeCursor.anchorSeq
-      : selectTimelineWindowStart(
-          hints,
-          budgetFloor,
-          page.segmentLimit,
+      : selectTimelineWindowStart(db, {
+          beforeSequence,
+          budgetFloorSequence: budgetFloor,
           epochSequenceStart,
-        );
+          hints,
+          segmentLimit: page.segmentLimit,
+          threadId: thread.id,
+        });
   const hasOlder =
     sequenceStart > epochSequenceStart &&
     findTimelineWindowBudgetFloorSequence(db, {
@@ -1060,16 +1166,6 @@ function selectStandardTimelineEventRows(
     excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
     maxInlineOutputChars,
   };
-  const groupingContext = measureThreadTimelineStage(
-    profile,
-    "ordering-context-query",
-    () =>
-      getTimelineGroupingContext(db, {
-        threadId: thread.id,
-        sequenceStart: epochSequenceStart,
-        maxSeq,
-      }),
-  );
   let rows = source.listThreadWindowRows(windowArgs);
   const initialTurnIds = [
     ...source.listRootWindowTurnIds(windowArgs),
@@ -1084,15 +1180,81 @@ function selectStandardTimelineEventRows(
     }),
   ];
   const fetchedTurns = new Set<string>();
+  const parentedRowLookups =
+    createTimelineWindowParentedRowLookups(fetchedTurns);
+  const turnBlocksById = new Map(
+    groupingContext.turnBlocks.map((block) => [block.turnId, block]),
+  );
+  const runningTurnJoinedByThreadRow = (
+    row: StoredEventRow,
+  ): TimelineTurnBlock | null =>
+    rootTurnJoinedByThreadRow(db, row, groupingContext.turnBlocks);
+  const listThreadRowsJoiningTurns = (
+    turnIds: readonly string[],
+  ): StoredEventRow[] => {
+    const blocks = turnIds.flatMap((turnId) => {
+      const block = turnBlocksById.get(turnId);
+      return block === undefined ? [] : [block];
+    });
+    if (blocks.length === 0) return [];
+    const candidates = source.listThreadNoticeAndInteractionRows({
+      ...windowArgs,
+      sequenceStart: Math.max(
+        epochSequenceStart,
+        Math.min(...blocks.map((block) => block.startedSequence + 1)),
+      ),
+      beforeSequence:
+        Math.max(...blocks.map((block) => block.completionSequence ?? maxSeq)) +
+        1,
+    });
+    const joined = new Set(turnIds);
+    return candidates.filter((row) => {
+      const turn = runningTurnJoinedByThreadRow(row);
+      return turn !== null && joined.has(turn.turnId);
+    });
+  };
   rows = measureThreadTimelineStage(profile, "group-context-query", () => {
     let selectedRows = rows;
+    const fetchedInteractionIds = new Set<string>();
     for (;;) {
+      const interactionIds = [
+        ...new Set(
+          selectedRows.flatMap((row) => {
+            if (
+              row.turnId !== null ||
+              row.type !== "system/interaction/lifecycle"
+            ) {
+              return [];
+            }
+            const event = decode(row);
+            return event.type === "system/interaction/lifecycle" &&
+              !fetchedInteractionIds.has(event.interaction.id)
+              ? [event.interaction.id]
+              : [];
+          }),
+        ),
+      ];
+      if (interactionIds.length > 0) {
+        for (const id of interactionIds) fetchedInteractionIds.add(id);
+        selectedRows = mergeStoredEventRowsById([
+          ...selectedRows,
+          ...source.listThreadInteractionRows({
+            threadId: thread.id,
+            interactionIds,
+            sequenceStart: epochSequenceStart,
+            beforeSequence: maxSeq + 1,
+            maxInlineOutputChars,
+          }),
+        ]);
+      }
       const turnIds = [
         ...new Set([
           ...initialTurnIds,
-          ...selectedRows.flatMap((row) =>
-            row.turnId === null ? [] : [row.turnId],
-          ),
+          ...selectedRows.flatMap((row) => {
+            if (row.turnId !== null) return [row.turnId];
+            const turn = runningTurnJoinedByThreadRow(row);
+            return turn === null ? [] : [turn.turnId];
+          }),
         ]),
       ].filter((turnId) => !fetchedTurns.has(turnId));
       if (turnIds.length === 0) break;
@@ -1105,11 +1267,13 @@ function selectStandardTimelineEventRows(
           beforeSequence: maxSeq + 1,
           turnIds,
         }),
+        ...listThreadRowsJoiningTurns(turnIds),
       ]);
       selectedRows = ensureTimelineWindowParentedRows(db, {
         threadId: thread.id,
         rows: selectedRows,
         source,
+        lookups: parentedRowLookups,
         maxInlineOutputChars,
         excludeDiagnosticEvents,
         sequenceBounds: {
@@ -1170,6 +1334,7 @@ function selectStandardTimelineEventRows(
         !existingRequests.has(parseAcceptedInputClientRequestId(row, decode)),
     )
     .map((row) => ({
+      acceptedSequence: row.sequence,
       threadId: thread.id,
       requestId: parseAcceptedInputClientRequestId(row, decode),
     }));
@@ -1219,25 +1384,12 @@ function selectStandardTimelineEventRows(
     hints,
     fetchedTurnIds: fetchedTurns,
     selection: {
-      headStateRows:
-        page.kind === "latest"
-          ? measureThreadTimelineStage(profile, "group-context-query", () =>
-              listLatestTimelineHeadStateRows(
-                db,
-                thread.id,
-                extensionStateKinds,
-              ).filter(
-                (row) =>
-                  row.sequence <= maxSeq && !visibleSequences.has(row.sequence),
-              ),
-            )
-          : [],
       contextOnlyInterruptionSequences: new Set(
         interruptionRows
           .filter((row) => !visibleSequences.has(row.sequence))
           .map((row) => row.sequence),
       ),
-      orderingBoundarySequence: groupingContext.orderingBoundarySequence,
+      groupingContext,
       ownedSequenceStart: sequenceStart,
       ownedSequenceEnd: beforeSequence,
       hasOlderSegments: hasOlder,
@@ -1245,6 +1397,20 @@ function selectStandardTimelineEventRows(
         contentCursor === undefined ? page : { ...page, segmentLimit: 1 },
       rows: ensureTimelineWindowTurnStartedRows(db, {
         threadId: thread.id,
+        requestTargetTurnIds: [
+          ...contextRows,
+          ...requestedRows,
+          ...rows,
+        ].flatMap((row) => {
+          if (row.type !== "client/turn/requested") return [];
+          const event = decode(row);
+          if (event.type !== "client/turn/requested") return [];
+          return (event.target.kind === "steer" ||
+            event.target.kind === "auto") &&
+            event.target.expectedTurnId !== null
+            ? [event.target.expectedTurnId]
+            : [];
+        }),
         rows: mergeStoredEventRowsById([
           ...interruptionRows,
           ...terminalContext,
@@ -1259,27 +1425,10 @@ function selectStandardTimelineEventRows(
   };
 }
 
-const storedEventRowByteLengths = new WeakMap<StoredEventRow, number>();
-
-function byteLengthOfStoredEventRows(rows: readonly StoredEventRow[]): number {
-  let byteLength = 0;
-  for (const row of rows) {
-    let rowByteLength = storedEventRowByteLengths.get(row);
-    if (rowByteLength === undefined) {
-      rowByteLength = Buffer.byteLength(row.data, "utf8");
-      storedEventRowByteLengths.set(row, rowByteLength);
-    }
-    byteLength += rowByteLength;
-  }
-  return byteLength;
-}
-
 function createThreadTimelineBuildProfileAccumulator(): ThreadTimelineBuildProfileAccumulator {
   return {
     compactedEventCount: 0,
     foldedEventCount: 0,
-    contextWindowEventDataBytes: 0,
-    contextWindowEventRowCount: 0,
     decodedEventCount: 0,
     eventDataBytes: 0,
     eventRowCount: 0,
@@ -1316,8 +1465,6 @@ function completeThreadTimelineBuildProfile(
   return {
     compactedEventCount: accumulator.compactedEventCount,
     foldedEventCount: accumulator.foldedEventCount,
-    contextWindowEventDataBytes: accumulator.contextWindowEventDataBytes,
-    contextWindowEventRowCount: accumulator.contextWindowEventRowCount,
     decodedEventCount: accumulator.decodedEventCount,
     eventDataBytes: accumulator.eventDataBytes,
     eventRowCount: accumulator.eventRowCount,
@@ -1393,7 +1540,6 @@ function buildThreadTimelineInternal(
       knownBudgetFloor,
       profile,
       source,
-      options.extensionStateKinds ?? [],
     );
   const maxInlineOutputChars = options.maxInlineOutputChars;
   const active = thread.status === "active";
@@ -1407,19 +1553,16 @@ function buildThreadTimelineInternal(
           epochSequenceStart: historySequenceStart,
           eventBudget: options.eventBudget,
           excludeDiagnosticEvents: !includeDiagnosticOperations,
-          extensionStateKinds: options.extensionStateKinds ?? [],
           maxInlineOutputChars,
           maxSeq: snapshot.maxSeq,
           page: options.page,
           threadId: thread.id,
         }
       : null;
-  const storedEventSelection = measureThreadTimelineStage(
-    profile,
-    "event-query",
-    () => {
+  const { decodedPrefix, selection: storedEventSelection } =
+    measureThreadTimelineStage(profile, "event-query", () => {
       if (memoArgs === null) {
-        return selectRows(null).selection;
+        return { decodedPrefix: null, selection: selectRows(null).selection };
       }
       const lookup = measureThreadTimelineStage(
         profile,
@@ -1427,15 +1570,17 @@ function buildThreadTimelineInternal(
         () => lookupLatestTimelineSelection(db, memoArgs),
       );
       if (lookup.selection !== null) {
-        return lookup.selection;
+        return {
+          decodedPrefix: lookup.decodedPrefix,
+          selection: lookup.selection,
+        };
       }
       const result = selectTrimmedOrFreshRows(lookup.trimSource, (source) =>
         selectRows(lookup.budgetFloor, source),
       );
       rememberLatestTimelineSelection(db, memoArgs, lookup, result);
-      return result.selection;
-    },
-  );
+      return { decodedPrefix: null, selection: result.selection };
+    });
   const eventSelection =
     options.maxInlineOutputChars === null
       ? {
@@ -1444,144 +1589,176 @@ function buildThreadTimelineInternal(
         }
       : storedEventSelection;
   const rawEventRows = eventSelection.rows;
-  profile.eventDataBytes = byteLengthOfStoredEventRows(rawEventRows);
+  const decodedSelection = measureThreadTimelineStage(
+    profile,
+    "event-json-decode",
+    () => decodeTimelineSelectionRows(db, rawEventRows, decodedPrefix),
+  );
+  if (memoArgs !== null) {
+    rememberDecodedLatestTimelineSelection(
+      db,
+      memoArgs,
+      rawEventRows,
+      decodedSelection,
+    );
+  }
+  const decodedRawEvents = decodedSelection.events.slice();
+  profile.eventDataBytes = decodedSelection.dataBytes;
   profile.eventRowCount = rawEventRows.length;
   profile.selectionStrategy = eventSelection.strategy;
-  const decodedRawEvents = measureThreadTimelineStage(
-    profile,
-    "event-json-decode",
-    () =>
-      rawEventRows.map((row) =>
-        withRowMeta(row, decodeStoredEventRowCached(db, row)),
-      ),
-  );
-  const headStateEvents = measureThreadTimelineStage(
-    profile,
-    "event-json-decode",
-    () =>
-      eventSelection.headStateRows.map((row) =>
-        withRowMeta(row, decodeStoredEventRowCached(db, row)),
-      ),
-  );
-  profile.eventRowCount += eventSelection.headStateRows.length;
-  profile.eventDataBytes += byteLengthOfStoredEventRows(
-    eventSelection.headStateRows,
-  );
-  profile.decodedEventCount = decodedRawEvents.length + headStateEvents.length;
-  const decodedEvents = measureThreadTimelineStage(
-    profile,
-    "summary-compaction",
-    () => compactThreadTimelineSummaryEvents(decodedRawEvents),
-  );
-  profile.compactedEventCount = decodedEvents.length;
-  const contextWindowUsageRows = measureThreadTimelineStage(
-    profile,
-    "context-window-query",
-    () =>
-      listContextWindowUsageRows(db, {
-        sequenceStart: contextBoundarySeq ?? 0,
-        threadId: thread.id,
-      }),
-  );
-  profile.contextWindowEventDataBytes = byteLengthOfStoredEventRows(
-    contextWindowUsageRows,
-  );
-  profile.contextWindowEventRowCount = contextWindowUsageRows.length;
-  const commonProjectionOptions = {
+  profile.decodedEventCount = decodedRawEvents.length;
+  const headState =
+    options.page.kind === "latest"
+      ? measureThreadTimelineStage(profile, "head-state", () =>
+          readThreadHeadState(
+            db,
+            { ...thread, status: snapshot.status },
+            {
+              compactionOfferEnabled: options.compactionOfferEnabled,
+              extensionStateKinds: options.extensionStateKinds ?? [],
+              planCommand: options.planCommand ?? null,
+            },
+            snapshot.maxSeq,
+          ),
+        )
+      : null;
+  const projectionOptions = {
     completedTurnDisplay: options.completedTurnDisplay,
     includeDiagnosticOperations,
     isLatestPage: options.page.kind === "latest",
     providerDisplayName: options.providerDisplayName,
-    planCommand: options.planCommand,
-    extensionStateKinds: options.extensionStateKinds,
     summarizeShellCommands: options.summarizeShellCommands,
     threadStatus: snapshot.status,
     threadName: surface.threadName,
     workspaceRoot: surface.workspaceRoot,
-  };
-  const contextWindowEvents = measureThreadTimelineStage(
-    profile,
-    "context-window-json-decode",
-    () =>
-      contextWindowUsageRows.map((row) =>
-        withRowMeta(row, decodeStoredEventRowCached(db, row)),
-      ),
-  );
-  const acceptedClientRequestContext: AcceptedClientRequestContext = {
-    acceptedClientRequestEvents: [],
-    rejectedClientRequestEvents: [],
-  };
-  const timelineOptions = {
-    ...commonProjectionOptions,
-    includeNestedRows,
     providerId: thread.providerId,
   };
-  const timeline = measureThreadTimelineStage(
-    profile,
-    "thread-view-projection",
-    () =>
-      buildThreadTimelineFromEvents({
-        acceptedClientRequestContext,
-        contextWindowEvents,
-        headStateEvents,
-        events: decodedEvents,
-        fold:
-          memoArgs === null || !active
-            ? undefined
-            : keepTimelineProjectionFold(db, profile, {
-                decodedRows: decodedRawEvents,
-                key: JSON.stringify([
-                  thread.id,
-                  memoArgs.epochSequenceStart,
-                  memoArgs.eventBudget,
-                  memoArgs.excludeDiagnosticEvents,
-                  memoArgs.maxInlineOutputChars,
-                  memoArgs.page.segmentLimit,
-                  includeDiagnosticOperations,
-                  options.providerDisplayName ?? null,
-                  snapshot.status,
-                  surface.threadName,
-                ]),
-                rows: rawEventRows,
-                start: () =>
-                  startThreadTimelineProjectionFold({
-                    acceptedClientRequestContext,
-                    events: decodedEvents,
-                    options: timelineOptions,
-                  }),
-                threadId: thread.id,
-              }),
-        options: timelineOptions,
-      }),
-  );
-  const projectedTimelineRows = orderTimelineRowsUsingContext(
-    timeline.rows.filter(
-      (row) =>
-        !(
-          row.kind === "system" &&
-          row.systemKind === "operation" &&
-          row.operationKind === "thread-interrupted" &&
-          eventSelection.contextOnlyInterruptionSequences.has(
-            row.sourceSeqStart,
-          )
-        ),
-    ),
-    eventSelection.orderingBoundarySequence,
-  );
+  const deferContent = options.deferContent ?? false;
+  const timelineOptions = {
+    ...projectionOptions,
+    includeNestedRows,
+    omitSettledDelegationChildRows: deferContent,
+  };
+  const project = (
+    cachedEventProjection: EventProjection | null,
+  ): BuiltTimelineProjection => {
+    const decodedEvents = measureThreadTimelineStage(
+      profile,
+      "summary-compaction",
+      () => compactThreadTimelineSummaryEvents(decodedRawEvents),
+    );
+    const acceptedClientRequestContext: AcceptedClientRequestContext = {
+      acceptedClientRequestEvents: [],
+      rejectedClientRequestEvents: [],
+    };
+    const eventProjection =
+      cachedEventProjection ??
+      measureThreadTimelineStage(profile, "thread-view-projection", () =>
+        projectThreadTimelineEvents({
+          acceptedClientRequestContext,
+          events: decodedEvents,
+          fold:
+            memoArgs === null || !active
+              ? undefined
+              : keepTimelineProjectionFold(db, profile, {
+                  decodedRows: decodedRawEvents,
+                  key: JSON.stringify([
+                    thread.id,
+                    memoArgs.epochSequenceStart,
+                    memoArgs.eventBudget,
+                    memoArgs.excludeDiagnosticEvents,
+                    memoArgs.maxInlineOutputChars,
+                    memoArgs.page.segmentLimit,
+                    includeDiagnosticOperations,
+                    options.providerDisplayName ?? null,
+                    snapshot.status,
+                    surface.threadName,
+                  ]),
+                  rows: rawEventRows,
+                  start: () =>
+                    startThreadTimelineProjectionFold({
+                      acceptedClientRequestContext,
+                      events: decodedEvents,
+                      options: timelineOptions,
+                    }),
+                  threadId: thread.id,
+                }),
+          options: timelineOptions,
+        }),
+      );
+    const { rows: timelineRows, ...summary } = measureThreadTimelineStage(
+      profile,
+      "thread-view-rows",
+      () =>
+        buildThreadTimelineFromProjection({
+          acceptedClientRequestContext,
+          contextWindowEvents: [],
+          events: decodedEvents,
+          options: timelineOptions,
+          projection: eventProjection,
+        }),
+    );
+    const projection: TimelineProjection = {
+      compactedEventCount: decodedEvents.length,
+      rows: timelineRows.filter(
+        (row) =>
+          !(
+            row.kind === "system" &&
+            row.systemKind === "operation" &&
+            row.operationKind === "thread-interrupted" &&
+            eventSelection.contextOnlyInterruptionSequences.has(
+              row.sourceSeqStart,
+            )
+          ),
+      ),
+      summary,
+    };
+    return { eventProjection, projection };
+  };
+  const projection =
+    memoArgs === null
+      ? project(null).projection
+      : keepTimelineProjection(
+          {
+            includeNestedRows,
+            omitSettledDelegationChildRows: deferContent,
+            projectionKey: JSON.stringify([
+              projectionOptions,
+              [...eventSelection.contextOnlyInterruptionSequences],
+            ]),
+            rows: rawEventRows,
+          },
+          project,
+        );
+  const timeline = projection.summary;
+  const projectedTimelineRows = projection.rows;
+  profile.compactedEventCount = projection.compactedEventCount;
   profile.projectedRowCount = projectedTimelineRows.length;
-  const retainedOutputPreviews = retainedOutputPreviewsByCallId(
+  const retainedOutputPreviews = readRetainedOutputPreviews(
     decodedRawEvents,
     "available",
     Date.now(),
   );
-  const deferContent = options.deferContent ?? false;
-  const pageableTimelineRows = mapTimelineRowTree(
+  const mappedTimelineRows = mapTimelineRowTree(
     projectedTimelineRows,
     (row) => {
-      const previewed = withRetainedOutputPreview(row, retainedOutputPreviews);
+      const previewed = withRetainedOutputPreview(
+        row,
+        retainedOutputPreviews.byCallId,
+      );
       return deferContent ? deferSettledTimelineRow(previewed) : previewed;
     },
   );
+  const pageableRowsVariant = JSON.stringify([deferContent, includeNestedRows]);
+  const pageableTimelineRows =
+    memoArgs === null
+      ? mappedTimelineRows
+      : reuseKeptLatestTimelinePageableRows(
+          db,
+          memoArgs,
+          pageableRowsVariant,
+          mappedTimelineRows,
+        );
   const paginatedTimeline = measureThreadTimelineStage(
     profile,
     "pagination-segmentation",
@@ -1598,37 +1775,36 @@ function buildThreadTimelineInternal(
         rows: pageableTimelineRows,
       }),
   );
+  if (memoArgs !== null) {
+    keepLatestTimelinePageableRows(
+      db,
+      memoArgs,
+      pageableRowsVariant,
+      pageableTimelineRows,
+    );
+  }
   profile.responseRowCount = paginatedTimeline.rows.length;
   profile.returnedSegmentCount = paginatedTimeline.returnedSegmentCount;
 
   const response: ThreadTimelineWindow = {
     maxSeq: snapshot.maxSeq,
-    rows: options.summaryOnly ? [] : paginatedTimeline.rows,
+    rows: paginatedTimeline.rows,
     contextBoundarySeq,
     completedTurnDisplay: options.completedTurnDisplay,
-    activePromptMode:
-      options.page.kind === "latest" ? timeline.activePromptMode : null,
+    activePromptMode: headState?.activePromptMode ?? null,
     activeThinking:
       options.page.kind === "latest" ? timeline.activeThinking : null,
     activeWorkflows:
       options.page.kind === "latest" ? timeline.activeWorkflows : [],
     activeBackgroundCommands:
       options.page.kind === "latest" ? timeline.activeBackgroundCommands : [],
-    pendingTodos: timeline.pendingTodos,
-    extensionStates: timeline.extensionStates,
-    providerCommands: timeline.providerCommands,
-    sessionOptions: timeline.sessionOptions,
-    modelFallback:
-      options.page.kind === "latest" ? timeline.modelFallback : null,
-    contextWindowUsage:
-      options.page.kind === "latest" && timeline.contextWindowUsage
-        ? withCompactionOffer(db, {
-            enabled: options.compactionOfferEnabled,
-            sequenceStart: contextBoundarySeq ?? 0,
-            threadId: thread.id,
-            usage: timeline.contextWindowUsage,
-          })
-        : undefined,
+    pendingSteers: options.page.kind === "latest" ? timeline.pendingSteers : [],
+    pendingTodos: headState?.pendingTodos ?? null,
+    extensionStates: headState?.extensionStates ?? {},
+    providerCommands: headState?.providerCommands ?? null,
+    sessionOptions: headState?.sessionOptions ?? null,
+    modelFallback: headState?.modelFallback ?? null,
+    contextWindowUsage: headState?.contextWindowUsage ?? undefined,
     timelinePage: {
       returnedSegmentCount: paginatedTimeline.returnedSegmentCount,
       olderCursor: bindTimelineCursor(
@@ -1638,26 +1814,39 @@ function buildThreadTimelineInternal(
       ),
       historySnapshot: timelineSnapshotKey(snapshot),
       olderRowsSourceSeqEnd: paginatedTimeline.olderRowsSourceSeqEnd,
-      olderRowUpdates: options.summaryOnly
-        ? undefined
-        : paginatedTimeline.olderRowUpdates,
+      olderRowUpdates: paginatedTimeline.olderRowUpdates,
     },
   };
   return {
+    expiresAt: retainedOutputPreviews.expiresAt,
     response,
     profile: completeThreadTimelineBuildProfile(profile, options),
   };
+}
+
+function earliestExpiry(
+  left: number | null,
+  right: number | null,
+): number | null {
+  if (left === null) return right;
+  if (right === null) return left;
+  return Math.min(left, right);
 }
 
 export function buildThreadTimelineWithProfile(
   db: DbConnection,
   thread: Thread,
   options: BuildThreadTimelineOptions,
-): { profile: ThreadTimelineBuildProfile; response: ThreadTimelineWindow } {
-  return runEventLoopWorkSync(`timeline-build ${thread.id}`, () =>
-    db.transaction(() => {
+): {
+  cost: MainThreadCost;
+  expiresAt: number | null;
+  profile: ThreadTimelineBuildProfile;
+  response: ThreadTimelineWindow;
+} {
+  return runEventLoopWorkSync(`timeline-build ${thread.id}`, () => {
+    const started = startMainThreadCost();
+    const built = db.transaction(() => {
       const result = buildThreadTimelineInternal(db, thread, options);
-      if (options.summaryOnly) return result;
       for (
         let skipped = 0;
         skipped < MAX_EMPTY_TIMELINE_WINDOWS;
@@ -1673,6 +1862,7 @@ export function buildThreadTimelineWithProfile(
             segmentLimit: options.page.segmentLimit,
           },
         });
+        result.expiresAt = earliestExpiry(result.expiresAt, older.expiresAt);
         result.response.rows = older.response.rows;
         result.response.timelinePage = older.response.timelinePage;
         result.profile.eventRowCount += older.profile.eventRowCount;
@@ -1680,10 +1870,6 @@ export function buildThreadTimelineWithProfile(
         result.profile.decodedEventCount += older.profile.decodedEventCount;
         result.profile.compactedEventCount += older.profile.compactedEventCount;
         result.profile.foldedEventCount += older.profile.foldedEventCount;
-        result.profile.contextWindowEventRowCount +=
-          older.profile.contextWindowEventRowCount;
-        result.profile.contextWindowEventDataBytes +=
-          older.profile.contextWindowEventDataBytes;
         result.profile.projectedRowCount += older.profile.projectedRowCount;
         result.profile.responseRowCount = older.profile.responseRowCount;
         result.profile.returnedSegmentCount =
@@ -1694,8 +1880,9 @@ export function buildThreadTimelineWithProfile(
         );
       }
       return result;
-    }),
-  );
+    });
+    return { ...built, cost: finishMainThreadCost(started) };
+  });
 }
 
 interface BuildThreadConversationOutlineOptions {
@@ -1710,7 +1897,7 @@ interface LoadThreadConversationOutlineOptions extends BuildThreadConversationOu
 }
 
 const CONVERSATION_OUTLINE_PREVIEW_MAX_LENGTH = 200;
-const CONVERSATION_OUTLINE_PROJECTION_VERSION = 2;
+const CONVERSATION_OUTLINE_PROJECTION_VERSION = 3;
 const conversationOutlineItemsSchema =
   threadConversationOutlineItemSchema.array();
 
@@ -1818,6 +2005,7 @@ function buildThreadConversationRows(
       options: {
         completedTurnDisplay: options.completedTurnDisplay,
         includeNestedRows: options.includeNestedRows,
+        omitSettledDelegationChildRows: false,
         includeDiagnosticOperations: false,
         isLatestPage: true,
         providerDisplayName: options.providerDisplayName,
@@ -1829,7 +2017,10 @@ function buildThreadConversationRows(
       },
     });
     const conversationRows: TimelineConversationRow[] = [];
-    collectConversationRows(timeline.rows, conversationRows);
+    collectConversationRows(
+      [...timeline.rows, ...timeline.pendingSteers],
+      conversationRows,
+    );
     return conversationRows;
   });
 }
@@ -1883,6 +2074,7 @@ function selectThreadConversationOutline(
         options: {
           completedTurnDisplay: options.completedTurnDisplay,
           includeNestedRows: false,
+          omitSettledDelegationChildRows: false,
           includeDiagnosticOperations: false,
           isLatestPage: true,
           providerDisplayName: options.providerDisplayName,
@@ -1894,7 +2086,7 @@ function selectThreadConversationOutline(
         },
       });
       const items: ReturnType<ConversationOutlineSelection["project"]> = [];
-      for (const row of timeline.rows) {
+      for (const row of [...timeline.rows, ...timeline.pendingSteers]) {
         if (row.kind !== "conversation") {
           continue;
         }
@@ -1903,6 +2095,7 @@ function selectThreadConversationOutline(
           sourceSeqEnd: row.sourceSeqEnd,
           item: {
             id: row.id,
+            messageSeq: row.messageSeq,
             role: row.role,
             preview: toConversationOutlinePreview(row.text),
             attachmentSummary: toConversationOutlineAttachmentSummary(
@@ -1992,6 +2185,20 @@ export function buildThreadConversationOutlineProjectionKey(
   ]);
 }
 
+function buildConversationOutlineCheckpointKey(
+  thread: Thread,
+  options: BuildThreadConversationOutlineOptions,
+): string {
+  return JSON.stringify([
+    CONVERSATION_OUTLINE_PROJECTION_VERSION,
+    getThreadEventRewriteGeneration(thread.id),
+    thread.providerId,
+    options.providerDisplayName ?? null,
+    options.completedTurnDisplay,
+    options.includeClearedContextHistory,
+  ]);
+}
+
 function parseThreadConversationOutlineItems(
   itemsJson: string,
 ): ThreadConversationOutlineItem[] | null {
@@ -2035,19 +2242,13 @@ export function loadThreadConversationOutline(
         thread,
         options,
       );
-      const { orderingBoundarySequence } = getTimelineGroupingContext(db, {
-        maxSeq: options.maxSeq,
-        sequenceStart: historySequenceStart,
-        threadId: thread.id,
-      });
       return {
         items: projectConversationOutlineIncrementally({
           db,
           threadId: thread.id,
-          key: buildThreadConversationOutlineProjectionKey(thread, 0, options),
+          key: buildConversationOutlineCheckpointKey(thread, options),
           maxSeq: options.maxSeq,
           historySequenceStart,
-          orderingBoundarySequence,
           resolveProjectionState: (classificationSequenceStart, previous) => {
             const state = getStoredConversationOutlineProjectionState(db, {
               threadId: thread.id,
@@ -2058,7 +2259,6 @@ export function loadThreadConversationOutline(
             });
             return {
               includeNestedEvents:
-                orderingBoundarySequence !== null ||
                 previous?.includeNestedEvents === true ||
                 state.includeNestedEvents,
               summaryCompactionEnabled: state.summaryCompactionEnabled,
@@ -2142,29 +2342,117 @@ function scopeTimelineTurnDetailsRows(
   return matched.length === 0 ? null : mapTimelineRowTree(matched, withPreview);
 }
 
-function resolveTimelineTurnDetailsRange(
+interface TimelineTurnDetailsReadRange {
+  delegatedTurnIds: readonly string[];
+  sequenceEnd: number;
+  sequenceStart: number;
+}
+
+function listTimelineDelegatedTurnChain(
   db: DbConnection,
   thread: Thread,
   options: BuildTimelineTurnSummaryDetailsOptions,
-): Pick<TimelineTurnSummarySelection, "sourceSeqEnd" | "sourceSeqStart"> {
-  const lifecycle =
-    options.itemId === null
-      ? null
-      : getStoredItemLifecycleSequenceRange(db, {
-          itemId: options.itemId,
-          threadId: thread.id,
-          turnId: options.turnId,
-        });
-  if (lifecycle === null) {
+  itemTurnId: string,
+): string[] | null {
+  const chain: string[] = [];
+  let turnId = itemTurnId;
+  while (turnId !== options.turnId) {
+    if (chain.includes(turnId)) {
+      return null;
+    }
+    chain.push(turnId);
+    const [started] = listStoredTurnStartedRowsByTurnIdsUpToSequence(db, {
+      sequenceCutoff: options.sourceSeqEnd,
+      threadId: thread.id,
+      turnIds: [turnId],
+    });
+    const parentToolCallId =
+      started === undefined
+        ? undefined
+        : getStoredEventParentToolCallId(started);
+    if (started === undefined || parentToolCallId === undefined) {
+      return null;
+    }
+    const parentTurnId = findStoredItemTurnIdInRange(db, {
+      itemId: parentToolCallId,
+      sequenceEnd: started.sequence,
+      sequenceStart: options.sourceSeqStart,
+      threadId: thread.id,
+    });
+    if (parentTurnId === null) {
+      return null;
+    }
+    turnId = parentTurnId;
+  }
+  return chain;
+}
+
+function findTimelineTurnDetailsItemRange(
+  db: DbConnection,
+  thread: Thread,
+  options: BuildTimelineTurnSummaryDetailsOptions & { itemId: string },
+): TimelineTurnDetailsReadRange | null {
+  const range = getStoredItemTreeSequenceRange(db, {
+    itemId: options.itemId,
+    threadId: thread.id,
+    turnId: options.turnId,
+  });
+  if (range !== null) {
     return {
-      sourceSeqEnd: options.sourceSeqEnd,
-      sourceSeqStart: options.sourceSeqStart,
+      delegatedTurnIds: [],
+      sequenceEnd: range.last,
+      sequenceStart: range.first,
     };
   }
-  return {
-    sourceSeqEnd: Math.max(options.sourceSeqEnd, lifecycle.last),
-    sourceSeqStart: Math.min(options.sourceSeqStart, lifecycle.first),
-  };
+  const itemTurnId = findStoredItemTurnIdInRange(db, {
+    itemId: options.itemId,
+    sequenceEnd: options.sourceSeqEnd,
+    sequenceStart: options.sourceSeqStart,
+    threadId: thread.id,
+  });
+  if (itemTurnId === null) {
+    return null;
+  }
+  const delegatedTurnIds = listTimelineDelegatedTurnChain(
+    db,
+    thread,
+    options,
+    itemTurnId,
+  );
+  const itemRange =
+    delegatedTurnIds === null
+      ? null
+      : getStoredItemTreeSequenceRange(db, {
+          itemId: options.itemId,
+          threadId: thread.id,
+          turnId: itemTurnId,
+        });
+  return delegatedTurnIds === null || itemRange === null
+    ? null
+    : {
+        delegatedTurnIds,
+        sequenceEnd: itemRange.last,
+        sequenceStart: itemRange.first,
+      };
+}
+
+function resolveTimelineTurnDetailsReadRange(
+  db: DbConnection,
+  thread: Thread,
+  options: BuildTimelineTurnSummaryDetailsOptions,
+): TimelineTurnDetailsReadRange {
+  return (
+    (options.itemId === null
+      ? null
+      : findTimelineTurnDetailsItemRange(db, thread, {
+          ...options,
+          itemId: options.itemId,
+        })) ?? {
+      delegatedTurnIds: [],
+      sequenceEnd: options.sourceSeqEnd,
+      sequenceStart: options.sourceSeqStart,
+    }
+  );
 }
 
 export function buildTimelineTurnSummaryDetails(
@@ -2173,10 +2461,7 @@ export function buildTimelineTurnSummaryDetails(
   options: BuildTimelineTurnSummaryDetailsOptions,
 ): TimelineTurnSummaryDetailsResponse {
   return db.transaction(() =>
-    buildTimelineTurnSummaryDetailsPage(db, thread, {
-      ...options,
-      ...resolveTimelineTurnDetailsRange(db, thread, options),
-    }),
+    buildTimelineTurnSummaryDetailsPage(db, thread, options),
   );
 }
 
@@ -2192,6 +2477,7 @@ function buildTimelineTurnSummaryDetailsPage(
       "sourceSeqStart must be less than or equal to sourceSeqEnd",
     );
   }
+  const readRange = resolveTimelineTurnDetailsReadRange(db, thread, options);
 
   const detailsPage: ThreadTimelinePageRequest =
     options.beforeCursor === undefined
@@ -2224,12 +2510,62 @@ function buildTimelineTurnSummaryDetailsPage(
     ]),
   );
   const contentCursor = readTimelineContentCursor(detailsPage);
+  const projection = getOrProjectTimelineTurnDetails(db, {
+    project: () =>
+      projectTimelineTurnSummaryDetails(
+        db,
+        thread,
+        options,
+        readRange,
+        snapshot,
+        Date.now(),
+      ),
+    revision: JSON.stringify([
+      timelineSnapshotKey(snapshot),
+      getThreadEventRewriteGeneration(thread.id),
+    ]),
+    slot: JSON.stringify([thread.id, snapshot.surface]),
+    threadId: thread.id,
+  });
+  const contents = paginateTimelineContents(
+    projection.rows,
+    contentCursor?.beforeLeaf,
+    TIMELINE_TURN_DETAILS_PAGE_LEAF_LIMIT,
+    TIMELINE_TURN_DETAILS_PAGE_BYTE_LIMIT,
+    projection.leafBytes,
+  );
+  const cursor =
+    contents.start === 0
+      ? null
+      : bindTimelineCursor(
+          {
+            anchorId: options.turnId,
+            anchorSeq: Math.max(1, options.sourceSeqStart),
+          },
+          snapshot,
+          { beforeLeaf: contents.start, beforeSequence: snapshot.maxSeq + 1 },
+        );
+  return {
+    rows: contents.rows,
+    olderCursor: cursor?.anchorId ?? null,
+    historySnapshot: timelineSnapshotKey(snapshot),
+  };
+}
+
+function projectTimelineTurnSummaryDetails(
+  db: DbConnection,
+  thread: Thread,
+  options: BuildTimelineTurnSummaryDetailsOptions,
+  readRange: TimelineTurnDetailsReadRange,
+  snapshot: TimelineSnapshot,
+  now: number,
+): { expiresAt: number | null; rows: TimelineRow[] } {
   const includeDiagnosticOperations = options.includeDiagnosticOperations;
   const detailsWindow = {
-    beforeSequence: Math.min(options.sourceSeqEnd, snapshot.maxSeq) + 1,
+    beforeSequence: Math.min(readRange.sequenceEnd, snapshot.maxSeq) + 1,
     excludeDiagnosticEvents: !includeDiagnosticOperations,
     excludedTypes: THREAD_TIMELINE_EXCLUDED_EVENT_TYPES,
-    sequenceStart: options.sourceSeqStart,
+    sequenceStart: readRange.sequenceStart,
     threadId: thread.id,
   };
   const fullDetailsFloor = findStoredTimelineWindowByteBudgetFloor(db, {
@@ -2247,8 +2583,8 @@ function buildTimelineTurnSummaryDetailsPage(
   });
   const clientRequestIds = listStoredClientTurnRequestIdsInRange(db, {
     threadId: thread.id,
-    seqStart: options.sourceSeqStart,
-    seqEnd: options.sourceSeqEnd,
+    seqStart: readRange.sequenceStart,
+    seqEnd: readRange.sequenceEnd,
   });
   const exactAcceptedInputRows = exactEventRows.filter(
     (row) => row.type === "turn/input/accepted",
@@ -2256,7 +2592,7 @@ function buildTimelineTurnSummaryDetailsPage(
   const futureAcceptedInputRows =
     listStoredTurnInputAcceptedRowsByClientRequestIds(db, {
       threadId: thread.id,
-      afterSequence: options.sourceSeqEnd,
+      afterSequence: readRange.sequenceEnd,
       clientRequestIds,
     }).filter((row) => row.sequence <= snapshot.maxSeq);
   const acceptedInputRowsByTurn = partitionAcceptedInputRowsByRequestedTurn({
@@ -2266,6 +2602,7 @@ function buildTimelineTurnSummaryDetailsPage(
   const exactEventRowsForRequestedTurn = filterExactEventRowsForRequestedTurn({
     acceptedClientRequestIdsForOtherTurns:
       acceptedInputRowsByTurn.acceptedClientRequestIdsForOtherTurns,
+    delegatedTurnIds: readRange.delegatedTurnIds,
     exactEventRows,
     turnId: options.turnId,
   });
@@ -2279,7 +2616,7 @@ function buildTimelineTurnSummaryDetailsPage(
   );
   const contextSequenceCutoff = eventRows.reduce(
     (maxSequence, row) => Math.max(maxSequence, row.sequence),
-    options.sourceSeqEnd,
+    readRange.sequenceEnd,
   );
   const requestedTurnStartedRows = hasCurrentStartedRow
     ? []
@@ -2292,7 +2629,7 @@ function buildTimelineTurnSummaryDetailsPage(
     throw new ApiError(
       400,
       "invalid_request",
-      `Timeline turn summary details range ${options.sourceSeqStart}-${options.sourceSeqEnd} cannot resolve turn/started for ${options.turnId}`,
+      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} cannot resolve turn/started for ${options.turnId}`,
     );
   }
   const turnContextRows = mergeStoredEventRowsById([
@@ -2304,7 +2641,7 @@ function buildTimelineTurnSummaryDetailsPage(
     afterSequence:
       turnContextRows.reduce(
         (minSequence, row) => Math.min(minSequence, row.sequence),
-        options.sourceSeqStart,
+        readRange.sequenceStart,
       ) - 1,
     beforeSequence: contextSequenceCutoff + 1,
     types: ["turn/started", "turn/completed"],
@@ -2316,18 +2653,24 @@ function buildTimelineTurnSummaryDetailsPage(
     sequenceStart: detailsWindow.sequenceStart,
     threadId: thread.id,
   });
-  const eventRowsWithParentedChildren = ensureTimelineWindowParentedRows(db, {
-    excludeDiagnosticEvents: !includeDiagnosticOperations,
-    source: databaseTimelineRowSource(db),
+  const eventRowsWithParentedChildren = ensureTimelineAncestorRows(db, {
     maxInlineOutputChars: detailsInlineOutputLimit,
-    sequenceBounds: {
-      beforeSequence: snapshot.maxSeq + 1,
-      sequenceStart: detailsWindow.sequenceStart,
-    },
     threadId: thread.id,
-    rows: wholeItemEventRows,
-  }).rows;
+    rows: ensureTimelineWindowParentedRows(db, {
+      excludeDiagnosticEvents: !includeDiagnosticOperations,
+      lookups: createTimelineWindowParentedRowLookups(new Set()),
+      source: databaseTimelineRowSource(db),
+      maxInlineOutputChars: detailsInlineOutputLimit,
+      sequenceBounds: {
+        beforeSequence: snapshot.maxSeq + 1,
+        sequenceStart: detailsWindow.sequenceStart,
+      },
+      threadId: thread.id,
+      rows: wholeItemEventRows,
+    }).rows,
+  });
   const eventRowsWithTurnStarts = ensureTimelineWindowTurnStartedRows(db, {
+    requestTargetTurnIds: [],
     threadId: thread.id,
     rows: eventRowsWithParentedChildren,
   });
@@ -2358,7 +2701,7 @@ function buildTimelineTurnSummaryDetailsPage(
     options: {
       completedTurnDisplay: options.completedTurnDisplay,
       includeDiagnosticOperations,
-      sourceSeqStart: options.sourceSeqStart,
+      sourceSeqStart: Math.min(options.sourceSeqStart, readRange.sequenceStart),
       summarizeShellCommands: options.summarizeShellCommands,
       turnId: options.turnId,
       providerDisplayName: options.providerDisplayName,
@@ -2368,50 +2711,32 @@ function buildTimelineTurnSummaryDetailsPage(
     },
   });
 
-  if (children.kind !== "missing-match") {
-    const scopedRows = scopeTimelineTurnDetailsRows(
-      children.rows,
-      retainedOutputPreviewsByCallId(
-        projectionEvents,
-        "detail-limit",
-        Date.now(),
-      ),
-      options,
+  if (children.kind === "missing-match") {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} does not include turn ${options.turnId}`,
     );
-    if (scopedRows === null) {
-      throw new ApiError(
-        400,
-        "invalid_request",
-        `Timeline turn summary details range ${options.sourceSeqStart}-${options.sourceSeqEnd} does not include item ${options.itemId}`,
-      );
-    }
-    const contents = paginateTimelineContents(
-      scopedRows,
-      contentCursor?.beforeLeaf,
-      TIMELINE_TURN_DETAILS_PAGE_LEAF_LIMIT,
-      TIMELINE_TURN_DETAILS_PAGE_BYTE_LIMIT,
-    );
-    const cursor =
-      contents.start === 0
-        ? null
-        : bindTimelineCursor(
-            {
-              anchorId: options.turnId,
-              anchorSeq: Math.max(1, options.sourceSeqStart),
-            },
-            snapshot,
-            { beforeLeaf: contents.start, beforeSequence: snapshot.maxSeq + 1 },
-          );
-    return {
-      rows: contents.rows,
-      olderCursor: cursor?.anchorId ?? null,
-      historySnapshot: timelineSnapshotKey(snapshot),
-    };
   }
-
-  throw new ApiError(
-    400,
-    "invalid_request",
-    `Timeline turn summary details range ${options.sourceSeqStart}-${options.sourceSeqEnd} does not include turn ${options.turnId}`,
+  const retainedOutputPreviews = readRetainedOutputPreviews(
+    projectionEvents,
+    "detail-limit",
+    now,
   );
+  const scopedRows = scopeTimelineTurnDetailsRows(
+    children.rows,
+    retainedOutputPreviews.byCallId,
+    options,
+  );
+  if (scopedRows === null) {
+    throw new ApiError(
+      400,
+      "invalid_request",
+      `Timeline turn summary details range ${readRange.sequenceStart}-${readRange.sequenceEnd} does not include item ${options.itemId}`,
+    );
+  }
+  return {
+    expiresAt: retainedOutputPreviews.expiresAt,
+    rows: scopedRows,
+  };
 }

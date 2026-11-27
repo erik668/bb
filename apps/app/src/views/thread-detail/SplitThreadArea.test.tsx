@@ -13,6 +13,7 @@ import { createStore, Provider as JotaiProvider } from "jotai";
 import {
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -97,6 +98,9 @@ const timelineProbe = vi.hoisted(() => ({
 }));
 
 const composerScopeProbe = vi.hoisted(() => ({ active: false }));
+const routeCommits = vi.hoisted(
+  (): Array<{ path: string; panes: string[] }> => [],
+);
 
 function ThreadComposerScope({
   projectId,
@@ -129,7 +133,12 @@ function ThreadComposerHostPublisher({
   });
   const host = useMemo<PluginComposerHost>(
     () => ({
-      scope: { kind: "thread", threadId },
+      scope: {
+        kind: "thread",
+        threadId,
+        projectId: "proj_test",
+        environmentId: null,
+      },
       textEffectKey: promptDraft.storageKey,
       getCurrent: promptDraft.getCurrent,
       subscribeDraft: promptDraft.subscribe,
@@ -454,7 +463,12 @@ function ThreadPaneFixture({
   const composerHost = useMemo<PluginComposerHost>(() => {
     const draft = { attachments: [], mentions: [], text: "" };
     return {
-      scope: { kind: "thread", threadId },
+      scope: {
+        kind: "thread",
+        threadId,
+        projectId: "proj_test",
+        environmentId: null,
+      },
       textEffectKey: `test-draft-${threadId}`,
       getCurrent: () => draft,
       subscribeDraft: () => () => {},
@@ -825,11 +839,24 @@ function ExternalNav({ to }: { to: string }) {
     <button
       type="button"
       data-testid="external-nav"
-      onClick={() => navigate(to)}
+      onClick={() => void navigate(to)}
     >
       go
     </button>
   );
+}
+
+function RouteCommitProbe() {
+  const { pathname } = useLocation();
+  useLayoutEffect(() => {
+    routeCommits.push({
+      path: pathname,
+      panes: screen
+        .queryAllByTestId(/^pane-thr-/)
+        .map((pane) => pane.getAttribute("data-testid") ?? ""),
+    });
+  }, [pathname]);
+  return null;
 }
 
 function PluginPanelLifecycleHarness() {
@@ -902,6 +929,7 @@ function renderSplitArea(options: {
                 <SplitThreadArea routeContent={options.routeContent} />
               )}
               <LocationProbe />
+              <RouteCommitProbe />
               {options.externalTo !== undefined ? (
                 <ExternalNav to={options.externalTo} />
               ) : null}
@@ -925,6 +953,7 @@ beforeEach(() => {
   timelineProbe.active = false;
   timelineProbe.calls.clear();
   composerScopeProbe.active = false;
+  routeCommits.length = 0;
   threadStore.set("thr-a", { archivedAt: null, deletedAt: null });
   threadStore.set("thr-b", { archivedAt: null, deletedAt: null });
 });
@@ -1272,7 +1301,12 @@ describe("SplitThreadArea", () => {
     await screen.findByTestId("pane-thr-a");
 
     expect(commandHandlers.get("pane.focus.right")?.()).toBe(true);
-    await waitFor(() => expect(store.get(maximizedPaneIdAtom)).toBe("pane-2"));
+    await waitFor(() => {
+      expect(store.get(maximizedPaneIdAtom)).toBe("pane-2");
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-b"),
+      );
+    });
 
     const opened = applyThreadOpenToLayout(
       store.get(splitLayoutAtom),
@@ -2124,6 +2158,39 @@ describe("SplitThreadArea", () => {
     ).toEqual([screen.getByTestId("pane-thr-a")]);
   });
 
+  it("shows the destination thread in the commit that changes the route", async () => {
+    renderSplitArea({
+      path: threadPath("thr-a"),
+      externalTo: threadPath("thr-c"),
+    });
+    await screen.findByTestId("pane-thr-a");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await screen.findByTestId("pane-thr-c");
+
+    expect(
+      routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
+    ).toEqual([{ path: threadPath("thr-c"), panes: ["pane-thr-c"] }]);
+  });
+
+  it("shows the destination thread in a split in the commit that changes the route", async () => {
+    renderSplitArea({
+      path: threadPath("thr-b"),
+      layout: twoPaneLayout("pane-2"),
+      externalTo: threadPath("thr-c"),
+    });
+    await screen.findByTestId("pane-thr-b");
+
+    fireEvent.click(screen.getByTestId("external-nav"));
+    await screen.findByTestId("pane-thr-c");
+
+    expect(
+      routeCommits.filter((commit) => commit.path === threadPath("thr-c")),
+    ).toEqual([
+      { path: threadPath("thr-c"), panes: ["pane-thr-a", "pane-thr-c"] },
+    ]);
+  });
+
   it("opens a created thread in the focused composer pane", async () => {
     const store = renderSplitArea({
       path: "/",
@@ -2339,6 +2406,31 @@ describe("SplitThreadArea", () => {
     });
     expect(screen.getByTestId("pane-thr-b").dataset.focused).toBe("false");
     expect(screen.queryAllByTestId(/^pane-/)).toHaveLength(2);
+  });
+
+  it("focuses the pane keyboard focus moves into, but not one hidden by maximize", async () => {
+    const store = renderSplitArea({
+      path: threadPath("thr-a"),
+      layout: twoPaneLayout("pane-1"),
+    });
+    const draftB = await screen.findByTestId("draft-thr-b");
+
+    act(() => draftB.focus());
+    await waitFor(() => {
+      expect(screen.getByTestId("pane-thr-b").dataset.focused).toBe("true");
+      expect(screen.getByTestId("location").textContent).toBe(
+        threadPath("thr-b"),
+      );
+    });
+    expect(screen.getByTestId("pane-thr-a").dataset.focused).toBe("false");
+
+    act(() => screen.getByTestId("draft-thr-a").focus());
+    fireEvent.click(screen.getByTestId("maximize-thr-a"));
+    expect(store.get(maximizedPaneIdAtom)).toBe("pane-1");
+
+    act(() => draftB.focus());
+    expect(store.get(maximizedPaneIdAtom)).toBe("pane-1");
+    expect(store.get(splitLayoutAtom)?.focusedPaneId).toBe("pane-1");
   });
 
   it("leaves uninvolved panes unrendered and pane callbacks stable when focus moves in a four-pane split", async () => {
@@ -3362,4 +3454,85 @@ describe("SplitThreadArea compact breakpoint crossings", () => {
     }
     expect(paneMounts.get("new-thread")).toBe(1);
   });
+});
+
+function UnsavedPluginForm() {
+  const [value, setValue] = useState("");
+  return (
+    <input
+      data-testid="plugin-form-input"
+      value={value}
+      onChange={(event) => setValue(event.target.value)}
+    />
+  );
+}
+
+describe("SplitThreadArea single-pane breakpoint contract", () => {
+  const SINGLE_PANE_SURFACES: ReadonlyArray<{
+    name: string;
+    path: string;
+    content: PaneContent;
+    rootTestId: string;
+  }> = [
+    {
+      name: "thread",
+      path: threadPath("thr-a"),
+      content: threadContent("thr-a"),
+      rootTestId: "pane-thr-a",
+    },
+    {
+      name: "new thread",
+      path: "/",
+      content: newThreadContent,
+      rootTestId: "root-compose-view",
+    },
+    {
+      name: "plugin navigation panel",
+      path: "/plugins/docs/docs",
+      content: docsContent,
+      rootTestId: "plugin-browser-host",
+    },
+  ];
+
+  it.each(SINGLE_PANE_SURFACES)(
+    "keeps a single $name pane mounted across compact breakpoint crossings",
+    async ({ path, content, rootTestId }) => {
+      setPluginSlotRegistrations(
+        "docs",
+        makePluginRegistrationSet({
+          navPanels: [
+            {
+              id: "docs",
+              title: "Docs",
+              icon: "FileText",
+              path: "docs",
+              component: UnsavedPluginForm,
+            },
+          ],
+        }),
+      );
+      renderSplitArea({
+        path,
+        layout: {
+          root: { type: "pane", paneId: "pane-1", content },
+          focusedPaneId: "pane-1",
+        },
+        routeAwareContent: true,
+      });
+      const root = await screen.findByTestId(rootTestId);
+      const input = screen.queryByTestId<HTMLInputElement>("plugin-form-input");
+      expect(input !== null).toBe(content.kind === "plugin-panel");
+      if (input !== null)
+        fireEvent.change(input, { target: { value: "unsaved plugin form" } });
+
+      for (const compact of [true, false, true, false]) {
+        setCompactViewport(compact);
+        expect(screen.getByTestId(rootTestId)).toBe(root);
+        if (input !== null) {
+          expect(screen.getByTestId("plugin-form-input")).toBe(input);
+          expect(input.value).toBe("unsaved plugin form");
+        }
+      }
+    },
+  );
 });

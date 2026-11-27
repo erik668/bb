@@ -1,21 +1,20 @@
 import {
   getEnvironment,
   getSessionById,
+  getThreadFailureKind,
   listActiveBackgroundTaskCountsByThreadIds,
   listLatestClosedSessionsForHosts,
   listLatestThreadStateEventRowsByThreadIds,
-  listOpenTurnInputAcceptedRowsByThreadIds,
-  listStoredClientTurnRequestRowsByKeys,
   type DbConnection,
   type HostDaemonSessionRow,
   type StoredEventRow,
-  type ThreadClientTurnRequestKey,
   type ThreadWithPendingInteractionState,
 } from "@bb/db";
 import { LEGACY_CODEX_GOAL_EXTENSION_KIND } from "@bb/domain";
 import type {
   Thread,
   ThreadActivityState,
+  ThreadFailureKind,
   ThreadChangeMetadata,
   ThreadListEntry,
   ThreadQueuedWork,
@@ -40,6 +39,7 @@ import {
   canThreadEditMessages,
   type ThreadMessageEditPolicyDeps,
 } from "./thread-message-edit-policy.js";
+import { listOpenTurnRequestRows } from "./thread-head-state.js";
 import { toThreadEventWithMeta } from "./timeline.js";
 import { intendedThreadHostId } from "./dispatch-attempt.js";
 
@@ -59,12 +59,14 @@ interface ThreadPromptBannerDeps extends ThreadRuntimeDisplayDeps {
 
 interface ResolveThreadRuntimeStateArgs {
   environmentHostId: string | null;
+  failure: ThreadFailureKind | null;
   now?: number;
   status: ThreadStatus;
 }
 
 interface ResolveThreadRuntimeStateFromLatestSessionArgs {
   environmentHostId: string | null;
+  failure: ThreadFailureKind | null;
   hostConnected: boolean;
   latestClosedSession: HostDaemonSessionRow | null;
   now?: number;
@@ -94,15 +96,20 @@ interface ToThreadListEntryResponseFromLatestSessionArgs {
   thread: ThreadWithPendingInteractionState;
 }
 
+type ThreadWithStatusChangedAt = Thread &
+  Pick<ThreadListEntry, "statusChangedAt"> & {
+    failureKind: ThreadFailureKind | null;
+  };
+
 interface BuildThreadStatusChangeMetadataByThreadIdArgs {
   environmentHostId: string;
-  threads: readonly Thread[];
+  threads: readonly ThreadWithStatusChangedAt[];
 }
 
 interface ToThreadStatusChangeMetadataArgs {
   activity: ThreadActivityState;
   runtime: ThreadRuntimeState;
-  thread: Thread;
+  thread: ThreadWithStatusChangedAt;
 }
 
 interface PromptBannerActivityState extends Pick<
@@ -119,7 +126,10 @@ const EMPTY_THREAD_ACTIVITY: ThreadActivityState = {
   activeWorkflowCount: 0,
 };
 
-function threadStatusRuntimeState(status: ThreadStatus): ThreadRuntimeState {
+function threadStatusRuntimeState(
+  status: ThreadStatus,
+  failure: ThreadFailureKind | null,
+): ThreadRuntimeState {
   switch (status) {
     case "pending":
     case "starting":
@@ -127,7 +137,7 @@ function threadStatusRuntimeState(status: ThreadStatus): ThreadRuntimeState {
     case "active":
     case "stopping":
     case "error":
-      return { displayStatus: status };
+      return { displayStatus: status, failure };
   }
 }
 
@@ -177,6 +187,7 @@ export function resolveThreadRuntimeState(
   if (args.status !== "active" || args.environmentHostId === null) {
     return resolveThreadRuntimeStateFromLatestSession({
       environmentHostId: args.environmentHostId,
+      failure: args.failure,
       hostConnected: false,
       latestClosedSession: null,
       now: args.now,
@@ -190,6 +201,7 @@ export function resolveThreadRuntimeState(
   );
   return resolveThreadRuntimeStateFromLatestSession({
     environmentHostId: args.environmentHostId,
+    failure: args.failure,
     hostConnected,
     latestClosedSession: getLatestClosedSessionForHost(deps, {
       hostConnected,
@@ -209,16 +221,16 @@ function resolveThreadRuntimeStateFromLatestSession(
   // derived from live dispatch holds — the holds are gone and `pending` is the
   // status, so the derivation and its second vocabulary went with them.
   if (args.status !== "active" || args.environmentHostId === null) {
-    return threadStatusRuntimeState(args.status);
+    return threadStatusRuntimeState(args.status, args.failure);
   }
 
   if (
     args.hostConnected ||
     isHostDisconnectHidden(args.latestClosedSession, args.now ?? Date.now())
   ) {
-    return threadStatusRuntimeState("active");
+    return threadStatusRuntimeState("active", args.failure);
   }
-  return { displayStatus: "waiting-for-host" };
+  return { displayStatus: "waiting-for-host", failure: args.failure };
 }
 
 function getLatestClosedSessionForHost(
@@ -246,7 +258,7 @@ function resolveThreadEnvironmentHostId(
 
 export function buildThreadStatusChangeMetadata(
   deps: ThreadPromptBannerDeps,
-  thread: Thread,
+  thread: ThreadWithStatusChangedAt,
 ): ThreadChangeMetadata {
   return toThreadStatusChangeMetadata({
     activity:
@@ -254,6 +266,7 @@ export function buildThreadStatusChangeMetadata(
       EMPTY_THREAD_ACTIVITY,
     runtime: resolveThreadRuntimeState(deps, {
       environmentHostId: resolveThreadEnvironmentHostId(deps, thread),
+      failure: thread.failureKind,
       status: thread.status,
     }),
     thread,
@@ -286,6 +299,7 @@ export function buildThreadStatusChangeMetadataByThreadId(
         activity: activityByThreadId.get(thread.id) ?? EMPTY_THREAD_ACTIVITY,
         runtime: resolveThreadRuntimeStateFromLatestSession({
           environmentHostId: args.environmentHostId,
+          failure: thread.failureKind,
           hostConnected,
           latestClosedSession,
           status: thread.status,
@@ -306,6 +320,7 @@ function toThreadStatusChangeMetadata(
       runtime: args.runtime,
       activity: args.activity,
       latestAttentionAt: args.thread.latestAttentionAt,
+      statusChangedAt: args.thread.statusChangedAt,
       updatedAt: args.thread.updatedAt,
     },
   };
@@ -320,6 +335,7 @@ function toThreadResponseWithHost(
     ...thread,
     runtime: resolveThreadRuntimeState(deps, {
       environmentHostId: args.environmentHostId,
+      failure: getThreadFailureKind(deps.db, thread.id),
       now: args.now,
       status: thread.status,
     }),
@@ -387,26 +403,11 @@ function listPromptBannerActivityCandidateRows(
   deps: ThreadPromptBannerDeps,
   threads: readonly Thread[],
 ): StoredEventRow[] {
-  const openAcceptedRows = listOpenTurnInputAcceptedRowsByThreadIds(deps.db, {
-    threadIds: threads
+  return listOpenTurnRequestRows(
+    deps.db,
+    threads
       .filter((thread) => canThreadShowActivePlanMode(deps, thread))
       .map((thread) => thread.id),
-  });
-  const openAcceptedEvents = openAcceptedRows.map(toThreadEventWithMeta);
-  const requestKeys: ThreadClientTurnRequestKey[] = openAcceptedEvents.flatMap(
-    ({ event }) =>
-      event.type === "turn/input/accepted"
-        ? [{ requestId: event.clientRequestId, threadId: event.threadId }]
-        : [],
-  );
-  const requestRows = listStoredClientTurnRequestRowsByKeys(deps.db, {
-    keys: requestKeys,
-  });
-
-  return [...openAcceptedRows, ...requestRows].sort(
-    (left, right) =>
-      left.threadId.localeCompare(right.threadId) ||
-      left.sequence - right.sequence,
   );
 }
 
@@ -595,10 +596,13 @@ function toThreadListEntryResponseFromLatestSession(
     activity: args.activity,
     queuedWork: args.queuedWork,
     pinSortKey: args.thread.pinSortKey,
+    statusChangedAt: args.thread.statusChangedAt,
     environmentBranchName: args.thread.environmentBranchName,
     environmentHostId: args.thread.environmentHostId,
     environmentName: args.thread.environmentName,
     environmentPath: args.thread.environmentPath,
+    environmentStatus: args.thread.environmentStatus,
+    environmentHostLifecycle: args.thread.environmentHostLifecycle,
     environmentProviderId: args.thread.environmentProviderId,
     environmentIsWorktree: args.thread.environmentIsWorktree,
     environmentWorkspaceDisplayKind: resolveEnvironmentWorkspaceDisplayKind({
@@ -608,6 +612,7 @@ function toThreadListEntryResponseFromLatestSession(
     hasPendingInteraction: args.thread.hasPendingInteraction,
     runtime: resolveThreadRuntimeStateFromLatestSession({
       environmentHostId: args.thread.environmentHostId,
+      failure: args.thread.failureKind,
       hostConnected: args.hostConnected,
       latestClosedSession: args.latestClosedSession,
       now: args.now,

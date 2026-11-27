@@ -3,6 +3,7 @@ import type {
   SidebarBootstrapResponse,
   ThreadSearchResponse,
   ThreadTimelineResponse,
+  TimelineRow,
 } from "@bb/server-contract";
 import { QueryObserver } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
@@ -86,9 +87,10 @@ function makeSearchResponse(thread: ThreadListEntry): ThreadSearchResponse {
   return {
     active: {
       total: 1,
+      totalCapped: false,
       results: [{ thread, matches: [] }],
     },
-    archived: { total: 0, results: [] },
+    archived: { total: 0, totalCapped: false, results: [] },
   };
 }
 
@@ -238,9 +240,9 @@ describe("thread runtime cache owner", () => {
     });
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => ({
           content: queuedMessage.content,
           groupWithNext: queuedMessage.groupWithNext,
@@ -268,9 +270,9 @@ describe("thread runtime cache owner", () => {
     });
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => queuedMessage.id),
     ).toEqual(["qmsg-first", "qmsg-edit", "qmsg-last"]);
 
@@ -885,9 +887,9 @@ describe("thread runtime cache owner", () => {
 
     expect(
       queryClient
-        .getQueryData<
-          ThreadQueuedMessage[]
-        >(threadQueuedMessagesQueryKey("thread-1"))
+        .getQueryData<ThreadQueuedMessage[]>(
+          threadQueuedMessagesQueryKey("thread-1"),
+        )
         ?.map((queuedMessage) => queuedMessage.id),
     ).toEqual(["qmsg-3"]);
     const timeline = queryClient.getQueryData<ThreadTimelineResponse>(
@@ -1103,7 +1105,7 @@ describe("thread runtime cache owner", () => {
       queryClient,
       realtimeConnected: true,
       request,
-      result: { ok: true, delivery: "sent" },
+      result: { ok: true, delivery: "sent", messageSequence: 1 },
       transaction,
     });
     await Promise.resolve();
@@ -1171,7 +1173,7 @@ describe("thread runtime cache owner", () => {
             queryClient,
             realtimeConnected: true,
             request,
-            result: { ok: true, delivery: "sent" },
+            result: { ok: true, delivery: "sent", messageSequence: 1 },
             transaction,
           });
         } else {
@@ -1189,6 +1191,107 @@ describe("thread runtime cache owner", () => {
         unsubscribe();
         queryClient.clear();
       }
+    },
+  );
+
+  const serverUserRow: TimelineRow = {
+    id: "row-server",
+    kind: "conversation",
+    role: "user",
+    threadId: "thread-1",
+    turnId: "turn-1",
+    messageSeq: 7,
+    sourceSeqStart: 7,
+    sourceSeqEnd: 7,
+    startedAt: 2,
+    createdAt: 2,
+    text: "Steered prompt",
+    mentions: [],
+    attachments: null,
+    initiator: "user",
+    senderThreadId: null,
+    systemMessageKind: "unlabeled",
+    systemMessageSubject: null,
+    turnRequest: { isGrouped: false, kind: "steer", status: "accepted" },
+  };
+  const unrelatedRow: TimelineRow = {
+    ...serverUserRow,
+    id: "row-unrelated",
+    role: "assistant",
+    messageSeq: 6,
+    sourceSeqStart: 6,
+    sourceSeqEnd: 6,
+    text: "Background agent progress",
+    turnRequest: null,
+  };
+
+  it.each([
+    {
+      name: "the refreshed timeline already contains the message",
+      refreshed: { rows: [serverUserRow], maxSeq: 7 },
+      messageSequence: 7,
+      expectedTexts: ["Steered prompt"],
+    },
+    {
+      name: "an unrelated refresh landed before the message",
+      refreshed: { rows: [unrelatedRow], maxSeq: 6 },
+      messageSequence: 7,
+      expectedTexts: ["Background agent progress", "Steered prompt"],
+    },
+    {
+      name: "the server recorded no message position",
+      refreshed: { rows: [unrelatedRow], maxSeq: 6 },
+      messageSequence: null,
+      expectedTexts: ["Background agent progress", "Steered prompt"],
+    },
+  ])(
+    "shows a predicted queued send that was steered exactly once when $name",
+    async ({ expectedTexts, messageSequence, refreshed }) => {
+      const queryClient = createAppQueryClient({
+        defaultOptions: { queries: { gcTime: Infinity, retry: false } },
+        showMutationErrorToasts: false,
+      });
+      queryClient.setQueryData(threadQueryKey("thread-1"), {
+        status: "active",
+        updatedAt: 1,
+        runtime: { displayStatus: "active" },
+      });
+      queryClient.setQueryData(
+        threadTimelineQueryKey("thread-1"),
+        makeTimelineResponse({ maxSeq: 5 }),
+      );
+      const request = {
+        id: "thread-1",
+        mode: "queue-if-active" as const,
+        input: [
+          { type: "text" as const, text: "Steered prompt", mentions: [] },
+        ],
+      };
+      const transaction = await beginSendThreadMessageTransaction({
+        queryClient,
+        request,
+      });
+      expect(transaction.kind).toBe("queued-message");
+      queryClient.setQueryData(
+        threadTimelineQueryKey("thread-1"),
+        makeTimelineResponse(refreshed),
+      );
+
+      applySendThreadMessageSuccess({
+        queryClient,
+        realtimeConnected: true,
+        request,
+        result: { ok: true, delivery: "sent", messageSequence },
+        transaction,
+      });
+
+      expect(
+        queryClient
+          .getQueryData<ThreadTimelineResponse>(
+            threadTimelineQueryKey("thread-1"),
+          )
+          ?.rows.map((row) => (row.kind === "conversation" ? row.text : null)),
+      ).toEqual(expectedTexts);
     },
   );
 
@@ -1251,7 +1354,7 @@ describe("thread runtime cache owner", () => {
       queryClient,
       realtimeConnected: true,
       request,
-      result: { ok: true, delivery: "sent" },
+      result: { ok: true, delivery: "sent", messageSequence: 1 },
       transaction,
     });
     await vi.waitFor(() => {

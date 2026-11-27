@@ -68,6 +68,11 @@ routed threads; use `bb pool bypass <thread-id>` for a thread that needs them.
 Claude Code removes `ANTHROPIC_AUTH_TOKEN` from tool subprocesses in this mode,
 so route a nested `claude` explicitly with
 `ANTHROPIC_AUTH_TOKEN="$BB_ACCOUNT_POOL_PARENT_TOKEN" claude ...`.
+Claude Code skips its served model catalog behind the pool and lists only the
+models it cached under a personal login, so the pool also contributes
+`BB_CLAUDE_MODELS_URL`. The Claude Code model picker then lists the models
+that pooled accounts can use from that hub route, newest first after Claude
+Code's default, including newly released ones.
 Codex receives `CODEX_OPENAI_BASE_URL` and the secret
 `CODEX_POOL_AUTH_TOKEN`; bb applies them as in-memory app-server config.
 Codex image generation and editing use the same authenticated pool route.
@@ -161,9 +166,8 @@ Codex credits use the same fallback policy and availability pill. The pool reads
 `credits.has_credits` and `credits.unlimited` from usage responses and the
 corresponding `x-codex-credits-*` headers. Credit-only updates are accepted;
 omitted fields preserve prior observations. Workspace hard stops (the
-`workspace_{owner,member}_{credits_depleted,usage_limit_reached}` limit types,
-or a reached spend control) block routing even below the subscription switch
-threshold and survive restarts. Other limit types, including unknown ones, do
+`workspace_{owner,member}_{credits_depleted,usage_limit_reached}` limit types) block routing even below the subscription switch
+threshold and survive restarts. A reached spend control blocks credit fallback. Included requests can still route when a current plan window shows capacity and no applicable window is exhausted. Other limit types, including unknown ones, do
 not restrict the account. A refreshed allowance or spending-control observation can
 clear the matching restriction. JSON account/status responses expose
 `usageRestriction` (reason and optional reset time); the pool does not change

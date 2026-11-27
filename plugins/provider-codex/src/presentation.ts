@@ -38,15 +38,29 @@ export const PLAN_PRESENTATION: DeltaPresentation = {
   icon: { glyph: "ListTodo" },
 };
 
-export const IMAGE_VIEW_PRESENTATION: DeltaPresentation = {
-  label: { pending: "Viewing image", completed: "Viewed image" },
-  icon: { glyph: "Eye" },
-};
-
 export const IMAGE_GENERATION_PRESENTATION: DeltaPresentation = {
   label: { pending: "Generating image", completed: "Generated image" },
   icon: { glyph: "Palette" },
 };
+
+export function backgroundCommandDescription(command: string): string {
+  return unwrapShellCommand(command);
+}
+
+export function backgroundCommandPresentation(
+  command: string,
+): DeltaPresentation {
+  return withTitle(
+    {
+      label: {
+        pending: "Running background command",
+        completed: "Background command finished",
+      },
+      icon: { glyph: "Terminal" },
+    },
+    presentationTitle(unwrapShellCommand(command)),
+  );
+}
 
 export function commandPresentation(command: string): DeltaPresentation {
   return withTitle(
@@ -72,13 +86,6 @@ export function fileChangePresentation(
       icon: { glyph: "EditFile" },
     },
     names.length === 0 ? undefined : presentationTitle(names.join(", ")),
-  );
-}
-
-export function imageViewPresentation(path: string): DeltaPresentation {
-  return withTitle(
-    IMAGE_VIEW_PRESENTATION,
-    presentationTitle(presentationFileName(path)),
   );
 }
 

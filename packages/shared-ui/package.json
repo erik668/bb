@@ -94,6 +94,16 @@
       "types": "./src/components/ui/hover-card.tsx",
       "default": "./src/components/ui/hover-card.tsx"
     },
+    "./info-list-more-row": {
+      "source": "./src/components/ui/info-list-more-row.tsx",
+      "types": "./src/components/ui/info-list-more-row.tsx",
+      "default": "./src/components/ui/info-list-more-row.tsx"
+    },
+    "./option-picker": {
+      "source": "./src/components/ui/option-picker.tsx",
+      "types": "./src/components/ui/option-picker.tsx",
+      "default": "./src/components/ui/option-picker.tsx"
+    },
     "./plugin-icon": {
       "source": "./src/components/ui/plugin-icon.tsx",
       "types": "./src/components/ui/plugin-icon.tsx",
@@ -134,6 +144,11 @@
       "types": "./src/components/ui/menu-item-hover.tsx",
       "default": "./src/components/ui/menu-item-hover.tsx"
     },
+    "./message-time": {
+      "source": "./src/components/ui/message-time.tsx",
+      "types": "./src/components/ui/message-time.tsx",
+      "default": "./src/components/ui/message-time.tsx"
+    },
     "./motion": {
       "source": "./src/components/ui/motion.ts",
       "types": "./src/components/ui/motion.ts",
@@ -164,11 +179,6 @@
       "types": "./src/components/ui/resource-list.tsx",
       "default": "./src/components/ui/resource-list.tsx"
     },
-    "./resource-edit-prompt": {
-      "source": "./src/components/ui/resource-edit-prompt.ts",
-      "types": "./src/components/ui/resource-edit-prompt.ts",
-      "default": "./src/components/ui/resource-edit-prompt.ts"
-    },
     "./resource-pagination": {
       "source": "./src/components/ui/resource-pagination.tsx",
       "types": "./src/components/ui/resource-pagination.tsx",
@@ -193,6 +203,11 @@
       "source": "./src/components/ui/responsive-overlay.tsx",
       "types": "./src/components/ui/responsive-overlay.tsx",
       "default": "./src/components/ui/responsive-overlay.tsx"
+    },
+    "./right-panel-file-visuals": {
+      "source": "./src/components/ui/right-panel-file-visuals.ts",
+      "types": "./src/components/ui/right-panel-file-visuals.ts",
+      "default": "./src/components/ui/right-panel-file-visuals.ts"
     },
     "./schedule-time-fields": {
       "source": "./src/components/ui/schedule-time-fields.tsx",
@@ -224,6 +239,16 @@
       "types": "./src/components/ui/textarea.tsx",
       "default": "./src/components/ui/textarea.tsx"
     },
+    "./thread-storage-tree": {
+      "source": "./src/components/ui/thread-storage-tree.ts",
+      "types": "./src/components/ui/thread-storage-tree.ts",
+      "default": "./src/components/ui/thread-storage-tree.ts"
+    },
+    "./thread-unarchive-button": {
+      "source": "./src/components/ui/thread-unarchive-button.tsx",
+      "types": "./src/components/ui/thread-unarchive-button.tsx",
+      "default": "./src/components/ui/thread-unarchive-button.tsx"
+    },
     "./toggle-group": {
       "source": "./src/components/ui/toggle-group.tsx",
       "types": "./src/components/ui/toggle-group.tsx",
@@ -234,10 +259,25 @@
       "types": "./src/components/ui/tooltip.tsx",
       "default": "./src/components/ui/tooltip.tsx"
     },
+    "./truncate-path-middle": {
+      "source": "./src/components/ui/truncate-path-middle.tsx",
+      "types": "./src/components/ui/truncate-path-middle.tsx",
+      "default": "./src/components/ui/truncate-path-middle.tsx"
+    },
+    "./use-thread-storage-browser": {
+      "source": "./src/components/ui/use-thread-storage-browser.ts",
+      "types": "./src/components/ui/use-thread-storage-browser.ts",
+      "default": "./src/components/ui/use-thread-storage-browser.ts"
+    },
     "./workflow-progress": {
       "source": "./src/components/ui/workflow-progress.tsx",
       "types": "./src/components/ui/workflow-progress.tsx",
       "default": "./src/components/ui/workflow-progress.tsx"
+    },
+    "./hooks/use-browser-dimming-modal": {
+      "source": "./src/hooks/useBrowserDimmingModal.ts",
+      "types": "./src/hooks/useBrowserDimmingModal.ts",
+      "default": "./src/hooks/useBrowserDimmingModal.ts"
     },
     "./hooks/use-compact-viewport": {
       "source": "./src/components/ui/hooks/use-compact-viewport.tsx",
@@ -254,6 +294,11 @@
       "types": "./src/components/ui/hooks/use-media-query.ts",
       "default": "./src/components/ui/hooks/use-media-query.ts"
     },
+    "./hooks/use-measured-value": {
+      "source": "./src/components/ui/hooks/use-measured-value.ts",
+      "types": "./src/components/ui/hooks/use-measured-value.ts",
+      "default": "./src/components/ui/hooks/use-measured-value.ts"
+    },
     "./hooks/use-pointer-coarse": {
       "source": "./src/components/ui/hooks/use-pointer-coarse.ts",
       "types": "./src/components/ui/hooks/use-pointer-coarse.ts",
@@ -269,10 +314,20 @@
       "types": "./src/lib/utils.ts",
       "default": "./src/lib/utils.ts"
     },
+    "./lib/ime-keyboard": {
+      "source": "./src/lib/ime-keyboard.ts",
+      "types": "./src/lib/ime-keyboard.ts",
+      "default": "./src/lib/ime-keyboard.ts"
+    },
     "./lib/portal-scope": {
       "source": "./src/lib/portal-scope.ts",
       "types": "./src/lib/portal-scope.ts",
       "default": "./src/lib/portal-scope.ts"
+    },
+    "./lib/shared-resize-observer": {
+      "source": "./src/lib/shared-resize-observer.ts",
+      "types": "./src/lib/shared-resize-observer.ts",
+      "default": "./src/lib/shared-resize-observer.ts"
     },
     "./question-form": {
       "source": "./src/components/ui/question-form.tsx",
@@ -368,6 +423,11 @@
       "source": "./src/components/ui/thread-list-empty-state.tsx",
       "types": "./src/components/ui/thread-list-empty-state.tsx",
       "default": "./src/components/ui/thread-list-empty-state.tsx"
+    },
+    "./use-scroll-overflow-state": {
+      "source": "./src/components/ui/use-scroll-overflow-state.ts",
+      "types": "./src/components/ui/use-scroll-overflow-state.ts",
+      "default": "./src/components/ui/use-scroll-overflow-state.ts"
     },
     "./use-dialog-state": {
       "source": "./src/components/ui/use-dialog-state.ts",
@@ -520,29 +580,31 @@
       "default": "./src/components/pickers/BranchPicker.tsx"
     },
     "./picker-layout": {
-      "source": "./src/components/pickers/picker-layout.ts",
-      "types": "./src/components/pickers/picker-layout.ts",
-      "default": "./src/components/pickers/picker-layout.ts"
-    },
-    "./picker-search": {
-      "source": "./src/components/pickers/picker-search.ts",
-      "types": "./src/components/pickers/picker-search.ts",
-      "default": "./src/components/pickers/picker-search.ts"
+      "source": "./src/components/ui/picker-layout.ts",
+      "types": "./src/components/ui/picker-layout.ts",
+      "default": "./src/components/ui/picker-layout.ts"
     },
     "./hooks/use-reset-picker-scroll": {
-      "source": "./src/components/pickers/use-reset-picker-scroll.ts",
-      "types": "./src/components/pickers/use-reset-picker-scroll.ts",
-      "default": "./src/components/pickers/use-reset-picker-scroll.ts"
+      "source": "./src/components/ui/use-reset-picker-scroll.ts",
+      "types": "./src/components/ui/use-reset-picker-scroll.ts",
+      "default": "./src/components/ui/use-reset-picker-scroll.ts"
     },
     "./list-loading-placeholder": {
       "source": "./src/components/ui/list-loading-placeholder.tsx",
       "types": "./src/components/ui/list-loading-placeholder.tsx",
       "default": "./src/components/ui/list-loading-placeholder.tsx"
+    },
+    "./settings-section": {
+      "source": "./src/components/ui/settings-section.tsx",
+      "types": "./src/components/ui/settings-section.tsx",
+      "default": "./src/components/ui/settings-section.tsx"
     }
   },
   "scripts": {
     "clean": "rimraf tsconfig.tsbuildinfo",
     "typecheck": "tsrs --noEmit",
+    "lint": "oxlint src",
+    "lint:type-aware": "oxlint -c ../../.oxlintrc.type-aware.json",
     "test": "vitest run --config vitest.config.ts"
   },
   "bb": {
@@ -606,10 +668,13 @@
     "@radix-ui/react-toggle": "^1.2.1",
     "@radix-ui/react-toggle-group": "^1.2.1",
     "@radix-ui/react-tooltip": "^1.4.1",
+    "@rolldown/plugin-babel": "^0.2.4",
     "@testing-library/react": "^16.3.3",
     "@types/node": "^22.20.5",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "babel-plugin-react-compiler": "^1.0.0",
     "cmdk": "^1.1.1",
     "embla-carousel-react": "^8.6.0",
     "input-otp": "^1.5.0",

@@ -171,6 +171,7 @@ import {
   useSidebarThreadDragOverlayModifiers,
   SidebarThreadDragChip,
 } from "../dnd/sidebarThreadDragChip.js";
+import { useSortableItemIds } from "../dnd/useStableItemIds.js";
 
 const SIDEBAR_STICKY_PARENT_DEPTH_CAP = 4;
 
@@ -197,7 +198,7 @@ export interface ProjectRowProps {
   collapsedThreadIds: Set<string>;
   collapsedEnvironmentIds: Set<string>;
   onProjectSelect?: () => void;
-  onCreateProjectThread?: (projectId: string) => void;
+  onCreateProjectThread?: (projectId: string, split: boolean) => void;
   onToggleProjectCollapsed: (projectId: string) => void;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
@@ -229,7 +230,7 @@ interface SectionThreadTreeProps {
   collapsedThreadIds: Set<string>;
   collapsedEnvironmentIds: Set<string>;
   onProjectSelect?: () => void;
-  onCreateThreadInSection?: (sectionId: string) => void;
+  onCreateThreadInSection?: (sectionId: string, split: boolean) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
@@ -244,7 +245,7 @@ interface ChronologicalBuiltInSidebarSections {
 
 interface ChronologicalSectionThreadSectionsProps extends SectionThreadTreeProps {
   builtInSections: ChronologicalBuiltInSidebarSections;
-  onCreateThread?: () => void;
+  onCreateThread?: (split: boolean) => void;
   topLevelSectionOrder: readonly SidebarSectionId[];
   fullSectionOrder: readonly SidebarSectionId[];
   onTopLevelSectionOrderChange: (order: SidebarSectionId[]) => void;
@@ -297,7 +298,7 @@ interface ThreadTreeItemRowProps {
   collapsedThreadIds: Set<string>;
   collapsedEnvironmentIds: Set<string>;
   onProjectSelect?: () => void;
-  onCreateThreadInSection?: (sectionId: string) => void;
+  onCreateThreadInSection?: (sectionId: string, split: boolean) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
@@ -316,7 +317,7 @@ interface SectionTreeItemRowProps {
   collapsedThreadIds: Set<string>;
   collapsedEnvironmentIds: Set<string>;
   onProjectSelect?: () => void;
-  onCreateThreadInSection?: (sectionId: string) => void;
+  onCreateThreadInSection?: (sectionId: string, split: boolean) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
@@ -383,14 +384,14 @@ interface EnvironmentThreadGroupHeaderProps {
   isCollapsed: boolean;
   archiveThreadsPending: boolean;
   onArchiveThreads: () => void;
-  onCreateNewThread: () => void;
+  onCreateNewThread: (split: boolean) => void;
   onToggleCollapsed: (environmentId: string) => void;
 }
 
 interface EnvironmentThreadGroupHeaderActionsProps {
   archiveThreadsPending: boolean;
   onArchiveThreads: () => void;
-  onCreateNewThread: () => void;
+  onCreateNewThread: (split: boolean) => void;
   onRenameEnvironment: () => void;
   onOpenChange: (open: boolean) => void;
   onCloseAutoFocus?: (event: Event) => void;
@@ -666,7 +667,9 @@ function EnvironmentThreadGroupHeaderActions({
         <SidebarControlButton
           label="New thread in environment"
           icon="MessageSquarePlus"
-          onClick={onCreateNewThread}
+          onClick={(event) =>
+            onCreateNewThread(event.metaKey || event.ctrlKey)
+          }
         />
       }
     >
@@ -959,15 +962,19 @@ const EnvironmentThreadGroupRow = memo(function EnvironmentThreadGroupRow({
   const { sectionId, pinned } = useThreadCreationPlacement(sectionWhenUnpinned);
   const { archiveThreadsPending, onArchiveThreads } =
     useArchiveEnvironmentThreadGroupAction({ environmentId });
-  const handleCreateNewThread = useCallback(() => {
-    onProjectSelect?.();
-    navigate.toCompose({
-      projectId,
-      environmentId,
-      placement: { sectionId, pinned },
-      focusPrompt: true,
-    });
-  }, [environmentId, navigate, onProjectSelect, projectId, sectionId, pinned]);
+  const handleCreateNewThread = useCallback(
+    (split: boolean) => {
+      onProjectSelect?.();
+      navigate.toCompose({
+        projectId,
+        environmentId,
+        placement: { sectionId, pinned },
+        focusPrompt: true,
+        ...(split ? { split: true } : {}),
+      });
+    },
+    [environmentId, navigate, onProjectSelect, projectId, sectionId, pinned],
+  );
   const nodeItems = useMemo<ProjectThreadItem[]>(
     () => nodes.map((node) => ({ kind: "thread", node })),
     [nodes],
@@ -1356,7 +1363,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
         sectionId={buildSidebarEntitySectionId("section", section.id)}
         onNewThread={
           onCreateThreadInSection
-            ? () => onCreateThreadInSection(section.id)
+            ? (split: boolean) => onCreateThreadInSection(section.id, split)
             : undefined
         }
         onOpenChange={setIsTopLevelActionsOpen}
@@ -1423,7 +1430,7 @@ const SectionTreeItemRow = memo(function SectionTreeItemRow({
         isCollapsed={isCollapsed}
         onCreateThread={
           onCreateThreadInSection
-            ? () => onCreateThreadInSection(section.id)
+            ? (split: boolean) => onCreateThreadInSection(section.id, split)
             : undefined
         }
         onRemove={onRemoveSection ? () => onRemoveSection(section) : undefined}
@@ -1646,7 +1653,7 @@ interface SectionThreadTreeItemsProps {
   onProjectSelect?: () => void;
   onToggleThreadCollapsed: (threadId: string) => void;
   onToggleEnvironmentCollapsed: (environmentId: string) => void;
-  onCreateThreadInSection?: (sectionId: string) => void;
+  onCreateThreadInSection?: (sectionId: string, split: boolean) => void;
   onRemoveSection?: (section: SidebarSectionDefinition) => void;
 }
 
@@ -1948,9 +1955,9 @@ export const ChronologicalSectionThreadSections = memo(
       () => rootItems.filter((item) => item.kind !== "section"),
       [rootItems],
     );
-    const looseItemIds = useMemo(
-      () => looseItems.map(getSidebarDndItemId),
-      [looseItems],
+    const looseItemIds = useSortableItemIds(
+      useMemo(() => looseItems.map(getSidebarDndItemId), [looseItems]),
+      renderedSectionDnd?.isDragging === true,
     );
     const looseThreads = getProjectThreadItemDescendants(looseItems);
 
@@ -2051,7 +2058,7 @@ export const ChronologicalSectionThreadSections = memo(
         title: item.group.name,
         threads: getProjectThreadItemDescendants(item.group.items),
         onNewThread: onCreateThreadInSection
-          ? () => onCreateThreadInSection(item.group.id)
+          ? (split: boolean) => onCreateThreadInSection(item.group.id, split)
           : undefined,
         renderContent: (close: () => void) => (
           <ProjectThreadTree
@@ -2174,9 +2181,12 @@ function ProjectRowComponent({
   const handleProjectRowToggle = useCallback(() => {
     onToggleProjectCollapsed(project.id);
   }, [onToggleProjectCollapsed, project.id]);
-  const handleCreateThread = useCallback(() => {
-    onCreateProjectThread?.(project.id);
-  }, [onCreateProjectThread, project.id]);
+  const handleCreateThread = useCallback(
+    (split: boolean) => {
+      onCreateProjectThread?.(project.id, split);
+    },
+    [onCreateProjectThread, project.id],
+  );
   const requestRemove = useCallback(() => setIsRemoveDialogOpen(true), []);
   const confirmRemove = useCallback(() => {
     setIsRemovePending(true);

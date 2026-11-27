@@ -58,11 +58,7 @@ import {
   type ThreadConversationOutlineRole,
   type ThreadTimelineTurnSummaryDetailsQueryIdentity,
 } from "./query-keys";
-import {
-  COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT,
-  isThreadTimelinePushEnabled,
-} from "../cache-owners/thread-timeline-push-owner";
-import { systemConfigQueryOptions } from "./system-queries";
+import { COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT } from "../cache-owners/thread-timeline-push-owner";
 import {
   THREAD_OPEN_CACHE_GC_MS,
   touchThreadOpenCache,
@@ -314,15 +310,10 @@ export function useThreadTimeline(
   const queryClient = useQueryClient();
   const enabled = (options?.enabled ?? true) && Boolean(id);
   const compactViewport = useMediaQuery(COMPACT_VIEWPORT_QUERY);
-  const pushEnabled = useQuery({
-    ...systemConfigQueryOptions(),
-    enabled: false,
-    select: isThreadTimelinePushEnabled,
-  }).data;
   useThreadDetailRealtimeSubscription(id, { enabled });
   useThreadTimelineRealtimeSubscription(id, {
     deferContent: true,
-    enabled: enabled && pushEnabled === true,
+    enabled,
     segmentLimit: compactViewport
       ? COMPACT_THREAD_TIMELINE_SEGMENT_LIMIT
       : null,
@@ -333,6 +324,18 @@ export function useThreadTimeline(
     }
   }, [enabled, id, queryClient]);
   return useQuery(threadTimelineQueryOptions(queryClient, id, options));
+}
+
+const NO_TIMELINE_RESULT_PROPS: NotifyOnChangeProps = [];
+
+export function useThreadTimelineSubscription(
+  id: string,
+  options: { enabled: boolean },
+): void {
+  useThreadTimeline(id, {
+    enabled: options.enabled,
+    notifyOnChangeProps: NO_TIMELINE_RESULT_PROPS,
+  });
 }
 
 export function useThreadConversationOutline(
@@ -432,5 +435,13 @@ export function useThreadTimelineTurnSummaryDetails(
       Boolean(identity.turnId),
     refetchOnMount: options?.refetchOnMount ?? true,
     staleTime: options?.staleTime ?? Infinity,
+    placeholderData: (previous, previousQuery) => {
+      const previousKey = previousQuery?.queryKey;
+      return previousKey?.[1] === identity.threadId &&
+        previousKey[2] === identity.turnId &&
+        previousKey[5] === identity.itemId
+        ? previous
+        : undefined;
+    },
   });
 }

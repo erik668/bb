@@ -1,9 +1,15 @@
 import {
+  calibrateProfileClock,
+  type ProfileClockReading,
+} from "./profile-clock.js";
+import {
   PROFILE_SAMPLING_INTERVAL_MS,
   summarizeStallWindows,
 } from "./stall-attribution.js";
 import {
+  parseProfileCodeOwners,
   parseStallWindowBatch,
+  type ProfileCodeOwner,
   type StallWindowBatch,
 } from "./stall-windows.js";
 import { parentPort, workerData } from "node:worker_threads";
@@ -52,14 +58,45 @@ async function runProfileWorker(): Promise<void> {
   };
   let startedAt = "";
   let title = "";
+  let profileStartClock: ProfileClockReading | undefined;
   let finishedProfile: Profiler.Profile | undefined;
   session.on("Profiler.consoleProfileFinished", (event) => {
     if (event.params.title === title) finishedProfile = event.params.profile;
   });
-  const begin = async (name: string) => {
-    await session.post("Runtime.evaluate", {
-      expression: `process.getBuiltinModule("node:inspector").console.profile(${JSON.stringify(name)})`,
-    });
+  const takeFinishedProfile = (): Profiler.Profile | undefined => {
+    const profile = finishedProfile;
+    finishedProfile = undefined;
+    return profile;
+  };
+  const profileCommand = async (
+    method: "profile" | "profileEnd",
+    name: string,
+  ): Promise<ProfileClockReading> => {
+    const { result, exceptionDetails } = await session.post(
+      "Runtime.evaluate",
+      {
+        expression: `(() => {
+        const beforeMs = Number(process.hrtime.bigint()) / 1e6;
+        process.getBuiltinModule("node:inspector").console.${method}(${JSON.stringify(name)});
+        return { beforeMs, afterMs: Number(process.hrtime.bigint()) / 1e6 };
+      })()`,
+        returnByValue: true,
+      },
+    );
+    const reading: unknown = result.value;
+    if (
+      exceptionDetails ||
+      typeof reading !== "object" ||
+      reading === null ||
+      !("beforeMs" in reading) ||
+      typeof reading.beforeMs !== "number" ||
+      !Number.isFinite(reading.beforeMs) ||
+      !("afterMs" in reading) ||
+      typeof reading.afterMs !== "number" ||
+      !Number.isFinite(reading.afterMs)
+    )
+      throw new Error("Invalid profiling clock reading");
+    return { beforeMs: reading.beforeMs, afterMs: reading.afterMs };
   };
   const respond = (
     fields: object,
@@ -105,7 +142,7 @@ async function runProfileWorker(): Promise<void> {
       interval: PROFILE_SAMPLING_INTERVAL_MS * 1_000,
     });
     title = `bb-performance-${randomUUID()}`;
-    await begin(title);
+    profileStartClock = await profileCommand("profile", title);
     startedAt = new Date().toISOString();
     respond(
       {
@@ -120,24 +157,51 @@ async function runProfileWorker(): Promise<void> {
       "Server performance diagnostics enabled",
     );
   };
-  const capture = async (restart: boolean, stalls: StallWindowBatch) => {
+  const capture = async (
+    restart: boolean,
+    stalls: StallWindowBatch,
+    codeOwners: ProfileCodeOwner[],
+  ) => {
     const beginning = startedAt;
+    const beginningClock = profileStartClock;
+    if (!beginningClock) throw new Error("Missing profiling start clock");
     const nextTitle = `bb-performance-${randomUUID()}`;
     if (restart) {
-      await begin(nextTitle);
+      profileStartClock = await profileCommand("profile", nextTitle);
       startedAt = new Date().toISOString();
     }
-    finishedProfile = undefined;
-    await session.post("Runtime.evaluate", {
-      expression: `process.getBuiltinModule("node:inspector").console.profileEnd(${JSON.stringify(title)})`,
-    });
-    const profile = finishedProfile;
-    finishedProfile = undefined;
+    takeFinishedProfile();
+    const endingClock = await profileCommand("profileEnd", title);
+    const profile = takeFinishedProfile();
     if (!profile) throw new Error("CPU profile completion was not received");
     title = nextTitle;
     const endedAt = new Date().toISOString();
-    for (const fields of summarizeStallWindows(profile, stalls)) {
-      respond(fields, "Event loop stall attribution", "info", false);
+    const clockCalibration = calibrateProfileClock({
+      startClock: beginningClock,
+      endClock: endingClock,
+      profileStartTimeUs: profile.startTime,
+      profileEndTimeUs: profile.endTime,
+      maximumUncertaintyMs: PROFILE_SAMPLING_INTERVAL_MS,
+    });
+    const attributionProfile =
+      clockCalibration.status === "calibrated"
+        ? {
+            ...profile,
+            startTime: profile.startTime + clockCalibration.offsetUs,
+            endTime: profile.endTime + clockCalibration.offsetUs,
+          }
+        : { ...profile, samples: [], timeDeltas: [] };
+    for (const fields of summarizeStallWindows(
+      attributionProfile,
+      stalls,
+      codeOwners,
+    )) {
+      respond(
+        { ...fields, clockCalibration },
+        "Event loop stall attribution",
+        "info",
+        false,
+      );
     }
     const contents = JSON.stringify(profile);
     const bytes = Buffer.byteLength(contents);
@@ -169,13 +233,14 @@ async function runProfileWorker(): Promise<void> {
         pid: process.pid,
         sampleTimeBasis: "elapsed",
         nativeFramesMayIncludeWaiting: true,
+        clockCalibration,
       },
       "Server CPU profile saved",
       "info",
       restart,
     );
   };
-  port.on("message", async (command: unknown) => {
+  const handleCommand = async (command: unknown) => {
     if (command === "drained") return;
     try {
       if (command === "start") await start();
@@ -184,11 +249,13 @@ async function runProfileWorker(): Promise<void> {
         command !== null &&
         "command" in command &&
         (command.command === "capture" || command.command === "stop") &&
-        "stalls" in command
+        "stalls" in command &&
+        "codeOwners" in command
       ) {
         await capture(
           command.command === "capture",
           parseStallWindowBatch(command.stalls),
+          parseProfileCodeOwners(command.codeOwners),
         );
         if (command.command === "stop") {
           await disconnect();
@@ -202,6 +269,13 @@ async function runProfileWorker(): Promise<void> {
       await rm(pendingPath, { force: true }).catch(() => {});
       throw error;
     }
+  };
+  port.on("message", (command: unknown) => {
+    handleCommand(command).catch((error: unknown) => {
+      process.nextTick(() => {
+        throw error;
+      });
+    });
   });
 }
 

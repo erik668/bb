@@ -1,14 +1,29 @@
 import { createStorage } from "./storage.js";
 import type { BbPluginApi } from "@get-bb/plugin-sdk";
-import { storageRpc } from "./contract.js";
+import { storageRpc, type Policy } from "./contract.js";
+import { createColdStorage } from "./cold-storage.js";
 import { createService } from "./service.js";
 import { registerCli } from "./cli.js";
 
 export default function plugin(bb: BbPluginApi) {
-  const service = createService(bb);
+  const coldStorage = createColdStorage(bb);
+  const service = createService(bb, coldStorage);
+  bb.experimental_hooks.on(
+    "thread.delete_finalize",
+    coldStorage.beforeDeleteFinalize,
+  );
   const devCleanupEnabled = async () =>
     (await service.state()).policy.deleteDevDataOnCheckoutRemoval;
-  const storage = createStorage(bb, devCleanupEnabled);
+  const cleanupEnabled = async () =>
+    (await service.state()).policy.deleteStorageOnArchive;
+  const storage = createStorage(bb, devCleanupEnabled, cleanupEnabled);
+  const configure = async (policy: Policy) => {
+    const before = (await service.state()).policy.deleteStorageOnArchive;
+    const state = await service.configure(policy);
+    if (!before && state.policy.deleteStorageOnArchive)
+      void storage.backfillArchivedStorage();
+    return state;
+  };
   bb.events.on("experimental_environment.removed", ({ removal }) =>
     removal.hostId === null
       ? undefined
@@ -56,8 +71,6 @@ export default function plugin(bb: BbPluginApi) {
       }
     },
   });
-  const cleanupEnabled = async () =>
-    (await service.state()).policy.deleteStorageOnArchive;
   bb.events.on("thread.archived", async ({ thread }) => {
     if (
       thread.archivedAt === null ||
@@ -79,7 +92,6 @@ export default function plugin(bb: BbPluginApi) {
   );
   bb.rpc.register(storageRpc, {
     startEntryCleanup: storage.startEntryCleanup,
-    entryCleanup: storage.entryCleanup,
     startCleanup: storage.startCleanup,
     hosts: () => storage.hosts(),
     host: storage.host,
@@ -88,17 +100,27 @@ export default function plugin(bb: BbPluginApi) {
     removeOrphans: (input) => storage.removeOrphans(input),
     clearLargeFiles: storage.clearLargeFiles,
     startClearLargeFiles: storage.startClearLargeFiles,
-    retryWorktreeCleanup: (input) => storage.retryWorktreeCleanup(input),
+    retryWorktreeCleanup: (input) =>
+      storage.retryWorktreeCleanup({ ...input, interruptedOnly: false }),
     clearThread: storage.clearThread,
     clearArchivedFiles: storage.clearArchivedFiles,
     startClearArchivedFiles: storage.startClearArchivedFiles,
     removeDevInstances: (input) => storage.removeDevInstances(input),
     removeExternalWorktrees: (input) => storage.removeExternalWorktrees(input),
     startRemoveExternalWorktree: storage.startRemoveExternalWorktree,
+    coldThreads: (input) => coldStorage.list(input),
+    restoreColdThread: ({ threadId }) => coldStorage.restore(threadId),
+    deleteColdThread: ({ threadId }) => coldStorage.remove(threadId),
     state: () => service.state(),
     preview: (policy) => service.preview(policy),
-    configure: (policy) => service.configure(policy),
+    configure,
   });
-  registerCli(bb, service, storage);
+  registerCli(bb, { ...service, configure }, storage, coldStorage);
   bb.background.schedule("retention", "0 * * * *", () => service.sweep());
+  bb.background.schedule("leftover-worktree-recovery", "15 * * * *", () =>
+    storage.recoverInterruptedWorktrees(),
+  );
+  bb.background.schedule("archived-storage-backfill", "30 * * * *", () =>
+    storage.backfillArchivedStorage(),
+  );
 }

@@ -316,9 +316,10 @@ export function useLocalOpenTargets(
         rememberPreferredOpenTarget(request.target);
       }
 
+      const requestedColumnNumber = request.columnNumber ?? null;
       try {
         const location = getSupportedLocation({
-          columnNumber: request.columnNumber ?? null,
+          columnNumber: requestedColumnNumber,
           contextKind,
           lineNumber: request.lineNumber,
           target: request.target,

@@ -9,6 +9,7 @@
     "plugins/browser-automation",
     "plugins/composer",
     "plugins/concurrency-limit",
+    "plugins/conductor",
     "plugins/custom-instructions",
     "plugins/docs",
     "plugins/drafts",
@@ -16,15 +17,16 @@
     "plugins/environment-personal-workspace",
     "plugins/github",
     "plugins/github-star",
+    "plugins/server-switcher",
     "plugins/inline-vis",
     "plugins/keep-awake",
+    "plugins/mcp",
     "plugins/memory",
     "plugins/monaco-editor",
     "plugins/navigation",
     "plugins/pdf-preview",
     "plugins/plugin-api-docs",
     "plugins/plugin-api-tester",
-    "plugins/mcp",
     "plugins/prompt-library",
     "plugins/provider-acp",
     "plugins/provider-claude-code",
@@ -38,6 +40,7 @@
     "plugins/side-chat",
     "plugins/tasks",
     "plugins/theme-preview",
-    "plugins/thread-list"
+    "plugins/thread-list",
+    "plugins/workflows"
   ]
 }

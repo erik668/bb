@@ -223,7 +223,7 @@ async function startPool(providers: FakeProviders) {
   });
   const store = new AccountStore(
     host.bb.storage.kv,
-    path.join(dataDir, "plugins", "account-pool", "secrets", "accounts"),
+    path.join(host.bb.storage.experimental_directory(), "accounts"),
   );
   return { host, store };
 }
@@ -490,11 +490,10 @@ describe("Account Pooler logins", () => {
       label: "Metered",
       priority: 200,
     });
-    const apiKeyAccount = (
-      await z
-        .array(accountSummarySchema)
-        .parse(await pool.host.harness.behavior.callRpc("account.list", null))
-    ).find((account) => account.kind === "api-key");
+    const apiKeyAccount = z
+      .array(accountSummarySchema)
+      .parse(await pool.host.harness.behavior.callRpc("account.list", null))
+      .find((account) => account.kind === "api-key");
     const apiKeyLogin = await pool.host.harness.behavior.runCli([
       "account",
       "login",

@@ -1,7 +1,16 @@
 import { requestThreadStorageDeletion } from "./thread-lifecycle.js";
 import { seedThreadSessionOptionSelections } from "./thread-session-options.js";
-import { assertEnvironmentPathAvailable } from "../environments/path-admission.js";
-import { markThreadDeleted, getEnvironment, getThread } from "@bb/db";
+import {
+  admitAfterPathClaimsSettle,
+  assertEnvironmentPathAvailable,
+} from "../environments/path-admission.js";
+import {
+  FORK_HISTORY_COPY_MARK,
+  getEnvironment,
+  getThread,
+  listThreadIdsCopyingForkHistory,
+  markThreadDeleted,
+} from "@bb/db";
 import {
   describeSessionOptionConflict,
   modelSessionOptionConflict,
@@ -65,6 +74,7 @@ import {
 import { deriveForkTitle, deriveTitleFallback } from "./title-generation.js";
 import type { ThreadProvisionEnvironmentIntent } from "./thread-startup-store.js";
 import { resolveSystemProviderModels } from "../system/execution-options.js";
+import { createGitCheckoutInspector } from "../environments/provider-availability.js";
 import {
   getEnvironmentProvider,
   listEnvironmentCompositions,
@@ -409,6 +419,38 @@ function requireLiveSourceThread(
  * leaves the thread exactly where it is, with the start context recorded so a
  * later drain (or a later server) can start it.
  */
+function discardUnstartedThread(deps: ThreadCreateDeps, thread: Thread): void {
+  emitPluginThreadDeleted({
+    ...thread,
+    deletedAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+  const deleted = markThreadDeleted(deps.db, deps.hub, {
+    threadId: thread.id,
+  });
+  if (deleted)
+    requestThreadStorageDeletion(
+      deps,
+      deleted,
+      deleted.environmentId
+        ? getEnvironment(deps.db, deleted.environmentId)
+        : null,
+    );
+}
+
+export function discardInterruptedForkHistoryCopies(
+  deps: ThreadCreateDeps,
+): number {
+  let discarded = 0;
+  for (const threadId of listThreadIdsCopyingForkHistory(deps.db)) {
+    const thread = getThread(deps.db, threadId);
+    if (thread === null) continue;
+    discardUnstartedThread(deps, thread);
+    discarded += 1;
+  }
+  return discarded;
+}
+
 async function createPendingThreadAndAttemptFirstDispatch(
   deps: ThreadCreateDeps,
   args: CreateProvisioningThreadArgs & {
@@ -421,7 +463,9 @@ async function createPendingThreadAndAttemptFirstDispatch(
       ? null
       : getEnvironment(deps.db, args.environmentId);
   if (environment !== null)
-    assertEnvironmentPathAvailable(deps, { ...environment, threadId: null });
+    await admitAfterPathClaimsSettle(deps, () =>
+      assertEnvironmentPathAvailable(deps, { ...environment, threadId: null }),
+    );
   if (args.request.sourceThreadId) {
     requireLiveSourceThread(deps, {
       projectId: args.request.projectId,
@@ -443,10 +487,22 @@ async function createPendingThreadAndAttemptFirstDispatch(
   );
   if (placementHostId !== null)
     requireEnvironmentPlacementHost(deps, placementHostId);
+  const historyEndSequence =
+    args.fork !== null &&
+    args.fork.historyEndSequence !== null &&
+    args.request.visibility === "visible"
+      ? args.fork.historyEndSequence
+      : null;
   const thread = createThreadRecord(deps, {
     request: args.request,
     environmentId: args.environmentId,
-    startupContext: JSON.stringify({ kind: "pending", ...startContext }),
+    startupContext: JSON.stringify({
+      kind: "pending",
+      ...startContext,
+      ...(historyEndSequence === null
+        ? {}
+        : { historyCopy: FORK_HISTORY_COPY_MARK }),
+    }),
   });
   let execution: Awaited<ReturnType<typeof buildExecutionOptions>>;
   try {
@@ -454,14 +510,10 @@ async function createPendingThreadAndAttemptFirstDispatch(
       thread,
       selections: args.request.sessionOptions ?? {},
     });
-    if (
-      args.fork !== null &&
-      args.fork.historyEndSequence !== null &&
-      args.request.visibility === "visible"
-    ) {
-      copyForkSourceHistory(deps, {
+    if (args.fork !== null && historyEndSequence !== null) {
+      await copyForkSourceHistory(deps, {
         fork: thread,
-        historyEndSequence: args.fork.historyEndSequence,
+        historyEndSequence,
         sourceThreadId: args.fork.sourceThreadId,
       });
     }
@@ -503,22 +555,7 @@ async function createPendingThreadAndAttemptFirstDispatch(
       trigger: "user",
     });
   } catch (error) {
-    emitPluginThreadDeleted({
-      ...thread,
-      deletedAt: Date.now(),
-      updatedAt: Date.now(),
-    });
-    const deleted = markThreadDeleted(deps.db, deps.hub, {
-      threadId: thread.id,
-    });
-    if (deleted)
-      requestThreadStorageDeletion(
-        deps,
-        deleted,
-        deleted.environmentId
-          ? getEnvironment(deps.db, deleted.environmentId)
-          : null,
-      );
+    discardUnstartedThread(deps, thread);
     throw error;
   }
   rememberProjectExecutionDefaultsForCreate(deps, {
@@ -695,7 +732,9 @@ export async function createThreadFromRequest(
     sourceThreadId: _requestedSourceThreadId,
     ...requestRest
   } = requestInput;
+  const inspectGitCheckout = createGitCheckoutInspector(deps);
   const requestedEnvironment = await resolveCreateThreadEnvironment(deps, {
+    inspectGitCheckout,
     parentThread:
       forkSourceEnvironmentId !== undefined
         ? null
@@ -747,8 +786,6 @@ export async function createThreadFromRequest(
     requestedEnvironment.type === "provider"
       ? null
       : resolveStableThreadRequestEnvironment(deps, {
-          allowUnmanagedPersonalProjectReuseEnvironmentId:
-            forkSourceEnvironmentId,
           environment: requestedEnvironment,
           projectId: request.projectId,
         });
@@ -805,14 +842,9 @@ export async function createThreadFromRequest(
 
   const { environmentId, environmentIntent } =
     await resolveThreadEnvironmentPlacement(deps, {
-      ...(forkSourceEnvironmentId !== undefined
-        ? {
-            allowUnmanagedPersonalProjectReuseEnvironmentId:
-              forkSourceEnvironmentId,
-          }
-        : {}),
       projectId: request.projectId,
       requestedEnvironment: request.environment,
+      inspectGitCheckout,
     });
   request.input = await resolvePromptAttachmentReferences({
     db: deps.db,

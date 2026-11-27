@@ -1,10 +1,4 @@
-import {
-  getEnvironment,
-  getThread,
-  listEvents,
-  environments,
-  updateHost,
-} from "@bb/db";
+import { getEnvironment, getThread, environments, updateHost } from "@bb/db";
 import { apiErrorSchema, threadResponseSchema } from "@bb/server-contract";
 import { validatePluginEnvironmentProviderDeclaration } from "@get-bb/plugin-sdk/internal/host-policy";
 import { eq } from "drizzle-orm";
@@ -22,6 +16,7 @@ import {
   seedThreadRuntimeState,
 } from "../helpers/seed.js";
 import { withTestHarness, type TestAppHarness } from "../helpers/test-app.js";
+import { listEvents } from "@bb/db/testing";
 
 const PROVIDER_ID = "test-worktree";
 const BRANCH_NAME = "bb/important-work";
@@ -53,7 +48,10 @@ function registerProvider(
         : {
             restore: async (context) => {
               restoreCalls.push(context.previous.environment.branchName);
-              return created;
+              return {
+                ...created,
+                additionalPaths: [{ path: "/tmp/restored-sibling" }],
+              };
             },
           }),
       remove: async () => ({ status: "removed" }),
@@ -128,9 +126,12 @@ async function restore(
   harness: TestAppHarness,
   threadId: string,
 ): Promise<Response> {
-  return harness.app.request(`/api/v1/threads/${threadId}/restore-environment`, {
-    method: "POST",
-  });
+  return harness.app.request(
+    `/api/v1/threads/${threadId}/restore-environment`,
+    {
+      method: "POST",
+    },
+  );
 }
 
 async function unarchive(
@@ -180,6 +181,13 @@ describe("POST /threads/:id/restore-environment (#1710)", () => {
         statusMessage: "Restoring Worktree…",
       });
       expect(countTurnRequests()).toBe(turnRequestsBefore);
+      await expect
+        .poll(
+          () =>
+            getEnvironment(harness.db, restored?.environmentId ?? "")
+              ?.additionalPaths,
+        )
+        .toEqual([{ path: "/tmp/restored-sibling", replaces: null }]);
 
       clearAllThreadProvisionSchedules();
       harness.db
