@@ -1,10 +1,11 @@
 export function assertForkPackageContents(files) {
   if (
-    files.some((file) =>
-      file.path.startsWith("server/dist/builtin-plugins/workflows/"),
+    !files.some(
+      (file) =>
+        file.path === "server/dist/builtin-plugins/workflows/dist/server.js",
     )
   ) {
-    throw new Error("The fork must not bundle workflows");
+    throw new Error("The fork must bundle upstream workflows");
   }
   if (
     !files.some(
@@ -21,10 +22,24 @@ export async function smokeForkMemoryPolicy({ runCli }) {
   const { plugins } = JSON.parse(await runCli(["plugin", "list", "--json"]));
   if (
     !Array.isArray(plugins) ||
-    plugins.some((plugin) => plugin.id === "workflows")
+    !plugins.some(
+      (plugin) => plugin.id === "workflows" && plugin.enabled === false,
+    )
   ) {
-    throw new Error("The fork must not install workflows");
+    throw new Error(
+      "Upstream workflows must be installed but disabled by default",
+    );
   }
+  await runCli(["plugin", "enable", "workflows", "--json"]);
+  const enabled = JSON.parse(await runCli(["plugin", "list", "--json"]));
+  if (
+    !enabled.plugins.some(
+      (plugin) => plugin.id === "workflows" && plugin.status === "running",
+    )
+  ) {
+    throw new Error("The bundled upstream workflows plugin did not load");
+  }
+  await runCli(["workflows", "list", "--help"]);
   if (
     !plugins.some(
       (plugin) => plugin.id === "memory" && plugin.status === "running",

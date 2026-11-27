@@ -221,6 +221,11 @@ export const BUILTIN_PLUGINS = [
     defaultEnabled: true,
   },
   {
+    name: "workflows",
+    pluginId: "workflows",
+    defaultEnabled: false,
+  },
+  {
     name: "composer",
     pluginId: "bb--composer",
     defaultEnabled: true,

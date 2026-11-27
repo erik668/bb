@@ -619,7 +619,8 @@
       "inputs": [
         "$TURBO_DEFAULT$",
         "$TURBO_ROOT$/plugins/account-pool/src/**",
-        "$TURBO_ROOT$/plugins/automations/src/**"
+        "$TURBO_ROOT$/plugins/automations/src/**",
+        "$TURBO_ROOT$/plugins/workflows/src/**"
       ]
     },
     "@bb/app#typecheck": {
@@ -1871,6 +1872,25 @@
       ]
     },
     "bb-plugin-tasks#test": {
+      "env": ["VITEST_MAX_WORKERS"],
+      "dependsOn": [
+        "//#ensure-native-modules",
+        "@get-bb/plugin-sdk#build",
+        "topo"
+      ],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/plugin-registry/flavors/**"
+      ]
+    },
+    "bb-plugin-workflows#typecheck": {
+      "dependsOn": ["@get-bb/plugin-sdk#build:types", "topo"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "$TURBO_ROOT$/packages/plugin-registry/flavors/**"
+      ]
+    },
+    "bb-plugin-workflows#test": {
       "env": ["VITEST_MAX_WORKERS"],
       "dependsOn": [
         "//#ensure-native-modules",

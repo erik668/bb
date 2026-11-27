@@ -12,6 +12,7 @@ import {
   QUOTA_MIGRATIONS,
   QuotaStore,
 } from "../../../../plugins/account-pool/src/store.js";
+import { migrations as WORKFLOWS_MIGRATIONS } from "../../../../plugins/workflows/src/data.js";
 import type { DbConnection } from "../../src/connection.js";
 import { scaled } from "./case.js";
 
@@ -25,6 +26,20 @@ export const POOL_AFFINITY_IDLE_TTL_MS = 65 * MINUTE_MS;
 const AUTOMATIONS = 20;
 const AUTOMATION_RUNS = 13_000;
 const AUTOMATION_PROJECTS = 4;
+
+const WORKFLOW_PROJECTS = 8;
+const WORKFLOW_RETAINED_RUNS = 3_000;
+const WORKFLOW_RUNS_PER_ORIGIN_THREAD = 10;
+const WORKFLOW_CALLS_PER_RUN = 20;
+const WORKFLOW_LARGEST_RUN_CALLS = 100;
+const WORKFLOW_RUNNING_RUNS = 4;
+const WORKFLOW_RUNNING_CALLS_PER_RUN = 8;
+const WORKFLOW_QUEUED_RUNS = 6;
+const WORKFLOW_EXPIRED_RUNS = 40;
+const WORKFLOW_PENDING_NOTIFICATION_RUNS = 6;
+const WORKFLOW_UNARCHIVED_RETIRED_RUNS = 5;
+const WORKFLOW_RETENTION_DAYS = 30;
+const WORKFLOW_SOURCE = `export const meta = { name: "review", description: "Review the change" };\n${"const step = await agent(`Review the diff and report findings`, { label: 'review' });\n".repeat(16)}`;
 
 export interface AccountPoolSeed {
   accountId: string;
@@ -42,6 +57,23 @@ export interface AutomationsSeed {
   targetThreadId: string;
   idempotency: { automationId: string; key: string };
   cursor: { startedAt: number; id: string };
+  now: number;
+}
+
+export interface WorkflowsSeed {
+  projectId: string;
+  originThreadId: string;
+  runningRunId: string;
+  largestRunId: string;
+  runningCallId: string;
+  runningChildThreadId: string;
+  queuedCallId: string;
+  failedCallId: string;
+  nextCallIndex: number;
+  pendingNotificationRunId: string;
+  terminalRunId: string;
+  retiredWorkerThreadId: string;
+  archivedWorkerThreadId: string;
   now: number;
 }
 
@@ -111,10 +143,7 @@ export function seedAccountPool(
       );
     }
     affinity.putActiveAccount("claude", accountId(0));
-    affinity.putActiveAccount(
-      providerSchema.options[1],
-      accountId(accounts - 1),
-    );
+    affinity.putActiveAccount(providerSchema.options[1], accountId(accounts - 1));
   })();
   return {
     accountId: accountId(0),
@@ -299,6 +328,271 @@ export function seedAutomations(
     targetThreadId: "thr_automation_target_0",
     idempotency: { automationId, key: "manual-new" },
     cursor,
+    now,
+  };
+}
+
+interface SeededRun {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
+  originThreadId: string;
+  projectId: string;
+  createdAt: number;
+  finishedAt: number | null;
+  notificationSent: boolean;
+  resumedFromRunId: string | null;
+  calls: number;
+  workersArchived: boolean;
+}
+
+export function seedWorkflows(db: DbConnection, scale: number): WorkflowsSeed {
+  const client = db.$client;
+  migrateStatements(client, WORKFLOWS_MIGRATIONS);
+  const now = Date.now();
+  const retained = scaled(WORKFLOW_RETAINED_RUNS, scale);
+  const originThreads = Math.max(
+    1,
+    Math.ceil(retained / WORKFLOW_RUNS_PER_ORIGIN_THREAD),
+  );
+  const runs: SeededRun[] = [];
+  const originOf = (index: number) =>
+    `thr_workflow_origin_${index % originThreads}`;
+  const projectOf = (index: number) =>
+    `proj_workflow_${index % WORKFLOW_PROJECTS}`;
+  const retentionSpanMs = (WORKFLOW_RETENTION_DAYS - 1) * DAY_MS;
+  for (let index = 0; index < retained; index += 1) {
+    const finishedAt =
+      now - retentionSpanMs + Math.floor((index / retained) * retentionSpanMs);
+    const previous = runs[runs.length - 1];
+    runs.push({
+      id: `wfr_retained_${index.toString().padStart(6, "0")}`,
+      status:
+        index % 13 === 0
+          ? "failed"
+          : index % 17 === 0
+            ? "cancelled"
+            : "succeeded",
+      originThreadId: originOf(index),
+      projectId: projectOf(index),
+      createdAt: finishedAt - 20 * MINUTE_MS,
+      finishedAt,
+      notificationSent: true,
+      resumedFromRunId:
+        index % 10 === 9 && previous !== undefined ? previous.id : null,
+      calls: index === 0 ? WORKFLOW_LARGEST_RUN_CALLS : WORKFLOW_CALLS_PER_RUN,
+      workersArchived: index < retained - WORKFLOW_UNARCHIVED_RETIRED_RUNS,
+    });
+  }
+  for (let index = 0; index < WORKFLOW_EXPIRED_RUNS; index += 1) {
+    const finishedAt =
+      now - (WORKFLOW_RETENTION_DAYS + 1) * DAY_MS - index * MINUTE_MS;
+    runs.push({
+      id: `wfr_expired_${index.toString().padStart(6, "0")}`,
+      status: "succeeded",
+      originThreadId: originOf(index),
+      projectId: projectOf(index),
+      createdAt: finishedAt - 20 * MINUTE_MS,
+      finishedAt,
+      notificationSent: true,
+      resumedFromRunId: null,
+      calls: WORKFLOW_CALLS_PER_RUN,
+      workersArchived: true,
+    });
+  }
+  for (let index = 0; index < WORKFLOW_PENDING_NOTIFICATION_RUNS; index += 1) {
+    runs.push({
+      id: `wfr_pending_${index}`,
+      status: "succeeded",
+      originThreadId: originOf(index),
+      projectId: projectOf(index),
+      createdAt: now - 30 * MINUTE_MS,
+      finishedAt: now - 5 * MINUTE_MS + index,
+      notificationSent: false,
+      resumedFromRunId: null,
+      calls: WORKFLOW_CALLS_PER_RUN,
+      workersArchived: false,
+    });
+  }
+  for (let index = 0; index < WORKFLOW_RUNNING_RUNS; index += 1) {
+    runs.push({
+      id: `wfr_running_${index}`,
+      status: "running",
+      originThreadId: originOf(0),
+      projectId: projectOf(0),
+      createdAt: now - 10 * MINUTE_MS + index,
+      finishedAt: null,
+      notificationSent: false,
+      resumedFromRunId: null,
+      calls: WORKFLOW_CALLS_PER_RUN,
+      workersArchived: false,
+    });
+  }
+  for (let index = 0; index < WORKFLOW_QUEUED_RUNS; index += 1) {
+    runs.push({
+      id: `wfr_queued_${index}`,
+      status: "queued",
+      originThreadId: originOf(index + 1),
+      projectId: projectOf(index + 1),
+      createdAt: now - MINUTE_MS + index,
+      finishedAt: null,
+      notificationSent: false,
+      resumedFromRunId: null,
+      calls: 0,
+      workersArchived: false,
+    });
+  }
+  const insertRun = client.prepare(
+    `INSERT INTO workflow_runs (
+       id, project_id, origin_thread_id, environment_id, origin_provider,
+       origin_model, origin_reasoning_level, origin_permission_mode, name,
+       source, source_hash, args_json, status, resumed_from_run_id,
+       result_json, error, phase, notification_sent, notification_outcome,
+       replay_safety_version, created_at, started_at, finished_at
+     ) VALUES (
+       @id, @projectId, @originThreadId, 'env_workflow', 'provider-a', 'gpt-5',
+       'high', 'accept-edits', 'review', @source, @sourceHash, '{"pr":42}',
+       @status, @resumedFromRunId, @resultJson, @error, @phase,
+       @notificationSent, @notificationOutcome, 1, @createdAt, @startedAt,
+       @finishedAt
+     )`,
+  );
+  const insertCall = client.prepare(
+    `INSERT INTO workflow_calls (
+       id, run_id, call_index, cache_key, prompt, options_json,
+       resolved_provider, resolved_model, resolved_reasoning_level,
+       resolved_permission_mode, status, child_thread_id, result_json, error,
+       created_at, started_at, last_activity_at, finished_at
+     ) VALUES (
+       @id, @runId, @callIndex, @cacheKey, @prompt, @optionsJson, 'provider-a',
+       'gpt-5', 'high', 'accept-edits', @status, @childThreadId, @resultJson,
+       @error, @createdAt, @startedAt, @lastActivityAt, @finishedAt
+     )`,
+  );
+  const insertWorker = client.prepare(
+    `INSERT INTO workflow_workers (
+       thread_id, run_id, call_id, origin_thread_id, archived_at, next_cleanup_at
+     ) VALUES (?, ?, ?, ?, ?, ?)`,
+  );
+  const prompt = `Review the files changed in pull request 42 for correctness bugs. ${"Report each finding with the file, line and a failing scenario. ".repeat(6)}`;
+  const resultJson = JSON.stringify({
+    findings: [{ file: "src/a.ts", line: 12, summary: "Stale cache read" }],
+  });
+  let callCounter = 0;
+  let runningCallId = "";
+  let runningChildThreadId = "";
+  let queuedCallId = "";
+  let failedCallId = "";
+  let retiredWorkerThreadId = "";
+  let archivedWorkerThreadId = "";
+  client.transaction(() => {
+    for (const run of runs) {
+      const terminal = run.status !== "queued" && run.status !== "running";
+      insertRun.run({
+        id: run.id,
+        projectId: run.projectId,
+        originThreadId: run.originThreadId,
+        source: WORKFLOW_SOURCE,
+        sourceHash: `hash-${run.id}`,
+        status: run.status,
+        resumedFromRunId: run.resumedFromRunId,
+        resultJson: run.status === "succeeded" ? resultJson : null,
+        error: run.status === "failed" ? "Agent call failed" : null,
+        phase: run.status === "running" ? "Review" : null,
+        notificationSent: run.notificationSent ? 1 : 0,
+        notificationOutcome: run.notificationSent ? "delivered" : "pending",
+        createdAt: run.createdAt,
+        startedAt: run.status === "queued" ? null : run.createdAt + 1_000,
+        finishedAt: run.finishedAt,
+      });
+      for (let callIndex = 0; callIndex < run.calls; callIndex += 1) {
+        callCounter += 1;
+        const id = `wfc_${callCounter.toString().padStart(8, "0")}`;
+        const running = run.status === "running";
+        const status = running
+          ? callIndex < WORKFLOW_RUNNING_CALLS_PER_RUN
+            ? "running"
+            : callIndex === WORKFLOW_RUNNING_CALLS_PER_RUN
+              ? "failed"
+              : callIndex < WORKFLOW_CALLS_PER_RUN - 2
+                ? "succeeded"
+                : "queued"
+          : run.status === "cancelled" && callIndex > 10
+            ? "cancelled"
+            : "succeeded";
+        const childThreadId =
+          status === "queued" || status === "cancelled"
+            ? null
+            : `thr_workflow_call_${callCounter}`;
+        const startedAt = run.createdAt + 2_000 + callIndex * 1_000;
+        insertCall.run({
+          id,
+          runId: run.id,
+          callIndex,
+          cacheKey: `cache-${run.id}-${callIndex}`,
+          prompt,
+          optionsJson: JSON.stringify({
+            selection: null,
+            outputSchema: null,
+            title: `Review shard ${callIndex}`,
+            phase: "Review",
+          }),
+          status,
+          childThreadId,
+          resultJson: status === "succeeded" ? resultJson : null,
+          error: status === "failed" ? "Provider overloaded" : null,
+          createdAt: startedAt,
+          startedAt: status === "queued" ? null : startedAt,
+          lastActivityAt: status === "running" ? now - callIndex * 1_000 : null,
+          finishedAt:
+            status === "running" || status === "queued"
+              ? null
+              : (run.finishedAt ?? now) - 1_000,
+        });
+        if (childThreadId !== null) {
+          const archivedAt =
+            terminal && run.workersArchived
+              ? (run.finishedAt ?? now) + MINUTE_MS
+              : null;
+          insertWorker.run(
+            childThreadId,
+            run.id,
+            id,
+            run.originThreadId,
+            archivedAt,
+            archivedAt === null && terminal ? now - 1_000 : now + DAY_MS,
+          );
+          if (archivedAt !== null && archivedWorkerThreadId === "") {
+            archivedWorkerThreadId = childThreadId;
+          }
+          if (archivedAt === null && terminal && retiredWorkerThreadId === "") {
+            retiredWorkerThreadId = childThreadId;
+          }
+        }
+        if (run.id === "wfr_running_0") {
+          if (status === "running" && runningCallId === "") {
+            runningCallId = id;
+            runningChildThreadId = childThreadId ?? "";
+          }
+          if (status === "queued" && queuedCallId === "") queuedCallId = id;
+          if (status === "failed") failedCallId = id;
+        }
+      }
+    }
+  })();
+  return {
+    projectId: projectOf(0),
+    originThreadId: originOf(0),
+    runningRunId: "wfr_running_0",
+    largestRunId: "wfr_retained_000000",
+    runningCallId,
+    runningChildThreadId,
+    queuedCallId,
+    failedCallId,
+    nextCallIndex: WORKFLOW_CALLS_PER_RUN,
+    pendingNotificationRunId: "wfr_pending_0",
+    terminalRunId: `wfr_retained_${(retained - 1).toString().padStart(6, "0")}`,
+    retiredWorkerThreadId,
+    archivedWorkerThreadId,
     now,
   };
 }

@@ -1233,7 +1233,7 @@ async function smokeFullStackAttempt(binDir, sdkDir, attempt) {
         }),
     });
     process.stdout.write(
-      "bb-app tarball smoke: fork memory policy and workflow exclusion passed\n",
+      "bb-app tarball smoke: fork memory policy and upstream workflows passed\n",
     );
     // Keep Awake reconciles even its default disabled state, so reaching this
     // log proves the packed daemon found its companion worker, downloaded the

@@ -6,6 +6,7 @@ import { PLUGINS_COST_GROUP } from "./plugins-cases.js";
 import {
   ACCOUNT_POOL_COST_GROUP,
   AUTOMATIONS_COST_GROUP,
+  WORKFLOWS_COST_GROUP,
 } from "./plugin-databases-cases.js";
 import { QUEUED_THREAD_MESSAGES_COST_CASES } from "./queued-thread-messages-cases.js";
 import { THREAD_FILES_COST_GROUP } from "./thread-files-cases.js";
@@ -28,6 +29,7 @@ const ALL_GROUPS: readonly RegisteredCostGroup[] = [
   PLUGINS_COST_GROUP,
   ACCOUNT_POOL_COST_GROUP,
   AUTOMATIONS_COST_GROUP,
+  WORKFLOWS_COST_GROUP,
   SETTINGS_MAINTENANCE_COST_GROUP,
   CREDENTIALS_ATTACHMENTS_COST_GROUP,
   THREAD_FILES_COST_GROUP,

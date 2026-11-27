@@ -1,19 +1,18 @@
-# BB workflows in this fork
+# Workflows in this fork
 
-This fork omits the bundled Workflows plugin, including its agent tools,
-instructions, skill, CLI commands, worker, and UI. Work uses ordinary agent
-threads and task-relevant skills.
+This fork bundles the unmodified upstream Workflows plugin. It is disabled by
+default, matching upstream. Enable it with `bb plugin enable workflows`; use
+`bb workflows validate|run|status|history|list|stop` and the bundled `workflows`
+skill for its standard JavaScript orchestration.
 
-On upgrade, bb removes the saved `builtin:workflows` registration with its
-settings, schedules, and secrets, as it does for any builtin it no longer
-bundles. Its code never loads. Installing `builtin:workflows` is rejected.
-Workflow run data (`plugins/workflows/data.db`) and artifacts are retained.
+The former enhanced fork runtime, workflow-gates releases, campaign and artifact
+review extensions, and their custom skills are not bundled. Ordinary agent
+threads and task-relevant skills remain available alongside upstream Workflows.
 
-For an already installed app, `bb plugin disable workflows` persistently
-disables the bundled plugin without replacing the app. Separately remove any
-user-installed `workflow-gates` skill links and replace custom instructions
-that still recommend BB workflow orchestration. Ordinary `workflow-router`
-skill routing can remain.
+The upstream plugin source is taken directly from the upstream revision recorded
+by the fork's merge commit. Future syncs should keep that plugin aligned with
+upstream instead of reintroducing the old extensions.
 
-Previously injected instructions remain part of existing conversation history.
-Use a fresh agent session to start without that historical context.
+Previously retained workflow databases and artifacts are not deleted by this
+source sync. Compatibility with historical enhanced-runtime data must be checked
+on copies before activating an upgraded app against that data.

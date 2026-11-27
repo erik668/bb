@@ -160,6 +160,11 @@
     "icon": "ListTodo"
   },
   {
+    "id": "workflows",
+    "name": "Workflows",
+    "icon": "Workflow"
+  },
+  {
     "id": "environment-git-worktree",
     "name": "Worktree",
     "icon": "FolderGit"

@@ -28,6 +28,7 @@ export const ONBOARDING_PLUGIN_MARKETPLACE = OFFICIAL_PLUGIN_MARKETPLACE;
 
 export const ONBOARDING_PLUGIN_ENTRY_IDS: readonly string[] = [
   "browser-automation",
+  "workflows",
   "monaco-editor",
   "prompt-library",
   "agent-annotations",

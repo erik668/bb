@@ -6,6 +6,7 @@ const DATA_DIR = "packages/db/src/data";
 export const PLUGIN_QUERY_MODULES: readonly string[] = [
   "plugins/account-pool/src/store.ts",
   "plugins/automations/src/data.ts",
+  "plugins/workflows/src/data.ts",
 ];
 const QUERY_METHODS = new Set([
   "select",
